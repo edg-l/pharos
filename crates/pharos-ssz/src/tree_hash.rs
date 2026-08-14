@@ -113,6 +113,20 @@ pub(crate) fn next_pow_of_two(n: usize) -> usize {
     n.next_power_of_two()
 }
 
+/// Concatenate the packed encodings of each element in `elems` into a single
+/// byte buffer.
+///
+/// Shared between `[T; N]`, `SszVector<T, N>`, and `SszList<T, N>` for the
+/// basic-element merkleization path: the result is fed to `pack_bytes_to_chunks`
+/// before merkleization.
+pub fn pack_basic_elems_bytes<T: TreeHash>(elems: &[T]) -> Vec<u8> {
+    let mut bytes: Vec<u8> = Vec::new();
+    for elem in elems {
+        bytes.extend_from_slice(&elem.tree_hash_packed_encoding());
+    }
+    bytes
+}
+
 /// Pack a byte slice into 32-byte chunks, right-padding the final chunk with
 /// zeros if necessary.
 ///
@@ -194,21 +208,24 @@ fn merkleize_padded_inner(chunks: &[Hash256], padded_len: usize) -> Hash256 {
         return zero_hash(total_depth);
     }
 
-    let mut layer: Vec<Hash256> = chunks.to_vec();
+    // Ping-pong between two buffers across tree levels, reusing the
+    // allocations instead of growing a fresh `Vec` per depth.
+    let mut current: Vec<Hash256> = chunks.to_vec();
+    let mut next: Vec<Hash256> = Vec::with_capacity(current.len().div_ceil(2));
     for depth in 0..total_depth {
-        let mut next_layer = Vec::with_capacity(layer.len().div_ceil(2));
-        let mut iter = layer.chunks_exact(2);
+        next.clear();
+        let mut iter = current.chunks_exact(2);
         for pair in iter.by_ref() {
-            next_layer.push(hash_concat(pair[0].as_ref(), pair[1].as_ref()));
+            next.push(hash_concat(pair[0].as_ref(), pair[1].as_ref()));
         }
         // If the layer has an odd node, pair it with the zero subtree at this depth.
         if let [last] = iter.remainder() {
-            next_layer.push(hash_concat(last.as_ref(), zero_hash(depth).as_ref()));
+            next.push(hash_concat(last.as_ref(), zero_hash(depth).as_ref()));
         }
-        layer = next_layer;
+        std::mem::swap(&mut current, &mut next);
     }
-    debug_assert_eq!(layer.len(), 1, "should have reduced to a single root");
-    layer[0]
+    debug_assert_eq!(current.len(), 1, "should have reduced to a single root");
+    current[0]
 }
 
 /// Mix a Merkle root with a length value (SSZ `mix_in_length`).

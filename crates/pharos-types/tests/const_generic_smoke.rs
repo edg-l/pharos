@@ -112,13 +112,31 @@ fn minimal_beacon_state_tree_hash_changes_on_mutation() {
 fn validator_root_same_across_presets() {
     // `Validator` is a non-generic struct (no list fields). Its tree hash
     // root depends only on its field values, not on preset constants.
-    // Two Validator instances with the same fields must hash identically
-    // regardless of which preset the BeaconState they live in uses.
+    //
+    // Verify the SSZ encode → decode → tree_hash_root path produces the same
+    // root as the in-memory value. A trivial `hash_tree_root(x) == hash_tree_root(x)`
+    // would pass by determinism alone; reconstructing the value from raw bytes
+    // exercises the `Decode` path and confirms re-export consistency.
     let v = make_validator(0x42);
-    let root = v.tree_hash_root();
-    // Re-create with same values — should give identical root.
-    let v2 = make_validator(0x42);
-    assert_eq!(root, v2.tree_hash_root());
+    let in_memory_root = v.tree_hash_root();
+
+    let encoded = v.as_ssz_bytes();
+    let decoded = Validator::from_ssz_bytes(&encoded).expect("decode should succeed");
+    let decoded_root = decoded.tree_hash_root();
+
+    assert_eq!(
+        in_memory_root, decoded_root,
+        "Validator tree_hash_root must be invariant across SSZ encode/decode"
+    );
+
+    // A second value differing only in pubkey must produce a different root,
+    // confirming the comparison above is not vacuously equal.
+    let other = make_validator(0x43);
+    assert_ne!(
+        in_memory_root,
+        other.tree_hash_root(),
+        "validators with different pubkeys must have different roots"
+    );
 }
 
 #[test]

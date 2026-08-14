@@ -32,7 +32,8 @@ use crate::{
     encode::{BYTES_PER_LENGTH_OFFSET, Encode},
     error::SszError,
     tree_hash::{
-        TreeHash, TreeHashType, merkleize, merkleize_padded, mix_in_length, pack_bytes_to_chunks,
+        TreeHash, TreeHashType, merkleize, merkleize_padded, mix_in_length, pack_basic_elems_bytes,
+        pack_bytes_to_chunks,
     },
 };
 use pharos_utils::Hash256;
@@ -453,10 +454,7 @@ where
         if T::IS_FIXED_SIZE {
             elems.len() * T::ssz_fixed_len()
         } else {
-            // Each element contributes its own bytes + a 4-byte offset slot.
-            let offsets_len = elems.len() * BYTES_PER_LENGTH_OFFSET;
-            let data_len: usize = elems.iter().map(|e| e.ssz_bytes_len()).sum();
-            offsets_len + data_len
+            variable_elems_ssz_bytes_len(elems)
         }
     }
 
@@ -467,20 +465,7 @@ where
                 elem.ssz_append(buf);
             }
         } else {
-            // Variable-element list: offsets then data.
-            let fixed_region_len = elems.len() * BYTES_PER_LENGTH_OFFSET;
-            let mut variable_parts: Vec<Vec<u8>> = Vec::with_capacity(elems.len());
-            for elem in elems {
-                variable_parts.push(elem.as_ssz_bytes());
-            }
-            let mut running_offset = fixed_region_len;
-            for part in &variable_parts {
-                buf.extend_from_slice(&(running_offset as u32).to_le_bytes());
-                running_offset += part.len();
-            }
-            for part in variable_parts {
-                buf.extend_from_slice(&part);
-            }
+            encode_variable_elems(elems, buf);
         }
     }
 }
@@ -530,9 +515,7 @@ where
         if T::IS_FIXED_SIZE {
             elems.len() * T::ssz_fixed_len()
         } else {
-            let offsets_len = elems.len() * BYTES_PER_LENGTH_OFFSET;
-            let data_len: usize = elems.iter().map(|e| e.ssz_bytes_len()).sum();
-            offsets_len + data_len
+            variable_elems_ssz_bytes_len(elems)
         }
     }
 
@@ -543,19 +526,7 @@ where
                 elem.ssz_append(buf);
             }
         } else {
-            let fixed_region_len = elems.len() * BYTES_PER_LENGTH_OFFSET;
-            let mut variable_parts: Vec<Vec<u8>> = Vec::with_capacity(elems.len());
-            for elem in elems {
-                variable_parts.push(elem.as_ssz_bytes());
-            }
-            let mut running_offset = fixed_region_len;
-            for part in &variable_parts {
-                buf.extend_from_slice(&(running_offset as u32).to_le_bytes());
-                running_offset += part.len();
-            }
-            for part in variable_parts {
-                buf.extend_from_slice(&part);
-            }
+            encode_variable_elems(elems, buf);
         }
     }
 }
@@ -614,10 +585,7 @@ where
                 // size_of(B) is T::ssz_fixed_len() for basic types.
                 let elem_size = T::ssz_fixed_len() as u64;
                 let limit = (N * elem_size).div_ceil(32) as usize;
-                let mut bytes: Vec<u8> = Vec::new();
-                for elem in elems {
-                    bytes.extend_from_slice(&elem.tree_hash_packed_encoding());
-                }
+                let bytes = pack_basic_elems_bytes(elems);
                 let chunks = pack_bytes_to_chunks(&bytes);
                 merkleize_padded(&chunks, limit)
             }
@@ -651,10 +619,7 @@ where
         match T::TREE_HASH_TYPE {
             TreeHashType::Basic => {
                 // Pack all packed encodings then merkleize WITHOUT a limit.
-                let mut bytes: Vec<u8> = Vec::new();
-                for elem in elems {
-                    bytes.extend_from_slice(&elem.tree_hash_packed_encoding());
-                }
+                let bytes = pack_basic_elems_bytes(elems);
                 let chunks = pack_bytes_to_chunks(&bytes);
                 merkleize(&chunks)
             }
@@ -668,6 +633,38 @@ where
 
     fn tree_hash_packed_encoding(&self) -> Vec<u8> {
         unreachable!("SszVector is not a basic type and is never packed")
+    }
+}
+
+// ── shared encode helpers ─────────────────────────────────────────────────────
+
+/// SSZ byte length of a variable-element sequence: per-element offsets plus
+/// the sum of each element's serialized length.
+fn variable_elems_ssz_bytes_len<T: Encode>(elems: &[T]) -> usize {
+    let offsets_len = elems.len() * BYTES_PER_LENGTH_OFFSET;
+    let data_len: usize = elems.iter().map(|e| e.ssz_bytes_len()).sum();
+    offsets_len + data_len
+}
+
+/// Encode a slice of variable-size elements into `buf` using two passes:
+///
+/// 1. Walk `elems` and write each element's offset, computed from
+///    `ssz_bytes_len()`, into the fixed region.
+/// 2. Walk `elems` again and stream each element's bytes directly into `buf`
+///    via `ssz_append`, avoiding the per-element intermediate `Vec<u8>`
+///    that an `as_ssz_bytes` round would allocate.
+///
+/// On a `BeaconBlockBody` with 128 attestations this removes 128 intermediate
+/// heap allocations per encode call.
+fn encode_variable_elems<T: Encode>(elems: &[T], buf: &mut Vec<u8>) {
+    let fixed_region_len = elems.len() * BYTES_PER_LENGTH_OFFSET;
+    let mut running_offset = fixed_region_len;
+    for elem in elems {
+        buf.extend_from_slice(&(running_offset as u32).to_le_bytes());
+        running_offset += elem.ssz_bytes_len();
+    }
+    for elem in elems {
+        elem.ssz_append(buf);
     }
 }
 

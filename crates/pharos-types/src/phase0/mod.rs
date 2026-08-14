@@ -102,26 +102,30 @@ pub type MainnetBeaconBlockBody = BeaconBlockBody<
     33,   // DEPOSIT_PROOF_LENGTH (specs/phase0/beacon-chain.md:194)
 >;
 
-/// Mainnet `BeaconBlock` with all mainnet limits.
+/// Mainnet `BeaconBlock` with all mainnet limits. Must match
+/// `MainnetBeaconBlockBody` const params exactly: a divergence between any
+/// literal here and the body alias above is a preset typo.
 pub type MainnetBeaconBlock = BeaconBlock<
-    16,   // MAX_PROPOSER_SLASHINGS
-    2,    // MAX_ATTESTER_SLASHINGS
-    128,  // MAX_ATTESTATIONS
-    16,   // MAX_DEPOSITS
-    16,   // MAX_VOLUNTARY_EXITS
-    2048, // MAX_VALIDATORS_PER_COMMITTEE
-    33,   // DEPOSIT_PROOF_LENGTH
+    16,   // MAX_PROPOSER_SLASHINGS (presets/mainnet/phase0.yaml:75)
+    2,    // MAX_ATTESTER_SLASHINGS (presets/mainnet/phase0.yaml:77)
+    128,  // MAX_ATTESTATIONS (presets/mainnet/phase0.yaml:79)
+    16,   // MAX_DEPOSITS (presets/mainnet/phase0.yaml:81)
+    16,   // MAX_VOLUNTARY_EXITS (presets/mainnet/phase0.yaml:83)
+    2048, // MAX_VALIDATORS_PER_COMMITTEE (presets/mainnet/phase0.yaml:10)
+    33,   // DEPOSIT_PROOF_LENGTH (specs/phase0/beacon-chain.md:194)
 >;
 
-/// Mainnet `SignedBeaconBlock` with all mainnet limits.
+/// Mainnet `SignedBeaconBlock` with all mainnet limits. Must match
+/// `MainnetBeaconBlockBody` const params exactly: a divergence between any
+/// literal here and the body alias above is a preset typo.
 pub type MainnetSignedBeaconBlock = SignedBeaconBlock<
-    16,   // MAX_PROPOSER_SLASHINGS
-    2,    // MAX_ATTESTER_SLASHINGS
-    128,  // MAX_ATTESTATIONS
-    16,   // MAX_DEPOSITS
-    16,   // MAX_VOLUNTARY_EXITS
-    2048, // MAX_VALIDATORS_PER_COMMITTEE
-    33,   // DEPOSIT_PROOF_LENGTH
+    16,   // MAX_PROPOSER_SLASHINGS (presets/mainnet/phase0.yaml:75)
+    2,    // MAX_ATTESTER_SLASHINGS (presets/mainnet/phase0.yaml:77)
+    128,  // MAX_ATTESTATIONS (presets/mainnet/phase0.yaml:79)
+    16,   // MAX_DEPOSITS (presets/mainnet/phase0.yaml:81)
+    16,   // MAX_VOLUNTARY_EXITS (presets/mainnet/phase0.yaml:83)
+    2048, // MAX_VALIDATORS_PER_COMMITTEE (presets/mainnet/phase0.yaml:10)
+    33,   // DEPOSIT_PROOF_LENGTH (specs/phase0/beacon-chain.md:194)
 >;
 
 // ── Minimal type aliases ──────────────────────────────────────────────────────
@@ -186,26 +190,30 @@ pub type MinimalBeaconBlockBody = BeaconBlockBody<
     33,   // DEPOSIT_PROOF_LENGTH
 >;
 
-/// Minimal `BeaconBlock` with all minimal limits.
+/// Minimal `BeaconBlock` with all minimal limits. Must match
+/// `MinimalBeaconBlockBody` const params exactly: a divergence between any
+/// literal here and the body alias above is a preset typo.
 pub type MinimalBeaconBlock = BeaconBlock<
-    16,   // MAX_PROPOSER_SLASHINGS
-    2,    // MAX_ATTESTER_SLASHINGS
-    128,  // MAX_ATTESTATIONS
-    16,   // MAX_DEPOSITS
-    16,   // MAX_VOLUNTARY_EXITS
-    2048, // MAX_VALIDATORS_PER_COMMITTEE
-    33,   // DEPOSIT_PROOF_LENGTH
+    16,   // MAX_PROPOSER_SLASHINGS (presets/minimal/phase0.yaml:75)
+    2,    // MAX_ATTESTER_SLASHINGS (presets/minimal/phase0.yaml:77)
+    128,  // MAX_ATTESTATIONS (presets/minimal/phase0.yaml:79)
+    16,   // MAX_DEPOSITS (presets/minimal/phase0.yaml:81)
+    16,   // MAX_VOLUNTARY_EXITS (presets/minimal/phase0.yaml:83)
+    2048, // MAX_VALIDATORS_PER_COMMITTEE (presets/minimal/phase0.yaml:10)
+    33,   // DEPOSIT_PROOF_LENGTH (specs/phase0/beacon-chain.md:194)
 >;
 
-/// Minimal `SignedBeaconBlock` with all minimal limits.
+/// Minimal `SignedBeaconBlock` with all minimal limits. Must match
+/// `MinimalBeaconBlockBody` const params exactly: a divergence between any
+/// literal here and the body alias above is a preset typo.
 pub type MinimalSignedBeaconBlock = SignedBeaconBlock<
-    16,   // MAX_PROPOSER_SLASHINGS
-    2,    // MAX_ATTESTER_SLASHINGS
-    128,  // MAX_ATTESTATIONS
-    16,   // MAX_DEPOSITS
-    16,   // MAX_VOLUNTARY_EXITS
-    2048, // MAX_VALIDATORS_PER_COMMITTEE
-    33,   // DEPOSIT_PROOF_LENGTH
+    16,   // MAX_PROPOSER_SLASHINGS (presets/minimal/phase0.yaml:75)
+    2,    // MAX_ATTESTER_SLASHINGS (presets/minimal/phase0.yaml:77)
+    128,  // MAX_ATTESTATIONS (presets/minimal/phase0.yaml:79)
+    16,   // MAX_DEPOSITS (presets/minimal/phase0.yaml:81)
+    16,   // MAX_VOLUNTARY_EXITS (presets/minimal/phase0.yaml:83)
+    2048, // MAX_VALIDATORS_PER_COMMITTEE (presets/minimal/phase0.yaml:10)
+    33,   // DEPOSIT_PROOF_LENGTH (specs/phase0/beacon-chain.md:194)
 >;
 
 // ── AggregateAndProof / SignedAggregateAndProof aliases ───────────────────────

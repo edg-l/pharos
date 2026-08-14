@@ -7,57 +7,6 @@ revised as decisions solidify.
 not just spec-test green. Decisions below are biased toward latency and
 throughput; correctness is the floor, speed is the target.
 
-## ⚠ Pending before next session (urgent)
-
-Quality findings from the M0 final review that were deferred for the next
-working session. Address these **before** starting any M1 work. Conformance
-is currently green (`ssz_generic` 2215/0/294, `ssz_static` mainnet 135/0/0,
-`ssz_static` minimal 3321/0/0; the 294 skips are intentional progressive-
-container deferrals per Q2).
-
-### Code duplication (correctness-adjacent)
-1. **`SszList` / `SszVector` encode-body deduplication** —
-   `crates/pharos-ssz/src/sequence.rs:463-485` and `540-560` have a
-   byte-for-byte identical variable-element encode body (offsets + payload
-   write). Extract `fn encode_variable_elems<T: Encode>(elems: &[T], buf:
-   &mut Vec<u8>)` and call it from both. Same treatment for the
-   `ssz_bytes_len` variable-case bodies at `456-459` and `533-535`.
-2. **Packed-bytes-for-basic-elems deduplication** —
-   `crates/pharos-ssz/src/sequence.rs:611-616` and `648-652` plus
-   `crates/pharos-ssz/src/array.rs:171-175` all build the same intermediate
-   `Vec<u8>` of per-element packed encodings before calling
-   `pack_bytes_to_chunks`. Extract a shared helper.
-
-### Minor quality
-3. **`Uint256::Display` heap allocation** —
-   `crates/pharos-utils/src/uint256.rs:168-188` allocates a `Vec<u8>`, maps
-   to `char`, collects to `String`. Replace with a stack `[u8; 78]`
-   (max-decimal-digit) buffer reversed in place. Eliminates the alloc.
-4. **Magic literal comments on Mainnet*Block* aliases** —
-   `crates/pharos-types/src/phase0/mod.rs:57-208` repeats the seven literals
-   `<16, 2, 128, 16, 16, 2048, 33>` across `MainnetBeaconBlockBody`,
-   `MainnetBeaconBlock`, `MainnetSignedBeaconBlock`. Add named-constant-
-   cross-reference comments on each literal so a preset typo surfaces.
-5. **Strengthen `validator_root_same_across_presets`** —
-   `crates/pharos-types/tests/const_generic_smoke.rs:109-119` currently
-   asserts `hash_tree_root(x) == hash_tree_root(x)` (trivially true by
-   determinism). Replace with a value comparison against a root computed
-   from raw SSZ bytes via `Decode`, confirming re-export-path consistency.
-
-### Hot-path items (M1 prep — bench-conscious, not yet measured)
-6. **Variable-element encode `Vec<Vec<u8>>`** —
-   `crates/pharos-ssz/src/sequence.rs:472-481` and `547-556` pre-serialize
-   every element into a `Vec<Vec<u8>>` before writing offsets. For a
-   `BeaconBlockBody` with 128 attestations this is 128 intermediate heap
-   allocations per encode call. Two-pass approach (pass 1: compute sizes +
-   write offsets; pass 2: stream element bytes directly into `buf`)
-   eliminates the `Vec<Vec<u8>>`. Highest-impact M0 allocation win.
-7. **`merkleize_padded_inner` ping-pong buffer** —
-   `crates/pharos-ssz/src/tree_hash.rs:~196-210` allocates a new
-   `Vec<Hash256>` per tree level. Replace with a single ping-pong buffer
-   pair (two allocations total). Low-impact at M0 scale; matters at
-   mainnet-state scale.
-
 ## Reference repos (local clones)
 
 All cloned under `~/dev/`:

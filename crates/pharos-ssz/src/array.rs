@@ -14,7 +14,7 @@ use crate::{
     decode::Decode,
     encode::Encode,
     error::SszError,
-    tree_hash::{TreeHash, TreeHashType, merkleize, pack_bytes_to_chunks},
+    tree_hash::{TreeHash, TreeHashType, merkleize, pack_basic_elems_bytes, pack_bytes_to_chunks},
 };
 use pharos_utils::Hash256;
 
@@ -168,10 +168,7 @@ where
         match T::TREE_HASH_TYPE {
             TreeHashType::Basic => {
                 // Pack all packed encodings into a byte stream, then merkleize without limit.
-                let mut bytes: Vec<u8> = Vec::new();
-                for elem in self.iter() {
-                    bytes.extend_from_slice(&elem.tree_hash_packed_encoding());
-                }
+                let bytes = pack_basic_elems_bytes(self);
                 let chunks = pack_bytes_to_chunks(&bytes);
                 merkleize(&chunks)
             }

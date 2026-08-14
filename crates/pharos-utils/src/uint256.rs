@@ -157,34 +157,30 @@ impl fmt::Debug for Uint256 {
 
 impl fmt::Display for Uint256 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Decimal display via repeated division by 10.
-        let limbs = to_limbs(self);
-        // Check for zero.
+        let mut limbs = to_limbs(self);
         if limbs == [0u64; 4] {
-            return write!(f, "0");
+            return f.write_str("0");
         }
 
-        // Collect decimal digits by dividing the 256-bit value by 10 repeatedly.
-        let mut digits = Vec::new();
-        let mut limbs = limbs;
-
-        loop {
-            if limbs == [0u64; 4] {
-                break;
-            }
-            // Divide limbs (big number) by 10 using schoolbook division.
+        // 2^256 - 1 has 78 decimal digits; write them into a stack buffer
+        // from the right, then emit the populated suffix.
+        let mut buf = [0u8; 78];
+        let mut idx = buf.len();
+        while limbs != [0u64; 4] {
+            // Schoolbook division of the 256-bit value by 10.
             let mut remainder: u128 = 0;
             for i in (0..4).rev() {
                 let cur = (remainder << 64) | (limbs[i] as u128);
                 limbs[i] = (cur / 10) as u64;
                 remainder = cur % 10;
             }
-            digits.push((remainder as u8) + b'0');
+            idx -= 1;
+            buf[idx] = (remainder as u8) + b'0';
         }
 
-        digits.reverse();
-        let s: String = digits.into_iter().map(char::from).collect();
-        write!(f, "{s}")
+        // All bytes written are ASCII digits, so the slice is valid UTF-8.
+        let s = std::str::from_utf8(&buf[idx..]).expect("ASCII digits");
+        f.write_str(s)
     }
 }
 
