@@ -31,6 +31,9 @@ pub enum StateTransitionError {
     #[error("slot out of range for block roots lookup")]
     SlotOutOfRange,
 
+    #[error("invalid randao reveal: invalid signature")]
+    InvalidRandaoReveal,
+
     #[error("ssz error: {0}")]
     Ssz(#[from] pharos_ssz::SszError),
 }

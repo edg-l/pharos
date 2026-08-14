@@ -12,7 +12,8 @@ Source: consensus-specs release `v1.6.1`.
 | phase0    | shuffling          | mainnet | 300  | 0    | 0    | 300   |
 | phase0    | shuffling          | minimal | 300  | 0    | 0    | 300   |
 | phase0    | genesis            | minimal | 5    | 0    | 0    | 5     |
-| phase0    | operations         | -       | -    | -    | -    | -     |
+| phase0    | operations         | mainnet | 118  | 0    | 0    | 118   |
+| phase0    | operations         | minimal | 119  | 0    | 0    | 119   |
 | phase0    | epoch_processing   | -       | -    | -    | -    | -     |
 | phase0    | sanity             | -       | -    | -    | -    | -     |
 | phase0    | finality           | -       | -    | -    | -    | -     |

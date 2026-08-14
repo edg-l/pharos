@@ -8,17 +8,15 @@
 
 use pharos_ssz::TreeHash;
 use pharos_types::phase0::{
-    AttestationData, Domain, Epoch, ForkData, IndexedAttestation, Root, SigningData, Slot,
-    ValidatorIndex,
+    Attestation, AttestationData, Domain, Epoch, ForkData, IndexedAttestation, Root, SigningData,
+    Slot, ValidatorIndex,
 };
-use pharos_types::{BeaconStateView, EthSpec};
+use pharos_types::{BeaconStateView, EthSpec, views::BeaconBlockBodyView};
 use pharos_utils::hash::hash;
 use pharos_utils::{Bytes4, Gwei, Hash256};
 
 use crate::error::StateTransitionError;
-use crate::phase0::helpers::{
-    CHURN_LIMIT_QUOTIENT, GENESIS_EPOCH, MIN_PER_EPOCH_CHURN_LIMIT, uint_to_bytes,
-};
+use crate::phase0::helpers::{GENESIS_EPOCH, uint_to_bytes};
 use crate::phase0::predicates::is_active_validator;
 use crate::phase0::shuffling::compute_shuffled_index;
 
@@ -107,7 +105,7 @@ pub fn get_active_validator_indices<E: EthSpec>(
 /// `get_validator_churn_limit` per `specs/phase0/beacon-chain.md:1054-1061`.
 pub fn get_validator_churn_limit<E: EthSpec>(state: &E::BeaconState) -> u64 {
     let active = get_active_validator_indices::<E>(state, get_current_epoch::<E>(state));
-    (active.len() as u64 / CHURN_LIMIT_QUOTIENT).max(MIN_PER_EPOCH_CHURN_LIMIT)
+    (active.len() as u64 / E::CHURN_LIMIT_QUOTIENT).max(E::MIN_PER_EPOCH_CHURN_LIMIT)
 }
 
 /// `get_seed` per `specs/phase0/beacon-chain.md:1067-1074`.
@@ -297,17 +295,20 @@ pub fn compute_signing_root<T: TreeHash>(ssz_object: &T, domain: Domain) -> Root
 }
 
 /// `get_attesting_indices` per `specs/phase0/beacon-chain.md:1192-1197`.
-//
-// FIXME(generic_const_exprs): the `Bitlist` capacity should be
-// `E::MAX_VALIDATORS_PER_COMMITTEE`, but using `E::CONST` in a const-generic
-// position requires `generic_const_exprs` (unstable). Hardcoded to 2048 —
-// the value both `MainnetEthSpec` and `MinimalEthSpec` use today. Phase 3
-// will move this to an associated-type path on a view trait per D8.
+///
+/// Uses the D8 associated-type pattern: the `Attestation` type is drawn from
+/// `<E::BeaconBlockBody as BeaconBlockBodyView>::Attestation`, which binds to
+/// `phase0::Attestation<2048>` in all current presets. The `Bitlist<2048>`
+/// parameter is the concrete capacity from that binding; no
+/// `generic_const_exprs` is required.
 pub fn get_attesting_indices<E: EthSpec>(
     state: &E::BeaconState,
     data: &AttestationData,
     aggregation_bits: &pharos_ssz::Bitlist<2048>,
-) -> Vec<ValidatorIndex> {
+) -> Vec<ValidatorIndex>
+where
+    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+{
     let committee = get_beacon_committee::<E>(state, data.slot, data.index.0);
     committee
         .into_iter()
@@ -323,22 +324,24 @@ pub fn get_attesting_indices<E: EthSpec>(
 }
 
 /// `get_indexed_attestation` per `specs/phase0/beacon-chain.md:1176-1186`.
-//
-// FIXME(generic_const_exprs): `Attestation<N>` / `IndexedAttestation<N>` should
-// be parameterised by `E::MAX_VALIDATORS_PER_COMMITTEE`. Same workaround as
-// `get_attesting_indices` above; Phase 3 will replace with the D8 associated
-// type pattern.
+///
+/// Uses the D8 associated-type pattern. `Attestation<2048>` is the concrete
+/// type for `<E::BeaconBlockBody as BeaconBlockBodyView>::Attestation` in all
+/// current presets.
 pub fn get_indexed_attestation<E: EthSpec>(
     state: &E::BeaconState,
-    attestation: &pharos_types::phase0::Attestation<2048>,
-) -> IndexedAttestation<2048> {
+    attestation: &<E::BeaconBlockBody as BeaconBlockBodyView>::Attestation,
+) -> IndexedAttestation<2048>
+where
+    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+{
     use pharos_ssz::SszList;
     let mut attesting =
         get_attesting_indices::<E>(state, &attestation.data, &attestation.aggregation_bits);
     attesting.sort();
     IndexedAttestation {
         attesting_indices: SszList::from_vec(attesting)
-            .expect("attesting indices exceed MAX_VALIDATORS_PER_COMMITTEE; invariant violated"),
+            .expect("attesting indices within MAX_VALIDATORS_PER_COMMITTEE"),
         data: attestation.data.clone(),
         signature: attestation.signature,
     }

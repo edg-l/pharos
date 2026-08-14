@@ -203,6 +203,26 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Sources: `configs/mainnet.yaml:28`, `configs/minimal.yaml:25`.
     const MIN_GENESIS_TIME: u64;
 
+    /// `MIN_VALIDATOR_WITHDRAWABILITY_DELAY` in epochs.
+    ///
+    /// Sources: `configs/mainnet.yaml` (256), `configs/minimal.yaml` (256).
+    const MIN_VALIDATOR_WITHDRAWABILITY_DELAY: u64;
+
+    /// `SHARD_COMMITTEE_PERIOD` in epochs.
+    ///
+    /// Sources: `configs/mainnet.yaml` (256), `configs/minimal.yaml` (64).
+    const SHARD_COMMITTEE_PERIOD: u64;
+
+    /// `MIN_PER_EPOCH_CHURN_LIMIT` — minimum validator churn per epoch.
+    ///
+    /// Sources: `configs/mainnet.yaml:119` (4), `configs/minimal.yaml:115` (2).
+    const MIN_PER_EPOCH_CHURN_LIMIT: u64;
+
+    /// `CHURN_LIMIT_QUOTIENT` — active validator count divisor for churn limit.
+    ///
+    /// Sources: `configs/mainnet.yaml` (65536), `configs/minimal.yaml` (32).
+    const CHURN_LIMIT_QUOTIENT: u64;
+
     /// Human-readable preset name (e.g. `"mainnet"`, `"minimal"`).
     fn name() -> &'static str;
 
@@ -384,6 +404,14 @@ impl EthSpec for MainnetEthSpec {
     const MIN_GENESIS_ACTIVE_VALIDATOR_COUNT: u64 = 16_384;
     /// `MIN_GENESIS_TIME` from `configs/mainnet.yaml:28`.
     const MIN_GENESIS_TIME: u64 = 1_606_824_000;
+    /// `MIN_VALIDATOR_WITHDRAWABILITY_DELAY` from `configs/mainnet.yaml`.
+    const MIN_VALIDATOR_WITHDRAWABILITY_DELAY: u64 = 256;
+    /// `SHARD_COMMITTEE_PERIOD` from `configs/mainnet.yaml`.
+    const SHARD_COMMITTEE_PERIOD: u64 = 256;
+    /// `MIN_PER_EPOCH_CHURN_LIMIT` from `configs/mainnet.yaml:119`.
+    const MIN_PER_EPOCH_CHURN_LIMIT: u64 = 4;
+    /// `CHURN_LIMIT_QUOTIENT` from `configs/mainnet.yaml`.
+    const CHURN_LIMIT_QUOTIENT: u64 = 65_536;
 
     fn name() -> &'static str {
         "mainnet"
@@ -511,6 +539,14 @@ impl EthSpec for MinimalEthSpec {
     const MIN_GENESIS_ACTIVE_VALIDATOR_COUNT: u64 = 64;
     /// `MIN_GENESIS_TIME` from `configs/minimal.yaml:25`.
     const MIN_GENESIS_TIME: u64 = 1_578_009_600;
+    /// `MIN_VALIDATOR_WITHDRAWABILITY_DELAY` from `configs/minimal.yaml`.
+    const MIN_VALIDATOR_WITHDRAWABILITY_DELAY: u64 = 256;
+    /// `SHARD_COMMITTEE_PERIOD` from `configs/minimal.yaml`.
+    const SHARD_COMMITTEE_PERIOD: u64 = 64;
+    /// `MIN_PER_EPOCH_CHURN_LIMIT` from `configs/minimal.yaml:115`.
+    const MIN_PER_EPOCH_CHURN_LIMIT: u64 = 2;
+    /// `CHURN_LIMIT_QUOTIENT` from `configs/minimal.yaml`.
+    const CHURN_LIMIT_QUOTIENT: u64 = 32;
 
     fn name() -> &'static str {
         "minimal"

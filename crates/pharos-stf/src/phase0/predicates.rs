@@ -1,9 +1,14 @@
 //! Pure predicate functions from `specs/phase0/beacon-chain.md` "Predicates"
-//! section (lines 694-760).
+//! section (lines 694-816).
 
-use pharos_types::phase0::{AttestationData, Epoch, Validator};
-
-use crate::phase0::helpers::FAR_FUTURE_EPOCH;
+use crate::phase0::{
+    accessors::{compute_signing_root, get_domain},
+    helpers::{DOMAIN_BEACON_ATTESTER, FAR_FUTURE_EPOCH},
+};
+use pharos_types::{
+    BeaconStateView, EthSpec,
+    phase0::{AttestationData, Epoch, IndexedAttestation, Validator},
+};
 
 /// Check if a validator is active at `epoch`.
 ///
@@ -42,6 +47,56 @@ pub fn is_slashable_attestation_data(d1: &AttestationData, d2: &AttestationData)
     (d1 != d2 && d1.target.epoch == d2.target.epoch)
         // Surround vote
         || (d1.source.epoch < d2.source.epoch && d2.target.epoch < d1.target.epoch)
+}
+
+/// `is_valid_indexed_attestation` per `specs/phase0/beacon-chain.md:765-779`.
+///
+/// Checks that attesting indices are sorted, unique, non-empty, and that the
+/// aggregate signature is valid (when `verify_signatures` is true).
+pub fn is_valid_indexed_attestation<E: EthSpec>(
+    state: &E::BeaconState,
+    indexed_att: &IndexedAttestation<2048>,
+    verify_signatures: bool,
+) -> bool {
+    let indices = indexed_att.attesting_indices.as_slice();
+
+    // Non-empty and sorted/unique.
+    if indices.is_empty() {
+        return false;
+    }
+    for w in indices.windows(2) {
+        if w[0] >= w[1] {
+            return false;
+        }
+    }
+
+    if !verify_signatures {
+        return true;
+    }
+
+    // Collect pubkeys.
+    let pubkeys: Vec<pharos_utils::BLSPubkey> = indices
+        .iter()
+        .filter_map(|i| state.validators().get(i.0 as usize).map(|v| v.pubkey))
+        .collect();
+
+    if pubkeys.len() != indices.len() {
+        return false;
+    }
+
+    let domain = get_domain::<E>(
+        state,
+        DOMAIN_BEACON_ATTESTER,
+        Some(indexed_att.data.target.epoch),
+    );
+    let signing_root = compute_signing_root(&indexed_att.data, domain);
+
+    pharos_utils::bls::fast_aggregate_verify(
+        &pubkeys,
+        signing_root.as_slice(),
+        &indexed_att.signature,
+    )
+    .unwrap_or(false)
 }
 
 #[cfg(test)]

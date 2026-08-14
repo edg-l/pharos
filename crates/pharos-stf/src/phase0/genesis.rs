@@ -6,15 +6,14 @@ use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
     EthSpec,
     phase0::{
-        BeaconBlockHeader, Deposit, DepositData, DepositMessage, Epoch, Eth1Data, Fork, Gwei, Slot,
-        Validator, ValidatorIndex,
+        BeaconBlockHeader, Deposit, DepositData, Epoch, Eth1Data, Fork, Gwei, Slot, ValidatorIndex,
     },
 };
-use pharos_utils::{Bytes4, Bytes32, Hash256};
+use pharos_utils::{Bytes4, Hash256};
 
 use crate::phase0::{
-    accessors::get_active_validator_indices,
-    helpers::{FAR_FUTURE_EPOCH, GENESIS_EPOCH},
+    accessors::get_active_validator_indices, helpers::GENESIS_EPOCH, operations::process_deposit,
+    state_write::BeaconStateWrite,
 };
 
 // Per `specs/phase0/beacon-chain.md:191`.
@@ -24,17 +23,13 @@ const GENESIS_SLOT: Slot = Slot(0);
 /// deposit list.
 ///
 /// Per `specs/phase0/beacon-chain.md:1300-1337`.
-///
-/// The deposit application logic lives in `apply_deposit_at_genesis` (below).
-// TODO(phase3): replace `apply_deposit_at_genesis` with the shared
-// `phase0::operations::process_deposit` once Task 3.5 lands.
 pub fn initialize_beacon_state_from_eth1<E: EthSpec>(
     eth1_block_hash: Hash256,
     eth1_timestamp: u64,
     deposits: &[Deposit<33>],
 ) -> E::BeaconState
 where
-    E::BeaconState: BeaconStateMut,
+    E::BeaconState: BeaconStateMut + BeaconStateWrite,
     E::BeaconBlockBody: Default + TreeHash,
 {
     let fork = Fork {
@@ -63,17 +58,18 @@ where
     );
 
     // Process deposits.
+    // Per `specs/phase0/beacon-chain.md:1318-1321`: before each deposit, the
+    // deposit_root is updated to the root of all deposits up to and including
+    // that deposit's index. Because the proof in each Deposit is constructed
+    // against this incrementally-updated root, `process_deposit`'s Merkle
+    // branch check passes trivially at genesis.
     let leaves: Vec<&DepositData> = deposits.iter().map(|d| &d.data).collect();
     for (i, deposit) in deposits.iter().enumerate() {
-        // Recompute deposit_root = hash_tree_root(List[DepositData, 2^32](leaves[..=i])).
-        // This matches the Python spec: each deposit advances the root.
         let deposit_root = compute_deposit_data_root(&leaves[..=i]);
         state.set_eth1_deposit_root(deposit_root);
-
-        // Genesis deposits are trusted by construction — no Merkle proof check.
-        // Proof verification is skipped here; process_deposit (Task 3.5) will
-        // verify proofs for mid-chain deposits.
-        apply_deposit_at_genesis(&mut state, deposit, E::GENESIS_FORK_VERSION);
+        // verify_signatures=true: BLS proofs of possession are verified even at genesis.
+        process_deposit::<E>(&mut state, deposit, true)
+            .expect("genesis deposit Merkle proof verified above; invariant violated");
     }
 
     // Process activations.
@@ -120,90 +116,6 @@ where
     E::BeaconBlock::with_state_root(genesis_state_root)
 }
 
-// ── Deposit application (genesis path) ───────────────────────────────────────
-
-/// Apply a single deposit at genesis time.
-///
-/// Mirrors `apply_deposit` from `specs/phase0/beacon-chain.md:2061-2084`.
-/// Merkle proof verification is skipped because genesis deposits are trusted
-/// by construction (the deposit root is built from the same deposit list).
-/// Phase 3's `process_deposit` will handle both proof verification and the
-/// incremented `eth1_deposit_index`.
-///
-/// `genesis_fork_version` is the preset's `GENESIS_FORK_VERSION`, used to
-/// compute the deposit domain per `compute_domain(DOMAIN_DEPOSIT)` (which
-/// defaults to `fork_version=GENESIS_FORK_VERSION` and zero genesis_validators_root).
-fn apply_deposit_at_genesis<S: BeaconStateMut>(
-    state: &mut S,
-    deposit: &Deposit<33>,
-    genesis_fork_version: [u8; 4],
-) {
-    let pubkey = deposit.data.pubkey;
-    let withdrawal_credentials = deposit.data.withdrawal_credentials;
-    let amount = deposit.data.amount.0;
-
-    // Increment deposit index (mirrors process_deposit's eth1_deposit_index += 1).
-    state.increment_eth1_deposit_index();
-
-    // Check if pubkey is already in the registry.
-    let existing_index =
-        (0..state.validators_len()).find(|&i| state.validator_pubkey_at(i) == pubkey);
-
-    match existing_index {
-        Some(idx) => {
-            // Existing validator: increase balance.
-            let cur = state.balance_at(idx);
-            state.set_balance_at(idx, cur + amount);
-        }
-        None => {
-            // New validator: verify BLS signature then add to registry.
-            // Per spec `apply_deposit`: `domain = compute_domain(DOMAIN_DEPOSIT)`
-            // which uses fork_version=GENESIS_FORK_VERSION and zeros genesis_validators_root.
-            let deposit_message = DepositMessage {
-                pubkey,
-                withdrawal_credentials,
-                amount: deposit.data.amount,
-            };
-            let domain = crate::phase0::accessors::compute_domain(
-                crate::phase0::helpers::DOMAIN_DEPOSIT,
-                genesis_fork_version,
-                &Hash256::default(),
-            );
-            let signing_root =
-                crate::phase0::accessors::compute_signing_root(&deposit_message, domain);
-            let valid = pharos_utils::bls::verify(
-                &pubkey,
-                signing_root.as_slice(),
-                &deposit.data.signature,
-            )
-            .unwrap_or(false);
-            if valid {
-                add_validator_to_registry(state, pubkey, withdrawal_credentials, amount);
-            }
-        }
-    }
-}
-
-fn add_validator_to_registry<S: BeaconStateMut>(
-    state: &mut S,
-    pubkey: pharos_utils::BLSPubkey,
-    withdrawal_credentials: Bytes32,
-    amount: u64,
-) {
-    let validator = Validator {
-        pubkey,
-        withdrawal_credentials,
-        effective_balance: Gwei(0),
-        slashed: false,
-        activation_eligibility_epoch: Epoch(FAR_FUTURE_EPOCH),
-        activation_epoch: Epoch(FAR_FUTURE_EPOCH),
-        exit_epoch: Epoch(FAR_FUTURE_EPOCH),
-        withdrawable_epoch: Epoch(FAR_FUTURE_EPOCH),
-    };
-    state.push_validator(validator);
-    state.push_balance(amount);
-}
-
 // ── Deposit Merkle root helper ────────────────────────────────────────────────
 
 /// Compute `hash_tree_root(List[DepositData, 2^DEPOSIT_CONTRACT_TREE_DEPTH](data))`.
@@ -227,12 +139,11 @@ fn compute_deposit_data_root(data: &[&DepositData]) -> Hash256 {
 
 /// Mutation interface used only by genesis.rs.
 ///
-/// Implemented below for the concrete `BeaconState` generic struct.
-/// This avoids adding mutable accessors to `BeaconStateView` (read-only).
+/// Implemented for the concrete `BeaconState` generic struct.
+/// Provides genesis-specific helpers that `BeaconStateWrite` does not expose.
 pub trait BeaconStateMut: pharos_types::BeaconStateView {
     fn genesis_time_val(&self) -> u64;
     fn set_eth1_deposit_root(&mut self, root: Hash256);
-    fn increment_eth1_deposit_index(&mut self);
     fn validators_len(&self) -> usize;
     fn validator_pubkey_at(&self, idx: usize) -> pharos_utils::BLSPubkey;
     fn balance_at(&self, idx: usize) -> u64;
@@ -242,8 +153,6 @@ pub trait BeaconStateMut: pharos_types::BeaconStateView {
     fn set_validator_activation_epoch(&mut self, idx: usize, epoch: Epoch);
     fn validators_tree_hash(&self) -> Hash256;
     fn set_genesis_validators_root(&mut self, root: Hash256);
-    fn push_validator(&mut self, v: Validator);
-    fn push_balance(&mut self, amount: u64);
 
     /// Build the genesis state with the given fields.
     fn genesis_state(
@@ -290,10 +199,6 @@ where
 
     fn set_eth1_deposit_root(&mut self, root: Hash256) {
         self.eth1_data.deposit_root = root;
-    }
-
-    fn increment_eth1_deposit_index(&mut self) {
-        self.eth1_deposit_index += 1;
     }
 
     fn validators_len(&self) -> usize {
@@ -348,20 +253,6 @@ where
 
     fn set_genesis_validators_root(&mut self, root: Hash256) {
         self.genesis_validators_root = root;
-    }
-
-    fn push_validator(&mut self, v: Validator) {
-        self.validators = self
-            .validators
-            .with_push(v)
-            .expect("validator registry limit not exceeded");
-    }
-
-    fn push_balance(&mut self, amount: u64) {
-        self.balances = self
-            .balances
-            .with_push(Gwei(amount))
-            .expect("balance list limit not exceeded");
     }
 
     fn genesis_state(

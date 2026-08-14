@@ -29,8 +29,8 @@
 
 use crate::phase0;
 use crate::phase0::{
-    BLSSignature, Checkpoint, Eth1Data, Fork, ProposerSlashing, Root, SignedVoluntaryExit, Slot,
-    Validator, ValidatorIndex,
+    BLSSignature, BeaconBlockHeader, Checkpoint, Eth1Data, Fork, ProposerSlashing, Root,
+    SignedVoluntaryExit, Slot, Validator, ValidatorIndex,
 };
 use pharos_utils::{Bytes32, Gwei, Hash256};
 
@@ -93,12 +93,14 @@ pub trait BeaconStateView {
     fn genesis_validators_root(&self) -> Root;
     fn slot(&self) -> Slot;
     fn fork(&self) -> &Fork;
+    fn latest_block_header(&self) -> &BeaconBlockHeader;
     fn validators(&self) -> &[Validator];
     fn balances(&self) -> &[Gwei];
     fn block_roots(&self) -> &[Root];
     fn state_roots(&self) -> &[Root];
     fn randao_mixes(&self) -> &[Hash256];
     fn slashings(&self) -> &[Gwei];
+    fn eth1_data(&self) -> &Eth1Data;
     fn previous_justified_checkpoint(&self) -> &Checkpoint;
     fn current_justified_checkpoint(&self) -> &Checkpoint;
     fn finalized_checkpoint(&self) -> &Checkpoint;
@@ -231,6 +233,9 @@ impl<
     fn fork(&self) -> &Fork {
         &self.fork
     }
+    fn latest_block_header(&self) -> &BeaconBlockHeader {
+        &self.latest_block_header
+    }
     fn validators(&self) -> &[Validator] {
         self.validators.as_slice()
     }
@@ -248,6 +253,9 @@ impl<
     }
     fn slashings(&self) -> &[Gwei] {
         self.slashings.as_slice()
+    }
+    fn eth1_data(&self) -> &Eth1Data {
+        &self.eth1_data
     }
     fn previous_justified_checkpoint(&self) -> &Checkpoint {
         &self.previous_justified_checkpoint

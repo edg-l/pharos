@@ -14,6 +14,7 @@ pub mod filter;
 pub mod fixture_walker;
 pub mod fixtures;
 pub mod genesis;
+pub mod operations;
 pub mod report;
 pub mod shuffling;
 pub mod snappy;
@@ -231,6 +232,52 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("phase0", "genesis", "minimal"));
     }
 
+    // ── phase0/operations/mainnet ─────────────────────────────────────────────
+    if filter.matches("phase0", "operations", "mainnet") {
+        let result = operations::run_operations_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "operations",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "operations", "mainnet"));
+    }
+
+    // ── phase0/operations/minimal ─────────────────────────────────────────────
+    if filter.matches("phase0", "operations", "minimal") {
+        let result = operations::run_operations_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "operations",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "operations", "minimal"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -254,6 +301,8 @@ fn fill_future_placeholders(report: &mut Report) {
         ("phase0", "genesis", "minimal"),
         ("phase0", "shuffling", "mainnet"),
         ("phase0", "shuffling", "minimal"),
+        ("phase0", "operations", "mainnet"),
+        ("phase0", "operations", "minimal"),
     ]
     .iter()
     .copied()
@@ -273,7 +322,8 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("phase0", "ssz_generic", "-"),
         ("phase0", "ssz_static", "mainnet"),
         ("phase0", "ssz_static", "minimal"),
-        ("phase0", "operations", "-"),
+        ("phase0", "operations", "mainnet"),
+        ("phase0", "operations", "minimal"),
         ("phase0", "epoch_processing", "-"),
         ("phase0", "sanity", "-"),
         ("phase0", "finality", "-"),

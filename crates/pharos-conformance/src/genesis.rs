@@ -10,8 +10,9 @@
 use std::path::Path;
 
 use pharos_ssz::{Decode, Encode};
-use pharos_stf::phase0::genesis::{
-    BeaconStateMut, initialize_beacon_state_from_eth1, is_valid_genesis_state,
+use pharos_stf::phase0::{
+    BeaconStateWrite,
+    genesis::{BeaconStateMut, initialize_beacon_state_from_eth1, is_valid_genesis_state},
 };
 use pharos_types::{MinimalEthSpec, phase0::Deposit};
 
@@ -103,7 +104,7 @@ fn run_initialization_case<E: pharos_types::EthSpec>(
     meta: Option<crate::fixture_walker::MetaYaml>,
 ) -> CaseResult
 where
-    E::BeaconState: BeaconStateMut,
+    E::BeaconState: BeaconStateMut + BeaconStateWrite,
     E::BeaconBlockBody: Default + pharos_ssz::TreeHash,
 {
     // Read eth1.yaml for eth1_block_hash and eth1_timestamp.

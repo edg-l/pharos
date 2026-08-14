@@ -43,7 +43,10 @@ impl Default for WalkOpts {
 ///
 /// Fields are optional at the type level; callers assert the ones they need.
 pub struct MetaYaml {
-    /// `bls_setting: u8` — 0 = default (verify), 1 = no BLS.
+    /// `bls_setting: u8` per `consensus-specs/tests/formats/README.md`:
+    /// `0` = default (run with verify ON),
+    /// `1` = BLS required (verify ON; case fails if signatures wrong),
+    /// `2` = BLS ignored (verify OFF; signatures may be placeholders).
     pub bls_setting: Option<u8>,
     /// `deposits_count: u64` — expected number of deposit files.
     pub deposits_count: Option<u64>,
