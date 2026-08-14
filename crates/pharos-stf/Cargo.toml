@@ -12,3 +12,7 @@ pharos-types.workspace = true
 pharos-ssz.workspace = true
 pharos-utils.workspace = true
 thiserror.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+snap.workspace = true

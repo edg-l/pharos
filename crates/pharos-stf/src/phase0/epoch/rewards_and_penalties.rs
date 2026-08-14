@@ -5,6 +5,8 @@
 //! All five `get_*_deltas` functions are `pub` so the rewards conformance
 //! harness (Phase 7 Task 7.4) can call each individually.
 
+use rayon::prelude::*;
+
 use pharos_ssz::{SszList, SszSequence};
 use pharos_types::{
     BeaconStateView, EthSpec,
@@ -291,18 +293,27 @@ where
     let inclusion = get_inclusion_delay_deltas::<E>(state)?;
     let inactivity = get_inactivity_penalty_deltas::<E>(state)?;
 
+    // Compute per-validator (reward, penalty) in parallel, then collect.
+    let deltas: Vec<(u64, u64)> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let reward = source.rewards.get(i).copied().unwrap_or(Gwei(0)).0
+                + target.rewards.get(i).copied().unwrap_or(Gwei(0)).0
+                + head.rewards.get(i).copied().unwrap_or(Gwei(0)).0
+                + inclusion.rewards.get(i).copied().unwrap_or(Gwei(0)).0;
+            let penalty = source.penalties.get(i).copied().unwrap_or(Gwei(0)).0
+                + target.penalties.get(i).copied().unwrap_or(Gwei(0)).0
+                + head.penalties.get(i).copied().unwrap_or(Gwei(0)).0
+                + inactivity.penalties.get(i).copied().unwrap_or(Gwei(0)).0;
+            (reward, penalty)
+        })
+        .collect();
+
     let mut rewards = vec![0u64; n];
     let mut penalties = vec![0u64; n];
-
-    for i in 0..n {
-        rewards[i] = source.rewards.get(i).copied().unwrap_or(Gwei(0)).0
-            + target.rewards.get(i).copied().unwrap_or(Gwei(0)).0
-            + head.rewards.get(i).copied().unwrap_or(Gwei(0)).0
-            + inclusion.rewards.get(i).copied().unwrap_or(Gwei(0)).0;
-        penalties[i] = source.penalties.get(i).copied().unwrap_or(Gwei(0)).0
-            + target.penalties.get(i).copied().unwrap_or(Gwei(0)).0
-            + head.penalties.get(i).copied().unwrap_or(Gwei(0)).0
-            + inactivity.penalties.get(i).copied().unwrap_or(Gwei(0)).0;
+    for (i, (r, p)) in deltas.into_iter().enumerate() {
+        rewards[i] = r;
+        penalties[i] = p;
     }
 
     Ok((rewards, penalties))

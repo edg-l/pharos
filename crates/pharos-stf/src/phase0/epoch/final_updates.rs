@@ -8,6 +8,8 @@
 //! 5. `process_historical_roots_update`
 //! 6. `process_participation_record_updates`
 
+use rayon::prelude::*;
+
 use pharos_ssz::TreeHash;
 use pharos_types::{BeaconStateView, EthSpec, phase0::HistoricalBatch};
 use pharos_utils::Gwei;
@@ -48,8 +50,10 @@ where
     let upward_threshold = hysteresis_increment * E::HYSTERESIS_UPWARD_MULTIPLIER;
 
     let n = state.validators().len();
-    // Collect updates first, apply after (to avoid borrow conflict with balances).
-    let updates: Vec<Option<u64>> = (0..n)
+
+    // Snapshot the per-validator (balance, effective_balance) pairs so the
+    // parallel map below has no shared mutable access.
+    let snapshot: Vec<(u64, u64)> = (0..n)
         .map(|i| {
             let balance = state.balances().get(i).copied().unwrap_or(Gwei(0)).0;
             let eff_bal = state
@@ -57,6 +61,15 @@ where
                 .get(i)
                 .map(|v| v.effective_balance.0)
                 .unwrap_or(0);
+            (balance, eff_bal)
+        })
+        .collect();
+
+    // Compute new effective balances in parallel, then apply sequentially via
+    // `set_validator` (BeaconStateWrite is not thread-safe).
+    let updates: Vec<Option<u64>> = snapshot
+        .into_par_iter()
+        .map(|(balance, eff_bal)| {
             if balance + downward_threshold < eff_bal || eff_bal + upward_threshold < balance {
                 let new_eff = (balance - balance % E::EFFECTIVE_BALANCE_INCREMENT)
                     .min(E::MAX_EFFECTIVE_BALANCE);
