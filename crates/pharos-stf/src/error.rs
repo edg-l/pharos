@@ -128,6 +128,19 @@ pub enum EpochProcessingError {
     BalanceIndexOutOfRange { index: usize },
     #[error("validator index out of range: {index}")]
     ValidatorIndexOutOfRange { index: usize },
+    #[error("block root unavailable for epoch")]
+    BlockRootUnavailable,
+    #[error("invalid epoch for attestation lookup (not current or previous)")]
+    InvalidEpochForAttestation,
     #[error("ssz error: {0}")]
     Ssz(#[from] pharos_ssz::SszError),
+}
+
+impl From<StateTransitionError> for EpochProcessingError {
+    fn from(e: StateTransitionError) -> Self {
+        match e {
+            StateTransitionError::Ssz(s) => EpochProcessingError::Ssz(s),
+            _ => EpochProcessingError::ValidatorIndexOutOfRange { index: 0 },
+        }
+    }
 }

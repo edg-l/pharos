@@ -15,6 +15,7 @@
 //! etc.) provide the ergonomic API that callers use.
 
 pub mod block;
+pub mod deltas;
 pub mod misc;
 pub mod operations;
 pub mod primitives;
@@ -22,6 +23,7 @@ pub mod state;
 
 // Re-export all container types.
 pub use block::{BeaconBlock, BeaconBlockBody, SignedBeaconBlock};
+pub use deltas::Deltas;
 pub use misc::{
     AttestationData, Checkpoint, Eth1Data, Fork, ForkData, HistoricalBatch, IndexedAttestation,
     PendingAttestation, Validator,

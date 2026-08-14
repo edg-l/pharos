@@ -9,6 +9,7 @@
 //! 2. Run: `cargo run -p pharos-conformance -- --write`
 
 pub mod bls;
+pub mod epoch_processing;
 pub mod error;
 pub mod filter;
 pub mod fixture_walker;
@@ -278,6 +279,52 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("phase0", "operations", "minimal"));
     }
 
+    // ── phase0/epoch_processing/mainnet ──────────────────────────────────────
+    if filter.matches("phase0", "epoch_processing", "mainnet") {
+        let result = epoch_processing::run_epoch_processing_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "epoch_processing",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "epoch_processing", "mainnet"));
+    }
+
+    // ── phase0/epoch_processing/minimal ──────────────────────────────────────
+    if filter.matches("phase0", "epoch_processing", "minimal") {
+        let result = epoch_processing::run_epoch_processing_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "epoch_processing",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "epoch_processing", "minimal"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -303,6 +350,8 @@ fn fill_future_placeholders(report: &mut Report) {
         ("phase0", "shuffling", "minimal"),
         ("phase0", "operations", "mainnet"),
         ("phase0", "operations", "minimal"),
+        ("phase0", "epoch_processing", "mainnet"),
+        ("phase0", "epoch_processing", "minimal"),
     ]
     .iter()
     .copied()
@@ -324,7 +373,8 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("phase0", "ssz_static", "minimal"),
         ("phase0", "operations", "mainnet"),
         ("phase0", "operations", "minimal"),
-        ("phase0", "epoch_processing", "-"),
+        ("phase0", "epoch_processing", "mainnet"),
+        ("phase0", "epoch_processing", "minimal"),
         ("phase0", "sanity", "-"),
         ("phase0", "finality", "-"),
         ("phase0", "random", "-"),

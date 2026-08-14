@@ -106,12 +106,20 @@ where
         .count() as u64;
 
     let final_exit_epoch = if exit_queue_churn >= churn_limit {
-        Epoch(exit_queue_epoch.0 + 1)
+        let next = exit_queue_epoch
+            .0
+            .checked_add(1)
+            .ok_or(StateTransitionError::SlotOutOfRange)?;
+        Epoch(next)
     } else {
         exit_queue_epoch
     };
 
-    let withdrawable_epoch = Epoch(final_exit_epoch.0 + E::MIN_VALIDATOR_WITHDRAWABILITY_DELAY);
+    let withdrawable_epoch_raw = final_exit_epoch
+        .0
+        .checked_add(E::MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
+        .ok_or(StateTransitionError::SlotOutOfRange)?;
+    let withdrawable_epoch = Epoch(withdrawable_epoch_raw);
 
     let mut validator = state
         .validators()
