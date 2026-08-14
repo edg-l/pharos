@@ -21,7 +21,7 @@ fn main() {
         }
     };
 
-    let report = run(&args.filter);
+    let report = run(&args.filter, args.bail);
     print_report(&report);
 
     if args.write {

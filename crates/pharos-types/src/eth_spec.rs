@@ -183,6 +183,66 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
 
     /// Human-readable preset name (e.g. `"mainnet"`, `"minimal"`).
     fn name() -> &'static str;
+
+    // -- Container associated types (D7) --
+    // These allow STF code to be generic over `<E: EthSpec>` and reference
+    // `E::BeaconState`, `E::BeaconBlock`, etc. without naming the concrete
+    // preset-stamped struct directly.
+
+    /// Concrete `BeaconState` for this preset.
+    type BeaconState: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Concrete `BeaconBlock` for this preset.
+    type BeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockView;
+
+    /// Concrete `SignedBeaconBlock` for this preset.
+    type SignedBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::SignedBeaconBlockView;
+
+    /// Concrete `BeaconBlockBody` for this preset.
+    type BeaconBlockBody: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockBodyView;
 }
 
 // ── MainnetEthSpec ─────────────────────────────────────────────────────────────
@@ -295,6 +355,11 @@ impl EthSpec for MainnetEthSpec {
     fn name() -> &'static str {
         "mainnet"
     }
+
+    type BeaconState = crate::phase0::MainnetBeaconState;
+    type BeaconBlock = crate::phase0::MainnetBeaconBlock;
+    type SignedBeaconBlock = crate::phase0::MainnetSignedBeaconBlock;
+    type BeaconBlockBody = crate::phase0::MainnetBeaconBlockBody;
 }
 
 // ── MinimalEthSpec ─────────────────────────────────────────────────────────────
@@ -407,4 +472,9 @@ impl EthSpec for MinimalEthSpec {
     fn name() -> &'static str {
         "minimal"
     }
+
+    type BeaconState = crate::phase0::MinimalBeaconState;
+    type BeaconBlock = crate::phase0::MinimalBeaconBlock;
+    type SignedBeaconBlock = crate::phase0::MinimalSignedBeaconBlock;
+    type BeaconBlockBody = crate::phase0::MinimalBeaconBlockBody;
 }

@@ -187,7 +187,7 @@ impl<T, const N: u64> SszList<T, N> {
     ///
     /// Primarily for merkleization and encoding, where direct slice access avoids
     /// repeated `get()` calls.
-    fn as_slice(&self) -> &[T] {
+    pub fn as_slice(&self) -> &[T] {
         match &self.backend {
             Backend::Naive(v) => v.as_slice(),
             Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
@@ -340,7 +340,7 @@ impl<T, const N: u64> SszVector<T, N> {
     }
 
     /// Return a reference to the underlying slice.
-    fn as_slice(&self) -> &[T] {
+    pub fn as_slice(&self) -> &[T] {
         match &self.backend {
             Backend::Naive(v) => v.as_slice(),
             Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),

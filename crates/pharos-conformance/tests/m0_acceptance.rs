@@ -6,7 +6,7 @@
 
 #[test]
 fn m0_acceptance() {
-    let report = pharos_conformance::run(&pharos_conformance::Filter::default());
+    let report = pharos_conformance::run(&pharos_conformance::Filter::default(), false);
 
     if report.fixtures_path == "<not found>" {
         println!("m0_acceptance: spec fixtures not found — skipping conformance assertions");

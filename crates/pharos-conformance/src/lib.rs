@@ -28,8 +28,11 @@ use std::path::Path;
 
 /// Run all conformance tests matching `filter` against the fixtures directory.
 ///
+/// If `bail` is true, the process exits with code 1 after the first category
+/// that has one or more failures, before running subsequent categories.
+///
 /// If no fixtures are present, returns a `Report` with only placeholder rows.
-pub fn run(filter: &Filter) -> Report {
+pub fn run(filter: &Filter, bail: bool) -> Report {
     let date = current_date();
 
     let Some(root) = fixtures::fixtures_root() else {
@@ -54,6 +57,7 @@ pub fn run(filter: &Filter) -> Report {
     // ── ssz_generic ───────────────────────────────────────────────────────────
     if filter.matches("phase0", "ssz_generic", "-") {
         let result = ssz_generic::run_ssz_generic(&root);
+        let had_failures = result.fail > 0;
         report.rows.push(Row::live(
             "phase0",
             "ssz_generic",
@@ -63,6 +67,10 @@ pub fn run(filter: &Filter) -> Report {
             result.skip,
         ));
         report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
     } else {
         report
             .rows
@@ -74,6 +82,7 @@ pub fn run(filter: &Filter) -> Report {
         let mainnet_dir = root.join("mainnet");
         if mainnet_dir.is_dir() {
             let result = ssz_static::run_ssz_static_preset(&mainnet_dir, "mainnet");
+            let had_failures = result.fail > 0;
             report.rows.push(Row::live(
                 "phase0",
                 "ssz_static",
@@ -83,6 +92,10 @@ pub fn run(filter: &Filter) -> Report {
                 result.skip,
             ));
             report.failures.extend(result.failures);
+            if bail && had_failures {
+                fill_future_placeholders(&mut report);
+                return report;
+            }
         } else {
             report
                 .rows
@@ -99,6 +112,7 @@ pub fn run(filter: &Filter) -> Report {
         let minimal_dir = root.join("minimal");
         if minimal_dir.is_dir() {
             let result = ssz_static::run_ssz_static_preset(&minimal_dir, "minimal");
+            let had_failures = result.fail > 0;
             report.rows.push(Row::live(
                 "phase0",
                 "ssz_static",
@@ -108,6 +122,10 @@ pub fn run(filter: &Filter) -> Report {
                 result.skip,
             ));
             report.failures.extend(result.failures);
+            if bail && had_failures {
+                fill_future_placeholders(&mut report);
+                return report;
+            }
         } else {
             report
                 .rows
