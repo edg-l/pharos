@@ -19,6 +19,8 @@
 pub mod error;
 pub mod phase0;
 
+pub use phase0::genesis::{initialize_beacon_state_from_eth1, is_valid_genesis_state};
+
 pub use error::{
     AttestationInvalidReason, AttesterSlashingInvalidReason, BlockHeaderInvalidReason,
     DepositInvalidReason, EpochProcessingError, ProposerSlashingInvalidReason,

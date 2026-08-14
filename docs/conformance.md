@@ -9,6 +9,9 @@ Source: consensus-specs release `v1.6.1`.
 | phase0    | ssz_static         | mainnet | 135  | 0    | 0    | 135   |
 | phase0    | ssz_static         | minimal | 3321 | 0    | 0    | 3321  |
 | general   | bls                | -       | 20   | 0    | 0    | 20    |
+| phase0    | shuffling          | mainnet | 300  | 0    | 0    | 300   |
+| phase0    | shuffling          | minimal | 300  | 0    | 0    | 300   |
+| phase0    | genesis            | minimal | 5    | 0    | 0    | 5     |
 | phase0    | operations         | -       | -    | -    | -    | -     |
 | phase0    | epoch_processing   | -       | -    | -    | -    | -     |
 | phase0    | sanity             | -       | -    | -    | -    | -     |
@@ -16,8 +19,6 @@ Source: consensus-specs release `v1.6.1`.
 | phase0    | random             | -       | -    | -    | -    | -     |
 | phase0    | rewards            | -       | -    | -    | -    | -     |
 | phase0    | fork_choice        | -       | -    | -    | -    | -     |
-| phase0    | genesis            | -       | -    | -    | -    | -     |
-| phase0    | shuffling          | -       | -    | -    | -    | -     |
 | altair    | ssz_static         | -       | -    | -    | -    | -     |
 | bellatrix | ssz_static         | -       | -    | -    | -    | -     |
 | capella   | ssz_static         | -       | -    | -    | -    | -     |

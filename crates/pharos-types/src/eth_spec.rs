@@ -181,6 +181,28 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Used by `Deposit::proof` per `specs/phase0/beacon-chain.md:522`.
     const DEPOSIT_PROOF_LENGTH: u64;
 
+    // -- Genesis / config constants (from configs/mainnet.yaml, configs/minimal.yaml) --
+
+    /// `GENESIS_FORK_VERSION` — first 4 bytes of the fork version at genesis.
+    ///
+    /// Sources: `configs/mainnet.yaml:30`, `configs/minimal.yaml:27`.
+    const GENESIS_FORK_VERSION: [u8; 4];
+
+    /// `GENESIS_DELAY` in seconds between the Eth1 block timestamp and genesis.
+    ///
+    /// Sources: `configs/mainnet.yaml:32`, `configs/minimal.yaml:29`.
+    const GENESIS_DELAY: u64;
+
+    /// `MIN_GENESIS_ACTIVE_VALIDATOR_COUNT` — minimum active validators to trigger genesis.
+    ///
+    /// Sources: `configs/mainnet.yaml:26`, `configs/minimal.yaml:23`.
+    const MIN_GENESIS_ACTIVE_VALIDATOR_COUNT: u64;
+
+    /// `MIN_GENESIS_TIME` — earliest allowed `genesis_time`.
+    ///
+    /// Sources: `configs/mainnet.yaml:28`, `configs/minimal.yaml:25`.
+    const MIN_GENESIS_TIME: u64;
+
     /// Human-readable preset name (e.g. `"mainnet"`, `"minimal"`).
     fn name() -> &'static str;
 
@@ -353,6 +375,16 @@ impl EthSpec for MainnetEthSpec {
     /// Source: `specs/phase0/beacon-chain.md:194` (DEPOSIT_CONTRACT_TREE_DEPTH=32).
     const DEPOSIT_PROOF_LENGTH: u64 = 33;
 
+    // -- Genesis / config constants --
+    /// `GENESIS_FORK_VERSION` from `configs/mainnet.yaml:30`.
+    const GENESIS_FORK_VERSION: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+    /// `GENESIS_DELAY` from `configs/mainnet.yaml:32` (604800 = 7 days).
+    const GENESIS_DELAY: u64 = 604_800;
+    /// `MIN_GENESIS_ACTIVE_VALIDATOR_COUNT` from `configs/mainnet.yaml:26`.
+    const MIN_GENESIS_ACTIVE_VALIDATOR_COUNT: u64 = 16_384;
+    /// `MIN_GENESIS_TIME` from `configs/mainnet.yaml:28`.
+    const MIN_GENESIS_TIME: u64 = 1_606_824_000;
+
     fn name() -> &'static str {
         "mainnet"
     }
@@ -469,6 +501,16 @@ impl EthSpec for MinimalEthSpec {
     /// `DEPOSIT_PROOF_LENGTH` = 32 + 1 = 33.
     /// Source: `specs/phase0/beacon-chain.md:194` (DEPOSIT_CONTRACT_TREE_DEPTH=32).
     const DEPOSIT_PROOF_LENGTH: u64 = 33;
+
+    // -- Genesis / config constants --
+    /// `GENESIS_FORK_VERSION` from `configs/minimal.yaml:27`.
+    const GENESIS_FORK_VERSION: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
+    /// `GENESIS_DELAY` from `configs/minimal.yaml:29` (300 seconds).
+    const GENESIS_DELAY: u64 = 300;
+    /// `MIN_GENESIS_ACTIVE_VALIDATOR_COUNT` from `configs/minimal.yaml:23`.
+    const MIN_GENESIS_ACTIVE_VALIDATOR_COUNT: u64 = 64;
+    /// `MIN_GENESIS_TIME` from `configs/minimal.yaml:25`.
+    const MIN_GENESIS_TIME: u64 = 1_578_009_600;
 
     fn name() -> &'static str {
         "minimal"

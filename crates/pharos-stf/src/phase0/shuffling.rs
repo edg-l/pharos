@@ -14,43 +14,65 @@ use crate::phase0::helpers::bytes_to_uint64;
 
 /// Return the shuffled permutation of `index_count` indices corresponding to
 /// `seed`. Per `specs/phase0/beacon-chain.md:819-842`.
+///
+/// Batched form: amortises the per-bucket `hash(seed ++ round ++ bucket)`
+/// across every index falling into the same 256-element bucket within the
+/// same round. Output is bitwise-identical to repeated `compute_shuffled_index`
+/// calls but does O(rounds * (1 + ceil(n/256))) hashes instead of O(n*rounds).
 pub fn compute_shuffled_permutation(
     index_count: u64,
     seed: &Hash256,
     round_count: u64,
 ) -> Vec<u64> {
+    use std::collections::HashMap;
+
+    if index_count == 0 {
+        return Vec::new();
+    }
+
     let mut indices: Vec<u64> = (0..index_count).collect();
+
+    // 37-byte buffer: seed(32) + round(1) + bucket(4).
+    let mut buf = [0u8; 37];
+    buf[..32].copy_from_slice(seed.as_slice());
+
     for current_round in 0..round_count {
-        let round_byte = (current_round as u8).to_le_bytes();
-        let pivot_input: Vec<u8> = seed.as_slice().iter().copied().chain(round_byte).collect();
-        let pivot_hash = hash(&pivot_input);
+        buf[32] = current_round as u8;
+
+        let pivot_hash = hash(&buf[..33]);
         let pivot = bytes_to_uint64(&pivot_hash.as_slice()[..8]) % index_count;
 
-        for i in 0..index_count {
-            let flip = (pivot + index_count - indices[i as usize]) % index_count;
-            let position = indices[i as usize].max(flip);
-            let position_bucket = (position / 256) as u32;
-            let bucket_bytes: Vec<u8> = seed
-                .as_slice()
-                .iter()
-                .copied()
-                .chain(round_byte)
-                .chain(position_bucket.to_le_bytes())
-                .collect();
-            let source = hash(&bucket_bytes);
+        let mut source_cache: HashMap<u32, Hash256> = HashMap::new();
+
+        for idx in indices.iter_mut() {
+            let flip = (pivot + index_count - *idx) % index_count;
+            let position = (*idx).max(flip);
+            let bucket = (position / 256) as u32;
+
+            let source = source_cache.entry(bucket).or_insert_with(|| {
+                buf[33..37].copy_from_slice(&bucket.to_le_bytes());
+                hash(&buf[..37])
+            });
+
             let byte_val = source.as_slice()[(position % 256 / 8) as usize];
             let bit = (byte_val >> (position % 8)) & 1;
             if bit != 0 {
-                indices[i as usize] = flip;
+                *idx = flip;
             }
         }
     }
+
     indices
 }
 
 /// Return the shuffled index corresponding to `seed` and `index_count`.
 ///
 /// Per `specs/phase0/beacon-chain.md:848-853`.
+///
+/// Implements the single-index swap-or-not algorithm from the Swap-or-Not
+/// Feistel shuffle paper (Hoang et al., 2012). This is O(round_count) and
+/// equivalent to indexing into the full permutation, but avoids allocating
+/// the complete permutation array.
 pub fn compute_shuffled_index(
     index: u64,
     index_count: u64,
@@ -61,7 +83,35 @@ pub fn compute_shuffled_index(
         index < index_count,
         "index {index} >= index_count {index_count}"
     );
-    compute_shuffled_permutation(index_count, seed, round_count)[index as usize]
+
+    // 37-byte buffer: 32-byte seed + 1-byte round + 4-byte bucket.
+    let mut buf = [0u8; 37];
+    buf[..32].copy_from_slice(seed.as_slice());
+
+    let mut cur = index;
+    for current_round in 0..round_count {
+        buf[32] = current_round as u8;
+
+        // pivot = hash(seed ++ round)[0:8] % index_count
+        let pivot_hash = hash(&buf[..33]);
+        let pivot = bytes_to_uint64(&pivot_hash.as_slice()[..8]) % index_count;
+
+        // flip = (pivot + index_count - cur) % index_count
+        let flip = (pivot + index_count - cur) % index_count;
+
+        // Swap cur <- flip depending on the bit at position max(cur, flip).
+        let position = cur.max(flip);
+        let bucket = (position / 256) as u32;
+        buf[33..37].copy_from_slice(&bucket.to_le_bytes());
+
+        let source = hash(&buf[..37]);
+        let byte_val = source.as_slice()[(position % 256 / 8) as usize];
+        let bit = (byte_val >> (position % 8)) & 1;
+        if bit != 0 {
+            cur = flip;
+        }
+    }
+    cur
 }
 
 #[cfg(test)]

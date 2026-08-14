@@ -11,8 +11,11 @@
 pub mod bls;
 pub mod error;
 pub mod filter;
+pub mod fixture_walker;
 pub mod fixtures;
+pub mod genesis;
 pub mod report;
+pub mod shuffling;
 pub mod snappy;
 pub mod ssz_generic_types;
 pub mod yaml_util;
@@ -159,6 +162,75 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
         report.rows.push(Row::placeholder("general", "bls", "-"));
     }
 
+    // ── phase0/shuffling/mainnet ──────────────────────────────────────────────
+    if filter.matches("phase0", "shuffling", "mainnet") {
+        let result = shuffling::run_shuffling_preset(&root, "mainnet", 90);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "shuffling",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "shuffling", "mainnet"));
+    }
+
+    // ── phase0/shuffling/minimal ──────────────────────────────────────────────
+    if filter.matches("phase0", "shuffling", "minimal") {
+        let result = shuffling::run_shuffling_preset(&root, "minimal", 10);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "shuffling",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "shuffling", "minimal"));
+    }
+
+    // ── phase0/genesis/minimal ────────────────────────────────────────────────
+    if filter.matches("phase0", "genesis", "minimal") {
+        let result = genesis::run_genesis_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "genesis",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "genesis", "minimal"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -179,6 +251,9 @@ fn fill_future_placeholders(report: &mut Report) {
         ("phase0", "ssz_static", "mainnet"),
         ("phase0", "ssz_static", "minimal"),
         ("general", "bls", "-"),
+        ("phase0", "genesis", "minimal"),
+        ("phase0", "shuffling", "mainnet"),
+        ("phase0", "shuffling", "minimal"),
     ]
     .iter()
     .copied()
@@ -205,8 +280,11 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("phase0", "random", "-"),
         ("phase0", "rewards", "-"),
         ("phase0", "fork_choice", "-"),
-        ("phase0", "genesis", "-"),
-        ("phase0", "shuffling", "-"),
+        // genesis: only minimal fixtures exist upstream (no mainnet genesis fixtures in v1.6.1).
+        ("phase0", "genesis", "minimal"),
+        // shuffling: per-preset rows (legacy phase0/shuffling/- removed).
+        ("phase0", "shuffling", "mainnet"),
+        ("phase0", "shuffling", "minimal"),
         ("altair", "ssz_static", "-"),
         ("bellatrix", "ssz_static", "-"),
         ("capella", "ssz_static", "-"),

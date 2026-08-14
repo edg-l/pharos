@@ -316,6 +316,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "pharos-ssz",
+ "pharos-stf",
  "pharos-types",
  "pharos-utils",
  "serde_yaml_ng",

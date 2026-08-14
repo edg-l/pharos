@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 pharos-types.workspace = true
 pharos-ssz.workspace = true
+pharos-stf.workspace = true
 pharos-utils.workspace = true
 serde_yaml_ng.workspace = true
 snap.workspace = true
