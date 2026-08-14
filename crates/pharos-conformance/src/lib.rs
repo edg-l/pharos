@@ -8,6 +8,7 @@
 //! 1. Download fixtures: `scripts/fetch-spec-tests.sh`
 //! 2. Run: `cargo run -p pharos-conformance -- --write`
 
+pub mod bls;
 pub mod error;
 pub mod filter;
 pub mod fixtures;
@@ -137,6 +138,27 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("phase0", "ssz_static", "minimal"));
     }
 
+    // ── general/bls ───────────────────────────────────────────────────────────
+    if filter.matches("general", "bls", "-") {
+        let result = bls::run_bls(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "general",
+            "bls",
+            "-",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report.rows.push(Row::placeholder("general", "bls", "-"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -156,6 +178,7 @@ fn fill_future_placeholders(report: &mut Report) {
         ("phase0", "ssz_generic", "-"),
         ("phase0", "ssz_static", "mainnet"),
         ("phase0", "ssz_static", "minimal"),
+        ("general", "bls", "-"),
     ]
     .iter()
     .copied()
@@ -171,6 +194,7 @@ fn fill_future_placeholders(report: &mut Report) {
 /// All (fork, category, preset) rows that appear in the conformance table.
 fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
     &[
+        ("general", "bls", "-"),
         ("phase0", "ssz_generic", "-"),
         ("phase0", "ssz_static", "mainnet"),
         ("phase0", "ssz_static", "minimal"),
@@ -181,7 +205,6 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("phase0", "random", "-"),
         ("phase0", "rewards", "-"),
         ("phase0", "fork_choice", "-"),
-        ("phase0", "bls", "-"),
         ("phase0", "genesis", "-"),
         ("phase0", "shuffling", "-"),
         ("altair", "ssz_static", "-"),

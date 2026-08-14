@@ -9,3 +9,4 @@ pub mod phase0;
 pub mod views;
 
 pub use eth_spec::{EthSpec, MainnetEthSpec, MinimalEthSpec};
+pub use views::{BeaconBlockBodyView, BeaconBlockView, BeaconStateView, SignedBeaconBlockView};

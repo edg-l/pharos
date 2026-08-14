@@ -200,7 +200,8 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + Default
         + Send
         + Sync
-        + 'static;
+        + 'static
+        + crate::views::BeaconStateView;
 
     /// Concrete `BeaconBlock` for this preset.
     type BeaconBlock: pharos_ssz::Encode

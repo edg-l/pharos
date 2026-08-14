@@ -102,6 +102,25 @@ pub fn verify(pubkey: &BLSPubkey, msg: &[u8], signature: &BLSSignature) -> Resul
     Ok(result == BLST_ERROR::BLST_SUCCESS)
 }
 
+/// Aggregate multiple public keys into one by summing G1 points.
+///
+/// Returns `BlsError::NoPubkeys` when `pubkeys` is empty.
+/// Returns `BlsError::InvalidPubkey` if any pubkey fails to validate.
+///
+/// Used by the `eth_aggregate_pubkeys` BLS conformance test.
+pub fn aggregate_pubkeys(pubkeys: &[BLSPubkey]) -> Result<BLSPubkey, BlsError> {
+    if pubkeys.is_empty() {
+        return Err(BlsError::NoPubkeys);
+    }
+    let parsed: Result<Vec<min_pk::PublicKey>, BlsError> =
+        pubkeys.iter().map(parse_pubkey_validated).collect();
+    let parsed = parsed?;
+    let refs: Vec<&min_pk::PublicKey> = parsed.iter().collect();
+    let agg = min_pk::AggregatePublicKey::aggregate(&refs, true)
+        .map_err(|e| BlsError::BlstError(format!("{e:?}")))?;
+    Ok(BLSPubkey::from_array(agg.to_public_key().compress()))
+}
+
 /// Aggregate multiple signatures into one.
 ///
 /// Returns `BlsError::NoSignatures` when `signatures` is empty.

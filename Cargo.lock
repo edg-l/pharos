@@ -391,6 +391,7 @@ dependencies = [
  "pharos-ssz",
  "pharos-types",
  "pharos-utils",
+ "thiserror",
 ]
 
 [[package]]

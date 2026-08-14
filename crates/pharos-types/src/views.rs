@@ -29,9 +29,10 @@
 
 use crate::phase0;
 use crate::phase0::{
-    BLSSignature, Eth1Data, ProposerSlashing, Root, SignedVoluntaryExit, Slot, ValidatorIndex,
+    BLSSignature, Checkpoint, Eth1Data, Fork, ProposerSlashing, Root, SignedVoluntaryExit, Slot,
+    Validator, ValidatorIndex,
 };
-use pharos_utils::Bytes32;
+use pharos_utils::{Bytes32, Gwei, Hash256};
 
 // ── BeaconBlockBodyView ───────────────────────────────────────────────────────
 
@@ -79,6 +80,28 @@ pub trait SignedBeaconBlockView {
 
     fn message(&self) -> &Self::Message;
     fn signature(&self) -> &BLSSignature;
+}
+
+// ── BeaconStateView ───────────────────────────────────────────────────────────
+
+/// Read-only accessors for `BeaconState` fields.
+///
+/// Exposes the subset of `BeaconState` fields needed by the STF accessors.
+/// Collection fields are exposed as slices so the concrete const-generic
+/// parameter does not appear at call sites.
+pub trait BeaconStateView {
+    fn genesis_validators_root(&self) -> Root;
+    fn slot(&self) -> Slot;
+    fn fork(&self) -> &Fork;
+    fn validators(&self) -> &[Validator];
+    fn balances(&self) -> &[Gwei];
+    fn block_roots(&self) -> &[Root];
+    fn state_roots(&self) -> &[Root];
+    fn randao_mixes(&self) -> &[Hash256];
+    fn slashings(&self) -> &[Gwei];
+    fn previous_justified_checkpoint(&self) -> &Checkpoint;
+    fn current_justified_checkpoint(&self) -> &Checkpoint;
+    fn finalized_checkpoint(&self) -> &Checkpoint;
 }
 
 // ── Blanket impls over the generic phase0 structs ─────────────────────────────
@@ -173,5 +196,66 @@ impl<
     }
     fn signature(&self) -> &BLSSignature {
         &self.signature
+    }
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const MAX_PENDING_ATTESTATIONS: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+> BeaconStateView
+    for phase0::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        MAX_PENDING_ATTESTATIONS,
+        JUSTIFICATION_BITS_LENGTH,
+        MAX_VALIDATORS_PER_COMMITTEE,
+    >
+{
+    fn genesis_validators_root(&self) -> Root {
+        self.genesis_validators_root
+    }
+    fn slot(&self) -> Slot {
+        self.slot
+    }
+    fn fork(&self) -> &Fork {
+        &self.fork
+    }
+    fn validators(&self) -> &[Validator] {
+        self.validators.as_slice()
+    }
+    fn balances(&self) -> &[Gwei] {
+        self.balances.as_slice()
+    }
+    fn block_roots(&self) -> &[Root] {
+        self.block_roots.as_slice()
+    }
+    fn state_roots(&self) -> &[Root] {
+        self.state_roots.as_slice()
+    }
+    fn randao_mixes(&self) -> &[Hash256] {
+        self.randao_mixes.as_slice()
+    }
+    fn slashings(&self) -> &[Gwei] {
+        self.slashings.as_slice()
+    }
+    fn previous_justified_checkpoint(&self) -> &Checkpoint {
+        &self.previous_justified_checkpoint
+    }
+    fn current_justified_checkpoint(&self) -> &Checkpoint {
+        &self.current_justified_checkpoint
+    }
+    fn finalized_checkpoint(&self) -> &Checkpoint {
+        &self.finalized_checkpoint
     }
 }
