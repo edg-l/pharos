@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="Pharos" width="128">
+</p>
+
 # Pharos
 
 A from-scratch Rust Ethereum proof-of-stake consensus client.
@@ -12,13 +16,12 @@ transition, fork choice, networking) is on the M1+ roadmap.
 > If consensus-specs publishes a conformance test suite for it, we own the
 > implementation.
 
-Pharos is not a thin wrapper around `sigp/lighthouse` crates. The SSZ codec,
-Merkleization, persistent collections, type containers, fork choice, STF,
-networking glue, Beacon API, and Engine API client are all in-house. Upstream
-dependencies are limited to generic infrastructure (`tokio`, `libp2p`,
-`discv5`, `rocksdb`, `rusqlite`, `reqwest`, `axum`, `snap`, `rayon`, `serde`,
-`tracing`) and cryptographic primitives where rolling our own would be
-irresponsible (`blst` for BLS12-381, `c-kzg` for KZG commitments).
+The SSZ codec, Merkleization, persistent collections, type containers, fork
+choice, STF, networking glue, Beacon API, and Engine API client are all
+in-house. Pharos leans on upstream crates only for generic infrastructure
+(async runtime, p2p, storage, HTTP, serde) and for cryptographic primitives
+where the conformance suite validates I/O but not side-channel safety
+(BLS12-381, KZG).
 
 Performance is a first-class goal: sync STF core with async I/O at the edges,
 CoW-friendly persistent collections, no `clone()` on `BeaconState` in hot

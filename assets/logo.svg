@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Pharos">
+  <title>Pharos</title>
+  <style>
+    .fg { fill: #1f2328; }
+    @media (prefers-color-scheme: dark) {
+      .fg { fill: #e6edf3; }
+    }
+  </style>
+
+  <g class="fg">
+    <!-- Light beams: three diverging wedges radiating from the apex -->
+    <polygon points="128,40 76,4 96,4" opacity="0.4"/>
+    <polygon points="128,40 124,0 132,0" opacity="0.85"/>
+    <polygon points="128,40 160,4 180,4" opacity="0.4"/>
+
+    <!-- Beacon flame -->
+    <circle cx="128" cy="48" r="8"/>
+
+    <!-- Lantern room (top tier) -->
+    <rect x="112" y="58" width="32" height="34"/>
+
+    <!-- Top platform -->
+    <rect x="104" y="92" width="48" height="8"/>
+
+    <!-- Middle tier (octagonal, slightly tapered) -->
+    <polygon points="102,100 154,100 164,166 92,166"/>
+
+    <!-- Mid platform -->
+    <rect x="84" y="166" width="88" height="8"/>
+
+    <!-- Base tier (square, widest) -->
+    <polygon points="86,174 170,174 184,226 72,226"/>
+
+    <!-- Ground line -->
+    <rect x="40" y="226" width="176" height="8"/>
+  </g>
+</svg>
