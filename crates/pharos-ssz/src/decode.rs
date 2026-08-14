@@ -19,7 +19,8 @@
 //!
 //! Validation guarantees enforced by `SszDecoder`:
 //! - Every offset is within `[fixed_region_len, total_len]`.
-//! - Offsets are strictly monotonically increasing.
+//! - Offsets are non-decreasing (equal adjacent offsets are valid — they
+//!   represent zero-length variable elements per the SSZ spec).
 //! - No offset points into the fixed region.
 //! - Total bytes consumed equals `bytes.len()` (no trailing garbage).
 
@@ -157,11 +158,21 @@ impl<'a> SszDecoder<'a> {
         T::from_ssz_bytes(slice)
     }
 
-    /// Assert that all bytes have been consumed.
+    /// Assert that all slots have been consumed.
+    ///
+    /// Byte coverage is enforced by `maybe_resolve_offsets` (which checks
+    /// `fixed_len == total` for all-fixed containers and sets the last
+    /// variable field's `end` to `bytes.len()`), so this only needs to
+    /// verify that every slot was actually read. The `debug_assert` catches
+    /// programming errors (missing `decode_next` calls) without paying for
+    /// the check in release builds.
     pub fn finish(&self) -> Result<(), SszError> {
-        // All bytes must be accounted for. The last variable field's `end` is
-        // set to `self.bytes.len()`, so if we successfully resolved offsets,
-        // coverage is complete by construction.
+        debug_assert_eq!(
+            self.decode_index,
+            self.slots.len(),
+            "SszDecoder::finish called with {} slots remaining",
+            self.slots.len() - self.decode_index
+        );
         Ok(())
     }
 
@@ -169,7 +180,8 @@ impl<'a> SszDecoder<'a> {
     ///
     /// Called lazily before the first `decode_next`. Performs:
     /// - Validates that every offset is >= fixed_region_len.
-    /// - Validates that offsets are strictly monotonically increasing.
+    /// - Validates that offsets are non-decreasing (equal adjacent offsets
+    ///   yield zero-length elements, which the SSZ spec allows).
     /// - Validates that no offset exceeds `bytes.len()`.
     /// - Fills `end` for each variable-size slot.
     fn maybe_resolve_offsets(&mut self) -> Result<(), SszError> {

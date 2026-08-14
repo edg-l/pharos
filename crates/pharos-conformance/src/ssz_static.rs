@@ -7,23 +7,33 @@
 //! - Check `tree_hash_root` against `roots.yaml`.
 //! - Re-encode and assert bytes match original.
 //!
-//! Dispatch covers all 24 Phase 0 containers for both `mainnet` and `minimal`
-//! presets using the preset-specific type aliases from `pharos-types`.
+//! Dispatch covers all 27 Phase 0 containers (24 from beacon-chain.md + 3 from
+//! validator.md) for both `mainnet` and `minimal` presets using the
+//! preset-specific type aliases from `pharos-types`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use pharos_ssz::{Decode, Encode, TreeHash};
 use pharos_types::phase0::{
-    Attestation, AttestationData, AttesterSlashing, BeaconBlock, BeaconBlockBody,
-    BeaconBlockHeader, BeaconState, Checkpoint, Deposit, DepositData, DepositMessage, Eth1Data,
-    Fork, ForkData, HistoricalBatch, IndexedAttestation, PendingAttestation, ProposerSlashing,
-    SignedBeaconBlock, SignedBeaconBlockHeader, SignedVoluntaryExit, SigningData, Validator,
-    VoluntaryExit,
+    AggregateAndProof, AttestationData, BeaconBlockHeader, Checkpoint, DepositData, DepositMessage,
+    Eth1Block, Eth1Data, Fork, ForkData, ProposerSlashing, SignedAggregateAndProof,
+    SignedBeaconBlockHeader, SignedVoluntaryExit, SigningData, Validator, VoluntaryExit,
+};
+use pharos_types::phase0::{
+    MainnetAttestation, MainnetAttesterSlashing, MainnetBeaconBlock, MainnetBeaconBlockBody,
+    MainnetBeaconState, MainnetDeposit, MainnetHistoricalBatch, MainnetIndexedAttestation,
+    MainnetPendingAttestation, MainnetSignedBeaconBlock,
+};
+use pharos_types::phase0::{
+    MinimalAttestation, MinimalAttesterSlashing, MinimalBeaconBlock, MinimalBeaconBlockBody,
+    MinimalBeaconState, MinimalDeposit, MinimalHistoricalBatch, MinimalIndexedAttestation,
+    MinimalPendingAttestation, MinimalSignedBeaconBlock,
 };
 use pharos_utils::Hash256;
 
 use crate::error::ConformanceError;
-use crate::snappy::decompress_framed;
+use crate::fs_util::{dir_name, read_dir_sorted};
+use crate::snappy::decompress_raw;
 use crate::yaml_util::read_root_from_file;
 
 /// Result of running all ssz_static tests for one preset.
@@ -106,20 +116,22 @@ fn run_static_case(
     }
 
     let compressed = std::fs::read(&ssz_snappy)?;
-    let ssz_bytes = decompress_framed(&compressed)?;
+    let ssz_bytes = decompress_raw(&compressed)?;
     let expected_root = read_root_from_file(&roots_yaml)?;
 
     // Dispatch on (preset, type_name) to the matching monomorphized type.
-    dispatch(preset, type_name, &ssz_bytes, &expected_root, case_label)?;
-    Ok(true)
+    // Returns Ok(true) = pass, Ok(false) = skip (unknown type).
+    dispatch(preset, type_name, &ssz_bytes, &expected_root, case_label)
 }
 
 /// Core SSZ round-trip + hash assertion for any type.
+///
+/// Returns `Ok(true)` on success.
 fn check<T>(
     ssz_bytes: &[u8],
     expected_root: &Hash256,
     case_label: &str,
-) -> Result<(), ConformanceError>
+) -> Result<bool, ConformanceError>
 where
     T: Encode + Decode + TreeHash,
 {
@@ -140,52 +152,27 @@ where
             want_hex: hex::encode(ssz_bytes),
         });
     }
-    Ok(())
+    Ok(true)
 }
-
-// ── Preset-specific const aliases ─────────────────────────────────────────────
-
-// mainnet
-type MainnetBeaconState =
-    BeaconState<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4096, 4, 2048>;
-type MainnetHistoricalBatch = HistoricalBatch<8192>;
-type MainnetIndexedAttestation = IndexedAttestation<2048>;
-type MainnetPendingAttestation = PendingAttestation<2048>;
-type MainnetAttesterSlashing = AttesterSlashing<2048>;
-type MainnetAttestation = Attestation<2048>;
-type MainnetDeposit = Deposit<33>;
-type MainnetBeaconBlockBody = BeaconBlockBody<16, 2, 128, 16, 16, 2048, 33>;
-type MainnetBeaconBlock = BeaconBlock<16, 2, 128, 16, 16, 2048, 33>;
-type MainnetSignedBeaconBlock = SignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33>;
-
-// minimal
-type MinimalBeaconState = BeaconState<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 1024, 4, 2048>;
-type MinimalHistoricalBatch = HistoricalBatch<64>;
-type MinimalIndexedAttestation = IndexedAttestation<2048>;
-type MinimalPendingAttestation = PendingAttestation<2048>;
-type MinimalAttesterSlashing = AttesterSlashing<2048>;
-type MinimalAttestation = Attestation<2048>;
-type MinimalDeposit = Deposit<33>;
-type MinimalBeaconBlockBody = BeaconBlockBody<16, 2, 128, 16, 16, 2048, 33>;
-type MinimalBeaconBlock = BeaconBlock<16, 2, 128, 16, 16, 2048, 33>;
-type MinimalSignedBeaconBlock = SignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33>;
 
 // ── Dispatch table ────────────────────────────────────────────────────────────
 
 /// Dispatch (preset, type_name) to the correct concrete type and run the check.
+///
+/// Returns `Ok(true)` = pass, `Ok(false)` = skip (unknown type).
 fn dispatch(
     preset: &str,
     type_name: &str,
     ssz_bytes: &[u8],
     expected_root: &Hash256,
     case_label: &str,
-) -> Result<(), ConformanceError> {
+) -> Result<bool, ConformanceError> {
     match preset {
         "mainnet" => dispatch_mainnet(type_name, ssz_bytes, expected_root, case_label),
         "minimal" => dispatch_minimal(type_name, ssz_bytes, expected_root, case_label),
         _ => {
             eprintln!("skipping ssz_static for unknown preset: {preset}");
-            Ok(())
+            Ok(false)
         }
     }
 }
@@ -195,9 +182,9 @@ fn dispatch_mainnet(
     ssz_bytes: &[u8],
     expected_root: &Hash256,
     case_label: &str,
-) -> Result<(), ConformanceError> {
+) -> Result<bool, ConformanceError> {
     match type_name {
-        // Preset-independent types
+        // Preset-independent types (beacon-chain.md)
         "Fork" => check::<Fork>(ssz_bytes, expected_root, case_label),
         "ForkData" => check::<ForkData>(ssz_bytes, expected_root, case_label),
         "Checkpoint" => check::<Checkpoint>(ssz_bytes, expected_root, case_label),
@@ -214,7 +201,9 @@ fn dispatch_mainnet(
         "ProposerSlashing" => check::<ProposerSlashing>(ssz_bytes, expected_root, case_label),
         "VoluntaryExit" => check::<VoluntaryExit>(ssz_bytes, expected_root, case_label),
         "SignedVoluntaryExit" => check::<SignedVoluntaryExit>(ssz_bytes, expected_root, case_label),
-        // Preset-specific types (mainnet)
+        // Preset-independent types (validator.md)
+        "Eth1Block" => check::<Eth1Block>(ssz_bytes, expected_root, case_label),
+        // Preset-specific types (mainnet, beacon-chain.md)
         "HistoricalBatch" => check::<MainnetHistoricalBatch>(ssz_bytes, expected_root, case_label),
         "IndexedAttestation" => {
             check::<MainnetIndexedAttestation>(ssz_bytes, expected_root, case_label)
@@ -233,9 +222,16 @@ fn dispatch_mainnet(
             check::<MainnetSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
         }
         "BeaconState" => check::<MainnetBeaconState>(ssz_bytes, expected_root, case_label),
+        // Preset-specific types (mainnet, validator.md)
+        "AggregateAndProof" => {
+            check::<AggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedAggregateAndProof" => {
+            check::<SignedAggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
         _ => {
             eprintln!("skipping mainnet/ssz_static/{type_name}: not in dispatch table");
-            Ok(())
+            Ok(false)
         }
     }
 }
@@ -245,9 +241,9 @@ fn dispatch_minimal(
     ssz_bytes: &[u8],
     expected_root: &Hash256,
     case_label: &str,
-) -> Result<(), ConformanceError> {
+) -> Result<bool, ConformanceError> {
     match type_name {
-        // Preset-independent types
+        // Preset-independent types (beacon-chain.md)
         "Fork" => check::<Fork>(ssz_bytes, expected_root, case_label),
         "ForkData" => check::<ForkData>(ssz_bytes, expected_root, case_label),
         "Checkpoint" => check::<Checkpoint>(ssz_bytes, expected_root, case_label),
@@ -264,7 +260,9 @@ fn dispatch_minimal(
         "ProposerSlashing" => check::<ProposerSlashing>(ssz_bytes, expected_root, case_label),
         "VoluntaryExit" => check::<VoluntaryExit>(ssz_bytes, expected_root, case_label),
         "SignedVoluntaryExit" => check::<SignedVoluntaryExit>(ssz_bytes, expected_root, case_label),
-        // Preset-specific types (minimal)
+        // Preset-independent types (validator.md)
+        "Eth1Block" => check::<Eth1Block>(ssz_bytes, expected_root, case_label),
+        // Preset-specific types (minimal, beacon-chain.md)
         "HistoricalBatch" => check::<MinimalHistoricalBatch>(ssz_bytes, expected_root, case_label),
         "IndexedAttestation" => {
             check::<MinimalIndexedAttestation>(ssz_bytes, expected_root, case_label)
@@ -283,28 +281,18 @@ fn dispatch_minimal(
             check::<MinimalSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
         }
         "BeaconState" => check::<MinimalBeaconState>(ssz_bytes, expected_root, case_label),
+        // Preset-specific types (minimal, validator.md)
+        "AggregateAndProof" => {
+            check::<AggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedAggregateAndProof" => {
+            check::<SignedAggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
         _ => {
             eprintln!("skipping minimal/ssz_static/{type_name}: not in dispatch table");
-            Ok(())
+            Ok(false)
         }
     }
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-fn read_dir_sorted(path: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(path)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    entries.sort();
-    Ok(entries)
-}
-
-fn dir_name(path: &Path) -> String {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string()
-}
+// Helpers `read_dir_sorted` and `dir_name` are shared via the `fs_util` module.

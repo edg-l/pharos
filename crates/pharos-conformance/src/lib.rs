@@ -16,6 +16,7 @@ pub mod snappy;
 pub mod ssz_generic_types;
 pub mod yaml_util;
 
+mod fs_util;
 mod ssz_generic;
 mod ssz_static;
 

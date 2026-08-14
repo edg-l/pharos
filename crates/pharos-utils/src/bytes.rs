@@ -9,7 +9,7 @@ use std::str::FromStr;
 /// `Copy` is implemented unconditionally for all `N` because `[u8; N]` is
 /// `Copy` for all `N` on stable Rust (S6).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FixedBytes<const N: usize>(pub [u8; N]);
+pub struct FixedBytes<const N: usize>(pub(crate) [u8; N]);
 
 impl<const N: usize> FixedBytes<N> {
     /// Returns a reference to the underlying byte slice.

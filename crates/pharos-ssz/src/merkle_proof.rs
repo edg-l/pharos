@@ -19,7 +19,7 @@
 
 use crate::{
     gindex::{GeneralizedIndex, get_generalized_index_length},
-    tree_hash::{merkleize, next_pow_of_two, zero_hash},
+    tree_hash::{next_pow_of_two, zero_hash},
 };
 use pharos_utils::{Hash256, hash::hash_concat};
 
@@ -141,13 +141,6 @@ pub fn build_single_proof_from_leaves(leaves: &[Hash256], index: GeneralizedInde
         branch,
         index,
     }
-}
-
-/// Compute the Merkle root of a flat leaf slice (padded to next power of two).
-///
-/// Convenience wrapper around `merkleize` for tests.
-pub fn compute_root_from_leaves(leaves: &[Hash256]) -> Hash256 {
-    merkleize(leaves)
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

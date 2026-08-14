@@ -5,7 +5,7 @@ Source: consensus-specs release `v1.6.1`.
 
 | Fork      | Category           | Preset  | Pass | Fail | Skip | Total |
 |-----------|--------------------|---------|------|------|------|-------|
-| phase0    | ssz_generic        | -       | 2207 | 0    | 302  | 2509  |
+| phase0    | ssz_generic        | -       | 2215 | 0    | 294  | 2509  |
 | phase0    | ssz_static         | mainnet | 135  | 0    | 0    | 135   |
 | phase0    | ssz_static         | minimal | 3321 | 0    | 0    | 3321  |
 | phase0    | operations         | -       | -    | -    | -    | -     |

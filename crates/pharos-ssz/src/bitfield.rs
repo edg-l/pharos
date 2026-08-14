@@ -44,22 +44,16 @@ pub struct Bitvector<const N: u64> {
 
 impl<const N: u64> Bitvector<N> {
     /// The number of bytes needed to store `N` bits.
-    const BYTE_LEN: usize = {
-        assert!(N > 0, "Bitvector<0> is illegal per the SSZ spec");
-        (N as usize).div_ceil(8)
-    };
+    ///
+    /// `Bitvector<0>` is illegal per the SSZ spec; decoding always returns an
+    /// error at runtime (see `from_ssz_bytes`).
+    const BYTE_LEN: usize = (N as usize).div_ceil(8);
 
     /// Construct a `Bitvector<N>` with all bits cleared.
     pub fn new() -> Self {
         Self {
             data: vec![0u8; Self::BYTE_LEN],
         }
-    }
-
-    /// Construct a `Bitvector<N>` with pre-allocated capacity (same as `new`
-    /// since size is fixed).
-    pub fn with_capacity() -> Self {
-        Self::new()
     }
 
     /// Get bit `i`. Returns `None` if `i >= N`.
@@ -159,6 +153,10 @@ impl<const N: u64> Decode for Bitvector<N> {
     }
 
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, SszError> {
+        // Bitvector<0> is illegal per the SSZ spec.
+        if N == 0 {
+            return Err(SszError::InvalidBitvector);
+        }
         if bytes.len() != Self::BYTE_LEN {
             return Err(SszError::InvalidByteLength {
                 found: bytes.len(),

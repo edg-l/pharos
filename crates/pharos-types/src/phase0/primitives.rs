@@ -11,10 +11,9 @@ pub use pharos_utils::{CommitteeIndex, Epoch, Gwei, Slot, ValidatorIndex};
 // Source: `specs/phase0/beacon-chain.md:176-177`
 pub use pharos_utils::{BLSPubkey, BLSSignature};
 
-// Re-export Hash256 as Root alias (Bytes32, per `specs/phase0/beacon-chain.md:170`).
-pub use pharos_utils::Hash256;
-
-/// `Root` — a Merkle root (Bytes32).
+/// `Root` — a Merkle root (Bytes32). Canonical Phase 0 spelling for
+/// `pharos_utils::Hash256`; do not re-export `Hash256` under that name from
+/// this module to avoid the same type having two import paths.
 /// Source: `specs/phase0/beacon-chain.md:170`.
 pub type Root = pharos_utils::Hash256;
 

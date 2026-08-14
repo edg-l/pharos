@@ -12,13 +12,16 @@
 
 use pharos_ssz::{Decode, Encode, TreeHash};
 use pharos_types::phase0::{MainnetBeaconState, MinimalBeaconState, Validator};
-use pharos_utils::{BLSPubkey, Bytes32, Epoch, Gwei};
+use pharos_utils::{
+    BLSPubkey, BLSSignature, Bytes32, CommitteeIndex, Epoch, Gwei, Slot, ValidatorIndex,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn make_validator(pubkey_byte: u8) -> Validator {
-    let mut pubkey = BLSPubkey::default();
-    pubkey.0[0] = pubkey_byte;
+    let mut arr = [0u8; 48];
+    arr[0] = pubkey_byte;
+    let pubkey = BLSPubkey::from_array(arr);
     Validator {
         pubkey,
         withdrawal_credentials: Bytes32::default(),
@@ -197,4 +200,445 @@ fn minimal_historical_batch_ssz_roundtrip() {
     let decoded = MinimalHistoricalBatch::from_ssz_bytes(&encoded)
         .expect("HistoricalBatch decode should succeed");
     assert_eq!(batch, decoded);
+}
+
+// ── Round-trip + tree_hash_root tests for the 19 under-covered containers ─────
+//
+// Each test: construct a non-default value, encode → decode → eq, then verify
+// that `tree_hash_root` differs between the non-default and default.
+
+#[test]
+fn fork_roundtrip() {
+    use pharos_types::phase0::Fork;
+    use pharos_utils::Bytes4;
+    let v = Fork {
+        previous_version: Bytes4::from_array([1, 0, 0, 0]),
+        current_version: Bytes4::from_array([2, 0, 0, 0]),
+        epoch: Epoch(7),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = Fork::from_ssz_bytes(&encoded).expect("Fork decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        Fork::default().tree_hash_root(),
+        "non-default Fork root must differ"
+    );
+}
+
+#[test]
+fn fork_data_roundtrip() {
+    use pharos_types::phase0::ForkData;
+    use pharos_utils::{Bytes4, Bytes32};
+    let v = ForkData {
+        current_version: Bytes4::from_array([3, 0, 0, 0]),
+        genesis_validators_root: Bytes32::from_array([0xAB; 32]),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = ForkData::from_ssz_bytes(&encoded).expect("ForkData decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        ForkData::default().tree_hash_root(),
+        "non-default ForkData root must differ"
+    );
+}
+
+#[test]
+fn checkpoint_roundtrip() {
+    use pharos_types::phase0::Checkpoint;
+    use pharos_utils::Hash256;
+    let v = Checkpoint {
+        epoch: Epoch(42),
+        root: Hash256::from_array([0xFF; 32]),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = Checkpoint::from_ssz_bytes(&encoded).expect("Checkpoint decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        Checkpoint::default().tree_hash_root(),
+        "non-default Checkpoint root must differ"
+    );
+}
+
+#[test]
+fn attestation_data_roundtrip() {
+    use pharos_types::phase0::{AttestationData, Checkpoint};
+    use pharos_utils::Hash256;
+    let chk = Checkpoint {
+        epoch: Epoch(1),
+        root: Hash256::from_array([0x11; 32]),
+    };
+    let v = AttestationData {
+        slot: Slot(100),
+        index: CommitteeIndex(2),
+        beacon_block_root: Hash256::from_array([0x22; 32]),
+        source: chk.clone(),
+        target: chk,
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = AttestationData::from_ssz_bytes(&encoded).expect("AttestationData decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        AttestationData::default().tree_hash_root(),
+        "non-default AttestationData root must differ"
+    );
+}
+
+#[test]
+fn indexed_attestation_roundtrip() {
+    use pharos_ssz::SszList;
+    use pharos_types::phase0::MinimalIndexedAttestation;
+    let v = MinimalIndexedAttestation {
+        attesting_indices: SszList::from_vec(vec![ValidatorIndex(1), ValidatorIndex(2)])
+            .expect("list from vec"),
+        ..Default::default()
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded =
+        MinimalIndexedAttestation::from_ssz_bytes(&encoded).expect("IndexedAttestation decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        MinimalIndexedAttestation::default().tree_hash_root(),
+        "non-default IndexedAttestation root must differ"
+    );
+}
+
+#[test]
+fn pending_attestation_roundtrip() {
+    use pharos_types::phase0::MinimalPendingAttestation;
+    let v = MinimalPendingAttestation {
+        inclusion_delay: Slot(3),
+        proposer_index: ValidatorIndex(5),
+        ..Default::default()
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded =
+        MinimalPendingAttestation::from_ssz_bytes(&encoded).expect("PendingAttestation decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        MinimalPendingAttestation::default().tree_hash_root(),
+        "non-default PendingAttestation root must differ"
+    );
+}
+
+#[test]
+fn attestation_roundtrip() {
+    use pharos_types::phase0::MinimalAttestation;
+    let v = MinimalAttestation {
+        signature: BLSSignature::from_array([0xAA; 96]),
+        ..Default::default()
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = MinimalAttestation::from_ssz_bytes(&encoded).expect("Attestation decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        MinimalAttestation::default().tree_hash_root(),
+        "non-default Attestation root must differ"
+    );
+}
+
+#[test]
+fn attester_slashing_roundtrip() {
+    use pharos_types::phase0::MinimalAttesterSlashing;
+    let v = MinimalAttesterSlashing {
+        attestation_1: {
+            use pharos_types::phase0::MinimalIndexedAttestation;
+            MinimalIndexedAttestation {
+                signature: BLSSignature::from_array([0x01; 96]),
+                ..Default::default()
+            }
+        },
+        ..Default::default()
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded =
+        MinimalAttesterSlashing::from_ssz_bytes(&encoded).expect("AttesterSlashing decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        MinimalAttesterSlashing::default().tree_hash_root(),
+        "non-default AttesterSlashing root must differ"
+    );
+}
+
+#[test]
+fn eth1_data_roundtrip() {
+    use pharos_types::phase0::Eth1Data;
+    use pharos_utils::Hash256;
+    let v = Eth1Data {
+        deposit_root: Hash256::from_array([0x55; 32]),
+        deposit_count: 42,
+        block_hash: Hash256::from_array([0x66; 32]),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = Eth1Data::from_ssz_bytes(&encoded).expect("Eth1Data decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        Eth1Data::default().tree_hash_root(),
+        "non-default Eth1Data root must differ"
+    );
+}
+
+#[test]
+fn deposit_message_roundtrip() {
+    use pharos_types::phase0::DepositMessage;
+    let v = DepositMessage {
+        pubkey: BLSPubkey::from_array([0x77; 48]),
+        withdrawal_credentials: Bytes32::from_array([0x88; 32]),
+        amount: Gwei(32_000_000_000),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = DepositMessage::from_ssz_bytes(&encoded).expect("DepositMessage decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        DepositMessage::default().tree_hash_root(),
+        "non-default DepositMessage root must differ"
+    );
+}
+
+#[test]
+fn deposit_data_roundtrip() {
+    use pharos_types::phase0::DepositData;
+    let v = DepositData {
+        pubkey: BLSPubkey::from_array([0x11; 48]),
+        withdrawal_credentials: Bytes32::from_array([0x22; 32]),
+        amount: Gwei(1_000_000_000),
+        signature: BLSSignature::from_array([0x33; 96]),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = DepositData::from_ssz_bytes(&encoded).expect("DepositData decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        DepositData::default().tree_hash_root(),
+        "non-default DepositData root must differ"
+    );
+}
+
+#[test]
+fn beacon_block_header_roundtrip() {
+    use pharos_types::phase0::BeaconBlockHeader;
+    use pharos_utils::Hash256;
+    let v = BeaconBlockHeader {
+        slot: Slot(99),
+        proposer_index: ValidatorIndex(3),
+        parent_root: Hash256::from_array([0xAA; 32]),
+        state_root: Hash256::from_array([0xBB; 32]),
+        body_root: Hash256::from_array([0xCC; 32]),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = BeaconBlockHeader::from_ssz_bytes(&encoded).expect("BeaconBlockHeader decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        BeaconBlockHeader::default().tree_hash_root(),
+        "non-default BeaconBlockHeader root must differ"
+    );
+}
+
+#[test]
+fn signing_data_roundtrip() {
+    use pharos_types::phase0::SigningData;
+    use pharos_utils::{Bytes32, Hash256};
+    let v = SigningData {
+        object_root: Hash256::from_array([0xDD; 32]),
+        domain: Bytes32::from_array([0xEE; 32]),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = SigningData::from_ssz_bytes(&encoded).expect("SigningData decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        SigningData::default().tree_hash_root(),
+        "non-default SigningData root must differ"
+    );
+}
+
+#[test]
+fn proposer_slashing_roundtrip() {
+    use pharos_types::phase0::{BeaconBlockHeader, ProposerSlashing, SignedBeaconBlockHeader};
+    use pharos_utils::Hash256;
+    let header = BeaconBlockHeader {
+        slot: Slot(5),
+        proposer_index: ValidatorIndex(10),
+        parent_root: Hash256::from_array([0x01; 32]),
+        state_root: Hash256::from_array([0x02; 32]),
+        body_root: Hash256::from_array([0x03; 32]),
+    };
+    let signed = SignedBeaconBlockHeader {
+        message: header,
+        signature: BLSSignature::from_array([0x04; 96]),
+    };
+    let v = ProposerSlashing {
+        signed_header_1: signed.clone(),
+        signed_header_2: signed,
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = ProposerSlashing::from_ssz_bytes(&encoded).expect("ProposerSlashing decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        ProposerSlashing::default().tree_hash_root(),
+        "non-default ProposerSlashing root must differ"
+    );
+}
+
+#[test]
+fn voluntary_exit_roundtrip() {
+    use pharos_types::phase0::VoluntaryExit;
+    let v = VoluntaryExit {
+        epoch: Epoch(100),
+        validator_index: ValidatorIndex(7),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = VoluntaryExit::from_ssz_bytes(&encoded).expect("VoluntaryExit decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        VoluntaryExit::default().tree_hash_root(),
+        "non-default VoluntaryExit root must differ"
+    );
+}
+
+#[test]
+fn signed_voluntary_exit_roundtrip() {
+    use pharos_types::phase0::{SignedVoluntaryExit, VoluntaryExit};
+    let v = SignedVoluntaryExit {
+        message: VoluntaryExit {
+            epoch: Epoch(200),
+            validator_index: ValidatorIndex(8),
+        },
+        signature: BLSSignature::from_array([0x55; 96]),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded =
+        SignedVoluntaryExit::from_ssz_bytes(&encoded).expect("SignedVoluntaryExit decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        SignedVoluntaryExit::default().tree_hash_root(),
+        "non-default SignedVoluntaryExit root must differ"
+    );
+}
+
+#[test]
+fn signed_beacon_block_header_roundtrip() {
+    use pharos_types::phase0::{BeaconBlockHeader, SignedBeaconBlockHeader};
+    let v = SignedBeaconBlockHeader {
+        message: BeaconBlockHeader {
+            slot: Slot(50),
+            ..Default::default()
+        },
+        signature: BLSSignature::from_array([0xCC; 96]),
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded =
+        SignedBeaconBlockHeader::from_ssz_bytes(&encoded).expect("SignedBeaconBlockHeader decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        SignedBeaconBlockHeader::default().tree_hash_root(),
+        "non-default SignedBeaconBlockHeader root must differ"
+    );
+}
+
+#[test]
+fn beacon_block_body_roundtrip() {
+    use pharos_types::phase0::MinimalBeaconBlockBody;
+    use pharos_utils::Bytes32;
+    let v = MinimalBeaconBlockBody {
+        graffiti: Bytes32::from_array([0x01; 32]),
+        ..Default::default()
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = MinimalBeaconBlockBody::from_ssz_bytes(&encoded).expect("BeaconBlockBody decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        MinimalBeaconBlockBody::default().tree_hash_root(),
+        "non-default BeaconBlockBody root must differ"
+    );
+}
+
+#[test]
+fn beacon_block_roundtrip() {
+    use pharos_types::phase0::MinimalBeaconBlock;
+    let v = MinimalBeaconBlock {
+        slot: Slot(77),
+        ..Default::default()
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = MinimalBeaconBlock::from_ssz_bytes(&encoded).expect("BeaconBlock decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        MinimalBeaconBlock::default().tree_hash_root(),
+        "non-default BeaconBlock root must differ"
+    );
+}
+
+// ── validator.md container round-trips ───────────────────────────────────────
+
+#[test]
+fn eth1_block_roundtrip() {
+    use pharos_types::phase0::Eth1Block;
+    use pharos_utils::Hash256;
+    let v = Eth1Block {
+        timestamp: 1_700_000_000,
+        deposit_root: Hash256::from_array([0xAB; 32]),
+        deposit_count: 1024,
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = Eth1Block::from_ssz_bytes(&encoded).expect("Eth1Block decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        Eth1Block::default().tree_hash_root(),
+        "non-default Eth1Block root must differ"
+    );
+}
+
+#[test]
+fn aggregate_and_proof_roundtrip() {
+    use pharos_types::phase0::MinimalAggregateAndProof;
+    let v = MinimalAggregateAndProof {
+        aggregator_index: ValidatorIndex(42),
+        selection_proof: BLSSignature::from_array([0x55; 96]),
+        ..Default::default()
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded =
+        MinimalAggregateAndProof::from_ssz_bytes(&encoded).expect("AggregateAndProof decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        MinimalAggregateAndProof::default().tree_hash_root(),
+        "non-default AggregateAndProof root must differ"
+    );
+}
+
+#[test]
+fn signed_aggregate_and_proof_roundtrip() {
+    use pharos_types::phase0::MinimalSignedAggregateAndProof;
+    let v = MinimalSignedAggregateAndProof {
+        signature: BLSSignature::from_array([0x66; 96]),
+        ..Default::default()
+    };
+    let encoded = v.as_ssz_bytes();
+    let decoded = MinimalSignedAggregateAndProof::from_ssz_bytes(&encoded)
+        .expect("SignedAggregateAndProof decode");
+    assert_eq!(v, decoded);
+    assert_ne!(
+        v.tree_hash_root(),
+        MinimalSignedAggregateAndProof::default().tree_hash_root(),
+        "non-default SignedAggregateAndProof root must differ"
+    );
 }

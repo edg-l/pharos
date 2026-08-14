@@ -155,6 +155,58 @@ where
     }
 }
 
+// ── Eth1Block ─────────────────────────────────────────────────────────────────
+
+/// `Eth1Block` per `specs/phase0/validator.md:118-126`.
+///
+/// Represents a snapshot of an Eth1 block as seen by the beacon chain.
+/// Preset-independent: all fields are primitive types.
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct Eth1Block {
+    /// `timestamp: uint64` — `specs/phase0/validator.md:122`.
+    pub timestamp: u64,
+    /// `deposit_root: Root` — `specs/phase0/validator.md:123`.
+    pub deposit_root: Root,
+    /// `deposit_count: uint64` — `specs/phase0/validator.md:124`.
+    pub deposit_count: u64,
+}
+
+// ── AggregateAndProof ─────────────────────────────────────────────────────────
+
+/// `AggregateAndProof` per `specs/phase0/validator.md:128-135`.
+///
+/// Generic over `MAX_VALIDATORS_PER_COMMITTEE` (a flat `u64` const) because it
+/// wraps `Attestation<MAX_VALIDATORS_PER_COMMITTEE>`.
+///
+/// For mainnet and minimal: `MAX_VALIDATORS_PER_COMMITTEE = 2048`
+/// (`presets/mainnet/phase0.yaml:10`, `presets/minimal/phase0.yaml:10`).
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct AggregateAndProof<const MAX_VALIDATORS_PER_COMMITTEE: u64> {
+    /// `aggregator_index: ValidatorIndex` — `specs/phase0/validator.md:132`.
+    pub aggregator_index: ValidatorIndex,
+    /// `aggregate: Attestation` — `specs/phase0/validator.md:133`.
+    pub aggregate: Attestation<MAX_VALIDATORS_PER_COMMITTEE>,
+    /// `selection_proof: BLSSignature` — `specs/phase0/validator.md:134`.
+    pub selection_proof: BLSSignature,
+}
+
+// ── SignedAggregateAndProof ───────────────────────────────────────────────────
+
+/// `SignedAggregateAndProof` per `specs/phase0/validator.md:137-142`.
+///
+/// Generic over `MAX_VALIDATORS_PER_COMMITTEE` (a flat `u64` const) because it
+/// wraps `AggregateAndProof<MAX_VALIDATORS_PER_COMMITTEE>`.
+///
+/// For mainnet and minimal: `MAX_VALIDATORS_PER_COMMITTEE = 2048`
+/// (`presets/mainnet/phase0.yaml:10`, `presets/minimal/phase0.yaml:10`).
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct SignedAggregateAndProof<const MAX_VALIDATORS_PER_COMMITTEE: u64> {
+    /// `message: AggregateAndProof` — `specs/phase0/validator.md:140`.
+    pub message: AggregateAndProof<MAX_VALIDATORS_PER_COMMITTEE>,
+    /// `signature: BLSSignature` — `specs/phase0/validator.md:141`.
+    pub signature: BLSSignature,
+}
+
 // ── VoluntaryExit ─────────────────────────────────────────────────────────────
 
 /// `VoluntaryExit` per `specs/phase0/beacon-chain.md:529-532`.

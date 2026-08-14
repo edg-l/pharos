@@ -43,9 +43,13 @@ pub enum BlsError {
     #[error("BLS signature verification failed")]
     VerificationFailed,
 
-    /// Aggregate was called with an empty slice.
+    /// `aggregate` was called with an empty signature slice.
     #[error("cannot aggregate an empty set of signatures")]
-    AggregateEmpty,
+    NoSignatures,
+
+    /// `fast_aggregate_verify` was called with an empty public key slice.
+    #[error("fast_aggregate_verify requires at least one public key")]
+    NoPubkeys,
 
     /// Raw `blst` error not covered by a more specific variant.
     #[error("blst error: {0}")]
@@ -100,11 +104,11 @@ pub fn verify(pubkey: &BLSPubkey, msg: &[u8], signature: &BLSSignature) -> Resul
 
 /// Aggregate multiple signatures into one.
 ///
-/// Returns `BlsError::AggregateEmpty` when `signatures` is empty.
+/// Returns `BlsError::NoSignatures` when `signatures` is empty.
 /// Returns `BlsError::InvalidSignature` if any signature fails to decompress.
 pub fn aggregate(signatures: &[BLSSignature]) -> Result<BLSSignature, BlsError> {
     if signatures.is_empty() {
-        return Err(BlsError::AggregateEmpty);
+        return Err(BlsError::NoSignatures);
     }
 
     let parsed: Result<Vec<min_pk::Signature>, BlsError> =
@@ -129,7 +133,7 @@ pub fn fast_aggregate_verify(
     signature: &BLSSignature,
 ) -> Result<bool, BlsError> {
     if pubkeys.is_empty() {
-        return Err(BlsError::AggregateEmpty);
+        return Err(BlsError::NoPubkeys);
     }
 
     // Subgroup-check each pubkey: `fast_aggregate_verify` calls into blst with
@@ -237,8 +241,20 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_empty_returns_error() {
-        assert_eq!(aggregate(&[]).unwrap_err(), BlsError::AggregateEmpty);
+    fn aggregate_empty_returns_no_signatures_error() {
+        assert_eq!(aggregate(&[]).unwrap_err(), BlsError::NoSignatures);
+    }
+
+    #[test]
+    fn fast_aggregate_verify_empty_pubkeys_returns_no_pubkeys_error() {
+        let sk = test_sk(1);
+        let msg = b"empty pubkeys test";
+        let sig = sign_with_sk(&sk, msg);
+        let agg = aggregate(&[sig]).unwrap();
+        assert_eq!(
+            fast_aggregate_verify(&[], msg, &agg).unwrap_err(),
+            BlsError::NoPubkeys
+        );
     }
 
     #[test]

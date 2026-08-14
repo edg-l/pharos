@@ -104,8 +104,9 @@ pub fn zero_hash(depth: usize) -> Hash256 {
 
 /// Return the smallest power of two ≥ `n`, with `0` mapping to `1`.
 ///
-/// Matches the spec's `next_pow_of_two`.
-pub fn next_pow_of_two(n: usize) -> usize {
+/// Matches the spec's `next_pow_of_two`. Crate-internal: used by
+/// `merkle_proof` and the merkleize helpers.
+pub(crate) fn next_pow_of_two(n: usize) -> usize {
     if n <= 1 {
         return 1;
     }
@@ -435,6 +436,69 @@ mod tests {
         let h23 = hash_concat(&chunk, &zero);
         let expected = hash_concat(h01.as_ref(), h23.as_ref());
         assert_eq!(bytes.tree_hash_root(), expected);
+    }
+
+    // ── merkleize_padded zero-folding correctness ─────────────────────────────
+
+    /// Naive reference implementation: materialize the full padded leaf array
+    /// and pair-hash bottom-up. Used to cross-check the optimised version that
+    /// folds zero-hash subtrees without materializing them.
+    fn naive_merkleize_padded(chunks: &[Hash256], limit: usize) -> Hash256 {
+        assert!(chunks.len() <= limit, "naive: chunks.len() exceeds limit");
+        let n = next_pow_of_two(limit.max(1));
+        let mut layer: Vec<Hash256> = Vec::with_capacity(n);
+        layer.extend_from_slice(chunks);
+        while layer.len() < n {
+            layer.push(zero_hash(0));
+        }
+        while layer.len() > 1 {
+            let mut next = Vec::with_capacity(layer.len() / 2);
+            for pair in layer.chunks_exact(2) {
+                next.push(hash_concat(pair[0].as_ref(), pair[1].as_ref()));
+            }
+            layer = next;
+        }
+        layer[0]
+    }
+
+    #[test]
+    fn merkleize_padded_some_chunks_limit_larger() {
+        // Case (a): 3 chunks present, limit = 8 (some zero-padded).
+        let a = Hash256::from_array([0x01; 32]);
+        let b = Hash256::from_array([0x02; 32]);
+        let c = Hash256::from_array([0x03; 32]);
+        let chunks = vec![a, b, c];
+        let limit = 8;
+        let got = merkleize_padded(&chunks, limit);
+        let want = naive_merkleize_padded(&chunks, limit);
+        assert_eq!(got, want, "3 chunks, limit=8");
+    }
+
+    #[test]
+    fn merkleize_padded_limit_much_larger_than_chunks() {
+        // Case (b): 3 chunks, limit = 1024.
+        let a = Hash256::from_array([0xAA; 32]);
+        let b = Hash256::from_array([0xBB; 32]);
+        let c = Hash256::from_array([0xCC; 32]);
+        let chunks = vec![a, b, c];
+        let limit = 1024;
+        let got = merkleize_padded(&chunks, limit);
+        let want = naive_merkleize_padded(&chunks, limit);
+        assert_eq!(got, want, "3 chunks, limit=1024");
+    }
+
+    #[test]
+    fn merkleize_padded_limit_equals_chunks_len() {
+        // Case (c): limit exactly matches chunks.len() (no zero padding needed).
+        let a = Hash256::from_array([0x11; 32]);
+        let b = Hash256::from_array([0x22; 32]);
+        let c = Hash256::from_array([0x33; 32]);
+        let d = Hash256::from_array([0x44; 32]);
+        let chunks = vec![a, b, c, d];
+        let limit = 4;
+        let got = merkleize_padded(&chunks, limit);
+        let want = naive_merkleize_padded(&chunks, limit);
+        assert_eq!(got, want, "4 chunks, limit=4");
     }
 
     #[test]

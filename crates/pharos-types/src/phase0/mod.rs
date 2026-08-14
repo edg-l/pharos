@@ -27,8 +27,9 @@ pub use misc::{
     PendingAttestation, Validator,
 };
 pub use operations::{
-    Attestation, AttesterSlashing, BeaconBlockHeader, Deposit, DepositData, DepositMessage,
-    ProposerSlashing, SignedBeaconBlockHeader, SignedVoluntaryExit, SigningData, VoluntaryExit,
+    AggregateAndProof, Attestation, AttesterSlashing, BeaconBlockHeader, Deposit, DepositData,
+    DepositMessage, Eth1Block, ProposerSlashing, SignedAggregateAndProof, SignedBeaconBlockHeader,
+    SignedVoluntaryExit, SigningData, VoluntaryExit,
 };
 pub use primitives::*;
 pub use state::BeaconState;
@@ -206,3 +207,26 @@ pub type MinimalSignedBeaconBlock = SignedBeaconBlock<
     2048, // MAX_VALIDATORS_PER_COMMITTEE
     33,   // DEPOSIT_PROOF_LENGTH
 >;
+
+// ── AggregateAndProof / SignedAggregateAndProof aliases ───────────────────────
+//
+// Both types wrap `Attestation`, which is generic over
+// `MAX_VALIDATORS_PER_COMMITTEE`.  The same concrete value (2048) is used for
+// both mainnet and minimal (`presets/mainnet/phase0.yaml:10`,
+// `presets/minimal/phase0.yaml:10`).
+
+/// Mainnet `AggregateAndProof` per `presets/mainnet/phase0.yaml:10`
+/// (`MAX_VALIDATORS_PER_COMMITTEE = 2048`).
+pub type MainnetAggregateAndProof = AggregateAndProof<2048>;
+
+/// Mainnet `SignedAggregateAndProof` per `presets/mainnet/phase0.yaml:10`
+/// (`MAX_VALIDATORS_PER_COMMITTEE = 2048`).
+pub type MainnetSignedAggregateAndProof = SignedAggregateAndProof<2048>;
+
+/// Minimal `AggregateAndProof` per `presets/minimal/phase0.yaml:10`
+/// (`MAX_VALIDATORS_PER_COMMITTEE = 2048`).
+pub type MinimalAggregateAndProof = AggregateAndProof<2048>;
+
+/// Minimal `SignedAggregateAndProof` per `presets/minimal/phase0.yaml:10`
+/// (`MAX_VALIDATORS_PER_COMMITTEE = 2048`).
+pub type MinimalSignedAggregateAndProof = SignedAggregateAndProof<2048>;

@@ -11,13 +11,14 @@
 //! - `containers`   → named test structs
 //! - others         → skip with message
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use pharos_ssz::{Bitlist, Bitvector, Decode, Encode, SszVector, TreeHash};
 use pharos_utils::Uint256;
 
 use crate::error::ConformanceError;
-use crate::snappy::decompress_framed;
+use crate::fs_util::{dir_name, read_dir_sorted};
+use crate::snappy::decompress_raw;
 use crate::ssz_generic_types::{
     BitsStruct, ComplexTestStruct, FixedTestStruct, SingleFieldTestStruct, SmallTestStruct,
     VarTestStruct,
@@ -134,7 +135,7 @@ fn run_case(
     }
 
     let compressed = std::fs::read(&ssz_snappy)?;
-    let ssz_bytes = decompress_framed(&compressed)?;
+    let ssz_bytes = decompress_raw(&compressed)?;
 
     match handler {
         "boolean" => run_typed::<bool>(case_path, case_label, &ssz_bytes, is_valid),
@@ -276,6 +277,7 @@ fn run_basic_vector(
     macro_rules! dispatch_vec {
         ($T:ty, $n:expr) => {
             match $n {
+                0 => run_typed::<SszVector<$T, 0>>(case_path, case_label, ssz_bytes, is_valid),
                 1 => run_typed::<SszVector<$T, 1>>(case_path, case_label, ssz_bytes, is_valid),
                 2 => run_typed::<SszVector<$T, 2>>(case_path, case_label, ssz_bytes, is_valid),
                 3 => run_typed::<SszVector<$T, 3>>(case_path, case_label, ssz_bytes, is_valid),
@@ -357,6 +359,7 @@ fn run_bitvector(
     macro_rules! dispatch_bv {
         ($n:expr) => {
             match $n {
+                0 => run_typed::<Bitvector<0>>(case_path, case_label, ssz_bytes, is_valid),
                 1 => run_typed::<Bitvector<1>>(case_path, case_label, ssz_bytes, is_valid),
                 2 => run_typed::<Bitvector<2>>(case_path, case_label, ssz_bytes, is_valid),
                 3 => run_typed::<Bitvector<3>>(case_path, case_label, ssz_bytes, is_valid),
@@ -417,6 +420,7 @@ fn run_bitlist(
     macro_rules! dispatch_bl {
         ($n:expr) => {
             match $n {
+                0 => run_typed::<Bitlist<0>>(case_path, case_label, ssz_bytes, is_valid),
                 1 => run_typed::<Bitlist<1>>(case_path, case_label, ssz_bytes, is_valid),
                 2 => run_typed::<Bitlist<2>>(case_path, case_label, ssz_bytes, is_valid),
                 3 => run_typed::<Bitlist<3>>(case_path, case_label, ssz_bytes, is_valid),
@@ -491,21 +495,5 @@ fn run_container(
     }
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-fn read_dir_sorted(path: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(path)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    entries.sort();
-    Ok(entries)
-}
-
-fn dir_name(path: &Path) -> String {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string()
-}
+// Helpers `read_dir_sorted` and `dir_name` are shared with `ssz_static` via
+// the `fs_util` module.

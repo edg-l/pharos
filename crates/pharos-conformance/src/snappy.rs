@@ -8,7 +8,7 @@
 use crate::error::ConformanceError;
 
 /// Decompress raw (non-framed) snappy bytes.
-pub fn decompress_framed(bytes: &[u8]) -> Result<Vec<u8>, ConformanceError> {
+pub fn decompress_raw(bytes: &[u8]) -> Result<Vec<u8>, ConformanceError> {
     let mut decoder = snap::raw::Decoder::new();
     decoder
         .decompress_vec(bytes)

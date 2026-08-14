@@ -64,18 +64,32 @@ pub fn parse_args_from(args: &[String]) -> Result<Args, String> {
 
 fn print_usage() {
     eprintln!(
-        "Usage: pharos-conformance [--fork <NAME>] [--category <NAME>] [--preset <NAME>] [--write]
+        "pharos-conformance — Ethereum consensus-spec-tests harness
+
+Usage: pharos-conformance [OPTIONS]
 
 Options:
-  --fork <NAME>      Filter by fork name (e.g. phase0)
-  --category <NAME>  Filter by test category (e.g. ssz_generic, ssz_static)
+  --fork <NAME>      Filter by fork name (e.g. phase0, altair, bellatrix)
+  --category <NAME>  Filter by test category (e.g. ssz_generic, ssz_static,
+                     operations, epoch_processing)
   --preset <NAME>    Filter by preset (mainnet or minimal)
-  --write            Write results to docs/conformance.md
-  --help             Show this message
+  --write            Write pass/fail/skip counts to docs/conformance.md
+  --help, -h         Show this help message and exit
+
+Exit codes:
+  0  All executed tests passed
+  1  One or more tests failed or an argument error occurred
 
 Environment:
-  PHAROS_SPEC_TESTS  Path to the spec-test fixtures root
-                     (default: ~/.cache/pharos-spec-tests/)
+  PHAROS_SPEC_TESTS  Path to the spec-test fixtures root directory.
+                     Default: ~/.cache/pharos-spec-tests/
+                     Fetch fixtures with: scripts/fetch-spec-tests.sh
+
+Examples:
+  pharos-conformance
+  pharos-conformance --fork phase0
+  pharos-conformance --fork phase0 --category ssz_static --preset mainnet
+  pharos-conformance --fork phase0 --write
 "
     );
 }

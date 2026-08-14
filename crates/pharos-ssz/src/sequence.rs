@@ -577,6 +577,12 @@ where
     }
 
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, SszError> {
+        // Vector<T, 0> is illegal per the SSZ spec.
+        if N == 0 {
+            return Err(SszError::Custom(
+                "Vector[T, 0] is not a valid SSZ type".into(),
+            ));
+        }
         let items = decode_list_items::<T>(bytes)?;
         let found = items.len();
         let expected = N as usize;
