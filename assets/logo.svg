@@ -5,32 +5,33 @@
     @media (prefers-color-scheme: dark) { svg { color: #e6edf3; } }
   </style>
 
-  <!-- Light beams shooting out the top of the ball -->
+  <!-- Outer halo -->
+  <circle cx="128" cy="128" r="116" fill="none" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+
+  <!-- Inner sacred-geometry ring -->
+  <circle cx="128" cy="128" r="100" fill="none" stroke="currentColor" stroke-width="2"/>
+
+  <!-- Triangle: lighthouse silhouette / alchemical fire glyph -->
+  <polygon points="128,40 50,206 206,206"
+           fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- Compass-point stars between the rings -->
   <g fill="currentColor">
-    <polygon points="128,24 80,-6 98,-6" opacity="0.45"/>
-    <polygon points="128,24 124,-14 132,-14" opacity="0.9"/>
-    <polygon points="128,24 158,-6 176,-6" opacity="0.45"/>
+    <circle cx="128" cy="20" r="2.5"/>
+    <circle cx="236" cy="128" r="2.5"/>
+    <circle cx="128" cy="236" r="2.5"/>
+    <circle cx="20" cy="128" r="2.5"/>
   </g>
 
-  <!-- Top hemisphere — subtle glow -->
-  <path d="M 24 128 A 104 104 0 0 1 232 128 Z" fill="currentColor" opacity="0.10"/>
+  <!-- Sacred flame at the heart of the triangle -->
+  <path d="M 128 86
+           C 113 110, 113 132, 128 138
+           C 143 132, 143 110, 128 86 Z"
+        fill="currentColor"/>
 
-  <!-- Pokéball outline -->
-  <circle cx="128" cy="128" r="104" fill="none" stroke="currentColor" stroke-width="10"/>
-
-  <!-- Lighthouse tower inside the bottom hemisphere, supporting the lantern button -->
-  <g fill="currentColor">
-    <!-- Upper tier (narrow, just under the equator) -->
-    <polygon points="108,138 148,138 154,170 102,170"/>
-    <!-- Lower tier (wider base) -->
-    <polygon points="92,170 164,170 176,212 80,212"/>
+  <!-- Faint horizon / distant sea lines under the triangle -->
+  <g stroke="currentColor" stroke-linecap="round" fill="none">
+    <line x1="74" y1="220" x2="182" y2="220" stroke-width="3" opacity="0.5"/>
+    <line x1="86" y1="232" x2="170" y2="232" stroke-width="2" opacity="0.3"/>
   </g>
-
-  <!-- Equator stripe (split around the button) -->
-  <rect x="24" y="120" width="76" height="16" fill="currentColor"/>
-  <rect x="156" y="120" width="76" height="16" fill="currentColor"/>
-
-  <!-- Center button = lantern room; inner dot = beacon flame -->
-  <circle cx="128" cy="128" r="28" fill="none" stroke="currentColor" stroke-width="10"/>
-  <circle cx="128" cy="128" r="10" fill="currentColor"/>
 </svg>
