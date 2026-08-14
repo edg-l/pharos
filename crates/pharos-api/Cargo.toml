@@ -1,0 +1,15 @@
+[package]
+name = "pharos-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Beacon API HTTP server (axum-based)."
+
+[dependencies]
+pharos-types.workspace = true
+pharos-storage.workspace = true
+pharos-stf.workspace = true
+pharos-fork-choice.workspace = true
+pharos-utils.workspace = true

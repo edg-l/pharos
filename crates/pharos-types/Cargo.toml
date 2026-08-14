@@ -1,0 +1,12 @@
+[package]
+name = "pharos-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Pharos beacon-chain types (per-fork containers, EthSpec, primitives)."
+
+[dependencies]
+pharos-ssz.workspace = true
+pharos-utils.workspace = true

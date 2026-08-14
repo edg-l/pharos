@@ -1,0 +1,13 @@
+[package]
+name = "pharos-stf"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Beacon-chain state transition function for Pharos."
+
+[dependencies]
+pharos-types.workspace = true
+pharos-ssz.workspace = true
+pharos-utils.workspace = true

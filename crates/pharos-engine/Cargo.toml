@@ -1,0 +1,12 @@
+[package]
+name = "pharos-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Engine API client for talking to an Ethereum execution-layer node."
+
+[dependencies]
+pharos-types.workspace = true
+pharos-utils.workspace = true

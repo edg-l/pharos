@@ -1,0 +1,12 @@
+[package]
+name = "pharos-fork-choice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "LMD-GHOST + FFG Casper fork choice for Pharos."
+
+[dependencies]
+pharos-types.workspace = true
+pharos-utils.workspace = true

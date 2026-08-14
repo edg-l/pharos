@@ -1,0 +1,23 @@
+[package]
+name = "pharos-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Pharos beacon-node binary."
+
+[[bin]]
+name = "pharos"
+path = "src/main.rs"
+
+[dependencies]
+pharos-api.workspace = true
+pharos-engine.workspace = true
+pharos-fork-choice.workspace = true
+pharos-network.workspace = true
+pharos-ssz.workspace = true
+pharos-stf.workspace = true
+pharos-storage.workspace = true
+pharos-types.workspace = true
+pharos-utils.workspace = true

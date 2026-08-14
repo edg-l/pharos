@@ -1,0 +1,13 @@
+[package]
+name = "pharos-network"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "libp2p + discv5 networking glue: gossip, req-resp, peer scoring."
+
+[dependencies]
+pharos-types.workspace = true
+pharos-ssz.workspace = true
+pharos-utils.workspace = true

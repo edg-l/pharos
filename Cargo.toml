@@ -1,0 +1,93 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/pharos-utils",
+    "crates/pharos-ssz",
+    "crates/pharos-types",
+    "crates/pharos-storage",
+    "crates/pharos-fork-choice",
+    "crates/pharos-stf",
+    "crates/pharos-engine",
+    "crates/pharos-network",
+    "crates/pharos-api",
+    "crates/pharos-node",
+    "crates/pharos-validator",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Edgar"]
+
+[workspace.dependencies]
+# Internal crates
+pharos-utils = { path = "crates/pharos-utils" }
+pharos-ssz = { path = "crates/pharos-ssz" }
+pharos-types = { path = "crates/pharos-types" }
+pharos-storage = { path = "crates/pharos-storage" }
+pharos-fork-choice = { path = "crates/pharos-fork-choice" }
+pharos-stf = { path = "crates/pharos-stf" }
+pharos-engine = { path = "crates/pharos-engine" }
+pharos-network = { path = "crates/pharos-network" }
+pharos-api = { path = "crates/pharos-api" }
+
+# Crypto (allowed exceptions: production primitives, no safe in-house alternative)
+blst = "0.3"
+c-kzg = "2"
+sha2 = "0.11"
+hex = "0.4"
+
+# Async runtime / parallelism
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "signal"] }
+rayon = "1"
+
+# Networking
+libp2p = "0.56"
+discv5 = "0.10"
+snap = "1"
+
+# HTTP
+axum = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-tls"] }
+jsonwebtoken = "10"
+
+# Storage
+rocksdb = "0.24"
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+# Serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Testing
+proptest = "1"
+criterion = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"
+panic = "abort"
+overflow-checks = false
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+debug = true
+
+[profile.dev]
+opt-level = 0
+debug = true
