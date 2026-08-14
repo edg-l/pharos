@@ -178,15 +178,26 @@ Don't implement EIPs linearly. Build state-transition primitives once, then
 layer forks on top of them.
 
 ### M0 — Foundations (no fork yet)
-- Wire up `ethereum_ssz`, `tree_hash`, `blst`, `c-kzg` behind thin internal
-  modules.
-- `BeaconState` containers per fork, hash-tree-root caching with dirty
-  tracking (not full recompute).
-- Persistent / CoW collections for `List`/`Vector` fields — evaluate
-  `milhouse` (sigp) vs rolling our own.
-- Generalized indices + Merkle proofs.
-- BLS verify / aggregate / fast aggregate verify wrappers, batch-verify
-  helpers.
+- In-house SSZ encode/decode + Merkleization + derive macros.
+- Phase 0 type containers (`BeaconBlock`, `BeaconState`, etc.) per
+  `specs/phase0/`. Hash-tree-root caching via the future persistent tree
+  backend (not full recompute) is reserved by the trait but lands later.
+- Persistent / CoW collections for `List`/`Vector` fields — in-house;
+  trait + naive `Vec`-backed impl ship now, tree-backed impl later.
+- `EthSpec` trait with flat preset constants (mainnet + minimal).
+- Generalized indices + single-leaf Merkle proofs.
+- BLS verify / aggregate / fast aggregate verify wrappers (over `blst`),
+  batch-verify scaffolding.
+- **Conformance harness** (`pharos-conformance` crate): walks
+  `~/.cache/pharos-spec-tests/` (override via `$PHAROS_SPEC_TESTS`),
+  runs Pharos against each fixture, tallies pass/fail per (fork, category).
+  Produces `docs/conformance.md` on every run — committed, so progress is
+  visible in git history. Doubles as the roadmap: categories appear with
+  `-` until implemented.
+- **M0 acceptance**: all `ssz_generic` and Phase 0 `ssz_static` tests
+  green in `conformance.md`.
+- **Spec-test workflow**: `scripts/fetch-spec-tests.sh` then
+  `cargo run -p pharos-conformance -- --write`.
 
 ### M1 — Phase 0 STF + fork choice
 - `process_block` + `process_epoch`.

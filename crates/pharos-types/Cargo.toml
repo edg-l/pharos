@@ -8,5 +8,11 @@ authors.workspace = true
 description = "Pharos beacon-chain types (per-fork containers, EthSpec, primitives)."
 
 [dependencies]
-pharos-ssz.workspace = true
 pharos-utils.workspace = true
+pharos-ssz.workspace = true
+pharos-ssz-derive.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_yaml_ng.workspace = true
+snap.workspace = true

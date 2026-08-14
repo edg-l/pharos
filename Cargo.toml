@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/pharos-utils",
     "crates/pharos-ssz",
+    "crates/pharos-ssz-derive",
     "crates/pharos-types",
     "crates/pharos-storage",
     "crates/pharos-fork-choice",
@@ -12,6 +13,7 @@ members = [
     "crates/pharos-api",
     "crates/pharos-node",
     "crates/pharos-validator",
+    "crates/pharos-conformance",
 ]
 
 [workspace.package]
@@ -25,6 +27,7 @@ authors = ["Edgar"]
 # Internal crates
 pharos-utils = { path = "crates/pharos-utils" }
 pharos-ssz = { path = "crates/pharos-ssz" }
+pharos-ssz-derive = { path = "crates/pharos-ssz-derive" }
 pharos-types = { path = "crates/pharos-types" }
 pharos-storage = { path = "crates/pharos-storage" }
 pharos-fork-choice = { path = "crates/pharos-fork-choice" }
@@ -32,6 +35,7 @@ pharos-stf = { path = "crates/pharos-stf" }
 pharos-engine = { path = "crates/pharos-engine" }
 pharos-network = { path = "crates/pharos-network" }
 pharos-api = { path = "crates/pharos-api" }
+pharos-conformance = { path = "crates/pharos-conformance" }
 
 # Crypto (allowed exceptions: production primitives, no safe in-house alternative)
 blst = "0.3"
@@ -60,6 +64,7 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 # Serde
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml_ng = "0.10"
 
 # Observability
 tracing = "0.1"

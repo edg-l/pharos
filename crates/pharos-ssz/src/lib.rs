@@ -4,3 +4,38 @@
 //! tree-backed `SszList` / `SszVector` types used by `BeaconState` fields.
 //!
 //! Conformance: `consensus-specs/tests/formats/ssz_generic` and `ssz_static`.
+
+mod array;
+pub mod bitfield;
+pub mod decode;
+pub mod encode;
+pub mod error;
+pub mod gindex;
+pub mod merkle_proof;
+pub mod newtypes;
+pub mod sequence;
+pub mod tree_hash;
+pub mod union;
+
+#[cfg(test)]
+mod proptest_eq;
+
+pub use bitfield::{Bitlist, Bitvector};
+pub use decode::{Decode, SszDecoder};
+pub use encode::{BYTES_PER_LENGTH_OFFSET, Encode};
+pub use error::SszError;
+pub use gindex::{
+    GeneralizedIndex, concat_generalized_indices, generalized_index_child,
+    generalized_index_parent, generalized_index_sibling, get_generalized_index_bit,
+    get_generalized_index_length,
+};
+pub use merkle_proof::{MerkleProof, build_single_proof_from_leaves, verify_merkle_proof};
+pub use sequence::{SszList, SszSequence, SszVector};
+pub use tree_hash::{
+    TreeHash, TreeHashType, merkleize, merkleize_padded, mix_in_length, mix_in_selector,
+    pack_bytes_to_chunks,
+};
+pub use union::SszUnion;
+
+// Re-export the derive macros so users only need `pharos_ssz::Encode` etc.
+pub use pharos_ssz_derive::{Decode, Encode, TreeHash};

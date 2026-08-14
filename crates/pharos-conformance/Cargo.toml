@@ -1,0 +1,25 @@
+[package]
+name = "pharos-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Spec-test conformance harness for Pharos; walks consensus-spec-tests fixtures and tallies pass/fail per (fork, category)."
+
+[lib]
+name = "pharos_conformance"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pharos-conformance"
+path = "src/main.rs"
+
+[dependencies]
+pharos-types.workspace = true
+pharos-ssz.workspace = true
+pharos-utils.workspace = true
+serde_yaml_ng.workspace = true
+snap.workspace = true
+hex.workspace = true
+thiserror.workspace = true

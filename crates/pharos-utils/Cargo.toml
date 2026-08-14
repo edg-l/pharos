@@ -7,4 +7,13 @@ license.workspace = true
 authors.workspace = true
 description = "Pharos shared utilities."
 
+[features]
+default = []
+serde = ["dep:serde"]
+
 [dependencies]
+sha2.workspace = true
+hex.workspace = true
+blst.workspace = true
+thiserror.workspace = true
+serde = { workspace = true, optional = true }

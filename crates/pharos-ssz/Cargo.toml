@@ -9,3 +9,10 @@ description = "In-house SSZ encoding, decoding, and Merkleization for Pharos."
 
 [dependencies]
 pharos-utils.workspace = true
+pharos-ssz-derive.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+snap.workspace = true
+serde_yaml_ng.workspace = true
