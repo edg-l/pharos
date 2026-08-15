@@ -603,8 +603,15 @@ where
         return None;
     }
 
+    // The block's `state_root` field commits to the full Bellatrix post-state
+    // (including `execution_payload_header`); the `state` parameter here is an
+    // Altair projection that has dropped that field. Recomputing
+    // `state.tree_hash_root()` would yield the Altair-shape hash, never matching
+    // the block's stored Bellatrix-shape root. Use the canonical `block.state_root`
+    // directly — the STF already verified it against the post-state when this
+    // block was applied.
     let mut header = state.latest_block_header.clone();
-    header.state_root = state.tree_hash_root();
+    header.state_root = block.state_root;
     let block_root = header.tree_hash_root();
 
     if block_root != block.tree_hash_root() {
@@ -758,8 +765,13 @@ where
     if attested_state.slot != attested_state.latest_block_header.slot {
         return None;
     }
+    // See `create_light_client_bootstrap_bellatrix` for the rationale:
+    // `attested_state` is an Altair projection of a Bellatrix state, so its
+    // tree-hash-root would not match the attested block's canonical Bellatrix
+    // `state_root`. Use the block's stored value, which was verified by the STF
+    // when this block was applied.
     let mut attested_header = attested_state.latest_block_header.clone();
-    attested_header.state_root = attested_state.tree_hash_root();
+    attested_header.state_root = attested_block.state_root;
     let attested_block_root = attested_header.tree_hash_root();
     if attested_block_root != attested_block.tree_hash_root() {
         return None;
