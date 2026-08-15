@@ -7,10 +7,10 @@
 //!
 //! # GossipValidator note
 //!
-//! Every `GossipValidator<E>` method on `HostImpl<E>` returns
-//! `GossipVerdict::Accept` for M3a. The trait *holder* is now the real
-//! `HostImpl`; M4 fills the validation bodies once STF wiring lands.
-//! See each method's `TODO(M4)` comment.
+//! `GossipValidator<E>` methods on `HostImpl<E>` return `GossipVerdict::Accept`
+//! stubs except for the two light-client gossip topics, which implement full
+//! validation per `specs/altair/light-client/p2p-interface.md` (M4c Phase 1).
+//! See `D-lc-gossip-validation-full-node-arm` in `docs/decisions.md`.
 //!
 //! # record_attnets_change
 //!
@@ -22,6 +22,8 @@
 
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use tokio::sync::{mpsc, watch};
@@ -31,16 +33,21 @@ use pharos_network::host::{
     BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
 };
 use pharos_network::types::{Fork, SubnetId};
-use pharos_ssz::Bitvector;
+use pharos_ssz::{Bitvector, TreeHash};
 use pharos_storage::{RocksStore, Store as StoreTrait};
 use pharos_types::EthSpec;
+use pharos_types::RuntimeConfig;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::fork::{ForkSchedule, compute_fork_digest};
-use pharos_types::phase0::primitives::{ATTESTATION_SUBNET_COUNT, ForkDigest, Root, Version};
+use pharos_types::phase0::primitives::{
+    ATTESTATION_SUBNET_COUNT, ForkDigest, INTERVALS_PER_SLOT, MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS,
+    Root, Version,
+};
 use pharos_types::phase0::{
     AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
     SignedVoluntaryExit, Slot,
 };
+use pharos_types::views::{LightClientFinalityUpdateView, LightClientOptimisticUpdateView};
 use pharos_utils::Epoch;
 
 use crate::engine_driver::{HeadChange, NewPayloadRequest};
@@ -79,6 +86,15 @@ pub struct HostImpl<E: EthSpec> {
     fork_choice: Arc<RwLock<pharos_fork_choice::Store<E>>>,
     fork_context: ForkContextInner,
     metadata: RwLock<AltairMetaData>,
+    /// Runtime configuration (seconds_per_slot, etc.) for gossip validation timing.
+    runtime_cfg: Arc<RuntimeConfig>,
+    /// Highest `finalized_header.beacon.slot` of any forwarded finality update.
+    ///
+    /// Backs the per-topic monotonic forwarded-slot IGNORE rule per
+    /// `specs/altair/light-client/p2p-interface.md`.
+    last_forwarded_finality_slot: AtomicU64,
+    /// Highest `attested_header.beacon.slot` of any forwarded optimistic update.
+    last_forwarded_optimistic_slot: AtomicU64,
     /// Broadcast channel for head-change events.  `None` before the engine
     /// driver is wired in (cold start before Task 4.8 spawns the loop).
     pub(crate) head_tx: Option<watch::Sender<Option<HeadChange>>>,
@@ -100,6 +116,7 @@ impl<E: EthSpec> HostImpl<E> {
         fork_choice: Arc<RwLock<pharos_fork_choice::Store<E>>>,
         genesis_validators_root: Root,
         current_fork_version: Version,
+        runtime_cfg: Arc<RuntimeConfig>,
     ) -> Self {
         let current_fork_digest =
             compute_fork_digest(current_fork_version, &genesis_validators_root);
@@ -129,6 +146,9 @@ impl<E: EthSpec> HostImpl<E> {
                 attnets: Bitvector::default(),
                 syncnets: Bitvector::default(),
             }),
+            runtime_cfg,
+            last_forwarded_finality_slot: AtomicU64::new(0),
+            last_forwarded_optimistic_slot: AtomicU64::new(0),
             head_tx: None,
             payload_tx: None,
             _phantom: PhantomData,
@@ -376,20 +396,142 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
         GossipVerdict::Accept
     }
 
-    /// TODO(M4): Validate light client finality update: better finalized header than latest.
+    /// Validate a gossip `LightClientFinalityUpdate` per the full-node arm of
+    /// `specs/altair/light-client/p2p-interface.md` (gossip topic
+    /// `light_client_finality_update`). Three IGNORE conditions apply:
+    ///
+    /// 1. No snapshot yet (LC snapshot store not yet populated).
+    /// 2. `msg.finalized_header.beacon.slot` is not strictly greater than the
+    ///    highest slot previously forwarded on this topic (monotonic guard).
+    /// 3. `tree_hash_root(msg) != tree_hash_root(local_snapshot)` — different
+    ///    finality update for this slot.
+    /// 4. Clock-window: `now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < due_ms`
+    ///    where `due_ms = slot_start_ms + slot_ms / INTERVALS_PER_SLOT`.
+    ///
+    /// All conditions map to `[IGNORE]` (not `[REJECT]`) per the spec.
+    ///
+    /// See also `D-lc-gossip-validation-full-node-arm` (docs/decisions.md).
     fn validate_light_client_finality_update(
         &self,
-        _msg: &<E as EthSpec>::AltairLightClientFinalityUpdate,
+        msg: &<E as EthSpec>::AltairLightClientFinalityUpdate,
     ) -> GossipVerdict {
-        GossipVerdict::Accept
+        // Step 1 — snapshot lookup.
+        let local = match self.light_client_finality_update() {
+            Some(u) => u,
+            None => return GossipVerdict::Ignore(String::new()),
+        };
+
+        // Step 2 — monotonic forwarded-slot guard (load current high-water mark).
+        let incoming = msg.finalized_header_slot();
+        let mut prev = self.last_forwarded_finality_slot.load(Ordering::Relaxed);
+        if incoming <= prev {
+            return GossipVerdict::Ignore(String::new());
+        }
+
+        // Step 3 — snapshot equality.
+        if local.tree_hash_root() != msg.tree_hash_root() {
+            return GossipVerdict::Ignore(String::new());
+        }
+
+        // Step 4 — clock window.
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis(),
+            Err(_) => return GossipVerdict::Ignore(String::new()),
+        };
+        let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
+        let signature_slot = msg.finality_signature_slot();
+        let slot_ms = u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
+        let slot_start_ms = genesis_ms + u128::from(signature_slot) * slot_ms;
+        let due_ms = slot_start_ms + slot_ms / u128::from(INTERVALS_PER_SLOT);
+        if now_ms + u128::from(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < due_ms {
+            return GossipVerdict::Ignore(String::new());
+        }
+
+        // Step 5 — commit CAS; retry loop if a concurrent thread advanced the slot.
+        loop {
+            match self.last_forwarded_finality_slot.compare_exchange(
+                prev,
+                incoming,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return GossipVerdict::Accept,
+                Err(current) => {
+                    if incoming <= current {
+                        return GossipVerdict::Ignore(String::new());
+                    }
+                    prev = current;
+                }
+            }
+        }
     }
 
-    /// TODO(M4): Validate light client optimistic update: attested header slot.
+    /// Validate a gossip `LightClientOptimisticUpdate` per the full-node arm of
+    /// `specs/altair/light-client/p2p-interface.md` (gossip topic
+    /// `light_client_optimistic_update`). Three IGNORE conditions apply:
+    ///
+    /// 1. No snapshot yet.
+    /// 2. `msg.attested_header.beacon.slot` is not strictly greater than the
+    ///    highest slot previously forwarded on this topic.
+    /// 3. `tree_hash_root(msg) != tree_hash_root(local_snapshot)`.
+    /// 4. Clock-window: `now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < due_ms`.
+    ///
+    /// All conditions map to `[IGNORE]` per the spec.
+    ///
+    /// See also `D-lc-gossip-validation-full-node-arm` (docs/decisions.md).
     fn validate_light_client_optimistic_update(
         &self,
-        _msg: &<E as EthSpec>::AltairLightClientOptimisticUpdate,
+        msg: &<E as EthSpec>::AltairLightClientOptimisticUpdate,
     ) -> GossipVerdict {
-        GossipVerdict::Accept
+        // Step 1 — snapshot lookup.
+        let local = match self.light_client_optimistic_update() {
+            Some(u) => u,
+            None => return GossipVerdict::Ignore(String::new()),
+        };
+
+        // Step 2 — monotonic forwarded-slot guard.
+        let incoming = msg.optimistic_attested_slot();
+        let mut prev = self.last_forwarded_optimistic_slot.load(Ordering::Relaxed);
+        if incoming <= prev {
+            return GossipVerdict::Ignore(String::new());
+        }
+
+        // Step 3 — snapshot equality.
+        if local.tree_hash_root() != msg.tree_hash_root() {
+            return GossipVerdict::Ignore(String::new());
+        }
+
+        // Step 4 — clock window.
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis(),
+            Err(_) => return GossipVerdict::Ignore(String::new()),
+        };
+        let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
+        let signature_slot = msg.optimistic_signature_slot();
+        let slot_ms = u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
+        let slot_start_ms = genesis_ms + u128::from(signature_slot) * slot_ms;
+        let due_ms = slot_start_ms + slot_ms / u128::from(INTERVALS_PER_SLOT);
+        if now_ms + u128::from(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < due_ms {
+            return GossipVerdict::Ignore(String::new());
+        }
+
+        // Step 5 — commit CAS; retry loop if a concurrent thread advanced the slot.
+        loop {
+            match self.last_forwarded_optimistic_slot.compare_exchange(
+                prev,
+                incoming,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return GossipVerdict::Accept,
+                Err(current) => {
+                    if incoming <= current {
+                        return GossipVerdict::Ignore(String::new());
+                    }
+                    prev = current;
+                }
+            }
+        }
     }
 }
 
@@ -471,8 +613,15 @@ impl<E: EthSpec> LightClientProvider<E> for HostImpl<E> {
 mod tests {
     use super::*;
     use pharos_ssz::Bitvector;
-    use pharos_storage::{RocksStore, RocksStoreConfig};
+    use pharos_storage::{RocksStore, RocksStoreConfig, Store as StoreTrait};
     use pharos_types::MainnetEthSpec;
+    use pharos_types::altair::light_client::{
+        LightClientFinalityUpdate, LightClientHeader, LightClientOptimisticUpdate,
+    };
+    use pharos_types::altair::{
+        MainnetLightClientFinalityUpdate, MainnetLightClientOptimisticUpdate,
+    };
+    use pharos_types::phase0::operations::BeaconBlockHeader;
 
     fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
         use pharos_ssz::TreeHash;
@@ -496,7 +645,8 @@ mod tests {
         let fork_choice = Arc::new(RwLock::new(fc_store));
         let gvr = Root::default();
         let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
-        HostImpl::new(store, fork_choice, gvr, fv)
+        let runtime_cfg = Arc::new(RuntimeConfig::default());
+        HostImpl::new(store, fork_choice, gvr, fv, runtime_cfg)
     }
 
     #[test]
@@ -549,6 +699,270 @@ mod tests {
             host.local_metadata().seq_number,
             2,
             "second distinct change must bump to 2"
+        );
+    }
+
+    // ── Helper: build a finality update with a given finalized slot + signature slot ──
+
+    fn make_finality_update(
+        finalized_slot: u64,
+        signature_slot: u64,
+    ) -> MainnetLightClientFinalityUpdate {
+        LightClientFinalityUpdate {
+            finalized_header: LightClientHeader {
+                beacon: BeaconBlockHeader {
+                    slot: Slot(finalized_slot),
+                    ..BeaconBlockHeader::default()
+                },
+            },
+            attested_header: LightClientHeader {
+                beacon: BeaconBlockHeader {
+                    slot: Slot(finalized_slot),
+                    ..BeaconBlockHeader::default()
+                },
+            },
+            signature_slot: Slot(signature_slot),
+            ..Default::default()
+        }
+    }
+
+    fn make_optimistic_update(
+        attested_slot: u64,
+        signature_slot: u64,
+    ) -> MainnetLightClientOptimisticUpdate {
+        LightClientOptimisticUpdate {
+            attested_header: LightClientHeader {
+                beacon: BeaconBlockHeader {
+                    slot: Slot(attested_slot),
+                    ..BeaconBlockHeader::default()
+                },
+            },
+            signature_slot: Slot(signature_slot),
+            ..Default::default()
+        }
+    }
+
+    // ── Task 1.5(a): validator_accepts_exact_match_finality ───────────────────
+
+    #[test]
+    fn validator_accepts_exact_match_finality() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+        // signature_slot = 0 → due_ms = 4000 ms, always in the past.
+        let upd = make_finality_update(1, 0);
+        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_finality_update(
+            &host.store,
+            &upd,
+        )
+        .expect("put finality update");
+        assert_eq!(
+            host.validate_light_client_finality_update(&upd),
+            GossipVerdict::Accept,
+        );
+    }
+
+    // ── Task 1.5(b): validator_ignores_when_snapshot_absent_finality ──────────
+
+    #[test]
+    fn validator_ignores_when_snapshot_absent_finality() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+        let upd = make_finality_update(1, 0);
+        // No snapshot written — must Ignore.
+        assert!(matches!(
+            host.validate_light_client_finality_update(&upd),
+            GossipVerdict::Ignore(_),
+        ));
+    }
+
+    // ── Task 1.5(c): validator_clock_window_just_past_finality ───────────────
+
+    #[test]
+    fn validator_clock_window_just_past_finality() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+
+        // Accept case: signature_slot = 0 → due_ms = 4000 ms (far in the past).
+        let upd_accept = make_finality_update(1, 0);
+        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_finality_update(
+            &host.store,
+            &upd_accept,
+        )
+        .expect("put");
+        assert_eq!(
+            host.validate_light_client_finality_update(&upd_accept),
+            GossipVerdict::Accept,
+            "past slot should Accept",
+        );
+
+        // Ignore case: signature_slot in the future.
+        // due_ms = sig_slot * 12000 + 4000 must be > now_ms + 500.
+        // now_ms is ~unix epoch. A slot far in the future: now_ms / 12000 + 1000.
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let future_sig_slot = (now_ms / 12000) as u64 + 1000;
+        // Use a finalized_slot strictly greater than the previous Accept so monotonic check passes.
+        let upd_ignore = make_finality_update(future_sig_slot + 1, future_sig_slot);
+        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_finality_update(
+            &host.store,
+            &upd_ignore,
+        )
+        .expect("put");
+        assert!(
+            matches!(
+                host.validate_light_client_finality_update(&upd_ignore),
+                GossipVerdict::Ignore(_),
+            ),
+            "future slot should Ignore",
+        );
+    }
+
+    // ── Task 1.5(d): validator_accepts_exact_match_optimistic ────────────────
+
+    #[test]
+    fn validator_accepts_exact_match_optimistic() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+        let upd = make_optimistic_update(1, 0);
+        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_optimistic_update(
+            &host.store,
+            &upd,
+        )
+        .expect("put optimistic update");
+        assert_eq!(
+            host.validate_light_client_optimistic_update(&upd),
+            GossipVerdict::Accept,
+        );
+    }
+
+    // ── Task 1.5(e): validator_clock_window_just_past_optimistic ─────────────
+
+    #[test]
+    fn validator_clock_window_just_past_optimistic() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+
+        // Accept case.
+        let upd_accept = make_optimistic_update(1, 0);
+        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_optimistic_update(
+            &host.store,
+            &upd_accept,
+        )
+        .expect("put");
+        assert_eq!(
+            host.validate_light_client_optimistic_update(&upd_accept),
+            GossipVerdict::Accept,
+            "past slot should Accept",
+        );
+
+        // Ignore case.
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let future_sig_slot = (now_ms / 12000) as u64 + 1000;
+        let upd_ignore = make_optimistic_update(future_sig_slot + 1, future_sig_slot);
+        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_optimistic_update(
+            &host.store,
+            &upd_ignore,
+        )
+        .expect("put");
+        assert!(
+            matches!(
+                host.validate_light_client_optimistic_update(&upd_ignore),
+                GossipVerdict::Ignore(_),
+            ),
+            "future slot should Ignore",
+        );
+    }
+
+    // ── Task 1.5(f): validator_ignores_non_monotonic_finality ────────────────
+
+    #[test]
+    fn validator_ignores_non_monotonic_finality() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+
+        let upd = make_finality_update(5, 0);
+        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_finality_update(
+            &host.store,
+            &upd,
+        )
+        .expect("put");
+
+        // First call: finalized_slot = 5, signature_slot = 0 → Accept.
+        assert_eq!(
+            host.validate_light_client_finality_update(&upd),
+            GossipVerdict::Accept,
+            "first call must Accept",
+        );
+
+        // Second call with same slot: high-water mark is 5, incoming is 5 → Ignore.
+        assert!(
+            matches!(
+                host.validate_light_client_finality_update(&upd),
+                GossipVerdict::Ignore(_),
+            ),
+            "second call with same slot must Ignore",
+        );
+
+        // Third call with strictly greater slot → Accept.
+        let upd2 = make_finality_update(6, 0);
+        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_finality_update(
+            &host.store,
+            &upd2,
+        )
+        .expect("put");
+        assert_eq!(
+            host.validate_light_client_finality_update(&upd2),
+            GossipVerdict::Accept,
+            "strictly greater slot must Accept",
+        );
+    }
+
+    // ── Task 1.5(g): validator_ignores_non_monotonic_optimistic ──────────────
+
+    #[test]
+    fn validator_ignores_non_monotonic_optimistic() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+
+        let upd = make_optimistic_update(5, 0);
+        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_optimistic_update(
+            &host.store,
+            &upd,
+        )
+        .expect("put");
+
+        // First call: attested_slot = 5, signature_slot = 0 → Accept.
+        assert_eq!(
+            host.validate_light_client_optimistic_update(&upd),
+            GossipVerdict::Accept,
+            "first call must Accept",
+        );
+
+        // Second call with same slot → Ignore.
+        assert!(
+            matches!(
+                host.validate_light_client_optimistic_update(&upd),
+                GossipVerdict::Ignore(_),
+            ),
+            "second call with same slot must Ignore",
+        );
+
+        // Third call with strictly greater attested_slot → Accept.
+        let upd2 = make_optimistic_update(6, 0);
+        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_optimistic_update(
+            &host.store,
+            &upd2,
+        )
+        .expect("put");
+        assert_eq!(
+            host.validate_light_client_optimistic_update(&upd2),
+            GossipVerdict::Accept,
+            "strictly greater slot must Accept",
         );
     }
 }

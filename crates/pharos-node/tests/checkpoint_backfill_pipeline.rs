@@ -410,6 +410,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         Arc::clone(&fc_store),
         genesis_validators_root,
         fork_version,
+        Arc::new(pharos_types::RuntimeConfig::default()),
     );
     host.wire_engine(head_tx.clone(), payload_tx.clone());
     let host = Arc::new(host);

@@ -472,6 +472,7 @@ async fn main() -> anyhow::Result<()> {
         fork_choice.clone(),
         genesis_validators_root,
         fork_version,
+        Arc::new(runtime_cfg.clone()),
     );
     host_inner.wire_engine(head_tx.clone(), payload_tx.clone());
     let host = Arc::new(host_inner);

@@ -484,6 +484,7 @@ async fn engine_pipeline_drives_bellatrix_chain() {
         Arc::clone(&fc),
         genesis_validators_root,
         fork_version,
+        Arc::new(pharos_types::RuntimeConfig::default()),
     ));
 
     let exec_engine = Arc::new(NullExecutionEngine);

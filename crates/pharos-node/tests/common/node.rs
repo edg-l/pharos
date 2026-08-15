@@ -74,7 +74,13 @@ pub fn build_host(path: &Path) -> HostImpl<MinimalEthSpec> {
 
     let gvr = Root::default();
     let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
-    HostImpl::new(store, fork_choice, gvr, fv)
+    HostImpl::new(
+        store,
+        fork_choice,
+        gvr,
+        fv,
+        Arc::new(pharos_types::RuntimeConfig::default()),
+    )
 }
 
 // ── spawn_node ────────────────────────────────────────────────────────────────

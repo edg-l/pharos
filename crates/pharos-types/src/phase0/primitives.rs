@@ -42,3 +42,19 @@ pub type DepositIndex = u64;
 /// `Bitvector<N>` uses `u64` const generics (B4 resolution), so this constant
 /// is `u64`. Value is 64 for both mainnet and minimal presets.
 pub const ATTESTATION_SUBNET_COUNT: u64 = 64;
+
+/// Maximum allowed clock disparity (ms) for gossip validation timing windows.
+///
+/// Per `specs/phase0/p2p-interface.md` (MAXIMUM_GOSSIP_CLOCK_DISPARITY = 500 ms).
+/// Applied symmetrically: a message may arrive up to this many ms before its
+/// nominal send time as measured by the local clock.
+pub const MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS: u64 = 500;
+
+/// Number of intervals per slot used for light-client gossip timing windows.
+///
+/// Value is 3, meaning the sync message is "due" at 1/3 of the slot duration
+/// after slot start. The Altair p2p spec defines this via
+/// `SYNC_MESSAGE_DUE_BPS = 3333` basis points out of `BASIS_POINTS = 10000`,
+/// giving `3333 * slot_ms / 10000 ≈ slot_ms / 3`. We use integer division
+/// by 3 for spec parity (exact for all standard slot durations: 12 s, 6 s, 3 s).
+pub const INTERVALS_PER_SLOT: u64 = 3;

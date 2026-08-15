@@ -713,6 +713,7 @@ mod tests {
             Arc::clone(&fc),
             genesis_validators_root,
             fork_version,
+            Arc::new(pharos_types::config::RuntimeConfig::default()),
         ));
 
         // Use NullExecutionEngine directly; run_backfill_loop is generic over EE.

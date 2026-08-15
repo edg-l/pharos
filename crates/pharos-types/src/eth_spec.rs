@@ -840,6 +840,8 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Altair `LightClientFinalityUpdate` for this preset.
     type AltairLightClientFinalityUpdate: pharos_ssz::Encode
         + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + crate::views::LightClientFinalityUpdateView
         + Clone
         + std::fmt::Debug
         + PartialEq
@@ -852,6 +854,8 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Altair `LightClientOptimisticUpdate` for this preset.
     type AltairLightClientOptimisticUpdate: pharos_ssz::Encode
         + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + crate::views::LightClientOptimisticUpdateView
         + Clone
         + std::fmt::Debug
         + PartialEq

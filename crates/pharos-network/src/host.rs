@@ -26,7 +26,7 @@ use crate::types::{Fork, SubnetId};
 ///
 /// Used to drive libp2p gossipsub message acceptance; maps directly onto
 /// gossipsub's `MessageAcceptance`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GossipVerdict {
     /// The message is valid; propagate it to other peers.
     Accept,

@@ -27,6 +27,7 @@
 //!
 //! Defined per `specs/phase0/beacon-chain.md:534-614`.
 
+use crate::altair::light_client::{LightClientFinalityUpdate, LightClientOptimisticUpdate};
 use crate::phase0;
 use crate::phase0::{
     BLSSignature, BeaconBlockHeader, Checkpoint, Eth1Data, Fork, ProposerSlashing, Root,
@@ -95,6 +96,35 @@ pub trait SignedBeaconBlockView {
 
     fn message(&self) -> &Self::Message;
     fn signature(&self) -> &BLSSignature;
+}
+
+// ── LightClientFinalityUpdateView ─────────────────────────────────────────────
+
+/// Accessor trait for `LightClientFinalityUpdate` fields needed by gossip validation.
+///
+/// Allows gossip-validator code to remain generic over `E::AltairLightClientFinalityUpdate`
+/// without naming the concrete const-generic preset alias.
+pub trait LightClientFinalityUpdateView {
+    /// `finalized_header.beacon.slot` — the monotonic-guard field for the
+    /// `light_client_finality_update` gossip topic per
+    /// `specs/altair/light-client/p2p-interface.md`.
+    fn finalized_header_slot(&self) -> u64;
+    /// `signature_slot` — used for the clock-window timing check.
+    fn finality_signature_slot(&self) -> u64;
+}
+
+// ── LightClientOptimisticUpdateView ───────────────────────────────────────────
+
+/// Accessor trait for `LightClientOptimisticUpdate` fields needed by gossip validation.
+///
+/// Allows gossip-validator code to remain generic over `E::AltairLightClientOptimisticUpdate`.
+pub trait LightClientOptimisticUpdateView {
+    /// `attested_header.beacon.slot` — the monotonic-guard field for the
+    /// `light_client_optimistic_update` gossip topic per
+    /// `specs/altair/light-client/p2p-interface.md`.
+    fn optimistic_attested_slot(&self) -> u64;
+    /// `signature_slot` — used for the clock-window timing check.
+    fn optimistic_signature_slot(&self) -> u64;
 }
 
 // ── BeaconStateView ───────────────────────────────────────────────────────────
@@ -345,5 +375,29 @@ impl<
     }
     fn into_tree_backend(self) -> Result<Self, SszError> {
         phase0::BeaconState::into_tree_backend(self)
+    }
+}
+
+// ── Blanket impls for LC update accessor traits ───────────────────────────────
+
+impl<const SYNC_COMMITTEE_SIZE: u64> LightClientFinalityUpdateView
+    for LightClientFinalityUpdate<SYNC_COMMITTEE_SIZE>
+{
+    fn finalized_header_slot(&self) -> u64 {
+        self.finalized_header.beacon.slot.0
+    }
+    fn finality_signature_slot(&self) -> u64 {
+        self.signature_slot.0
+    }
+}
+
+impl<const SYNC_COMMITTEE_SIZE: u64> LightClientOptimisticUpdateView
+    for LightClientOptimisticUpdate<SYNC_COMMITTEE_SIZE>
+{
+    fn optimistic_attested_slot(&self) -> u64 {
+        self.attested_header.beacon.slot.0
+    }
+    fn optimistic_signature_slot(&self) -> u64 {
+        self.signature_slot.0
     }
 }

@@ -42,7 +42,13 @@ fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
 
     let gvr = Root::default();
     let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
-    HostImpl::new(store, fork_choice, gvr, fv)
+    HostImpl::new(
+        store,
+        fork_choice,
+        gvr,
+        fv,
+        Arc::new(pharos_types::RuntimeConfig::default()),
+    )
 }
 
 /// Transition 1: zero → bit-5 set.
