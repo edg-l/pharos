@@ -10,7 +10,8 @@
 
 use std::net::Ipv4Addr;
 
-use discv5::enr::CombinedKey;
+use discv5::enr::{CombinedKey, CombinedPublicKey, EnrPublicKey as _};
+use libp2p::Multiaddr;
 use pharos_ssz::{Bitvector, Decode, Encode};
 use pharos_types::phase0::ENRForkID;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
@@ -167,6 +168,44 @@ pub fn matches_local_fork(local: &ENRForkID, peer: &ENRForkID) -> bool {
     local.fork_digest == peer.fork_digest
 }
 
+// ── ENR → dial multiaddr ──────────────────────────────────────────────────────
+
+/// Convert a discv5 ENR into a libp2p dial multiaddr.
+///
+/// Returns `/ip4/<ip4>/tcp/<tcp4>/p2p/<peer_id>` when the ENR carries ip4 and
+/// tcp4 fields; falls back to `/ip6/<ip6>/tcp/<tcp6>/p2p/<peer_id>` otherwise.
+/// Returns `None` when neither ip4+tcp4 nor ip6+tcp6 are present, or when the
+/// ENR's public key cannot be decoded as a secp256k1 key.
+pub fn enr_to_dial_multiaddr(enr: &Enr) -> Option<Multiaddr> {
+    // Derive the libp2p PeerId from the ENR's secp256k1 public key.
+    let peer_id = {
+        let combined_pk = enr.public_key();
+        // Only secp256k1 ENRs are valid on the Ethereum CL p2p network.
+        let compressed = match &combined_pk {
+            CombinedPublicKey::Secp256k1(_) => combined_pk.encode(), // 33 bytes compressed
+            CombinedPublicKey::Ed25519(_) => return None,
+        };
+        let secp_pk =
+            libp2p::identity::secp256k1::PublicKey::try_from_bytes(&compressed).ok()?;
+        let identity_pk = libp2p::identity::PublicKey::from(secp_pk);
+        libp2p::PeerId::from_public_key(&identity_pk)
+    };
+
+    // Prefer IPv4 + TCP4.
+    if let (Some(ip4), Some(tcp4)) = (enr.ip4(), enr.tcp4()) {
+        let base: Multiaddr = format!("/ip4/{ip4}/tcp/{tcp4}").parse().ok()?;
+        return base.with_p2p(peer_id).ok();
+    }
+
+    // Fall back to IPv6 + TCP6.
+    if let (Some(ip6), Some(tcp6)) = (enr.ip6(), enr.tcp6()) {
+        let base: Multiaddr = format!("/ip6/{ip6}/tcp/{tcp6}").parse().ok()?;
+        return base.with_p2p(peer_id).ok();
+    }
+
+    None
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -292,6 +331,44 @@ mod tests {
             .expect("empty ENR build failed");
 
         assert_eq!(read_quic_port(&enr), None);
+    }
+
+    // ── enr_to_dial_multiaddr ─────────────────────────────────────────────────
+
+    #[test]
+    fn enr_to_dial_multiaddr_ip4() {
+        let key = CombinedKey::generate_secp256k1();
+        let fork_id = test_fork_id();
+        let attnets = test_attnets();
+
+        let enr = build_local_enr(
+            &key,
+            Some(Ipv4Addr::new(127, 0, 0, 1)),
+            Some(9000),
+            Some(9000),
+            None,
+            None,
+            fork_id,
+            attnets,
+        )
+        .expect("build_local_enr failed");
+
+        let addr = enr_to_dial_multiaddr(&enr).expect("enr_to_dial_multiaddr returned None");
+        let s = addr.to_string();
+        assert!(
+            s.contains("/ip4/127.0.0.1/tcp/9000/p2p/"),
+            "unexpected multiaddr: {s}"
+        );
+    }
+
+    #[test]
+    fn enr_to_dial_multiaddr_no_tcp_returns_none() {
+        // An ENR without any ip/tcp fields should yield None.
+        let key = CombinedKey::generate_secp256k1();
+        let enr = discv5::enr::Enr::builder()
+            .build(&key)
+            .expect("empty ENR build failed");
+        assert!(enr_to_dial_multiaddr(&enr).is_none());
     }
 
     /// `read_quic6_port` returns `None` for an ENR without the `quic6` key.

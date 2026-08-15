@@ -39,7 +39,7 @@ use tokio::time::{Interval, interval, timeout};
 use discv5::enr::EnrKey as _;
 
 use crate::codec::snappy_block::{decode_snappy_block, encode_snappy_block};
-use crate::discovery::enr::Enr;
+use crate::discovery::enr::{Enr, enr_to_dial_multiaddr};
 use crate::discovery::handle::{DiscoveryCommand, DiscoveryHandle, discovery_channel};
 use crate::discovery::service::{DiscoveryConfig, DiscoveryService};
 use crate::discovery::subnets::compute_subscribed_subnets;
@@ -281,6 +281,8 @@ pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScore
     ping_tick: Interval,
     /// Fires every 30 seconds to drive score-based peer pruning.
     score_prune_tick: Interval,
+    /// Bootstrap ENRs; dialed once at startup to seed the peer table.
+    bootnodes: Vec<Enr>,
     _phantom: PhantomData<E>,
 }
 
@@ -297,6 +299,32 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
         // need the discv5 ENR with the real bound UDP port) can proceed.
         let local_enr = self.discovery.local_enr();
         self.emit_event(NetworkEvent::LocalEnr(local_enr)).await;
+
+        // Dial bootnodes directly at startup.  discv5 FINDNODE against a fresh
+        // bootnode with an empty routing table may return nothing, so we dial
+        // bootnodes unconditionally via libp2p to seed the connection table.
+        let mut booted = 0u32;
+        for enr in &self.bootnodes.clone() {
+            match enr_to_dial_multiaddr(enr) {
+                Some(addr) => {
+                    match self.swarm.dial(addr.clone()) {
+                        Ok(()) => {
+                            booted += 1;
+                            tracing::debug!(addr = %addr, "dialing bootnode");
+                        }
+                        Err(e) => {
+                            tracing::debug!(addr = %addr, err = %e, "bootnode dial failed");
+                        }
+                    }
+                }
+                None => {
+                    tracing::debug!(enr = %enr, "bootnode ENR has no dialable address; skipping");
+                }
+            }
+        }
+        if booted > 0 {
+            tracing::info!(count = booted, "dialed bootnodes at startup");
+        }
 
         loop {
             tokio::select! {
@@ -318,10 +346,54 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                     }
                 }
                 _ = self.discovery_tick.tick() => {
-                    // Run a discv5 FINDNODE query and drain results.
-                    // Conversion of discovered ENRs to multiaddrs and dialling
-                    // is wired in Phase 7.
-                    let _peers = self.discovery.find_peers().await;
+                    // Run a discv5 FINDNODE query and dial any discovered peers.
+                    let peers = self.discovery.find_peers().await;
+                    let discovered = peers.len();
+                    let mut dialed = 0u32;
+                    for enr in peers {
+                        let addr = match enr_to_dial_multiaddr(&enr) {
+                            Some(a) => a,
+                            None => {
+                                tracing::debug!(
+                                    enr = %enr,
+                                    "discovered ENR has no dialable address; skipping"
+                                );
+                                continue;
+                            }
+                        };
+                        // Skip already-connected peers when the peer id is
+                        // embedded in the multiaddr (with_p2p appends it).
+                        // Extract the PeerId from the last Protocol::P2p component.
+                        let already_connected = addr
+                            .iter()
+                            .find_map(|p| {
+                                if let libp2p::multiaddr::Protocol::P2p(peer_id) = p {
+                                    Some(peer_id)
+                                } else {
+                                    None
+                                }
+                            })
+                            .map(|pid| self.swarm.is_connected(&pid))
+                            .unwrap_or(false);
+                        if already_connected {
+                            tracing::debug!(addr = %addr, "discovered peer already connected; skipping dial");
+                            continue;
+                        }
+                        match self.swarm.dial(addr.clone()) {
+                            Ok(()) => {
+                                dialed += 1;
+                                tracing::debug!(addr = %addr, "dialing discovered peer");
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    addr = %addr,
+                                    err = %e,
+                                    "dial to discovered peer failed"
+                                );
+                            }
+                        }
+                    }
+                    tracing::debug!(discovered, dialed, "discovery tick complete");
                 }
                 _ = self.ping_tick.tick() => {
                     self.tick_ping();
@@ -1528,6 +1600,8 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
         // ── Step 3: start DiscoveryService ───────────────────────────────────
         let fork_id = self.host.enr_fork_id();
         let fork_digest = self.host.current_fork_digest();
+        // Clone bootnodes so the Network struct can dial them directly at startup.
+        let bootnodes_for_network = self.bootnodes.clone();
         let discovery = DiscoveryService::start(DiscoveryConfig {
             listen_addr: self.discv5_addr,
             tcp_port: self.tcp_listen_port,
@@ -1729,6 +1803,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
             pending_metadata_fetches: HashMap::new(),
             ping_tick,
             score_prune_tick,
+            bootnodes: bootnodes_for_network,
             _phantom: PhantomData,
         };
 
