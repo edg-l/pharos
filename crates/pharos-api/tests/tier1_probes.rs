@@ -18,7 +18,7 @@ use arc_swap::ArcSwap;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use libp2p::PeerId;
-use pharos_api::{ApiState, ChainStateApi, NodeIdentityCache, build_router};
+use pharos_api::{ApiState, ChainStateApi, NodeIdentityCache, RegenTarget, build_router};
 use pharos_network::discovery::enr::Enr;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::config::RuntimeConfig;
@@ -163,6 +163,15 @@ impl ChainStateApi<MainnetEthSpec> for MockChain {
     ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)> {
         None
     }
+
+    fn regenerate_state(
+        &self,
+        _target: RegenTarget,
+    ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, pharos_api::ApiError> {
+        Err(pharos_api::ApiError::NotFound(
+            "regen not available in mock".into(),
+        ))
+    }
 }
 
 /// A minimal mock that delegates everything to `MockChain` but overrides
@@ -256,6 +265,13 @@ impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
         root: Root,
     ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)> {
         self.inner.signed_block_header_at(root)
+    }
+
+    fn regenerate_state(
+        &self,
+        target: RegenTarget,
+    ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, pharos_api::ApiError> {
+        self.inner.regenerate_state(target)
     }
 }
 

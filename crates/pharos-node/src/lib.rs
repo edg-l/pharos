@@ -18,6 +18,7 @@ pub mod network_lookup_provider;
 pub mod pending_blocks;
 pub mod pow_block;
 pub mod startup;
+pub mod state_regen;
 pub mod subnet_rotation;
 
 pub use engine_driver::ExecutionEngineHandle;

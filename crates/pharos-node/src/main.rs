@@ -37,6 +37,7 @@ use pharos_node::network_lookup_provider::NetworkLookupProvider;
 use pharos_node::pending_blocks::PendingBlocks;
 use pharos_node::pow_block::EnginePowBlockProvider;
 use pharos_node::startup::rehydrate_fork_choice_store;
+use pharos_node::state_regen::StateRegenService;
 use pharos_node::subnet_rotation::run_subnet_rotation_loop;
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -643,11 +644,58 @@ async fn main() -> anyhow::Result<()> {
             metadata: handle.metadata_ref(),
         };
 
-        let chain_state = pharos_api::NodeChainState::new(
+        // Construct the Phase-2 state-regeneration service and wrap it in a
+        // closure so that `NodeChainState` (in pharos-api) can call it without
+        // a pharos-api → pharos-node dependency edge.
+        let regen_svc = Arc::new(StateRegenService::<MainnetEthSpec>::new(
+            Arc::clone(&store_arc),
+            Arc::clone(&fork_choice),
+            Arc::new(runtime_cfg.clone()),
+        ));
+        let regen_fn: Arc<pharos_api::RegenFn<MainnetEthSpec>> = {
+            use pharos_api::ApiError;
+            use pharos_api::RegenTarget;
+            use pharos_node::state_regen::RegenError;
+            let svc = Arc::clone(&regen_svc);
+            Arc::new(move |target: RegenTarget| -> Result<_, ApiError> {
+                let result = match target {
+                    RegenTarget::Slot(slot) => svc.state_at_slot(slot),
+                    RegenTarget::StateRoot(root) => svc.state_at_root(root),
+                    RegenTarget::BlockRoot(block_root) => {
+                        // Find the slot for this block root via the state-summary CF.
+                        use pharos_storage::Store as DbStore;
+                        let summary_result = <pharos_storage::RocksStore as DbStore<
+                            MainnetEthSpec,
+                        >>::get_state_summary(
+                            svc.store_ref(), &block_root
+                        )
+                        .map_err(RegenError::Storage);
+                        match summary_result {
+                            Err(e) => Err(e),
+                            Ok(Some(s)) => svc.state_at_slot(s.slot),
+                            Ok(None) => Err(RegenError::NotFound(format!(
+                                "no state-summary for block root {block_root:?}"
+                            ))),
+                        }
+                    }
+                };
+                result.map_err(|e| match e {
+                    RegenError::MissingBlock { .. }
+                    | RegenError::MissingAnchorState
+                    | RegenError::NotFound(_) => ApiError::NotFound(e.to_string()),
+                    RegenError::Stf(_) | RegenError::Storage(_) => {
+                        ApiError::Internal(e.to_string())
+                    }
+                })
+            })
+        };
+
+        let chain_state = pharos_api::NodeChainState::new_with_regen(
             Arc::clone(&store_arc),
             Arc::clone(&fork_choice),
             identity,
             Arc::new(runtime_cfg.clone()),
+            regen_fn,
         );
         let api_state = pharos_api::ApiState::new(Arc::new(chain_state));
         let http_addr = SocketAddr::new(args.http_address, args.http_port);

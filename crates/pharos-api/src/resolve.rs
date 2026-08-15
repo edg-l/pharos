@@ -185,7 +185,7 @@ mod tests {
     use pharos_types::{EthSpec, MainnetEthSpec};
 
     use super::*;
-    use crate::state::{ChainStateApi, NodeIdentityCache};
+    use crate::state::{ChainStateApi, NodeIdentityCache, RegenTarget};
 
     // ── Minimal mock ──────────────────────────────────────────────────────────
 
@@ -299,6 +299,13 @@ mod tests {
             _root: Root,
         ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)> {
             None
+        }
+
+        fn regenerate_state(
+            &self,
+            _target: RegenTarget,
+        ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, ApiError> {
+            Err(ApiError::NotFound("regen not available in mock".into()))
         }
     }
 

@@ -15,7 +15,7 @@ use arc_swap::ArcSwap;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use libp2p::PeerId;
-use pharos_api::{ApiState, ChainStateApi, NodeIdentityCache, build_router};
+use pharos_api::{ApiState, ChainStateApi, NodeIdentityCache, RegenTarget, build_router};
 use pharos_network::discovery::enr::Enr;
 use pharos_ssz::TreeHash;
 use pharos_stf::phase0::state_write::BeaconStateWrite;
@@ -196,6 +196,15 @@ impl ChainStateApi<MainnetEthSpec> for StateMock {
         _root: Root,
     ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)> {
         None
+    }
+
+    fn regenerate_state(
+        &self,
+        _target: RegenTarget,
+    ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, pharos_api::ApiError> {
+        Err(pharos_api::ApiError::NotFound(
+            "regen not available in mock".into(),
+        ))
     }
 }
 

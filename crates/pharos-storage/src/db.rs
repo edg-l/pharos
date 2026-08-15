@@ -124,6 +124,32 @@ impl RocksStore {
             .cf_handle(name)
             .ok_or(StorageError::ColumnFamilyNotFound(name))
     }
+
+    // ── Public inherent helpers (not on Store<E> trait) ───────────────────────
+
+    /// Look up the canonical block root at `slot` from the `slot_to_block_root` CF.
+    ///
+    /// Returns `None` when no block was imported at this slot (e.g. missed slot
+    /// or a slot before the checkpoint-sync anchor). Used by the Phase-2
+    /// `StateRegenService` to map boundary slots to block roots without decoding
+    /// the full `SignedBeaconBlock`.
+    pub fn block_root_at_slot(&self, slot: Slot) -> Result<Option<Root>, StorageError> {
+        let cf = self.cf_handle(CF_SLOT_TO_BLOCK_ROOT)?;
+        match self.db.get_cf(cf, slot_key(slot))? {
+            None => Ok(None),
+            Some(bytes) => {
+                if bytes.len() != 32 {
+                    return Err(StorageError::InvalidKeyLength {
+                        got: bytes.len(),
+                        expected: 32,
+                    });
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Ok(Some(Root::from(arr)))
+            }
+        }
+    }
 }
 
 /// Returns per-CF `Options` pre-populated per `D-block-encoding-on-disk`.

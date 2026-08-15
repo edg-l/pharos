@@ -25,6 +25,22 @@ use pharos_utils::BLSSignature;
 use crate::dto::block::{BlockApiSerializer, SignedBlockForApi};
 use crate::error::ApiError;
 
+// ── RegenTarget ────────────────────────────────────────────────────────────────
+
+/// Target for state regeneration via `ChainStateApi::regenerate_state`.
+///
+/// Passed to the `regenerate_state` method to indicate whether the caller wants
+/// the state at a particular slot, by state-root, or by block-root (post-state).
+#[derive(Debug, Clone, Copy)]
+pub enum RegenTarget {
+    /// Return the post-state at the given slot (nearest-boundary + replay).
+    Slot(Slot),
+    /// Return the state whose `tree_hash_root()` equals this state-root.
+    StateRoot(Root),
+    /// Return the post-state of the block with this block-root.
+    BlockRoot(Root),
+}
+
 // ── NodeIdentityCache ─────────────────────────────────────────────────────────
 
 /// Snapshot of node identity data captured at startup.
@@ -131,9 +147,36 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
         &self,
         root: Root,
     ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)>;
+
+    // ── Replay-on-read (Phase 2) ───────────────────────────────────────────────
+
+    /// Regenerate (or fetch) a historical state via the `StateRegenService`.
+    ///
+    /// - `RegenTarget::Slot(s)` — find nearest stored boundary ≤ `s`, replay to `s`.
+    /// - `RegenTarget::StateRoot(r)` — walk `state-summary` CF to find the block
+    ///   whose post-state root is `r`, replay to that block's slot.
+    /// - `RegenTarget::BlockRoot(r)` — regenerate the post-state of block `r`.
+    ///
+    /// Error mapping (per `D-replay-on-read`):
+    /// - `RegenError::MissingBlock` / `RegenError::MissingAnchorState` /
+    ///   `RegenError::NotFound` → `ApiError::NotFound`.
+    /// - `RegenError::Stf` / `RegenError::Storage` → `ApiError::Internal`.
+    ///
+    /// Mock implementations (tests that don't exercise regen) should return
+    /// `Err(ApiError::NotFound("regen not available in mock".into()))`.
+    fn regenerate_state(&self, target: RegenTarget) -> Result<E::BeaconState, ApiError>;
 }
 
 // ── NodeChainState ────────────────────────────────────────────────────────────
+
+/// Type alias for the state-regeneration callback injected into `NodeChainState`.
+///
+/// The callback is constructed in `pharos-node/src/main.rs` (which depends on
+/// `pharos-api`) and wraps a `StateRegenService<E>`. This avoids a
+/// `pharos-api → pharos-node` dependency while allowing `NodeChainState` to
+/// call into the replay-on-read service (per `D-replay-on-read`, Task 2.4).
+pub type RegenFn<E> =
+    dyn Fn(RegenTarget) -> Result<<E as EthSpec>::BeaconState, ApiError> + Send + Sync + 'static;
 
 /// Concrete `ChainStateApi` backed by the shared fork-choice store and storage.
 pub struct NodeChainState<E: EthSpec> {
@@ -145,9 +188,16 @@ pub struct NodeChainState<E: EthSpec> {
     identity: NodeIdentityCache,
     /// Runtime configuration forwarded from `main.rs`.
     runtime_cfg: Arc<RuntimeConfig>,
+    /// Optional state-regeneration callback (Phase 2).
+    ///
+    /// `None` when the HTTP server is not active (no `--http` flag) or when the
+    /// replay service has not been wired in. When `None`, `regenerate_state`
+    /// returns `ApiError::NotFound`.
+    regen_fn: Option<Arc<RegenFn<E>>>,
 }
 
 impl<E: EthSpec> NodeChainState<E> {
+    /// Construct without a state-regeneration service (backward-compat).
     pub fn new(
         store: Arc<RocksStore>,
         fork_choice: Arc<RwLock<FcStore<E>>>,
@@ -159,6 +209,28 @@ impl<E: EthSpec> NodeChainState<E> {
             fork_choice,
             identity,
             runtime_cfg,
+            regen_fn: None,
+        }
+    }
+
+    /// Construct with a state-regeneration callback (Phase 2).
+    ///
+    /// `regen` is a closure wrapping a `StateRegenService<E>` constructed in
+    /// `pharos-node/src/main.rs`. It must be `Send + Sync + 'static` and take a
+    /// `RegenTarget`, returning `Result<E::BeaconState, ApiError>`.
+    pub fn new_with_regen(
+        store: Arc<RocksStore>,
+        fork_choice: Arc<RwLock<FcStore<E>>>,
+        identity: NodeIdentityCache,
+        runtime_cfg: Arc<RuntimeConfig>,
+        regen: Arc<RegenFn<E>>,
+    ) -> Self {
+        Self {
+            store,
+            fork_choice,
+            identity,
+            runtime_cfg,
+            regen_fn: Some(regen),
         }
     }
 }
@@ -249,15 +321,27 @@ where
     }
 
     fn state_by_block_root(&self, root: Root) -> Option<E::BeaconState> {
-        let fc = self.fork_choice.read();
-        fc.block_states.get(&root).cloned()
+        // Fast path: in-memory fork-choice post-states (always tried first).
+        {
+            let fc = self.fork_choice.read();
+            if let Some(state) = fc.block_states.get(&root).cloned() {
+                return Some(state);
+            }
+        }
+        // Fall through to regen when the block root is not in-memory.
+        // `regen_fn` converts `RegenError → ApiError`; we swallow ApiError here
+        // because the trait returns `Option<E::BeaconState>`.
+        if let Some(regen) = &self.regen_fn {
+            regen(RegenTarget::BlockRoot(root)).ok()
+        } else {
+            None
+        }
     }
 
     fn state_by_state_root(&self, state_root: Root) -> Option<E::BeaconState> {
-        // First check in-memory fork-choice post-states (keyed by block root,
-        // but each has a .state_root). Clone the candidates out and release the
-        // read lock BEFORE merkleizing — `tree_hash_root()` over a full state is
-        // expensive and must not block concurrent fork-choice writers.
+        // Fast path 1: in-memory fork-choice post-states.
+        // Clone candidates out and release the read lock BEFORE merkleizing —
+        // `tree_hash_root()` over a full state is expensive and must not hold the lock.
         let candidates: Vec<E::BeaconState> = {
             let fc = self.fork_choice.read();
             fc.block_states.values().cloned().collect()
@@ -270,14 +354,23 @@ where
                 }
             }
         }
-        // Fall back to cold storage.
-        <RocksStore as DbStore<E>>::get_state(&self.store, &state_root)
-            .ok()
-            .flatten()
+        // Fast path 2: hot `states` CF (epoch-boundary states stored by root).
+        if let Ok(Some(state)) = <RocksStore as DbStore<E>>::get_state(&self.store, &state_root) {
+            return Some(state);
+        }
+        // Fall through to regen (replay-on-read) when not found in hot storage.
+        if let Some(regen) = &self.regen_fn {
+            regen(RegenTarget::StateRoot(state_root)).ok()
+        } else {
+            None
+        }
     }
 
     fn block_root_for_slot(&self, slot: Slot) -> Option<Root> {
         use pharos_types::views::BeaconBlockView;
+        // TODO(Phase 4): fall through to the persisted `slot_to_block_root` index
+        // (RocksStore::block_root_at_slot) when the slot is outside the in-memory
+        // window, so `resolve_state_id` by decimal slot works for cold history.
         let fc = self.fork_choice.read();
         fc.blocks.iter().find_map(|(root, block)| {
             if block.slot() == slot {
@@ -313,6 +406,15 @@ where
         // Delegate to BeaconStateView::sync_committee_pubkeys which has
         // per-fork overrides returning the committee pubkeys (Phase0 returns None).
         fc.block_states.get(&block_root)?.sync_committee_pubkeys()
+    }
+
+    fn regenerate_state(&self, target: RegenTarget) -> Result<E::BeaconState, ApiError> {
+        match &self.regen_fn {
+            Some(regen) => regen(target),
+            None => Err(ApiError::NotFound(
+                "state regeneration service not available".into(),
+            )),
+        }
     }
 
     fn signed_block_header_at(&self, root: Root) -> Option<(BeaconBlockHeader, BLSSignature)> {

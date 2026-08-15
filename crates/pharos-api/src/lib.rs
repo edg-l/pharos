@@ -17,4 +17,4 @@ pub mod state;
 pub use error::ApiError;
 pub use router::build_router;
 pub use server::serve;
-pub use state::{ApiState, ChainStateApi, NodeChainState, NodeIdentityCache};
+pub use state::{ApiState, ChainStateApi, NodeChainState, NodeIdentityCache, RegenFn, RegenTarget};
