@@ -44,6 +44,14 @@ done < <(find target/criterion -name "estimates.json" -path "*/new/estimates.jso
 
 BENCHES_JSON+="]"
 
+# Refuse to write an empty-record artifact: it would silently commit a
+# bench history with zero entries (e.g. if benches were never run or all
+# failed mid-run).
+if [[ "$BENCHES_JSON" == "[]" ]]; then
+    echo "bench-summary: no estimates.json found under target/criterion/; did make bench complete?" >&2
+    exit 1
+fi
+
 JSON=$(jq -n \
     --arg sha "$SHA" \
     --arg host "$HOST" \
