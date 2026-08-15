@@ -39,6 +39,20 @@ pub use phase0::epoch::process_epoch;
 pub use phase0::genesis::{initialize_beacon_state_from_eth1, is_valid_genesis_state};
 pub use phase0::slot::process_slots;
 
+// ── Signing-domain constants ──────────────────────────────────────────────────
+//
+// Phase0 (0x00–0x06), Altair (0x07–0x09), Capella (0x0A) — re-exported here
+// so `pharos-validator` (which depends on `pharos-stf`) can import them from
+// a single location without depending on `pharos-stf::phase0::helpers` directly.
+pub use altair::helpers::{
+    DOMAIN_CONTRIBUTION_AND_PROOF, DOMAIN_SYNC_COMMITTEE, DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF,
+};
+pub use capella::helpers::DOMAIN_BLS_TO_EXECUTION_CHANGE;
+pub use phase0::helpers::{
+    DOMAIN_AGGREGATE_AND_PROOF, DOMAIN_BEACON_ATTESTER, DOMAIN_BEACON_PROPOSER, DOMAIN_DEPOSIT,
+    DOMAIN_RANDAO, DOMAIN_SELECTION_PROOF, DOMAIN_VOLUNTARY_EXIT,
+};
+
 pub use error::{
     AttestationInvalidReason, AttesterSlashingInvalidReason, BlockHeaderInvalidReason,
     DepositInvalidReason, EpochProcessingError, ProposerSlashingInvalidReason,
@@ -55,7 +69,6 @@ use pharos_types::{
 
 use phase0::{
     accessors::{compute_signing_root, get_domain},
-    helpers::DOMAIN_BEACON_PROPOSER,
     state_write::BeaconStateWrite,
 };
 

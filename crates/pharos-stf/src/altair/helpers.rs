@@ -27,6 +27,16 @@ use crate::phase0::{
 /// `DOMAIN_SYNC_COMMITTEE` per `specs/altair/beacon-chain.md:97`.
 pub const DOMAIN_SYNC_COMMITTEE: [u8; 4] = [0x07, 0x00, 0x00, 0x00];
 
+/// `DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF` per `specs/altair/beacon-chain.md`.
+///
+/// Used to sign sync-committee selection proofs. Value `0x08000000`.
+pub const DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF: [u8; 4] = [0x08, 0x00, 0x00, 0x00];
+
+/// `DOMAIN_CONTRIBUTION_AND_PROOF` per `specs/altair/beacon-chain.md`.
+///
+/// Used to sign `ContributionAndProof` messages. Value `0x09000000`.
+pub const DOMAIN_CONTRIBUTION_AND_PROOF: [u8; 4] = [0x09, 0x00, 0x00, 0x00];
+
 /// `SYNC_REWARD_WEIGHT` per `specs/altair/beacon-chain.md:87`.
 pub const SYNC_REWARD_WEIGHT: u64 = 2;
 

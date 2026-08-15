@@ -22,6 +22,15 @@ use crate::phase0::{accessors::compute_epoch_at_slot, predicates::is_active_vali
 
 // ── Withdrawal-credential predicates ─────────────────────────────────────────
 
+// ── Domain constants ──────────────────────────────────────────────────────────
+
+/// `DOMAIN_BLS_TO_EXECUTION_CHANGE` per `specs/capella/beacon-chain.md`
+/// (value `0x0A000000`). Single source of truth lives in `pharos_types::fork`;
+/// re-exported here so the `pharos-stf` crate root can surface every `DOMAIN_*`.
+pub use pharos_types::fork::DOMAIN_BLS_TO_EXECUTION_CHANGE;
+
+// ── Withdrawal-credential predicates ─────────────────────────────────────────
+
 /// First byte of an ETH1 ("0x01") withdrawal credential.
 ///
 /// Per `specs/phase0/beacon-chain.md:203`:

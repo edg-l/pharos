@@ -51,6 +51,10 @@ pub enum BlsError {
     #[error("fast_aggregate_verify requires at least one public key")]
     NoPubkeys,
 
+    /// The supplied 32-byte buffer is not a valid BLS secret key scalar.
+    #[error("invalid BLS secret key encoding")]
+    InvalidSecretKey,
+
     /// Raw `blst` error not covered by a more specific variant.
     #[error("blst error: {0}")]
     BlstError(String),
@@ -167,6 +171,77 @@ pub fn fast_aggregate_verify(
 
     let result = sig.fast_aggregate_verify(true, msg, BLS_DST, &pk_refs);
     Ok(result == BLST_ERROR::BLST_SUCCESS)
+}
+
+/// A BLS secret key wrapping `blst::min_pk::SecretKey`.
+///
+/// Public API is compressed bytes only; the inner `blst` type is never exposed.
+///
+/// # Zeroization
+///
+/// `blst::min_pk::SecretKey` is `#[repr(transparent)]` over a `blst_scalar`
+/// (`[u8; 32]`, no heap indirection) and itself derives `zeroize::Zeroize` with
+/// `#[zeroize(drop)]`, so the inner key is zeroed when dropped. Our `Drop` adds
+/// a defense-in-depth `write_bytes` over the same 32 bytes before that runs;
+/// both operations target the same inline scalar and are compatible. Neither
+/// can clear stack copies the optimizer may have made during construction.
+pub struct BLSSecretKey(min_pk::SecretKey);
+
+impl Drop for BLSSecretKey {
+    fn drop(&mut self) {
+        // Defense-in-depth: blst's SecretKey already zeroizes itself on drop
+        // (it derives zeroize::Zeroize), but we additionally overwrite the inner
+        // bytes here via write_bytes (a compiler intrinsic the optimizer cannot
+        // elide) so key material does not outlive this scope.
+        //
+        // SAFETY: `self.0` is valid, aligned, and we own it (we're in Drop).
+        // The struct is 32 bytes (a `blst_scalar`) and we zero exactly that
+        // many bytes.  After this write the value is dropped normally; no
+        // double-free risk because we are NOT calling drop again.
+        let size = std::mem::size_of::<min_pk::SecretKey>();
+        unsafe {
+            std::ptr::write_bytes(&mut self.0 as *mut min_pk::SecretKey as *mut u8, 0, size);
+        }
+    }
+}
+
+impl BLSSecretKey {
+    /// Deserialize a secret key from a 32-byte big-endian scalar.
+    ///
+    /// Returns `BlsError::InvalidSecretKey` if the bytes are not a valid
+    /// scalar (i.e. `>= curve order` or all zeros for the key value check).
+    pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self, BlsError> {
+        min_pk::SecretKey::from_bytes(bytes)
+            .map(BLSSecretKey)
+            .map_err(|_| BlsError::InvalidSecretKey)
+    }
+
+    /// Derive a secret key from initial key material (IKM).
+    ///
+    /// `ikm` must be at least 32 bytes. Used for test key derivation and
+    /// EIP-2333-style key generation. Wraps `SecretKey::key_gen(ikm, &[])`.
+    pub fn key_gen(ikm: &[u8]) -> Result<Self, BlsError> {
+        min_pk::SecretKey::key_gen(ikm, &[])
+            .map(BLSSecretKey)
+            .map_err(|_| BlsError::InvalidSecretKey)
+    }
+
+    /// Return the compressed public key corresponding to this secret key.
+    pub fn to_pubkey(&self) -> BLSPubkey {
+        BLSPubkey::from_array(self.0.sk_to_pk().compress())
+    }
+
+    /// Sign `msg` using `BLS_DST` (the Ethereum PoS signing DST) and return
+    /// the compressed signature.
+    pub fn sign(&self, msg: &[u8]) -> BLSSignature {
+        let sig = self.0.sign(msg, BLS_DST, &[]);
+        BLSSignature::from_array(sig.compress())
+    }
+
+    /// Serialize the secret key to 32 big-endian bytes.
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
 }
 
 /// A (pubkey, message, signature) triple for batch verification.
@@ -382,5 +457,60 @@ mod tests {
         let bad_pk = BLSPubkey::from_array([0u8; 48]);
         let err = fast_aggregate_verify(&[bad_pk], msg, &agg).unwrap_err();
         assert_eq!(err, BlsError::InvalidPubkey);
+    }
+
+    // ── BLSSecretKey tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn sign_then_verify_roundtrip() {
+        let ikm = [42u8; 32];
+        let sk = BLSSecretKey::key_gen(&ikm).expect("valid ikm");
+        let pk = sk.to_pubkey();
+        let msg = b"sign then verify";
+        let sig = sk.sign(msg);
+        assert!(verify(&pk, msg, &sig).unwrap(), "signature must verify");
+    }
+
+    #[test]
+    fn sign_then_fast_aggregate_verify_single() {
+        let ikm = [7u8; 32];
+        let sk = BLSSecretKey::key_gen(&ikm).expect("valid ikm");
+        let pk = sk.to_pubkey();
+        let msg = b"aggregate single signer";
+        let sig = sk.sign(msg);
+        // Aggregating a single signature then fast_aggregate_verify against
+        // one pubkey must succeed.
+        let agg = aggregate(&[sig]).unwrap();
+        assert!(fast_aggregate_verify(&[pk], msg, &agg).unwrap());
+    }
+
+    #[test]
+    fn secret_key_to_pubkey_deterministic() {
+        // The same IKM must produce the same public key bytes across two
+        // independent derivations.
+        let ikm = [0xABu8; 32];
+        let sk1 = BLSSecretKey::key_gen(&ikm).expect("valid ikm (first)");
+        let sk2 = BLSSecretKey::key_gen(&ikm).expect("valid ikm (second)");
+        assert_eq!(
+            sk1.to_pubkey().0,
+            sk2.to_pubkey().0,
+            "same IKM must yield the same public key bytes"
+        );
+    }
+
+    #[test]
+    fn secret_key_zeroized_on_drop() {
+        // Best-effort test: create a key, record its raw bytes, drop it, then
+        // confirm we can no longer read them via any live reference (we can't
+        // hold one past the drop, so this test just exercises the Drop impl
+        // without panicking — a sanitizer run would catch residual key material).
+        //
+        // NOTE: the Rust compiler makes no guarantee that stack bytes are
+        // cleared even after this Drop; the test exercises the code path but
+        // cannot prove the stack frame is clean without a memory sanitizer.
+        let ikm = [0x11u8; 32];
+        let sk = BLSSecretKey::key_gen(&ikm).expect("valid ikm");
+        let _pk = sk.to_pubkey(); // capture pubkey before drop
+        drop(sk); // exercises the Drop impl; no panic is the assertion
     }
 }

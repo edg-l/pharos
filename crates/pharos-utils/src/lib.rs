@@ -11,6 +11,10 @@ pub mod uint256;
 pub mod units;
 pub mod version;
 
+pub use bls::{
+    BLS_DST, BLSSecretKey, BlsError, SignatureSet, aggregate, aggregate_pubkeys,
+    fast_aggregate_verify, verify, verify_signature_sets,
+};
 pub use bytes::{BLSPubkey, BLSSignature, Bytes4, Bytes32, Bytes48, Bytes96, FixedBytes, Hash256};
 pub use cached_root::CachedRoot;
 pub use uint256::Uint256;
