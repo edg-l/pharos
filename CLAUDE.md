@@ -269,6 +269,40 @@ Deferred: `validate_voluntary_exit`, `validate_proposer_slashing`,
 (M11). Workspace version bumped `0.6.0` → `0.7.0`. Phase 6 wrap-up + audits
 in `docs/m4e-plan.md`.
 
+## M5-follow status
+
+Closed. Full cross-client gossip block-following proven on the live Bellatrix
+devnet (Lighthouse v8.1.3 + ethrex): pharos `head == wall` (exact, 0 lag),
+`peers:1` stable to epoch 15, 0 bans, direct gossip import (no lookup-fallback
+churn at the tip). Prior commit `8a76559` landed lookup-sync + in-flight dial
+dedup; this milestone fixed the four remaining correctness gaps that surfaced
+once pharos actually followed:
+- `6b19e71` `D-blocksbyroot-bare-list`: `BeaconBlocksByRootRequest` was SSZ-encoded
+  as a container (spurious 4-byte offset) instead of the bare `List[Root,N]`;
+  Lighthouse `InvalidByteLength` → instant -100 ban. Hand-written transparent
+  `Encode`/`Decode` in `crates/pharos-types/src/phase0/operations.rs`.
+- `2b9d390` `D-lc-publish-due-time`: LC `optimistic/finality_update` published at
+  slot start → Lighthouse `TooEarly` → `light_client_gossip_error` -1/slot bleed.
+  `HostImpl::lc_publish_wait` + delayed publish in `block_ingestion.rs`.
+- `c351622` `D-import-clock-nudge`: `on_block` future-slot guard read a `store.time`
+  lagged by the 1s background ticker → every tip block rejected `FutureSlot`,
+  re-fetched via lookup a slot late. Advance-only single-step `on_tick_per_slot`
+  to wall-now before `on_block` in `import.rs` (NOT catch-up `on_tick` — it hangs
+  on mock `genesis_time=0` and can regress the cursor).
+- `4d49d24` `D-future-block-hold`: future blocks were dropped, not delayed
+  (`fork-choice.md` says delay until in the past). Re-inject channel +
+  `hold_future_block` replays at slot start (bounded `MAX_FUTURE_BLOCK_HOLD`).
+ADRs in `docs/decisions.md` ("M5-follow correctness decisions" section). Tests:
+`blocks_by_root_request_is_bare_list_no_offset` (exact wire bytes),
+`lc_publish_wait_*`, `wait_until_slot_start_*`, `hold_future_block_*`. Full gate
+green (670 tests). `docs/conformance.md` untouched (network-layer-only milestone;
+runner does not exercise gossip/follow). Workspace version bumped `0.7.0` →
+`0.8.0`. Diagnostic key: Lighthouse `--debug-level debug` surfaced `TooEarly`,
+the `InvalidByteLength` RPC error, and `Peer has been banned ... Bad Score`.
+Deferred: extend `D-future-block-hold` to the lookup direct-import path (self-heals
+today); bench-regression check in CI (carry-in from M4c). NOTE: `D-byroot-lookup-deferred`
+(M5 section) is now obsolete — `8a76559` shipped the `BeaconBlocksByRoot` lookup.
+
 ## Reference repos (cloned in `~/dev/`)
 
 - `consensus-specs/` — Python specs + reference tests (test fixtures live

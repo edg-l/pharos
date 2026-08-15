@@ -2245,3 +2245,103 @@ requirements that belong in a dedicated milestone (reorg handling / side-branch 
 
 Enforced by absence: `rg 'BeaconBlocksByRoot' crates/pharos-node/src/block_ingestion.rs`
 returns empty; the orphan-defer site calls `notify_one()` only.
+
+## M5-follow correctness decisions (cross-client follow hardening)
+
+These four fixes closed the remaining correctness gaps that surfaced once
+Pharos actually followed Lighthouse v8.1.3 + ethrex on the live Bellatrix
+devnet. All live-verified: pharos `head == wall` (exact, 0 lag), `peers:1`
+stable to epoch 15, 0 Lighthouse bans.
+
+### D-blocksbyroot-bare-list — BeaconBlocksByRoot request is the bare List, not a container
+
+**Status**: Accepted. **Date**: 2026-05-29. **Commit**: `6b19e71`.
+
+The req/resp `BeaconBlocksByRootRequest` is a single-field wrapper around
+`SszList<Root, MAX_REQUEST_BLOCKS>`. Per the p2p single-field rule
+(`p2p-interface.md`) it serializes as the bare `List[Root, N]` — but
+`#[derive(Encode, Decode)]` treated it as an SSZ container and prepended a
+4-byte offset for its lone variable-length field (an empty request became
+exactly the 4 offset bytes). Lighthouse decoded that as
+`InvalidByteLength { len: 4, expected: 32 }`, classified it a fault, and
+**banned pharos to -100 on the spot** — the true "not peering" cause, latent
+until a checkpoint gap forced the lookup's by-root request onto the wire.
+
+Fix: hand-written transparent `Encode`/`Decode` over `block_roots` (no
+container offset) in `crates/pharos-types/src/phase0/operations.rs`.
+
+A symmetric pharos↔pharos round-trip test could NOT catch this (the wrong
+layout is self-consistent in both directions), so an **exact-wire-byte** test
+(`blocks_by_root_request_is_bare_list_no_offset`) asserts `len == 32·n` with no
+offset. Other req/resp methods are unaffected: `BeaconBlocksByRange` is all
+fixed-size fields, LC requests are empty or single-fixed-field.
+
+### D-lc-publish-due-time — LC gossip updates are published at the spec due-time, not at import
+
+**Status**: Accepted. **Date**: 2026-05-29. **Commit**: `2b9d390`.
+**Supersedes** the immediate-send half of `D-lc-broadcast-from-ingestion` (M4c).
+
+pharos published `light_client_finality_update` / `light_client_optimistic_update`
+the instant a head advanced (slot start). The altair p2p rule forwards an LC
+update only after `get_sync_message_due_ms` (one `INTERVALS_PER_SLOT` fraction =
+4 s for 12 s slots) has transpired since the start of `signature_slot`.
+Lighthouse logged `Light client optimistic update too early error: TooEarly` and
+applied a `light_client_gossip_error` penalty (~-1.00/slot), bleeding toward a
+ban in ~15 min. The update *content* was correct (Lighthouse deduped pharos's
+bytes as identical to its own) — purely a timing defect.
+
+Fix: `HostImpl::lc_publish_wait(signature_slot)` (the publish-side mirror of the
+inbound validator's `due_ms` gate) + a delayed `tokio::spawn` publish in
+`block_ingestion.rs`. Publishes at the full `due_ms` (no disparity shaving) so
+the message stays inside the receiver's window under modest clock skew; a newer
+head arriving first just makes the older update a no-penalty IGNORE on peers.
+
+### D-import-clock-nudge — advance the fork-choice clock to wall-now before on_block
+
+**Status**: Accepted. **Date**: 2026-05-29. **Commit**: `c351622`.
+
+`on_block`'s future-slot guard reads `get_current_slot(store) = store.time`,
+advanced only by a 1 s background `on_tick` driver. That driver fires at an
+arbitrary sub-second phase and floors `now` to whole seconds, so right after a
+slot boundary `store.time` still reported the previous slot — and a
+just-proposed gossip block was rejected `FutureSlot`, then re-fetched via lookup
+a full slot later (measured: 91 rejects / 90 lookup re-imports / 0 direct gossip
+imports in a 2-minute run; head perpetually 1 slot behind wall).
+
+Fix: nudge `store.time` to wall-now inside the import write-lock, immediately
+before `on_block`, in `crates/pharos-node/src/import.rs`. Crucially
+**advance-only and single-step** via `on_tick_per_slot`, NOT the catch-up
+`on_tick`:
+- advance-only (`if now > store.time`): never regress a cursor a caller or the
+  background ticker set further ahead (a first attempt regressed a test's
+  pre-advanced clock);
+- single-step / O(1): `on_tick`'s slot-by-slot catch-up loop explodes against a
+  mock `genesis_time = 0` (it hung `checkpoint_backfill_pipeline` for 30 s).
+
+The background `on_tick` stays the primary clock driver; this is only a sub-slot
+freshness nudge. `on_block`'s `get_current_slot(store) >= block.slot` assert is
+untouched. Result: 0 future-block rejects, direct gossip import, `head == wall`.
+
+### D-future-block-hold — future blocks are held until their slot, not dropped
+
+**Status**: Accepted. **Date**: 2026-05-29. **Commit**: `4d49d24`.
+
+Per `fork-choice.md` `on_block`, a future block's "consideration must be delayed
+until they are in the past" — but the ingestion loop *dropped* any block
+`on_block` rejected as `FutureSlot`. With `D-import-clock-nudge` this is now
+reachable only for a block arriving within `MAXIMUM_GOSSIP_CLOCK_DISPARITY`
+before its slot (clock skew), and dropping it costs a full slot of lookup
+re-fetch.
+
+Fix: a re-inject `mpsc` channel. `run_block_ingestion_loop` now `select!`s over
+network events and re-injected blocks; on `FutureSlot`, `hold_future_block`
+parks `(topic, data)` and a `tokio::spawn` sleeps until the slot opens
+(`HostImpl::wait_until_slot_start`) then re-sends it for another import attempt.
+Bounded by `MAX_FUTURE_BLOCK_HOLD` (24 s) so the hold can't pin memory — the
+gossip validator already IGNOREs blocks further ahead. `on_block`'s assert is
+untouched. The lookup path is deliberately unchanged: its direct-import only
+sees past catch-up blocks, and a future block dropped there self-heals via the
+next block's re-lookup.
+
+Verified by unit tests `hold_future_block_replays_when_due`,
+`hold_future_block_drops_when_too_far`, and `wait_until_slot_start_past_and_future`.
