@@ -123,6 +123,81 @@ Costs we accept: +1–2 months on M0 to write our own SSZ + Merkleization.
 Benefit: full control of the hot path and the type system, no surprise
 upstream churn, a real consensus client and not a re-skin.
 
+### Independence guarantee
+
+Pharos competes with Lighthouse (and Prysm, Lodestar, Teku, Nimbus). It is
+not a re-skin or a port. The following rules keep it that way; they apply
+to every contributor — human or agent — and the implementer agents in
+particular must read this before touching code.
+
+**Authoritative reference materials** (in priority order):
+
+1. `~/dev/consensus-specs/specs/` — the prose specs (Python) and SSZ
+   simple-serialize. Read these. Cite the file + line number in code
+   comments when implementing a non-obvious clause.
+2. `~/dev/consensus-specs/tests/formats/` — conformance fixtures. The
+   bar for "we implemented it right" is fixtures green, not visual
+   resemblance to another client.
+3. `~/dev/EIPs/` — canonical EIP text where a spec section refers out.
+4. `~/dev/beacon-APIs/` — Beacon API OpenAPI surface.
+5. `~/dev/execution-apis/src/engine/` — Engine API spec + fixtures.
+
+**Banned during implementation**: reading source from `~/dev/lighthouse/`,
+`~/dev/prysm/`, `~/dev/lodestar/`, `~/dev/teku/`, `~/dev/nimbus-eth2/`,
+or equivalent. Includes blog posts that paste code blocks. Cross-language
+ports (Prysm Go, Lodestar TS, Teku Java) are *less* risky for accidental
+copying because porting requires re-thinking, but the rule applies
+uniformly so there's no judgement call.
+
+**Permitted uses of other clients**:
+
+- **Wire-level oracle** — running another client on localhost and
+  comparing the bytes it emits vs ours, when debugging "did I encode
+  this right." See the Cross-client interop testing entry in
+  Cross-cutting. Looking at wire output is *observing the network*,
+  not reading source.
+- **Public spec-adjacent artefacts** — published mainnet ENRs,
+  published bootnode lists, published genesis state roots. These are
+  data on the public network, not source code. Vendoring them as test
+  fixtures is fine; cite the publication source.
+- **De-facto conventions where the spec is silent** — e.g. the QUIC
+  ENR key naming (`quic`/`quic6`) that Lighthouse documented first
+  and every CL client now follows. Adopting the convention is
+  necessary for interop; document it in `docs/decisions.md` with a
+  link to where the convention was published (NOT to Lighthouse's
+  source, but to a spec-adjacent README, ethresear.ch post, or
+  EthCC talk).
+
+**What is identical across all clients (by spec mandate, not copying)**:
+
+- Wire formats: SSZ-snappy framing, varint length prefixes,
+  gossipsub topic names, req-resp protocol IDs, container layouts.
+- Constants: `SLOTS_PER_EPOCH`, `MIN_VALIDATOR_WITHDRAWABILITY_DELAY`,
+  Goodbye reason codes, etc.
+- Algorithms: `compute_shuffled_index`, `get_active_validator_indices`,
+  `process_block` semantics, fork choice.
+
+If we changed any of these, our node couldn't talk to the network.
+Differentiation lives *above* the wire layer, not in it. Performance,
+data structures, error model, observability, and operator UX are the
+competition surface.
+
+**Red flags during code review** (any of these triggers a hard stop):
+
+- Function signatures that match a Lighthouse type exactly when the
+  spec doesn't mandate that signature.
+- File or module names that mirror a Lighthouse crate's structure
+  beyond what the spec organisation implies.
+- Comments that reference a Lighthouse type / function / line.
+- Identifier naming that follows Lighthouse-specific patterns
+  (`NetworkGlobals`, `BeaconChainTypes`, `ChainSpec`, etc.).
+- Test fixtures vendored from `~/dev/lighthouse/`.
+- Performance heuristics copied from a Lighthouse README or issue
+  thread without a spec-based or measured justification.
+
+Reviewers should treat any of these as a port-of-Lighthouse signal and
+require the contributor to redo the work from spec + first principles.
+
 
 ## Performance principles
 
