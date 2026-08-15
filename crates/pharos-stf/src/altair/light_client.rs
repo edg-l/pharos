@@ -10,7 +10,7 @@ use pharos_ssz::{SszVector, TreeHash, build_single_proof_from_leaves};
 use pharos_types::{
     EthSpec,
     altair::{
-        BeaconState, SignedBeaconBlock,
+        BeaconBlock, BeaconState,
         light_client::{
             CURRENT_SYNC_COMMITTEE_BRANCH_DEPTH, CURRENT_SYNC_COMMITTEE_GINDEX,
             FINALITY_BRANCH_DEPTH, FINALIZED_ROOT_GINDEX, LightClientBootstrap,
@@ -82,7 +82,7 @@ fn is_valid_normalized_merkle_branch(
 // ── Sync committee count helpers ──────────────────────────────────────────────
 
 /// Count the number of set bits in a `Bitvector` (number of participants).
-fn count_participants<const SYNC_COMMITTEE_SIZE: u64>(
+pub(crate) fn count_participants<const SYNC_COMMITTEE_SIZE: u64>(
     bits: &pharos_ssz::Bitvector<SYNC_COMMITTEE_SIZE>,
 ) -> u64 {
     bits.iter().filter(|b| *b).count() as u64
@@ -558,7 +558,7 @@ pub fn block_to_light_client_header<
     const DEPOSIT_PROOF_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
 >(
-    block: &SignedBeaconBlock<
+    block: &BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS,
         MAX_ATTESTATIONS,
@@ -582,14 +582,13 @@ where
     >: TreeHash,
 {
     use pharos_types::phase0::operations::BeaconBlockHeader;
-    let msg = &block.message;
     LightClientHeader {
         beacon: BeaconBlockHeader {
-            slot: msg.slot,
-            proposer_index: msg.proposer_index,
-            parent_root: msg.parent_root,
-            state_root: msg.state_root,
-            body_root: msg.body.tree_hash_root(),
+            slot: block.slot,
+            proposer_index: block.proposer_index,
+            parent_root: block.parent_root,
+            state_root: block.state_root,
+            body_root: block.body.tree_hash_root(),
         },
     }
 }
@@ -660,7 +659,7 @@ fn beacon_state_field_hashes<
 ///
 /// Returns the branch as a `Vec<Bytes32>` whose length equals
 /// `floor(log2(field_gindex))`.
-fn compute_state_proof<
+pub(crate) fn compute_state_proof<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
     const ETH1_DATA_VOTES_LIMIT: u64,
@@ -774,7 +773,7 @@ pub fn update_light_client_snapshots<
         JUSTIFICATION_BITS_LENGTH,
         SYNC_COMMITTEE_SIZE,
     >,
-    block: &SignedBeaconBlock<
+    block: &BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS,
         MAX_ATTESTATIONS,
@@ -797,7 +796,7 @@ pub fn update_light_client_snapshots<
         >,
     >,
     attested_block: Option<
-        &SignedBeaconBlock<
+        &BeaconBlock<
             MAX_PROPOSER_SLASHINGS,
             MAX_ATTESTER_SLASHINGS,
             MAX_ATTESTATIONS,
@@ -809,7 +808,7 @@ pub fn update_light_client_snapshots<
         >,
     >,
     finalized_block: Option<
-        &SignedBeaconBlock<
+        &BeaconBlock<
             MAX_PROPOSER_SLASHINGS,
             MAX_ATTESTER_SLASHINGS,
             MAX_ATTESTATIONS,
@@ -845,7 +844,7 @@ pub fn update_light_client_snapshots<
     use pharos_storage::Store as StoreT;
 
     // Compute block root for bootstrap keying.
-    let block_root = block.message.tree_hash_root();
+    let block_root = block.tree_hash_root();
 
     // 1. Store LightClientBootstrap for this block.
     if let Some(bootstrap) = create_light_client_bootstrap(post_state, block) {
@@ -936,7 +935,7 @@ pub fn create_light_client_bootstrap<
         JUSTIFICATION_BITS_LENGTH,
         SYNC_COMMITTEE_SIZE,
     >,
-    block: &SignedBeaconBlock<
+    block: &BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS,
         MAX_ATTESTATIONS,
@@ -970,8 +969,8 @@ where
     header.state_root = state.tree_hash_root();
     let block_root = header.tree_hash_root();
 
-    // Verify this matches block.message's hash.
-    if block_root != block.message.tree_hash_root() {
+    // Verify this matches block's hash.
+    if block_root != block.tree_hash_root() {
         return None;
     }
 
@@ -1030,7 +1029,7 @@ pub fn create_light_client_update<
         JUSTIFICATION_BITS_LENGTH,
         SYNC_COMMITTEE_SIZE,
     >,
-    block: &SignedBeaconBlock<
+    block: &BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS,
         MAX_ATTESTATIONS,
@@ -1050,7 +1049,7 @@ pub fn create_light_client_update<
         JUSTIFICATION_BITS_LENGTH,
         SYNC_COMMITTEE_SIZE,
     >,
-    attested_block: &SignedBeaconBlock<
+    attested_block: &BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS,
         MAX_ATTESTATIONS,
@@ -1061,7 +1060,7 @@ pub fn create_light_client_update<
         SYNC_COMMITTEE_SIZE,
     >,
     finalized_block: Option<
-        &SignedBeaconBlock<
+        &BeaconBlock<
             MAX_PROPOSER_SLASHINGS,
             MAX_ATTESTER_SLASHINGS,
             MAX_ATTESTATIONS,
@@ -1087,13 +1086,13 @@ where
     Bytes32: Default + Clone,
 {
     // Verify sync_aggregate has enough participants.
-    let n_participants = count_participants(&block.message.body.sync_aggregate.sync_committee_bits);
+    let n_participants = count_participants(&block.body.sync_aggregate.sync_committee_bits);
     if n_participants < MIN_SYNC_COMMITTEE_PARTICIPANTS {
         return None;
     }
 
     // Derive update_signature_period from block.slot.
-    let update_signature_period = compute_sync_committee_period_at_slot::<E>(block.message.slot);
+    let update_signature_period = compute_sync_committee_period_at_slot::<E>(block.slot);
 
     // Precondition: attested_state.slot == attested_state.latest_block_header.slot.
     if attested_state.slot != attested_state.latest_block_header.slot {
@@ -1102,15 +1101,14 @@ where
     let mut attested_header = attested_state.latest_block_header.clone();
     attested_header.state_root = attested_state.tree_hash_root();
     let attested_block_root = attested_header.tree_hash_root();
-    if attested_block_root != attested_block.message.tree_hash_root() {
+    if attested_block_root != attested_block.tree_hash_root() {
         return None;
     }
-    if attested_block_root != block.message.parent_root {
+    if attested_block_root != block.parent_root {
         return None;
     }
 
-    let update_attested_period =
-        compute_sync_committee_period_at_slot::<E>(attested_block.message.slot);
+    let update_attested_period = compute_sync_committee_period_at_slot::<E>(attested_block.slot);
 
     // Compute next_sync_committee branch when attested and signature periods match.
     let (next_sync_committee, next_sync_committee_branch) =
@@ -1130,7 +1128,7 @@ where
 
     // Compute finality header and branch when finalized_block is available.
     let (finalized_header, finality_branch) = if let Some(fin_block) = finalized_block {
-        let header = if fin_block.message.slot.0 != 0 {
+        let header = if fin_block.slot.0 != 0 {
             block_to_light_client_header(fin_block)
         } else {
             LightClientHeader::default()
@@ -1151,8 +1149,8 @@ where
         next_sync_committee_branch,
         finalized_header,
         finality_branch,
-        sync_aggregate: block.message.body.sync_aggregate.clone(),
-        signature_slot: block.message.slot,
+        sync_aggregate: block.body.sync_aggregate.clone(),
+        signature_slot: block.slot,
     })
 }
 

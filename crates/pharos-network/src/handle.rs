@@ -32,12 +32,46 @@ use crate::topics::GossipTopic;
 pub struct NetworkCommandSender<E: EthSpec>(pub(crate) mpsc::Sender<NetworkCommand<E>>);
 
 impl<E: EthSpec> NetworkCommandSender<E> {
+    /// Construct a `NetworkCommandSender` from a raw mpsc sender.
+    ///
+    /// Exposed for test code in external crates that need a dummy sender whose
+    /// receiver is held (or dropped) by the test harness.
+    pub fn new(sender: mpsc::Sender<NetworkCommand<E>>) -> Self {
+        Self(sender)
+    }
+
     /// Send a raw `NetworkCommand` without waiting for a reply.
     pub async fn send(&self, cmd: NetworkCommand<E>) -> Result<(), NetworkError> {
         self.0
             .send(cmd)
             .await
             .map_err(|_| NetworkError::ChannelClosed)
+    }
+
+    /// SSZ-encode `payload`, snappy-frame it in the network task, and publish
+    /// to `topic`.
+    ///
+    /// Returns the gossipsub `MessageId` assigned to the message.
+    ///
+    /// Identical semantics to `NetworkHandle::publish`; provided here so the
+    /// block-ingestion loop can publish using the clonable `NetworkCommandSender`
+    /// (not the non-`Clone` `NetworkHandle`).
+    pub async fn publish(
+        &self,
+        topic: GossipTopic,
+        payload: &impl Encode,
+    ) -> Result<libp2p::gossipsub::MessageId, NetworkError> {
+        let ssz_payload = payload.as_ssz_bytes();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.0
+            .send(NetworkCommand::Publish {
+                topic,
+                ssz_payload,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        reply_rx.await.map_err(|_| NetworkError::ChannelClosed)?
     }
 
     /// Send an outbound RPC `req` to `peer`, waiting up to `timeout` for a

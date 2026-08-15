@@ -21,6 +21,7 @@ pub mod bellatrix;
 pub mod error;
 pub mod phase0;
 
+pub use altair::light_client_dispatch::{AltairDispatchBounds, BellatrixDispatchBounds};
 pub use altair::state_transition::{AltairDispatch, AltairJaFDispatch, AltairProcessSlotsDispatch};
 pub use bellatrix::execution_engine::{ExecutionEngine, FixedExecutionEngine, NullExecutionEngine};
 pub use bellatrix::state_transition::{BellatrixDispatch, BellatrixProcessSlotsDispatch};

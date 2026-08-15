@@ -489,6 +489,20 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Wrap a concrete bellatrix `SignedBeaconBlock` into the fork-enum `SignedBeaconBlock`.
     fn bellatrix_into_signed_block(s: Self::BellatrixSignedBeaconBlock) -> Self::SignedBeaconBlock;
 
+    /// Unwrap a fork-enum `BeaconBlock` to the inner phase0 variant.
+    ///
+    /// Returns `Some` if the block is a `Phase0` variant, `None` otherwise.
+    /// Used by the light-client snapshot dispatcher to fetch unsigned phase0
+    /// blocks from `fc_store.blocks`.
+    fn unwrap_phase0_block(s: &Self::BeaconBlock) -> Option<&Self::Phase0BeaconBlock>;
+
+    /// Unwrap a fork-enum `BeaconBlock` to the inner altair variant.
+    ///
+    /// Returns `Some` if the block is an `Altair` variant, `None` otherwise.
+    /// Used by the light-client snapshot dispatcher to fetch unsigned altair
+    /// blocks from `fc_store.blocks`.
+    fn unwrap_altair_block(s: &Self::BeaconBlock) -> Option<&Self::AltairBeaconBlock>;
+
     /// Unwrap a fork-enum `BeaconBlock` to the inner bellatrix variant.
     ///
     /// Returns `Some` if the block is a `Bellatrix` variant, `None` otherwise.
@@ -1207,6 +1221,22 @@ impl EthSpec for MainnetEthSpec {
         crate::state::MainnetSignedBeaconBlock::Bellatrix(s)
     }
 
+    fn unwrap_phase0_block(s: &Self::BeaconBlock) -> Option<&Self::Phase0BeaconBlock> {
+        match s {
+            crate::state::MainnetBeaconBlock::Phase0(inner) => Some(inner),
+            crate::state::MainnetBeaconBlock::Altair(_) => None,
+            crate::state::MainnetBeaconBlock::Bellatrix(_) => None,
+        }
+    }
+
+    fn unwrap_altair_block(s: &Self::BeaconBlock) -> Option<&Self::AltairBeaconBlock> {
+        match s {
+            crate::state::MainnetBeaconBlock::Altair(inner) => Some(inner),
+            crate::state::MainnetBeaconBlock::Phase0(_) => None,
+            crate::state::MainnetBeaconBlock::Bellatrix(_) => None,
+        }
+    }
+
     fn unwrap_bellatrix_block(s: &Self::BeaconBlock) -> Option<&Self::BellatrixBeaconBlock> {
         match s {
             crate::state::MainnetBeaconBlock::Bellatrix(inner) => Some(inner),
@@ -1684,6 +1714,22 @@ impl EthSpec for MinimalEthSpec {
 
     fn bellatrix_into_signed_block(s: Self::BellatrixSignedBeaconBlock) -> Self::SignedBeaconBlock {
         crate::state::MinimalSignedBeaconBlock::Bellatrix(s)
+    }
+
+    fn unwrap_phase0_block(s: &Self::BeaconBlock) -> Option<&Self::Phase0BeaconBlock> {
+        match s {
+            crate::state::MinimalBeaconBlock::Phase0(inner) => Some(inner),
+            crate::state::MinimalBeaconBlock::Altair(_) => None,
+            crate::state::MinimalBeaconBlock::Bellatrix(_) => None,
+        }
+    }
+
+    fn unwrap_altair_block(s: &Self::BeaconBlock) -> Option<&Self::AltairBeaconBlock> {
+        match s {
+            crate::state::MinimalBeaconBlock::Altair(inner) => Some(inner),
+            crate::state::MinimalBeaconBlock::Phase0(_) => None,
+            crate::state::MinimalBeaconBlock::Bellatrix(_) => None,
+        }
     }
 
     fn unwrap_bellatrix_block(s: &Self::BeaconBlock) -> Option<&Self::BellatrixBeaconBlock> {

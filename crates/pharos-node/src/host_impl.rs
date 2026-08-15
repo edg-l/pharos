@@ -215,6 +215,14 @@ impl<E: EthSpec> HostImpl<E> {
         &self.fork_context.fork_schedule
     }
 
+    /// Return a clone of the `Arc<RocksStore>` backing this host.
+    ///
+    /// Used by the block-ingestion loop to pass the store into a
+    /// `spawn_blocking` closure for LC snapshot writes (Task 2.2).
+    pub fn store_arc(&self) -> Arc<RocksStore> {
+        Arc::clone(&self.store)
+    }
+
     /// Update the local `attnets` field and bump `seq_number` if attnets changed.
     ///
     /// Spec: `p2p-interface.md:391-393`.

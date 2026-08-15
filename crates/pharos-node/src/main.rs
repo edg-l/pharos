@@ -24,7 +24,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::info;
 
 use pharos_node::ExecutionEngineHandle;
-use pharos_node::block_ingestion::run_block_ingestion_loop;
+use pharos_node::block_ingestion::{IngestionEgress, run_block_ingestion_loop};
 use pharos_node::checkpoint_sync::{apply_anchor, fetch_checkpoint};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::engine_keepalive::{hex_to_u256, run_transition_config_keepalive, u256_to_hex};
@@ -580,6 +580,11 @@ async fn main() -> anyhow::Result<()> {
             let pow_clone = Arc::clone(&pow_provider);
             let head_tx_clone = head_tx.clone();
             let payload_tx_clone = payload_tx.clone();
+            let ingestion_egress = IngestionEgress {
+                head_tx: head_tx_clone,
+                payload_tx: payload_tx_clone,
+                network: handle.command_sender(),
+            };
             tokio::spawn(async move {
                 if let Err(e) = run_block_ingestion_loop::<MainnetEthSpec, ExecutionEngineHandle>(
                     event_rx,
@@ -587,8 +592,7 @@ async fn main() -> anyhow::Result<()> {
                     fc,
                     exec_engine_clone,
                     pow_clone,
-                    head_tx_clone,
-                    payload_tx_clone,
+                    ingestion_egress,
                     true, // validate_result: enforce BLS signatures and state roots
                 )
                 .await

@@ -52,7 +52,7 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 
-use pharos_node::block_ingestion::run_block_ingestion_loop;
+use pharos_node::block_ingestion::{IngestionEgress, run_block_ingestion_loop};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::host_impl::HostImpl;
 use pharos_node::pow_block::EnginePowBlockProvider;
@@ -494,7 +494,14 @@ async fn engine_pipeline_drives_bellatrix_chain() {
     {
         let fc_clone = Arc::clone(&fc);
         let host_clone = Arc::clone(&host);
-        let ht = head_tx.clone();
+        // Dummy network sender for the ingestion loop: sends are silently dropped.
+        let (dummy_net_tx, _dummy_net_rx) = tokio::sync::mpsc::channel(1);
+        let dummy_net = pharos_network::NetworkCommandSender::new(dummy_net_tx);
+        let ingestion_egress = IngestionEgress {
+            head_tx: head_tx.clone(),
+            payload_tx,
+            network: dummy_net,
+        };
         tokio::spawn(async move {
             if let Err(e) = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
                 event_rx,
@@ -502,8 +509,7 @@ async fn engine_pipeline_drives_bellatrix_chain() {
                 fc_clone,
                 exec_engine,
                 pow_provider,
-                ht,
-                payload_tx,
+                ingestion_egress,
                 false, // validate_result: false — skip BLS and state-root checks
             )
             .await

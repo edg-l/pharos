@@ -19,12 +19,17 @@ use tracing::{debug, warn};
 
 use pharos_fork_choice::Store as FcStore;
 use pharos_fork_choice::{get_head, on_block};
+use pharos_network::NetworkCommandSender;
+use pharos_network::host::{ForkContext as _, LightClientProvider as _};
 use pharos_network::network::NetworkEvent;
-use pharos_network::topics::GossipTopicKind;
+use pharos_network::topics::{GossipTopic, GossipTopicKind};
 use pharos_ssz::Decode;
-use pharos_stf::{ExecutionEngine, StateTransitionError, state_transition};
+use pharos_stf::{
+    AltairDispatchBounds, BellatrixDispatchBounds, ExecutionEngine, StateTransitionError,
+    state_transition,
+};
 use pharos_storage::StorageError;
-use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
+use pharos_types::views::{BeaconBlockView as _, ForkVariant, SignedBeaconBlockView as _};
 use pharos_types::{EthSpec, phase0::primitives::Root};
 
 use crate::engine_driver::{
@@ -67,6 +72,20 @@ pub enum IngestionError {
     Join(#[from] tokio::task::JoinError),
 }
 
+// ── IngestionEgress ───────────────────────────────────────────────────────────
+
+/// Output channels from the block-ingestion loop.
+///
+/// Bundles the head-change watch sender, new-payload mpsc sender, and the
+/// clonable network command sender so the ingestion loop can publish LC gossip
+/// updates without holding a non-`Clone` `NetworkHandle<E>`.
+pub struct IngestionEgress<E: EthSpec> {
+    pub head_tx: watch::Sender<Option<HeadChange>>,
+    pub payload_tx: mpsc::Sender<NewPayloadRequest<E>>,
+    /// Clonable command sender for publishing gossip messages.
+    pub network: NetworkCommandSender<E>,
+}
+
 // ── run_block_ingestion_loop ──────────────────────────────────────────────────
 
 /// Async block-ingestion loop.
@@ -74,10 +93,14 @@ pub enum IngestionError {
 /// Receives `NetworkEvent::GossipMessage` for beacon-block topics, decodes the
 /// SSZ payload, runs state transition in a `spawn_blocking` worker, calls
 /// `on_block` to update the fork-choice store, and publishes a `HeadChange`
-/// to the engine driver via `head_tx`.
+/// to the engine driver via `egress.head_tx`.
 ///
-/// Bellatrix blocks additionally push the execution payload onto `payload_tx`
-/// so the engine driver calls `engine_newPayloadV1`.
+/// Bellatrix blocks additionally push the execution payload onto
+/// `egress.payload_tx` so the engine driver calls `engine_newPayloadV1`.
+///
+/// After each head change, if the block is post-Altair, publishes the latest
+/// `LightClientFinalityUpdate` and `LightClientOptimisticUpdate` via
+/// `egress.network`.
 ///
 /// `validate_result` is passed directly to `state_transition`. Set to `false`
 /// in test contexts where blocks are constructed without valid BLS signatures
@@ -91,8 +114,7 @@ pub async fn run_block_ingestion_loop<E, EE>(
     fc_store: Arc<RwLock<FcStore<E>>>,
     execution_engine: Arc<EE>,
     pow_provider: Arc<EnginePowBlockProvider>,
-    head_tx: watch::Sender<Option<HeadChange>>,
-    payload_tx: mpsc::Sender<NewPayloadRequest<E>>,
+    egress: IngestionEgress<E>,
     validate_result: bool,
 ) -> Result<(), IngestionError>
 where
@@ -104,11 +126,13 @@ where
         + Clone,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
-        + pharos_stf::AltairProcessSlotsDispatch<E>,
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + AltairDispatchBounds<E>,
     E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, EE>
         + pharos_stf::BellatrixJaFDispatch<E>
         + pharos_stf::BellatrixProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
+        + pharos_ssz::TreeHash
+        + BellatrixDispatchBounds<E>,
     E::Phase0BeaconBlock:
         pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
     E::Phase0SignedBeaconBlock:
@@ -205,6 +229,12 @@ where
         let fc_clone = Arc::clone(&fc_store);
         let block_for_on_block = signed_block.clone();
         let pow_clone = Arc::clone(&pow_provider);
+        // Capture fork variant and clone for LC snapshot dispatch before moving post_state.
+        let post_state_fork_variant = {
+            use pharos_types::views::BeaconStateView as _;
+            post_state.fork_variant()
+        };
+        let post_state_for_snap = post_state.clone();
         let on_block_result = tokio::task::spawn_blocking(move || {
             let mut store = fc_clone.write();
             on_block::<E, EnginePowBlockProvider>(
@@ -230,6 +260,29 @@ where
             continue;
         }
 
+        // (e2) Write LC snapshots before publishing (Task 2.2).
+        // spawn_blocking per M3a invariant (R8); .await to ensure write completes
+        // before the publish step below reads from the snapshot CF.
+        {
+            let post_state_snap = post_state_for_snap;
+            let signed_block_snap = signed_block.clone();
+            let fc_snap = Arc::clone(&fc_store);
+            let store_snap = Arc::clone(&host.store_arc());
+            let snap_result = tokio::task::spawn_blocking(move || {
+                let fc = fc_snap.read();
+                dispatch_update_light_client_snapshots::<E, _>(
+                    &post_state_snap,
+                    &signed_block_snap,
+                    &fc,
+                    &*store_snap,
+                );
+            })
+            .await;
+            if let Err(e) = snap_result {
+                warn!(error = %e, "lc snapshot dispatch task failed");
+            }
+        }
+
         // (f) For Bellatrix blocks, push the execution payload to the engine driver.
         if let Some(payload) = E::get_execution_payload(&signed_block) {
             let req = NewPayloadRequest {
@@ -237,7 +290,7 @@ where
                 payload: payload.to_execution_payload_v1(),
                 _marker: std::marker::PhantomData,
             };
-            if payload_tx.try_send(req).is_err() {
+            if egress.payload_tx.try_send(req).is_err() {
                 warn!(%block_root, "block_ingestion: payload_tx full or closed; dropping newPayload");
             }
         }
@@ -271,10 +324,139 @@ where
 
         // Also notify HostImpl for any subscribers.
         host.on_head_change(change.clone());
-        let _ = head_tx.send(Some(change));
+        let _ = egress.head_tx.send(Some(change));
+
+        // (i) Publish LC finality + optimistic updates (Tasks 2.4 + 2.5).
+        // Gate: only when the head block is post-Altair.
+        let has_lc_snapshots = post_state_fork_variant != ForkVariant::Phase0;
+        if has_lc_snapshots {
+            if let Some(fu) = host.light_client_finality_update() {
+                let topic = GossipTopic {
+                    fork_digest: host.current_fork_digest(),
+                    kind: GossipTopicKind::LightClientFinalityUpdate,
+                };
+                if let Err(e) = egress.network.publish(topic, &fu).await {
+                    warn!(error = %e, "lc finality update publish failed");
+                }
+            }
+            if let Some(ou) = host.light_client_optimistic_update() {
+                let topic = GossipTopic {
+                    fork_digest: host.current_fork_digest(),
+                    kind: GossipTopicKind::LightClientOptimisticUpdate,
+                };
+                if let Err(e) = egress.network.publish(topic, &ou).await {
+                    warn!(error = %e, "lc optimistic update publish failed");
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+// ── dispatch_update_light_client_snapshots ────────────────────────────────────
+
+/// Fork-aware dispatcher: build and persist LC snapshots after each block.
+///
+/// Lives in `pharos-node` (rather than `pharos-stf`) because it needs
+/// `pharos_fork_choice::Store<E>` — and `pharos-fork-choice` already depends
+/// on `pharos-stf`, so `pharos-stf` cannot depend on `pharos-fork-choice`.
+///
+/// The actual const-generic LC snapshot writes are delegated to
+/// `AltairDispatchBounds::call_update_lc_snapshots` and
+/// `BellatrixDispatchBounds::call_update_lc_snapshots_bellatrix`, both of
+/// which live in `pharos-stf` and carry the fifteen const-generic bounds.
+pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
+    post_state: &E::BeaconState,
+    signed_block: &E::SignedBeaconBlock,
+    fc_store: &FcStore<E>,
+    store: &S,
+) where
+    E: EthSpec,
+    E::AltairBeaconState: AltairDispatchBounds<E>,
+    E::BellatrixBeaconState: BellatrixDispatchBounds<E>,
+    S: pharos_storage::Store<E>,
+    E::AltairSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::AltairBeaconBlock: pharos_types::views::BeaconBlockView,
+    E::BellatrixSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::BellatrixBeaconBlock: pharos_types::views::BeaconBlockView,
+    E::BeaconState: pharos_types::views::BeaconStateView,
+{
+    use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _};
+    match post_state.fork_variant() {
+        ForkVariant::Phase0 => {
+            // No LC snapshots before Altair.
+        }
+        ForkVariant::Altair => {
+            let Some(altair_signed) = E::unwrap_altair_signed_block(signed_block) else {
+                return;
+            };
+            // Access the unsigned block via SignedBeaconBlockView::message().
+            let altair_block = altair_signed.message();
+            let Some(post_state_altair) = E::unwrap_altair_state(post_state) else {
+                return;
+            };
+
+            let attested_root = altair_block.parent_root();
+            let finalized_root = post_state.finalized_checkpoint().root;
+
+            let attested_block_opt = fc_store
+                .blocks
+                .get(&attested_root)
+                .and_then(|b| E::unwrap_altair_block(b));
+            let attested_state_opt = fc_store
+                .block_states
+                .get(&attested_root)
+                .and_then(|s| E::unwrap_altair_state(s));
+            let finalized_block_opt = fc_store
+                .blocks
+                .get(&finalized_root)
+                .and_then(|b| E::unwrap_altair_block(b));
+
+            post_state_altair.call_update_lc_snapshots::<S>(
+                altair_block,
+                attested_state_opt,
+                attested_block_opt,
+                finalized_block_opt,
+                store,
+            );
+        }
+        ForkVariant::Bellatrix => {
+            let Some(bellatrix_signed) = E::unwrap_bellatrix_signed_block(signed_block) else {
+                return;
+            };
+            let bellatrix_block = bellatrix_signed.message();
+            let Some(post_state_bellatrix) = E::unwrap_bellatrix_state(post_state) else {
+                return;
+            };
+
+            let attested_root = bellatrix_block.parent_root();
+            let finalized_root = post_state.finalized_checkpoint().root;
+
+            let attested_block_opt = fc_store
+                .blocks
+                .get(&attested_root)
+                .and_then(|b| E::unwrap_bellatrix_block(b));
+            let attested_state_opt = fc_store
+                .block_states
+                .get(&attested_root)
+                .and_then(|s| E::unwrap_bellatrix_state(s));
+            let finalized_block_opt = fc_store
+                .blocks
+                .get(&finalized_root)
+                .and_then(|b| E::unwrap_bellatrix_block(b));
+
+            post_state_bellatrix.call_update_lc_snapshots_bellatrix::<S>(
+                bellatrix_block,
+                attested_state_opt,
+                attested_block_opt,
+                finalized_block_opt,
+                store,
+            );
+        }
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
