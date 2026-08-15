@@ -45,6 +45,12 @@ where
 
 /// `get_matching_target_attestations` per
 /// `specs/phase0/beacon-chain.md:1450-1459`.
+///
+/// The Python spec evaluates `get_block_root` inside the list-comprehension
+/// filter, so it is only called if `source` is non-empty. We match that
+/// semantics: return an empty list immediately when there are no source
+/// attestations rather than calling `get_block_root` unconditionally (which
+/// would fail at slot 0 where no prior block root exists).
 pub fn get_matching_target_attestations<E: EthSpec>(
     state: &E::BeaconState,
     epoch: Epoch,
@@ -54,6 +60,9 @@ where
     E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let source = get_matching_source_attestations::<E>(state, epoch)?;
+    if source.is_empty() {
+        return Ok(vec![]);
+    }
     let block_root = get_block_root::<E>(state, epoch)
         .map_err(|_| EpochProcessingError::BlockRootUnavailable)?;
     Ok(source

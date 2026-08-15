@@ -12,11 +12,15 @@ pub mod bls;
 pub mod epoch_processing;
 pub mod error;
 pub mod filter;
+pub mod finality;
 pub mod fixture_walker;
 pub mod fixtures;
 pub mod genesis;
 pub mod operations;
+pub mod random;
 pub mod report;
+pub mod rewards;
+pub mod sanity;
 pub mod shuffling;
 pub mod snappy;
 pub mod ssz_generic_types;
@@ -325,6 +329,190 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("phase0", "epoch_processing", "minimal"));
     }
 
+    // ── phase0/sanity/mainnet ─────────────────────────────────────────────────
+    if filter.matches("phase0", "sanity", "mainnet") {
+        let result = sanity::run_sanity_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "sanity",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "sanity", "mainnet"));
+    }
+
+    // ── phase0/sanity/minimal ─────────────────────────────────────────────────
+    if filter.matches("phase0", "sanity", "minimal") {
+        let result = sanity::run_sanity_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "sanity",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "sanity", "minimal"));
+    }
+
+    // ── phase0/finality/mainnet ───────────────────────────────────────────────
+    if filter.matches("phase0", "finality", "mainnet") {
+        let result = finality::run_finality_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "finality",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "finality", "mainnet"));
+    }
+
+    // ── phase0/finality/minimal ───────────────────────────────────────────────
+    if filter.matches("phase0", "finality", "minimal") {
+        let result = finality::run_finality_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "finality",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "finality", "minimal"));
+    }
+
+    // ── phase0/random/mainnet ─────────────────────────────────────────────────
+    if filter.matches("phase0", "random", "mainnet") {
+        let result = random::run_random_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "random",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "random", "mainnet"));
+    }
+
+    // ── phase0/random/minimal ─────────────────────────────────────────────────
+    if filter.matches("phase0", "random", "minimal") {
+        let result = random::run_random_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "random",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "random", "minimal"));
+    }
+
+    // ── phase0/rewards/mainnet ────────────────────────────────────────────────
+    if filter.matches("phase0", "rewards", "mainnet") {
+        let result = rewards::run_rewards_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "rewards",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "rewards", "mainnet"));
+    }
+
+    // ── phase0/rewards/minimal ────────────────────────────────────────────────
+    if filter.matches("phase0", "rewards", "minimal") {
+        let result = rewards::run_rewards_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "phase0",
+            "rewards",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "rewards", "minimal"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -352,6 +540,14 @@ fn fill_future_placeholders(report: &mut Report) {
         ("phase0", "operations", "minimal"),
         ("phase0", "epoch_processing", "mainnet"),
         ("phase0", "epoch_processing", "minimal"),
+        ("phase0", "sanity", "mainnet"),
+        ("phase0", "sanity", "minimal"),
+        ("phase0", "finality", "mainnet"),
+        ("phase0", "finality", "minimal"),
+        ("phase0", "random", "mainnet"),
+        ("phase0", "random", "minimal"),
+        ("phase0", "rewards", "mainnet"),
+        ("phase0", "rewards", "minimal"),
     ]
     .iter()
     .copied()
@@ -375,10 +571,14 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("phase0", "operations", "minimal"),
         ("phase0", "epoch_processing", "mainnet"),
         ("phase0", "epoch_processing", "minimal"),
-        ("phase0", "sanity", "-"),
-        ("phase0", "finality", "-"),
-        ("phase0", "random", "-"),
-        ("phase0", "rewards", "-"),
+        ("phase0", "sanity", "mainnet"),
+        ("phase0", "sanity", "minimal"),
+        ("phase0", "finality", "mainnet"),
+        ("phase0", "finality", "minimal"),
+        ("phase0", "random", "mainnet"),
+        ("phase0", "random", "minimal"),
+        ("phase0", "rewards", "mainnet"),
+        ("phase0", "rewards", "minimal"),
         ("phase0", "fork_choice", "-"),
         // genesis: only minimal fixtures exist upstream (no mainnet genesis fixtures in v1.6.1).
         ("phase0", "genesis", "minimal"),

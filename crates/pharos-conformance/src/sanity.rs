@@ -1,0 +1,302 @@
+//! Sanity conformance dispatcher.
+//!
+//! Covers two sub-categories of `phase0/sanity` for both presets:
+//!   - `blocks`  — apply a sequence of signed blocks via `state_transition`.
+//!   - `slots`   — advance the state forward by N slots via `process_slots`.
+//!
+//! # blocks sub-category
+//!
+//! Each case has `pre.ssz_snappy`, `blocks_<i>.ssz_snappy` for `i in
+//! 0..blocks_count`, and an optional `post.ssz_snappy`:
+//! - post present  → all blocks must apply successfully; final state must equal post.
+//! - post absent   → at least one block must fail `state_transition` (negative test).
+//!
+//! `bls_setting`:
+//! - `2` → `validate_result = false` (BLS ignored, signatures are placeholders).
+//! - otherwise    → `validate_result = true`.
+//!
+//! # slots sub-category
+//!
+//! Each case has `pre.ssz_snappy`, `post.ssz_snappy`, and `slots.yaml` (a bare
+//! integer, optionally followed by YAML `...` end-document marker). The fixture
+//! contains no `meta.yaml`, so `WalkOpts::meta_required` is `false`.
+
+use std::path::Path;
+
+use pharos_ssz::{Decode, Encode, TreeHash};
+use pharos_stf::phase0::BeaconStateWrite;
+use pharos_stf::{process_slots, state_transition};
+use pharos_types::{
+    BeaconStateView, EthSpec, MainnetEthSpec, MinimalEthSpec,
+    phase0::{Attestation, AttesterSlashing, Deposit, Slot},
+    views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
+};
+
+use crate::fixture_walker::{WalkOpts, load_pre_post, load_ssz_snappy, walk_category};
+use crate::fs_util::dir_name;
+
+/// Result tally for a single sanity preset run.
+pub struct SanityResult {
+    pub pass: u64,
+    pub fail: u64,
+    pub skip: u64,
+    pub failures: Vec<String>,
+}
+
+impl SanityResult {
+    fn new() -> Self {
+        SanityResult {
+            pass: 0,
+            fail: 0,
+            skip: 0,
+            failures: Vec::new(),
+        }
+    }
+
+    fn merge(&mut self, other: SanityResult) {
+        self.pass += other.pass;
+        self.fail += other.fail;
+        self.skip += other.skip;
+        self.failures.extend(other.failures);
+    }
+}
+
+// ── Public entry points ───────────────────────────────────────────────────────
+
+/// Run all sanity sub-categories for the mainnet preset.
+pub fn run_sanity_mainnet(root: &Path) -> SanityResult {
+    run_sanity_preset::<MainnetEthSpec>(root, "mainnet")
+}
+
+/// Run all sanity sub-categories for the minimal preset.
+pub fn run_sanity_minimal(root: &Path) -> SanityResult {
+    run_sanity_preset::<MinimalEthSpec>(root, "minimal")
+}
+
+/// Run all sanity sub-categories for a single preset.
+pub fn run_sanity_preset<E>(root: &Path, preset: &'static str) -> SanityResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Decode,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock> + Decode,
+    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody>,
+    E::BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+{
+    let mut total = SanityResult::new();
+    total.merge(run_blocks_preset::<E>(root, preset));
+    total.merge(run_slots_preset::<E>(root, preset));
+    total
+}
+
+// ── blocks sub-sweep ──────────────────────────────────────────────────────────
+
+fn run_blocks_preset<E>(root: &Path, preset: &'static str) -> SanityResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Decode,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock> + Decode,
+    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody>,
+    E::BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+{
+    let mut out = SanityResult::new();
+    for (case_dir, meta) in walk_category(
+        root,
+        preset,
+        "phase0",
+        "sanity",
+        Some("blocks"),
+        WalkOpts::default(),
+    ) {
+        let case_name = format!("phase0/sanity/blocks/{preset}/{}", dir_name(&case_dir));
+
+        // blocks_count is required for the blocks sub-category.
+        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+            Some(n) => n,
+            None => {
+                out.skip += 1;
+                continue;
+            }
+        };
+
+        // bls_setting == 2 → skip BLS verification; anything else → verify.
+        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+
+        let result = run_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_blocks_case<E>(
+    case_dir: &Path,
+    case_name: &str,
+    blocks_count: u64,
+    validate_result: bool,
+) -> CaseResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Decode,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock> + Decode,
+    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody>,
+    E::BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+{
+    let (pre, post) = match load_pre_post::<E::BeaconState>(case_dir) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut current: Option<E::BeaconState> = Some(pre);
+    let mut block_error: Option<String> = None;
+
+    for i in 0..blocks_count {
+        let block_file = format!("blocks_{i}.ssz_snappy");
+        let block = match load_ssz_snappy::<E::SignedBeaconBlock>(case_dir, &block_file) {
+            Ok(v) => v,
+            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+        };
+        let state = current.take().unwrap();
+        match state_transition::<E>(state, &block, validate_result) {
+            Ok(new_state) => current = Some(new_state),
+            Err(e) => {
+                block_error = Some(format!("{e}"));
+                break;
+            }
+        }
+    }
+
+    match (block_error, post) {
+        // All blocks applied, post present — compare states.
+        (None, Some(expected)) => {
+            let state = current.unwrap();
+            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!("{case_name}: state mismatch after block sequence"))
+            }
+        }
+        // All blocks applied but no post expected — should have failed.
+        (None, None) => CaseResult::Fail(format!(
+            "{case_name}: expected a block to fail but all blocks applied successfully"
+        )),
+        // A block failed and we expected it (no post) — negative test passed.
+        (Some(_), None) => CaseResult::Pass,
+        // A block failed unexpectedly (post was present).
+        (Some(e), Some(_)) => {
+            CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
+        }
+    }
+}
+
+// ── slots sub-sweep ───────────────────────────────────────────────────────────
+
+fn run_slots_preset<E>(root: &Path, preset: &'static str) -> SanityResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + Decode,
+    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+{
+    let mut out = SanityResult::new();
+    for (case_dir, _meta) in walk_category(
+        root,
+        preset,
+        "phase0",
+        "sanity",
+        Some("slots"),
+        WalkOpts {
+            meta_required: false,
+            inner_dir: Some("pyspec_tests"),
+        },
+    ) {
+        let case_name = format!("phase0/sanity/slots/{preset}/{}", dir_name(&case_dir));
+        let result = run_slots_case::<E>(&case_dir, &case_name);
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_slots_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + Decode,
+    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+{
+    // slots.yaml is a bare integer (optionally followed by YAML end-document `...`).
+    let slots_path = case_dir.join("slots.yaml");
+    let slots_count: u64 = match read_u64_yaml(&slots_path) {
+        Ok(n) => n,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let (mut pre, post) = match load_pre_post::<E::BeaconState>(case_dir) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match post {
+        Some(p) => p,
+        None => return CaseResult::Fail(format!("{case_name}: missing post.ssz_snappy")),
+    };
+
+    let target_slot = Slot(pre.slot().0 + slots_count);
+    if let Err(e) = process_slots::<E>(&mut pre, target_slot) {
+        return CaseResult::Fail(format!("{case_name}: process_slots failed: {e}"));
+    }
+
+    if pre.as_ssz_bytes() == expected.as_ssz_bytes() {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
+    }
+}
+
+// ── YAML helper ───────────────────────────────────────────────────────────────
+
+/// Parse a bare integer from a YAML file.
+///
+/// `slots.yaml` in the sanity/slots fixtures is a single integer value,
+/// optionally followed by a YAML end-document marker (`...`). Example:
+/// ```text
+/// 1
+/// ...
+/// ```
+fn read_u64_yaml(path: &Path) -> Result<u64, String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let val: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)
+        .map_err(|e| format!("yaml parse {}: {e}", path.display()))?;
+    val.as_u64()
+        .ok_or_else(|| format!("{}: expected integer, got {:?}", path.display(), val))
+}
+
+// ── Internal result type ──────────────────────────────────────────────────────
+
+enum CaseResult {
+    Pass,
+    Fail(String),
+}

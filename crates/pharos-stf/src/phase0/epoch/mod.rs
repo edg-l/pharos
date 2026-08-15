@@ -19,7 +19,10 @@ pub use final_updates::{
 };
 pub use justification_and_finalization::process_justification_and_finalization;
 pub use registry_updates::process_registry_updates;
-pub use rewards_and_penalties::process_rewards_and_penalties;
+pub use rewards_and_penalties::{
+    get_head_deltas, get_inactivity_penalty_deltas, get_inclusion_delay_deltas, get_source_deltas,
+    get_target_deltas, process_rewards_and_penalties,
+};
 pub use slashings::process_slashings;
 
 use pharos_types::{EthSpec, phase0::Attestation, views::BeaconBlockBodyView};

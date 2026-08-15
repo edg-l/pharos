@@ -50,6 +50,10 @@ pub struct MetaYaml {
     pub bls_setting: Option<u8>,
     /// `deposits_count: u64` — expected number of deposit files.
     pub deposits_count: Option<u64>,
+    /// `blocks_count: u64` — number of `blocks_<i>.ssz_snappy` files in the case dir.
+    ///
+    /// Used by sanity/blocks, finality, and random fixtures.
+    pub blocks_count: Option<u64>,
 }
 
 impl MetaYaml {
@@ -63,9 +67,12 @@ impl MetaYaml {
 
         let deposits_count = val.get("deposits_count").and_then(|v| v.as_u64());
 
+        let blocks_count = val.get("blocks_count").and_then(|v| v.as_u64());
+
         Ok(MetaYaml {
             bls_setting,
             deposits_count,
+            blocks_count,
         })
     }
 }
