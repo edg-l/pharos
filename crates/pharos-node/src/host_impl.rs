@@ -96,13 +96,17 @@ pub struct HostImpl<E: EthSpec> {
     metadata: RwLock<AltairMetaData>,
     /// Runtime configuration (seconds_per_slot, etc.) for gossip validation timing.
     runtime_cfg: Arc<RuntimeConfig>,
-    /// Highest `finalized_header.beacon.slot` of any forwarded finality update.
+    /// Highest `finalized_header.beacon.slot` of any forwarded altair finality update.
     ///
     /// Backs the per-topic monotonic forwarded-slot IGNORE rule per
     /// `specs/altair/light-client/p2p-interface.md`.
     last_forwarded_finality_slot: AtomicU64,
-    /// Highest `attested_header.beacon.slot` of any forwarded optimistic update.
+    /// Highest `attested_header.beacon.slot` of any forwarded altair optimistic update.
     last_forwarded_optimistic_slot: AtomicU64,
+    /// Highest `finalized_header.beacon.slot` of any forwarded capella finality update.
+    last_forwarded_finality_slot_capella: AtomicU64,
+    /// Highest `attested_header.beacon.slot` of any forwarded capella optimistic update.
+    last_forwarded_optimistic_slot_capella: AtomicU64,
     /// Broadcast channel for head-change events.  `None` before the engine
     /// driver is wired in (cold start before Task 4.8 spawns the loop).
     pub(crate) head_tx: Option<watch::Sender<Option<HeadChange>>>,
@@ -142,6 +146,23 @@ pub struct HostImpl<E: EthSpec> {
     /// set bit in the incoming bitlist is already set in the stored bitlist.
     /// Capacity: 2048 entries.
     seen_aggregate_data: RwLock<LruCache<Root, pharos_ssz::Bitlist<2048>>>,
+    /// Tracks validator indices for which a `voluntary_exit` has been accepted.
+    /// Gates the duplicate-exit IGNORE rule per `specs/phase0/p2p-interface.md`.
+    /// Capacity: 4096 entries (D-seen-cache-shape).
+    seen_voluntary_exit_indices: RwLock<LruCache<u64, ()>>,
+    /// Tracks validator indices for which a `proposer_slashing` has been accepted.
+    /// Gates the duplicate-slashing IGNORE rule per `specs/phase0/p2p-interface.md`.
+    /// Capacity: 4096 entries.
+    seen_proposer_slashing_indices: RwLock<LruCache<u64, ()>>,
+    /// Tracks validator indices present in attester slashings that have been accepted.
+    /// Gates the duplicate-attester-slashing IGNORE rule per `specs/phase0/p2p-interface.md`.
+    /// Capacity: 4096 entries.
+    seen_attester_slashing_indices: RwLock<LruCache<u64, ()>>,
+    /// Tracks validator indices for which a `bls_to_execution_change` has been accepted.
+    /// Gates the duplicate-change IGNORE rule per `specs/capella/p2p-interface.md`
+    /// (ADR `D-bls-to-exec-seen-cache`).
+    /// Capacity: 4096 entries.
+    seen_bls_to_execution_change_indices: RwLock<LruCache<u64, ()>>,
     _phantom: PhantomData<E>,
 }
 
@@ -179,6 +200,8 @@ impl<E: EthSpec> HostImpl<E> {
             runtime_cfg,
             last_forwarded_finality_slot: AtomicU64::new(0),
             last_forwarded_optimistic_slot: AtomicU64::new(0),
+            last_forwarded_finality_slot_capella: AtomicU64::new(0),
+            last_forwarded_optimistic_slot_capella: AtomicU64::new(0),
             head_tx: None,
             payload_tx: None,
             seen_block_proposers: RwLock::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
@@ -190,6 +213,18 @@ impl<E: EthSpec> HostImpl<E> {
             committee_cache: RwLock::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
             seen_aggregators: RwLock::new(LruCache::new(NonZeroUsize::new(8192).unwrap())),
             seen_aggregate_data: RwLock::new(LruCache::new(NonZeroUsize::new(2048).unwrap())),
+            seen_voluntary_exit_indices: RwLock::new(LruCache::new(
+                NonZeroUsize::new(4096).unwrap(),
+            )),
+            seen_proposer_slashing_indices: RwLock::new(LruCache::new(
+                NonZeroUsize::new(4096).unwrap(),
+            )),
+            seen_attester_slashing_indices: RwLock::new(LruCache::new(
+                NonZeroUsize::new(4096).unwrap(),
+            )),
+            seen_bls_to_execution_change_indices: RwLock::new(LruCache::new(
+                NonZeroUsize::new(4096).unwrap(),
+            )),
             _phantom: PhantomData,
         }
     }
@@ -572,13 +607,14 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
             Fork::Phase0 => sched.genesis_fork_version,
             Fork::Altair => sched.altair_fork_version,
             Fork::Bellatrix => sched.bellatrix_fork_version,
+            Fork::Capella => sched.capella_fork_version,
         };
         compute_fork_digest(version, &self.fork_context.genesis_validators_root)
     }
 
     /// Reverse-maps a raw 4-byte context to a `Fork`.
     ///
-    /// Computes the three known fork digests on the fly and compares against
+    /// Computes the four known fork digests on the fly and compares against
     /// `ctx`. Returns `None` for any unrecognised context bytes.
     fn fork_from_context(&self, ctx: &[u8; 4]) -> Option<Fork> {
         let gvr = &self.fork_context.genesis_validators_root;
@@ -594,6 +630,10 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
         let bellatrix_digest = compute_fork_digest(sched.bellatrix_fork_version, gvr);
         if *ctx == bellatrix_digest.into_inner() {
             return Some(Fork::Bellatrix);
+        }
+        let capella_digest = compute_fork_digest(sched.capella_fork_version, gvr);
+        if *ctx == capella_digest.into_inner() {
+            return Some(Fork::Capella);
         }
         None
     }
@@ -1248,18 +1288,329 @@ where
         GossipVerdict::Accept
     }
 
-    /// TODO(M4): Validate voluntary exit epoch, validator status, signature.
-    fn validate_voluntary_exit(&self, _exit: &SignedVoluntaryExit) -> GossipVerdict {
+    /// Validate a `voluntary_exit` message per `specs/phase0/p2p-interface.md:740-793`.
+    ///
+    /// 1 IGNORE + 6 REJECT rules (per spec), + mark-seen on accept.
+    /// Per `D-folded-phase0-validators` in `docs/decisions.md`.
+    fn validate_voluntary_exit(&self, exit: &SignedVoluntaryExit) -> GossipVerdict {
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_signing_root, get_domain,
+        };
+        use pharos_stf::phase0::helpers::DOMAIN_VOLUNTARY_EXIT;
+        use pharos_stf::phase0::predicates::is_active_validator;
+        use pharos_types::BeaconStateView as _;
+
+        let voluntary_exit = &exit.message;
+        let validator_index = voluntary_exit.validator_index.0;
+
+        // [IGNORE] First valid voluntary exit for this validator.
+        if self
+            .seen_voluntary_exit_indices
+            .read()
+            .peek(&validator_index)
+            .is_some()
+        {
+            return GossipVerdict::Ignore("exit: already seen for this validator".into());
+        }
+
+        // Get the head state for subsequent checks (two-step to avoid double-lock).
+        let head_root = pharos_fork_choice::get_head(&*self.fork_choice.read());
+        let head_state = match self
+            .fork_choice
+            .read()
+            .block_states
+            .get(&head_root)
+            .cloned()
+        {
+            Some(s) => s,
+            None => return GossipVerdict::Ignore("exit: head state unavailable".into()),
+        };
+
+        let num_validators = head_state.num_validators();
+        let current_epoch = compute_epoch_at_slot(head_state.slot(), E::SLOTS_PER_EPOCH);
+
+        // [REJECT] Validator index must be in range.
+        if validator_index as usize >= num_validators {
+            return GossipVerdict::Reject("exit: validator index out of range".into());
+        }
+
+        let validator = match head_state.validator(validator_index as usize) {
+            Some(v) => v,
+            None => return GossipVerdict::Reject("exit: validator index out of range".into()),
+        };
+
+        // [REJECT] Validator must be active.
+        if !is_active_validator(validator, current_epoch.0) {
+            return GossipVerdict::Reject("exit: validator not active".into());
+        }
+
+        // [REJECT] Validator must not have already initiated exit.
+        if validator.exit_epoch.0 != u64::MAX {
+            return GossipVerdict::Reject("exit: validator already exiting".into());
+        }
+
+        // [REJECT] Exit epoch must not be in the future (current_epoch >= voluntary_exit.epoch).
+        if current_epoch < voluntary_exit.epoch {
+            return GossipVerdict::Reject("exit: exit epoch in the future".into());
+        }
+
+        // [REJECT] Validator must have been active long enough (SHARD_COMMITTEE_PERIOD).
+        if current_epoch.0 < validator.activation_epoch.0 + E::SHARD_COMMITTEE_PERIOD {
+            return GossipVerdict::Reject("exit: validator not active long enough".into());
+        }
+
+        // [REJECT] BLS signature must be valid.
+        let domain = get_domain::<E>(
+            &head_state,
+            DOMAIN_VOLUNTARY_EXIT,
+            Some(voluntary_exit.epoch),
+        );
+        let signing_root = compute_signing_root(voluntary_exit, domain);
+        match pharos_utils::bls::verify(&validator.pubkey, signing_root.as_ref(), &exit.signature) {
+            Ok(true) => {}
+            _ => return GossipVerdict::Reject("exit: invalid signature".into()),
+        }
+
+        // Mark as seen and accept.
+        self.seen_voluntary_exit_indices
+            .write()
+            .put(validator_index, ());
         GossipVerdict::Accept
     }
 
-    /// TODO(M4): Validate proposer slashing headers, signature.
-    fn validate_proposer_slashing(&self, _slashing: &ProposerSlashing) -> GossipVerdict {
+    /// Validate a `proposer_slashing` message per `specs/phase0/p2p-interface.md:796-851`.
+    ///
+    /// 1 IGNORE + 6 REJECT rules (per spec), + mark-seen on accept.
+    /// Per `D-folded-phase0-validators` in `docs/decisions.md`.
+    fn validate_proposer_slashing(&self, slashing: &ProposerSlashing) -> GossipVerdict {
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_signing_root, get_domain,
+        };
+        use pharos_stf::phase0::helpers::DOMAIN_BEACON_PROPOSER;
+        use pharos_stf::phase0::predicates::is_slashable_validator;
+        use pharos_types::BeaconStateView as _;
+
+        let header_1 = &slashing.signed_header_1.message;
+        let header_2 = &slashing.signed_header_2.message;
+        let proposer_index = header_1.proposer_index.0;
+
+        // [IGNORE] First valid proposer slashing for this proposer.
+        if self
+            .seen_proposer_slashing_indices
+            .read()
+            .peek(&proposer_index)
+            .is_some()
+        {
+            return GossipVerdict::Ignore(
+                "proposer_slashing: already seen for this proposer".into(),
+            );
+        }
+
+        // [REJECT] Header slots must match.
+        if header_1.slot != header_2.slot {
+            return GossipVerdict::Reject("proposer_slashing: header slots do not match".into());
+        }
+
+        // [REJECT] Header proposer indices must match.
+        if header_1.proposer_index != header_2.proposer_index {
+            return GossipVerdict::Reject(
+                "proposer_slashing: header proposer indices do not match".into(),
+            );
+        }
+
+        // [REJECT] Headers must be different.
+        if header_1 == header_2 {
+            return GossipVerdict::Reject("proposer_slashing: headers are not different".into());
+        }
+
+        // Get the head state (two-step to avoid double-lock).
+        let head_root = pharos_fork_choice::get_head(&*self.fork_choice.read());
+        let head_state = match self
+            .fork_choice
+            .read()
+            .block_states
+            .get(&head_root)
+            .cloned()
+        {
+            Some(s) => s,
+            None => {
+                return GossipVerdict::Ignore("proposer_slashing: head state unavailable".into());
+            }
+        };
+
+        let num_validators = head_state.num_validators();
+        let current_epoch = compute_epoch_at_slot(head_state.slot(), E::SLOTS_PER_EPOCH);
+
+        // [REJECT] Proposer index must be in range.
+        if proposer_index as usize >= num_validators {
+            return GossipVerdict::Reject("proposer_slashing: proposer index out of range".into());
+        }
+
+        let proposer = match head_state.validator(proposer_index as usize) {
+            Some(v) => v,
+            None => {
+                return GossipVerdict::Reject(
+                    "proposer_slashing: proposer index out of range".into(),
+                );
+            }
+        };
+
+        // [REJECT] Proposer must be slashable.
+        if !is_slashable_validator(proposer, current_epoch.0) {
+            return GossipVerdict::Reject("proposer_slashing: proposer not slashable".into());
+        }
+
+        // [REJECT] Both signatures must be valid.
+        for signed_header in [&slashing.signed_header_1, &slashing.signed_header_2] {
+            let epoch = compute_epoch_at_slot(signed_header.message.slot, E::SLOTS_PER_EPOCH);
+            let domain = get_domain::<E>(&head_state, DOMAIN_BEACON_PROPOSER, Some(epoch));
+            let signing_root = compute_signing_root(&signed_header.message, domain);
+            match pharos_utils::bls::verify(
+                &proposer.pubkey,
+                signing_root.as_ref(),
+                &signed_header.signature,
+            ) {
+                Ok(true) => {}
+                _ => {
+                    return GossipVerdict::Reject("proposer_slashing: invalid signature".into());
+                }
+            }
+        }
+
+        // Mark as seen and accept.
+        self.seen_proposer_slashing_indices
+            .write()
+            .put(proposer_index, ());
         GossipVerdict::Accept
     }
 
-    /// TODO(M4): Validate attester slashing indices, signature.
-    fn validate_attester_slashing(&self, _slashing: &AttesterSlashing<2048>) -> GossipVerdict {
+    /// Validate an `attester_slashing` message per `specs/phase0/p2p-interface.md:854-913`.
+    ///
+    /// 1 IGNORE + 6 REJECT rules (per spec), + mark-seen on accept.
+    /// Per `D-folded-phase0-validators` in `docs/decisions.md`.
+    fn validate_attester_slashing(&self, slashing: &AttesterSlashing<2048>) -> GossipVerdict {
+        use pharos_stf::phase0::predicates::{
+            is_slashable_attestation_data, is_slashable_validator, is_valid_indexed_attestation,
+        };
+        use pharos_types::BeaconStateView as _;
+
+        let att_1 = &slashing.attestation_1;
+        let att_2 = &slashing.attestation_2;
+
+        use pharos_stf::phase0::accessors::compute_epoch_at_slot;
+
+        // Compute the intersection of attesting indices using as_slice() on SszList.
+        let indices_1: std::collections::HashSet<u64> = att_1
+            .attesting_indices
+            .as_slice()
+            .iter()
+            .map(|v| v.0)
+            .collect();
+        let indices_2: std::collections::HashSet<u64> = att_2
+            .attesting_indices
+            .as_slice()
+            .iter()
+            .map(|v| v.0)
+            .collect();
+        let slashable_indices: std::collections::HashSet<u64> =
+            indices_1.intersection(&indices_2).copied().collect();
+
+        // [IGNORE] At least one index in the intersection must be new (not yet seen).
+        let has_new = {
+            let cache = self.seen_attester_slashing_indices.read();
+            slashable_indices
+                .iter()
+                .any(|idx| cache.peek(idx).is_none())
+        };
+        if !has_new {
+            return GossipVerdict::Ignore("attester_slashing: all indices already seen".into());
+        }
+
+        // [REJECT] Attestation data must be slashable (double vote or surround).
+        if !is_slashable_attestation_data(&att_1.data, &att_2.data) {
+            return GossipVerdict::Reject(
+                "attester_slashing: attestation data not slashable".into(),
+            );
+        }
+
+        // Get head state for index-range checks and signature verification (two-step).
+        let head_root = pharos_fork_choice::get_head(&*self.fork_choice.read());
+        let head_state = match self
+            .fork_choice
+            .read()
+            .block_states
+            .get(&head_root)
+            .cloned()
+        {
+            Some(s) => s,
+            None => {
+                return GossipVerdict::Ignore("attester_slashing: head state unavailable".into());
+            }
+        };
+
+        let num_validators = head_state.num_validators();
+
+        // [REJECT] All indices in attestation_1 must be in range.
+        if att_1
+            .attesting_indices
+            .as_slice()
+            .iter()
+            .any(|v| v.0 as usize >= num_validators)
+        {
+            return GossipVerdict::Reject(
+                "attester_slashing: index out of range in attestation_1".into(),
+            );
+        }
+
+        // [REJECT] attestation_1 must be valid (signature check included).
+        if !is_valid_indexed_attestation::<E>(&head_state, att_1, true) {
+            return GossipVerdict::Reject(
+                "attester_slashing: invalid indexed attestation_1".into(),
+            );
+        }
+
+        // [REJECT] All indices in attestation_2 must be in range.
+        if att_2
+            .attesting_indices
+            .as_slice()
+            .iter()
+            .any(|v| v.0 as usize >= num_validators)
+        {
+            return GossipVerdict::Reject(
+                "attester_slashing: index out of range in attestation_2".into(),
+            );
+        }
+
+        // [REJECT] attestation_2 must be valid (signature check included).
+        if !is_valid_indexed_attestation::<E>(&head_state, att_2, true) {
+            return GossipVerdict::Reject(
+                "attester_slashing: invalid indexed attestation_2".into(),
+            );
+        }
+
+        // Compute current epoch for slashability check.
+        let current_epoch = compute_epoch_at_slot(head_state.slot(), E::SLOTS_PER_EPOCH);
+
+        // [REJECT] At least one validator in the intersection must be slashable.
+        let any_slashable = slashable_indices.iter().any(|idx| {
+            head_state
+                .validator(*idx as usize)
+                .map(|v| is_slashable_validator(v, current_epoch.0))
+                .unwrap_or(false)
+        });
+        if !any_slashable {
+            return GossipVerdict::Reject(
+                "attester_slashing: no slashable validators in intersection".into(),
+            );
+        }
+
+        // Mark new indices as seen and accept.
+        {
+            let mut cache = self.seen_attester_slashing_indices.write();
+            for idx in &slashable_indices {
+                cache.put(*idx, ());
+            }
+        }
         GossipVerdict::Accept
     }
 
@@ -1442,6 +1793,249 @@ where
             }
         }
     }
+
+    /// Validate a capella-fork `light_client_finality_update` per
+    /// `specs/capella/light-client/p2p-interface.md`.
+    ///
+    /// Same IGNORE rules as the altair path; only the storage CF differs.
+    /// Per `D-lc-gossip-validation-full-node-arm`, full-node arm:
+    /// snapshot equality short-circuit via `tree_hash_root`.
+    fn validate_capella_light_client_finality_update(
+        &self,
+        msg: &<E as EthSpec>::CapellaLightClientFinalityUpdate,
+    ) -> GossipVerdict {
+        use pharos_ssz::TreeHash;
+        use pharos_types::views::LightClientFinalityUpdateView as _;
+
+        let local = match <RocksStore as StoreTrait<E>>::get_light_client_finality_update_capella(
+            &self.store,
+        ) {
+            Ok(Some(u)) => u,
+            Ok(None) => {
+                return GossipVerdict::Ignore("capella_lc_finality: no local snapshot".into());
+            }
+            Err(e) => {
+                warn!(%e, "capella_lc_finality: storage error");
+                return GossipVerdict::Ignore("capella_lc_finality: no local snapshot".into());
+            }
+        };
+
+        let incoming = msg.finalized_header_slot();
+        let mut prev = self
+            .last_forwarded_finality_slot_capella
+            .load(Ordering::Relaxed);
+        if incoming <= prev {
+            return GossipVerdict::Ignore("capella_lc_finality: non-monotonic slot".into());
+        }
+
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis(),
+            Err(_) => {
+                return GossipVerdict::Ignore("capella_lc_finality: clock unavailable".into());
+            }
+        };
+        let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
+        let signature_slot = msg.finality_signature_slot();
+        let slot_ms = u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
+        let slot_start_ms = genesis_ms + u128::from(signature_slot) * slot_ms;
+        let due_ms = slot_start_ms + slot_ms / u128::from(INTERVALS_PER_SLOT);
+        if now_ms + u128::from(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < due_ms {
+            return GossipVerdict::Ignore("capella_lc_finality: clock window not elapsed".into());
+        }
+
+        if local.tree_hash_root() != msg.tree_hash_root() {
+            return GossipVerdict::Ignore("capella_lc_finality: snapshot mismatch".into());
+        }
+
+        loop {
+            match self.last_forwarded_finality_slot_capella.compare_exchange(
+                prev,
+                incoming,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return GossipVerdict::Accept,
+                Err(current) => {
+                    if incoming <= current {
+                        return GossipVerdict::Ignore(
+                            "capella_lc_finality: lost CAS race to higher slot".into(),
+                        );
+                    }
+                    prev = current;
+                }
+            }
+        }
+    }
+
+    /// Validate a capella-fork `light_client_optimistic_update` per
+    /// `specs/capella/light-client/p2p-interface.md`.
+    ///
+    /// Same IGNORE rules as the altair path; only the storage CF differs.
+    fn validate_capella_light_client_optimistic_update(
+        &self,
+        msg: &<E as EthSpec>::CapellaLightClientOptimisticUpdate,
+    ) -> GossipVerdict {
+        use pharos_ssz::TreeHash;
+        use pharos_types::views::LightClientOptimisticUpdateView as _;
+
+        let local = match <RocksStore as StoreTrait<E>>::get_light_client_optimistic_update_capella(
+            &self.store,
+        ) {
+            Ok(Some(u)) => u,
+            Ok(None) => {
+                return GossipVerdict::Ignore("capella_lc_optimistic: no local snapshot".into());
+            }
+            Err(e) => {
+                warn!(%e, "capella_lc_optimistic: storage error");
+                return GossipVerdict::Ignore("capella_lc_optimistic: no local snapshot".into());
+            }
+        };
+
+        let incoming = msg.optimistic_attested_slot();
+        let mut prev = self
+            .last_forwarded_optimistic_slot_capella
+            .load(Ordering::Relaxed);
+        if incoming <= prev {
+            return GossipVerdict::Ignore("capella_lc_optimistic: non-monotonic slot".into());
+        }
+
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis(),
+            Err(_) => {
+                return GossipVerdict::Ignore("capella_lc_optimistic: clock unavailable".into());
+            }
+        };
+        let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
+        let signature_slot = msg.optimistic_signature_slot();
+        let slot_ms = u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
+        let slot_start_ms = genesis_ms + u128::from(signature_slot) * slot_ms;
+        let due_ms = slot_start_ms + slot_ms / u128::from(INTERVALS_PER_SLOT);
+        if now_ms + u128::from(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < due_ms {
+            return GossipVerdict::Ignore("capella_lc_optimistic: clock window not elapsed".into());
+        }
+
+        if local.tree_hash_root() != msg.tree_hash_root() {
+            return GossipVerdict::Ignore("capella_lc_optimistic: snapshot mismatch".into());
+        }
+
+        loop {
+            match self
+                .last_forwarded_optimistic_slot_capella
+                .compare_exchange(prev, incoming, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return GossipVerdict::Accept,
+                Err(current) => {
+                    if incoming <= current {
+                        return GossipVerdict::Ignore(
+                            "capella_lc_optimistic: lost CAS race to higher slot".into(),
+                        );
+                    }
+                    prev = current;
+                }
+            }
+        }
+    }
+
+    /// Validate a `bls_to_execution_change` message per
+    /// `specs/capella/p2p-interface.md:207-259`.
+    ///
+    /// Spec rules (2 IGNORE + 4 REJECT + mark-seen on accept):
+    ///  1. [IGNORE] Current epoch must be at or after CAPELLA_FORK_EPOCH.
+    ///  2. [IGNORE] First valid change for this validator (seen-cache).
+    ///  3. [REJECT] Validator index must be in range.
+    ///  4. [REJECT] Validator must have BLS withdrawal credentials (prefix 0x00).
+    ///  5. [REJECT] `from_bls_pubkey` hash must match the stored credential.
+    ///  6. [REJECT] BLS signature over the fork-agnostic domain must be valid.
+    ///
+    /// Domain is fork-agnostic per `D-bls-to-exec-change-domain`:
+    /// `compute_domain(DOMAIN_BLS_TO_EXECUTION_CHANGE, GENESIS_FORK_VERSION, genesis_validators_root)`.
+    fn validate_bls_to_execution_change(
+        &self,
+        signed_msg: &pharos_types::capella::operations::SignedBLSToExecutionChange,
+    ) -> GossipVerdict {
+        use pharos_stf::phase0::accessors::{compute_domain, compute_signing_root};
+        use pharos_types::BeaconStateView as _;
+        use pharos_types::fork::DOMAIN_BLS_TO_EXECUTION_CHANGE;
+
+        let msg = &signed_msg.message;
+        let validator_index = msg.validator_index.0;
+
+        // [IGNORE] Current epoch must be at or after CAPELLA_FORK_EPOCH.
+        // Use wall-clock epoch from fork_context (same computation as current_epoch()).
+        {
+            let current_ep = self.current_epoch();
+            let capella_fork_epoch = self.fork_context.fork_schedule.capella_fork_epoch;
+            if current_ep < capella_fork_epoch {
+                return GossipVerdict::Ignore("bls_to_exec: current epoch is pre-capella".into());
+            }
+        }
+
+        // [IGNORE] First valid change for this validator.
+        if self
+            .seen_bls_to_execution_change_indices
+            .read()
+            .peek(&validator_index)
+            .is_some()
+        {
+            return GossipVerdict::Ignore("bls_to_exec: already seen for this validator".into());
+        }
+
+        // Get head state for remaining checks (two-step to avoid double-lock).
+        let head_root = pharos_fork_choice::get_head(&*self.fork_choice.read());
+        let head_state = match self
+            .fork_choice
+            .read()
+            .block_states
+            .get(&head_root)
+            .cloned()
+        {
+            Some(s) => s,
+            None => return GossipVerdict::Ignore("bls_to_exec: head state unavailable".into()),
+        };
+
+        // [REJECT] Validator index must be in range.
+        if validator_index as usize >= head_state.num_validators() {
+            return GossipVerdict::Reject("bls_to_exec: validator index out of range".into());
+        }
+
+        let validator = match head_state.validator(validator_index as usize) {
+            Some(v) => v,
+            None => {
+                return GossipVerdict::Reject("bls_to_exec: validator index out of range".into());
+            }
+        };
+
+        // [REJECT] Validator must have BLS withdrawal credentials (prefix 0x00).
+        let creds = validator.withdrawal_credentials;
+        if creds.as_slice()[0] != 0x00u8 {
+            return GossipVerdict::Reject("bls_to_exec: not BLS withdrawal credentials".into());
+        }
+
+        // [REJECT] `from_bls_pubkey` must hash-match the stored credential.
+        let pubkey_hash = pharos_utils::hash::hash(msg.from_bls_pubkey.as_slice());
+        if creds.as_slice()[1..] != pubkey_hash.as_slice()[1..] {
+            return GossipVerdict::Reject("bls_to_exec: pubkey hash mismatch".into());
+        }
+
+        // [REJECT] BLS signature must be valid (fork-agnostic domain).
+        let gvr = &self.fork_context.genesis_validators_root;
+        let domain = compute_domain(DOMAIN_BLS_TO_EXECUTION_CHANGE, E::GENESIS_FORK_VERSION, gvr);
+        let signing_root = compute_signing_root(msg, domain);
+        match pharos_utils::bls::verify(
+            &msg.from_bls_pubkey,
+            signing_root.as_ref(),
+            &signed_msg.signature,
+        ) {
+            Ok(true) => {}
+            _ => return GossipVerdict::Reject("bls_to_exec: invalid signature".into()),
+        }
+
+        // Mark as seen and accept.
+        self.seen_bls_to_execution_change_indices
+            .write()
+            .put(validator_index, ());
+        GossipVerdict::Accept
+    }
 }
 
 // ── LightClientProvider ───────────────────────────────────────────────────────
@@ -1514,11 +2108,40 @@ impl<E: EthSpec> LightClientProvider<E> for HostImpl<E> {
             }
         }
     }
+
+    /// Return the latest stored Capella `LightClientFinalityUpdate`, if any.
+    fn light_client_finality_update_capella(&self) -> Option<E::CapellaLightClientFinalityUpdate> {
+        match <RocksStore as StoreTrait<E>>::get_light_client_finality_update_capella(&self.store) {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(%e, "light_client_finality_update_capella: storage error");
+                None
+            }
+        }
+    }
+
+    /// Return the latest stored Capella `LightClientOptimisticUpdate`, if any.
+    fn light_client_optimistic_update_capella(
+        &self,
+    ) -> Option<E::CapellaLightClientOptimisticUpdate> {
+        match <RocksStore as StoreTrait<E>>::get_light_client_optimistic_update_capella(&self.store)
+        {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(%e, "light_client_optimistic_update_capella: storage error");
+                None
+            }
+        }
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+// Several validator tests reach into `block_states.get_mut` then match the
+// fork-enum variant; the nested `if let` form is clearer than the collapsed
+// `if let Some(Variant(..))` here, so allow it in test code only.
+#[allow(clippy::collapsible_match)]
 mod tests {
     use super::*;
     use pharos_ssz::Bitvector;
@@ -4118,6 +4741,1168 @@ mod tests {
             matches!(second, GossipVerdict::Ignore(_)),
             "second call must Ignore (either RAG6 or RAG7 dedup), got {:?}",
             second,
+        );
+    }
+
+    // ── voluntary_exit validation tests ──────────────────────────────────────
+
+    // Helpers for exit/slashing tests.
+    fn exit_test_sk() -> BlstSecretKey {
+        BlstSecretKey::key_gen(&[77u8; 32], &[]).expect("valid IKM")
+    }
+
+    fn exit_test_pubkey() -> BLSPubkey {
+        BLSPubkey::from_array(exit_test_sk().sk_to_pk().compress())
+    }
+
+    /// Build a host with the validator set up for exit tests. The validator has:
+    /// - pubkey from exit_test_sk
+    /// - activation_epoch = 0
+    /// - exit_epoch = FAR_FUTURE (not yet exiting)
+    fn make_exit_test_host(dir: &tempfile::TempDir) -> HostImpl<MinimalEthSpec> {
+        use pharos_types::phase0::misc::Fork;
+        use pharos_types::phase0::operations::BeaconBlockHeader;
+        use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
+
+        let store = Arc::new(
+            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+                path: dir.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("open store"),
+        );
+
+        let genesis_slot = Slot(0);
+        let validator = pharos_types::phase0::misc::Validator {
+            pubkey: exit_test_pubkey(),
+            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            activation_epoch: Epoch(0),
+            exit_epoch: Epoch(u64::MAX),
+            withdrawable_epoch: Epoch(u64::MAX),
+            slashed: false,
+            ..Default::default()
+        };
+
+        let genesis_body_root = MinimalBeaconBlockBody::default().tree_hash_root();
+        let genesis_state_inner = MinimalBeaconState {
+            genesis_time: 0,
+            slot: genesis_slot,
+            fork: Fork {
+                previous_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+                current_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+                epoch: Epoch(0),
+            },
+            latest_block_header: BeaconBlockHeader {
+                slot: genesis_slot,
+                proposer_index: ValidatorIndex(0),
+                parent_root: Root::default(),
+                state_root: Root::default(),
+                body_root: genesis_body_root,
+            },
+            validators: SszList::with_push(&SszList::default(), validator).unwrap(),
+            balances: SszList::with_push(
+                &SszList::default(),
+                Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            )
+            .unwrap(),
+            ..Default::default()
+        };
+
+        let fork_genesis_state = ForkMinimalState::Phase0(genesis_state_inner.clone());
+
+        let genesis_inner_block = MinimalBeaconBlock {
+            slot: genesis_slot,
+            proposer_index: ValidatorIndex(0),
+            parent_root: Root::default(),
+            state_root: fork_genesis_state.tree_hash_root(),
+            body: MinimalBeaconBlockBody::default(),
+        };
+        let genesis_root: Root = genesis_inner_block.tree_hash_root();
+        let genesis_block = pharos_types::state::BeaconBlock::Phase0(genesis_inner_block);
+
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(
+            fork_genesis_state.clone(),
+            genesis_block.clone(),
+        );
+        let fork_choice = Arc::new(RwLock::new(fc_store));
+        {
+            let mut fc = fork_choice.write();
+            fc.block_states
+                .insert(genesis_root, fork_genesis_state.clone());
+            fc.blocks.insert(genesis_root, genesis_block);
+        }
+
+        let gvr = Root::default();
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(u64::MAX),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(u64::MAX),
+            capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+            capella_fork_epoch: Epoch(u64::MAX),
+            genesis_validators_root: gvr,
+        };
+        let runtime_cfg = Arc::new(RuntimeConfig {
+            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            ..Default::default()
+        });
+        HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
+    }
+
+    fn make_valid_exit(host: &HostImpl<MinimalEthSpec>) -> SignedVoluntaryExit {
+        use pharos_stf::phase0::helpers::DOMAIN_VOLUNTARY_EXIT;
+        use pharos_types::BeaconStateView as _;
+        use pharos_types::phase0::operations::VoluntaryExit;
+        use pharos_types::phase0::primitives::ValidatorIndex;
+
+        let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
+        let state = host
+            .fork_choice
+            .read()
+            .block_states
+            .get(&head_root)
+            .cloned()
+            .unwrap();
+        let current_epoch = pharos_stf::phase0::accessors::compute_epoch_at_slot(
+            state.slot(),
+            MinimalEthSpec::SLOTS_PER_EPOCH,
+        );
+
+        let exit = VoluntaryExit {
+            epoch: current_epoch,
+            validator_index: ValidatorIndex(0),
+        };
+        let domain = pharos_stf::phase0::accessors::get_domain::<MinimalEthSpec>(
+            &state,
+            DOMAIN_VOLUNTARY_EXIT,
+            Some(current_epoch),
+        );
+        let signing_root = pharos_stf::phase0::accessors::compute_signing_root(&exit, domain);
+        let sig = BLSSignature::from_array(
+            exit_test_sk()
+                .sign(signing_root.as_ref(), BLS_DST, &[])
+                .compress(),
+        );
+        SignedVoluntaryExit {
+            message: exit,
+            signature: sig,
+        }
+    }
+
+    #[test]
+    fn exit_ignore_already_seen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        let exit = make_valid_exit(&host);
+        // Pre-populate seen cache.
+        host.seen_voluntary_exit_indices.write().put(0u64, ());
+        assert_eq!(
+            host.validate_voluntary_exit(&exit),
+            GossipVerdict::Ignore("exit: already seen for this validator".into()),
+        );
+    }
+
+    #[test]
+    fn exit_reject_out_of_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::operations::VoluntaryExit;
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        let bad_exit = SignedVoluntaryExit {
+            message: VoluntaryExit {
+                epoch: pharos_utils::Epoch(0),
+                validator_index: ValidatorIndex(999),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_voluntary_exit(&bad_exit),
+            GossipVerdict::Reject("exit: validator index out of range".into()),
+        );
+    }
+
+    #[test]
+    fn exit_reject_not_active() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::operations::VoluntaryExit;
+        use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
+        // Set validator exit_epoch to a past epoch to make it inactive.
+        {
+            let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
+            let mut fc = host.fork_choice.write();
+            if let Some(state) = fc.block_states.get_mut(&head_root) {
+                if let ForkMinimalState::Phase0(s) = state {
+                    let mut v = s.validators.get(0).unwrap().clone();
+                    v.exit_epoch = Epoch(0); // exited already
+                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
+                }
+            }
+        }
+        let exit = SignedVoluntaryExit {
+            message: VoluntaryExit {
+                epoch: pharos_utils::Epoch(0),
+                validator_index: ValidatorIndex(0),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_voluntary_exit(&exit),
+            GossipVerdict::Reject("exit: validator not active".into()),
+        );
+    }
+
+    #[test]
+    fn exit_reject_already_exiting() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::operations::VoluntaryExit;
+        use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
+        // Set validator exit_epoch to a future (but non-max) epoch.
+        {
+            let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
+            let mut fc = host.fork_choice.write();
+            if let Some(state) = fc.block_states.get_mut(&head_root) {
+                if let ForkMinimalState::Phase0(s) = state {
+                    let mut v = s.validators.get(0).unwrap().clone();
+                    v.exit_epoch = Epoch(100); // future exit planned
+                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
+                }
+            }
+        }
+        let exit = SignedVoluntaryExit {
+            message: VoluntaryExit {
+                epoch: pharos_utils::Epoch(0),
+                validator_index: ValidatorIndex(0),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_voluntary_exit(&exit),
+            GossipVerdict::Reject("exit: validator already exiting".into()),
+        );
+    }
+
+    #[test]
+    fn exit_reject_future_epoch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::operations::VoluntaryExit;
+        use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
+        // epoch=1 is in the future (current_epoch=0)
+        let exit = SignedVoluntaryExit {
+            message: VoluntaryExit {
+                epoch: Epoch(1),
+                validator_index: ValidatorIndex(0),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_voluntary_exit(&exit),
+            GossipVerdict::Reject("exit: exit epoch in the future".into()),
+        );
+    }
+
+    #[test]
+    fn exit_reject_not_active_long_enough() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::operations::VoluntaryExit;
+        use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
+        // Set activation_epoch to require more time than has passed.
+        {
+            let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
+            let mut fc = host.fork_choice.write();
+            if let Some(state) = fc.block_states.get_mut(&head_root) {
+                if let ForkMinimalState::Phase0(s) = state {
+                    let mut v = s.validators.get(0).unwrap().clone();
+                    // SHARD_COMMITTEE_PERIOD=64 for minimal; current_epoch=0 < 0+64
+                    v.activation_epoch = Epoch(0);
+                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
+                    // Advance slot to epoch 1 so exit_epoch=0 isn't "future"
+                    s.slot = Slot(MinimalEthSpec::SLOTS_PER_EPOCH); // epoch 1
+                }
+            }
+        }
+        let exit = SignedVoluntaryExit {
+            message: VoluntaryExit {
+                epoch: Epoch(0),
+                validator_index: ValidatorIndex(0),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_voluntary_exit(&exit),
+            GossipVerdict::Reject("exit: validator not active long enough".into()),
+        );
+    }
+
+    #[test]
+    fn exit_reject_invalid_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::operations::VoluntaryExit;
+        use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
+
+        // Advance the state slot to epoch 64 so the SHARD_COMMITTEE_PERIOD check passes.
+        // SHARD_COMMITTEE_PERIOD=64 for MinimalEthSpec; activation_epoch=0.
+        // Need: current_epoch(64) >= 0 + 64 → true.
+        {
+            let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
+            let mut fc = host.fork_choice.write();
+            if let Some(ForkMinimalState::Phase0(s)) = fc.block_states.get_mut(&head_root) {
+                s.slot =
+                    Slot(MinimalEthSpec::SHARD_COMMITTEE_PERIOD * MinimalEthSpec::SLOTS_PER_EPOCH);
+            }
+        }
+
+        let exit = SignedVoluntaryExit {
+            message: VoluntaryExit {
+                epoch: Epoch(MinimalEthSpec::SHARD_COMMITTEE_PERIOD), // current_epoch >= this
+                validator_index: ValidatorIndex(0),
+            },
+            signature: BLSSignature::from_array([0u8; 96]), // zero sig = invalid
+        };
+        assert_eq!(
+            host.validate_voluntary_exit(&exit),
+            GossipVerdict::Reject("exit: invalid signature".into()),
+        );
+    }
+
+    // ── proposer_slashing validation tests ────────────────────────────────────
+
+    fn make_ps_headers(
+        host: &HostImpl<MinimalEthSpec>,
+        slot: Slot,
+        proposer: u64,
+        different: bool,
+        flip_sig1: bool,
+        flip_sig2: bool,
+    ) -> ProposerSlashing {
+        use pharos_types::phase0::operations::{BeaconBlockHeader, SignedBeaconBlockHeader};
+        use pharos_types::phase0::primitives::ValidatorIndex;
+
+        let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
+        let state = host
+            .fork_choice
+            .read()
+            .block_states
+            .get(&head_root)
+            .cloned()
+            .unwrap();
+        let epoch = pharos_stf::phase0::accessors::compute_epoch_at_slot(
+            slot,
+            MinimalEthSpec::SLOTS_PER_EPOCH,
+        );
+        let domain = pharos_stf::phase0::accessors::get_domain::<MinimalEthSpec>(
+            &state,
+            pharos_stf::phase0::helpers::DOMAIN_BEACON_PROPOSER,
+            Some(epoch),
+        );
+
+        let h1 = BeaconBlockHeader {
+            slot,
+            proposer_index: ValidatorIndex(proposer),
+            parent_root: Root::default(),
+            state_root: Root::default(),
+            body_root: Root::default(),
+        };
+        let h2 = if different {
+            BeaconBlockHeader {
+                slot,
+                proposer_index: ValidatorIndex(proposer),
+                parent_root: Root::from_array([1u8; 32]),
+                state_root: Root::default(),
+                body_root: Root::default(),
+            }
+        } else {
+            h1.clone()
+        };
+
+        let sign = |header: &BeaconBlockHeader, flip: bool| {
+            let sr = pharos_stf::phase0::accessors::compute_signing_root(header, domain);
+            let mut bytes: [u8; 96] = exit_test_sk().sign(sr.as_ref(), BLS_DST, &[]).compress();
+            if flip {
+                bytes[0] ^= 0xff;
+            }
+            BLSSignature::from_array(bytes)
+        };
+
+        ProposerSlashing {
+            signed_header_1: SignedBeaconBlockHeader {
+                message: h1.clone(),
+                signature: sign(&h1, flip_sig1),
+            },
+            signed_header_2: SignedBeaconBlockHeader {
+                message: h2.clone(),
+                signature: sign(&h2, flip_sig2),
+            },
+        }
+    }
+
+    #[test]
+    fn ps_ignore_already_seen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        host.seen_proposer_slashing_indices.write().put(0u64, ());
+        let ps = make_ps_headers(&host, Slot(1), 0, true, false, false);
+        assert_eq!(
+            host.validate_proposer_slashing(&ps),
+            GossipVerdict::Ignore("proposer_slashing: already seen for this proposer".into()),
+        );
+    }
+
+    #[test]
+    fn ps_reject_slots_mismatch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::operations::{BeaconBlockHeader, SignedBeaconBlockHeader};
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        let h1 = BeaconBlockHeader {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(0),
+            ..Default::default()
+        };
+        let h2 = BeaconBlockHeader {
+            slot: Slot(2),
+            proposer_index: ValidatorIndex(0),
+            ..Default::default()
+        };
+        let ps = ProposerSlashing {
+            signed_header_1: SignedBeaconBlockHeader {
+                message: h1,
+                signature: BLSSignature::from_array([0u8; 96]),
+            },
+            signed_header_2: SignedBeaconBlockHeader {
+                message: h2,
+                signature: BLSSignature::from_array([0u8; 96]),
+            },
+        };
+        assert_eq!(
+            host.validate_proposer_slashing(&ps),
+            GossipVerdict::Reject("proposer_slashing: header slots do not match".into()),
+        );
+    }
+
+    #[test]
+    fn ps_reject_proposer_mismatch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::operations::{BeaconBlockHeader, SignedBeaconBlockHeader};
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        let h1 = BeaconBlockHeader {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(0),
+            ..Default::default()
+        };
+        let h2 = BeaconBlockHeader {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(1),
+            ..Default::default()
+        };
+        let ps = ProposerSlashing {
+            signed_header_1: SignedBeaconBlockHeader {
+                message: h1,
+                signature: BLSSignature::from_array([0u8; 96]),
+            },
+            signed_header_2: SignedBeaconBlockHeader {
+                message: h2,
+                signature: BLSSignature::from_array([0u8; 96]),
+            },
+        };
+        assert_eq!(
+            host.validate_proposer_slashing(&ps),
+            GossipVerdict::Reject("proposer_slashing: header proposer indices do not match".into()),
+        );
+    }
+
+    #[test]
+    fn ps_reject_same_headers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::operations::{BeaconBlockHeader, SignedBeaconBlockHeader};
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        let h = BeaconBlockHeader {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(0),
+            ..Default::default()
+        };
+        let ps = ProposerSlashing {
+            signed_header_1: SignedBeaconBlockHeader {
+                message: h.clone(),
+                signature: BLSSignature::from_array([0u8; 96]),
+            },
+            signed_header_2: SignedBeaconBlockHeader {
+                message: h,
+                signature: BLSSignature::from_array([0u8; 96]),
+            },
+        };
+        assert_eq!(
+            host.validate_proposer_slashing(&ps),
+            GossipVerdict::Reject("proposer_slashing: headers are not different".into()),
+        );
+    }
+
+    #[test]
+    fn ps_reject_out_of_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::operations::{BeaconBlockHeader, SignedBeaconBlockHeader};
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        let h1 = BeaconBlockHeader {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(999),
+            parent_root: Root::default(),
+            ..Default::default()
+        };
+        let h2 = BeaconBlockHeader {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(999),
+            parent_root: Root::from_array([1u8; 32]),
+            ..Default::default()
+        };
+        let ps = ProposerSlashing {
+            signed_header_1: SignedBeaconBlockHeader {
+                message: h1,
+                signature: BLSSignature::from_array([0u8; 96]),
+            },
+            signed_header_2: SignedBeaconBlockHeader {
+                message: h2,
+                signature: BLSSignature::from_array([0u8; 96]),
+            },
+        };
+        assert_eq!(
+            host.validate_proposer_slashing(&ps),
+            GossipVerdict::Reject("proposer_slashing: proposer index out of range".into()),
+        );
+    }
+
+    #[test]
+    fn ps_reject_not_slashable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        // Mark the validator as already slashed.
+        {
+            let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
+            let mut fc = host.fork_choice.write();
+            if let Some(state) = fc.block_states.get_mut(&head_root) {
+                if let ForkMinimalState::Phase0(s) = state {
+                    let mut v = s.validators.get(0).unwrap().clone();
+                    v.slashed = true;
+                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
+                }
+            }
+        }
+        let ps = make_ps_headers(&host, Slot(1), 0, true, false, false);
+        assert_eq!(
+            host.validate_proposer_slashing(&ps),
+            GossipVerdict::Reject("proposer_slashing: proposer not slashable".into()),
+        );
+    }
+
+    #[test]
+    fn ps_reject_invalid_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        // Build valid headers but with zero sigs.
+        let ps = make_ps_headers(&host, Slot(1), 0, true, true, false); // flip sig1
+        assert_eq!(
+            host.validate_proposer_slashing(&ps),
+            GossipVerdict::Reject("proposer_slashing: invalid signature".into()),
+        );
+    }
+
+    // ── attester_slashing validation tests ────────────────────────────────────
+
+    fn make_indexed_att(
+        host: &HostImpl<MinimalEthSpec>,
+        indices: &[u64],
+        slot: Slot,
+        target_epoch: pharos_utils::Epoch,
+        source_epoch: pharos_utils::Epoch,
+        flip_sig: bool,
+    ) -> pharos_types::phase0::IndexedAttestation<2048> {
+        use pharos_ssz::SszList;
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        use pharos_types::phase0::{AttestationData, Checkpoint, IndexedAttestation};
+
+        let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
+        let state = host
+            .fork_choice
+            .read()
+            .block_states
+            .get(&head_root)
+            .cloned()
+            .unwrap();
+
+        let data = AttestationData {
+            slot,
+            index: pharos_types::phase0::primitives::CommitteeIndex(0),
+            beacon_block_root: head_root,
+            source: Checkpoint {
+                epoch: source_epoch,
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: target_epoch,
+                root: Root::default(),
+            },
+        };
+        let domain = pharos_stf::phase0::accessors::get_domain::<MinimalEthSpec>(
+            &state,
+            pharos_stf::phase0::helpers::DOMAIN_BEACON_ATTESTER,
+            Some(target_epoch),
+        );
+        let sr = pharos_stf::phase0::accessors::compute_signing_root(&data, domain);
+        let mut sig: [u8; 96] = exit_test_sk().sign(sr.as_ref(), BLS_DST, &[]).compress();
+        if flip_sig {
+            sig[0] ^= 0xff;
+        }
+
+        let vi: Vec<ValidatorIndex> = indices.iter().map(|&i| ValidatorIndex(i)).collect();
+        let attesting_indices = {
+            let mut l = SszList::<ValidatorIndex, 2048>::default();
+            for v in &vi {
+                l = SszList::with_push(&l, *v).unwrap();
+            }
+            l
+        };
+        IndexedAttestation {
+            attesting_indices,
+            data,
+            signature: BLSSignature::from_array(sig),
+        }
+    }
+
+    #[test]
+    fn as_ignore_all_seen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        host.seen_attester_slashing_indices.write().put(0u64, ());
+        use pharos_types::phase0::AttesterSlashing;
+        let att1 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(0),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        let att2 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(0),
+            pharos_utils::Epoch(2),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        let slashing = AttesterSlashing {
+            attestation_1: att1,
+            attestation_2: att2,
+        };
+        assert_eq!(
+            host.validate_attester_slashing(&slashing),
+            GossipVerdict::Ignore("attester_slashing: all indices already seen".into()),
+        );
+    }
+
+    #[test]
+    fn as_reject_not_slashable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::AttesterSlashing;
+        // Same target epoch → not slashable (no double vote, no surround)
+        let att1 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(0),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        let att2 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(0),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        let slashing = AttesterSlashing {
+            attestation_1: att1,
+            attestation_2: att2,
+        };
+        // Both same data → is_slashable_attestation_data returns false (not slashable)
+        let verdict = host.validate_attester_slashing(&slashing);
+        assert_eq!(
+            verdict,
+            GossipVerdict::Reject("attester_slashing: attestation data not slashable".into()),
+        );
+    }
+
+    #[test]
+    fn as_reject_index_out_of_range_att1() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::AttesterSlashing;
+        // Double vote (same target_epoch, different slot) → slashable data.
+        // Then att1 has index=999 which is out of range.
+        let att1 = make_indexed_att(
+            &host,
+            &[999],
+            Slot(0),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        let att2 = make_indexed_att(
+            &host,
+            &[999],
+            Slot(1),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        let slashing = AttesterSlashing {
+            attestation_1: att1,
+            attestation_2: att2,
+        };
+        assert_eq!(
+            host.validate_attester_slashing(&slashing),
+            GossipVerdict::Reject("attester_slashing: index out of range in attestation_1".into()),
+        );
+    }
+
+    #[test]
+    fn as_reject_invalid_att1() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::AttesterSlashing;
+        // Double vote (same target_epoch, different slot) → slashable data.
+        // att1 has flipped sig → invalid indexed attestation.
+        let att1 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(0),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            true,
+        );
+        let att2 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(1),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        let slashing = AttesterSlashing {
+            attestation_1: att1,
+            attestation_2: att2,
+        };
+        assert_eq!(
+            host.validate_attester_slashing(&slashing),
+            GossipVerdict::Reject("attester_slashing: invalid indexed attestation_1".into()),
+        );
+    }
+
+    #[test]
+    fn as_reject_index_out_of_range_att2() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        // att1: valid index 0; att2: invalid index 999 (but they must share an index for IGNORE to pass)
+        // We need att1 and att2 to have a shared index first, so we use index 0 in both.
+        // But att2 has index 999 not in att1. Actually for att2 out-of-range we need intersection nonempty too.
+        // Easiest: use index 0 in att1 (valid), indices [0, 999] in att2 (one valid, one invalid range check)
+        // Actually the spec check is: any index in att2 >= len(validators). With our att2 having [999],
+        // the intersection with att1's [0] is empty → IGNORE fires first. We need to have index 0 in both
+        // so intersection is nonempty, and also have 999 in att2 to trigger the range check.
+        use pharos_ssz::SszList;
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        // att1: valid index 0; att2: indices [0, 999] (shared + out-of-range).
+        // Double vote: both have target_epoch=0, different slot → slashable.
+        let att1 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(0),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        // Build att2 with indices [0, 999] — intersection with att1 = [0] (not all seen).
+        // att2 has 999 which is out of range. Use slot=1 so data != att1's data (double vote).
+        let vi: Vec<ValidatorIndex> = [0u64, 999].iter().map(|&i| ValidatorIndex(i)).collect();
+        let mut idx_list = SszList::<ValidatorIndex, 2048>::default();
+        for v in &vi {
+            idx_list = SszList::with_push(&idx_list, *v).unwrap();
+        }
+        use pharos_types::phase0::{AttestationData, Checkpoint, IndexedAttestation};
+        let data = AttestationData {
+            slot: Slot(1), // different slot → double vote (same target_epoch=0)
+            index: pharos_types::phase0::primitives::CommitteeIndex(0),
+            beacon_block_root: Root::default(),
+            source: Checkpoint {
+                epoch: pharos_utils::Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: pharos_utils::Epoch(0),
+                root: Root::default(),
+            },
+        };
+        let att2 = IndexedAttestation {
+            attesting_indices: idx_list,
+            data,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        let slashing = pharos_types::phase0::AttesterSlashing {
+            attestation_1: att1,
+            attestation_2: att2,
+        };
+        assert_eq!(
+            host.validate_attester_slashing(&slashing),
+            GossipVerdict::Reject("attester_slashing: index out of range in attestation_2".into()),
+        );
+    }
+
+    #[test]
+    fn as_reject_invalid_att2() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::AttesterSlashing;
+        // Double vote (same target_epoch=0, different slot) → slashable data.
+        // att1 valid; att2 has flipped sig → invalid indexed attestation_2.
+        let att1 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(0),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        let att2 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(1),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            true,
+        );
+        let slashing = AttesterSlashing {
+            attestation_1: att1,
+            attestation_2: att2,
+        };
+        assert_eq!(
+            host.validate_attester_slashing(&slashing),
+            GossipVerdict::Reject("attester_slashing: invalid indexed attestation_2".into()),
+        );
+    }
+
+    #[test]
+    fn as_reject_no_slashable_validators() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_exit_test_host(&dir);
+        // Mark the validator as already slashed (not slashable).
+        {
+            let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
+            let mut fc = host.fork_choice.write();
+            if let Some(state) = fc.block_states.get_mut(&head_root) {
+                if let ForkMinimalState::Phase0(s) = state {
+                    let mut v = s.validators.get(0).unwrap().clone();
+                    v.slashed = true;
+                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
+                }
+            }
+        }
+        use pharos_types::phase0::AttesterSlashing;
+        // Double vote (same target_epoch=0, different slot) → slashable data.
+        // Validator is slashed → no slashable validators in intersection.
+        let att1 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(0),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        let att2 = make_indexed_att(
+            &host,
+            &[0],
+            Slot(1),
+            pharos_utils::Epoch(0),
+            pharos_utils::Epoch(0),
+            false,
+        );
+        let slashing = AttesterSlashing {
+            attestation_1: att1,
+            attestation_2: att2,
+        };
+        assert_eq!(
+            host.validate_attester_slashing(&slashing),
+            GossipVerdict::Reject(
+                "attester_slashing: no slashable validators in intersection".into()
+            ),
+        );
+    }
+
+    // ── bls_to_execution_change validation tests ─────────────────────────────
+
+    use pharos_types::bellatrix::execution_payload::ExecutionAddress;
+    use pharos_types::capella::operations::{BLSToExecutionChange, SignedBLSToExecutionChange};
+
+    fn bls_test_sk() -> BlstSecretKey {
+        BlstSecretKey::key_gen(&[88u8; 32], &[]).expect("valid IKM")
+    }
+
+    fn bls_test_pubkey() -> BLSPubkey {
+        BLSPubkey::from_array(bls_test_sk().sk_to_pk().compress())
+    }
+
+    /// Build a host where the single validator has BLS withdrawal credentials
+    /// matching `bls_test_pubkey()`, and capella_fork_epoch = 0 (active now).
+    fn make_bls_to_exec_host(dir: &tempfile::TempDir) -> HostImpl<MinimalEthSpec> {
+        use pharos_types::phase0::misc::Fork;
+        use pharos_types::phase0::operations::BeaconBlockHeader;
+        use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
+
+        // Build withdrawal_credentials = 0x00 || hash(pubkey)[1..]
+        let pubkey_hash = pharos_utils::hash::hash(bls_test_pubkey().as_slice());
+        let mut creds = [0u8; 32];
+        creds[0] = 0x00;
+        creds[1..].copy_from_slice(&pubkey_hash.as_slice()[1..]);
+
+        let store = Arc::new(
+            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+                path: dir.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("open store"),
+        );
+
+        let genesis_slot = Slot(0);
+        let validator = pharos_types::phase0::misc::Validator {
+            pubkey: exit_test_pubkey(), // validator signing key (different from BLS withdrawal key)
+            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            activation_epoch: Epoch(0),
+            exit_epoch: Epoch(u64::MAX),
+            withdrawable_epoch: Epoch(u64::MAX),
+            slashed: false,
+            withdrawal_credentials: pharos_utils::Hash256::from_array(creds),
+            ..Default::default()
+        };
+
+        let genesis_body_root = MinimalBeaconBlockBody::default().tree_hash_root();
+        let genesis_state_inner = MinimalBeaconState {
+            genesis_time: 0,
+            slot: genesis_slot,
+            fork: Fork {
+                previous_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+                current_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+                epoch: Epoch(0),
+            },
+            latest_block_header: BeaconBlockHeader {
+                slot: genesis_slot,
+                proposer_index: ValidatorIndex(0),
+                parent_root: Root::default(),
+                state_root: Root::default(),
+                body_root: genesis_body_root,
+            },
+            validators: SszList::with_push(&SszList::default(), validator).unwrap(),
+            balances: SszList::with_push(
+                &SszList::default(),
+                Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            )
+            .unwrap(),
+            ..Default::default()
+        };
+
+        let fork_genesis_state = ForkMinimalState::Phase0(genesis_state_inner.clone());
+        let genesis_inner_block = MinimalBeaconBlock {
+            slot: genesis_slot,
+            proposer_index: ValidatorIndex(0),
+            parent_root: Root::default(),
+            state_root: fork_genesis_state.tree_hash_root(),
+            body: MinimalBeaconBlockBody::default(),
+        };
+        let genesis_root: Root = genesis_inner_block.tree_hash_root();
+        let genesis_block = pharos_types::state::BeaconBlock::Phase0(genesis_inner_block);
+
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(
+            fork_genesis_state.clone(),
+            genesis_block.clone(),
+        );
+        let fork_choice = Arc::new(RwLock::new(fc_store));
+        {
+            let mut fc = fork_choice.write();
+            fc.block_states
+                .insert(genesis_root, fork_genesis_state.clone());
+            fc.blocks.insert(genesis_root, genesis_block);
+        }
+
+        let gvr = Root::default();
+        // capella_fork_epoch = 0 so current epoch (0) >= capella epoch → IGNORE check passes.
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(u64::MAX),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(u64::MAX),
+            capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+            capella_fork_epoch: Epoch(0), // active at genesis
+            genesis_validators_root: gvr,
+        };
+        let runtime_cfg = Arc::new(RuntimeConfig {
+            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            ..Default::default()
+        });
+        HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
+    }
+
+    fn make_valid_bls_to_exec(_host: &HostImpl<MinimalEthSpec>) -> SignedBLSToExecutionChange {
+        use pharos_types::fork::DOMAIN_BLS_TO_EXECUTION_CHANGE;
+        use pharos_types::phase0::primitives::ValidatorIndex;
+
+        let msg = BLSToExecutionChange {
+            validator_index: ValidatorIndex(0),
+            from_bls_pubkey: bls_test_pubkey(),
+            to_execution_address: ExecutionAddress::default(),
+        };
+        let gvr = Root::default();
+        let domain = pharos_stf::phase0::accessors::compute_domain(
+            DOMAIN_BLS_TO_EXECUTION_CHANGE,
+            MinimalEthSpec::GENESIS_FORK_VERSION,
+            &gvr,
+        );
+        let sr = pharos_stf::phase0::accessors::compute_signing_root(&msg, domain);
+        let sig =
+            BLSSignature::from_array(bls_test_sk().sign(sr.as_ref(), BLS_DST, &[]).compress());
+        SignedBLSToExecutionChange {
+            message: msg,
+            signature: sig,
+        }
+    }
+
+    #[test]
+    fn bls_to_exec_ignore_pre_capella() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Use the exit_test_host which has capella_fork_epoch = FAR_FUTURE.
+        let host = make_exit_test_host(&dir);
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        let msg = BLSToExecutionChange {
+            validator_index: ValidatorIndex(0),
+            from_bls_pubkey: bls_test_pubkey(),
+            to_execution_address: ExecutionAddress::default(),
+        };
+        let signed = SignedBLSToExecutionChange {
+            message: msg,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_bls_to_execution_change(&signed),
+            GossipVerdict::Ignore("bls_to_exec: current epoch is pre-capella".into()),
+        );
+    }
+
+    #[test]
+    fn bls_to_exec_ignore_already_seen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_bls_to_exec_host(&dir);
+        host.seen_bls_to_execution_change_indices
+            .write()
+            .put(0u64, ());
+        let signed = make_valid_bls_to_exec(&host);
+        assert_eq!(
+            host.validate_bls_to_execution_change(&signed),
+            GossipVerdict::Ignore("bls_to_exec: already seen for this validator".into()),
+        );
+    }
+
+    #[test]
+    fn bls_to_exec_reject_out_of_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_bls_to_exec_host(&dir);
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        let msg = BLSToExecutionChange {
+            validator_index: ValidatorIndex(999),
+            from_bls_pubkey: bls_test_pubkey(),
+            to_execution_address: ExecutionAddress::default(),
+        };
+        let signed = SignedBLSToExecutionChange {
+            message: msg,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_bls_to_execution_change(&signed),
+            GossipVerdict::Reject("bls_to_exec: validator index out of range".into()),
+        );
+    }
+
+    #[test]
+    fn bls_to_exec_reject_not_bls_credentials() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_bls_to_exec_host(&dir);
+        // Overwrite the validator's withdrawal_credentials to use prefix 0x01 (not BLS).
+        {
+            let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
+            let mut fc = host.fork_choice.write();
+            if let Some(state) = fc.block_states.get_mut(&head_root) {
+                if let ForkMinimalState::Phase0(s) = state {
+                    let mut v = s.validators.get(0).unwrap().clone();
+                    let mut creds: [u8; 32] = v.withdrawal_credentials.into();
+                    creds[0] = 0x01; // ETH1 prefix
+                    v.withdrawal_credentials = pharos_utils::Hash256::from_array(creds);
+                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
+                }
+            }
+        }
+        let signed = make_valid_bls_to_exec(&host);
+        assert_eq!(
+            host.validate_bls_to_execution_change(&signed),
+            GossipVerdict::Reject("bls_to_exec: not BLS withdrawal credentials".into()),
+        );
+    }
+
+    #[test]
+    fn bls_to_exec_reject_pubkey_hash_mismatch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_bls_to_exec_host(&dir);
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        // Use a different pubkey than what was stored in withdrawal_credentials.
+        let other_pubkey = block_test_pubkey(); // different from bls_test_pubkey
+        let msg = BLSToExecutionChange {
+            validator_index: ValidatorIndex(0),
+            from_bls_pubkey: other_pubkey,
+            to_execution_address: ExecutionAddress::default(),
+        };
+        let signed = SignedBLSToExecutionChange {
+            message: msg,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_bls_to_execution_change(&signed),
+            GossipVerdict::Reject("bls_to_exec: pubkey hash mismatch".into()),
+        );
+    }
+
+    #[test]
+    fn bls_to_exec_reject_invalid_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_bls_to_exec_host(&dir);
+        // Valid msg but zero signature.
+        use pharos_types::phase0::primitives::ValidatorIndex;
+        let msg = BLSToExecutionChange {
+            validator_index: ValidatorIndex(0),
+            from_bls_pubkey: bls_test_pubkey(),
+            to_execution_address: ExecutionAddress::default(),
+        };
+        let signed = SignedBLSToExecutionChange {
+            message: msg,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_bls_to_execution_change(&signed),
+            GossipVerdict::Reject("bls_to_exec: invalid signature".into()),
         );
     }
 }

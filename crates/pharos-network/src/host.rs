@@ -12,6 +12,7 @@ use std::sync::Arc;
 use pharos_types::EthSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::altair::SyncCommitteeMessage;
+use pharos_types::capella::operations::SignedBLSToExecutionChange;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
     Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing, Root,
@@ -188,6 +189,35 @@ pub trait GossipValidator<E: EthSpec>: Send + Sync + 'static {
         &self,
         msg: &E::AltairLightClientOptimisticUpdate,
     ) -> GossipVerdict;
+
+    // ── Capella gossip topics ─────────────────────────────────────────────────
+    //
+    // Per `specs/capella/p2p-interface.md` and
+    // `specs/capella/light-client/p2p-interface.md`.
+
+    /// Validate a `bls_to_execution_change` message.
+    ///
+    /// `SignedBLSToExecutionChange` is not generic over `E` (no preset-sized
+    /// fields); the type is the same across all presets.
+    fn validate_bls_to_execution_change(&self, msg: &SignedBLSToExecutionChange) -> GossipVerdict;
+
+    /// Validate a capella-fork `light_client_finality_update` message.
+    ///
+    /// The capella LC header shape differs from altair (adds `execution` +
+    /// `execution_branch`). Full-node validation logic is otherwise identical.
+    /// Per `specs/capella/light-client/p2p-interface.md`.
+    fn validate_capella_light_client_finality_update(
+        &self,
+        msg: &E::CapellaLightClientFinalityUpdate,
+    ) -> GossipVerdict;
+
+    /// Validate a capella-fork `light_client_optimistic_update` message.
+    ///
+    /// Per `specs/capella/light-client/p2p-interface.md`.
+    fn validate_capella_light_client_optimistic_update(
+        &self,
+        msg: &E::CapellaLightClientOptimisticUpdate,
+    ) -> GossipVerdict;
 }
 
 // ── LightClientProvider ───────────────────────────────────────────────────────
@@ -231,6 +261,18 @@ pub trait LightClientProvider<E: EthSpec>: Send + Sync + 'static {
     ///
     /// Per `specs/altair/light-client/p2p-interface.md:103-116`.
     fn light_client_optimistic_update(&self) -> Option<E::AltairLightClientOptimisticUpdate>;
+
+    /// Return the latest Capella `LightClientFinalityUpdate`, if any.
+    ///
+    /// Per `specs/capella/light-client/p2p-interface.md`.
+    fn light_client_finality_update_capella(&self) -> Option<E::CapellaLightClientFinalityUpdate>;
+
+    /// Return the latest Capella `LightClientOptimisticUpdate`, if any.
+    ///
+    /// Per `specs/capella/light-client/p2p-interface.md`.
+    fn light_client_optimistic_update_capella(
+        &self,
+    ) -> Option<E::CapellaLightClientOptimisticUpdate>;
 }
 
 // Arc<T> blanket impl for LightClientProvider.
@@ -260,6 +302,16 @@ where
 
     fn light_client_optimistic_update(&self) -> Option<E::AltairLightClientOptimisticUpdate> {
         (**self).light_client_optimistic_update()
+    }
+
+    fn light_client_finality_update_capella(&self) -> Option<E::CapellaLightClientFinalityUpdate> {
+        (**self).light_client_finality_update_capella()
+    }
+
+    fn light_client_optimistic_update_capella(
+        &self,
+    ) -> Option<E::CapellaLightClientOptimisticUpdate> {
+        (**self).light_client_optimistic_update_capella()
     }
 }
 
@@ -394,6 +446,24 @@ where
         msg: &E::AltairLightClientOptimisticUpdate,
     ) -> GossipVerdict {
         (**self).validate_light_client_optimistic_update(msg)
+    }
+
+    fn validate_bls_to_execution_change(&self, msg: &SignedBLSToExecutionChange) -> GossipVerdict {
+        (**self).validate_bls_to_execution_change(msg)
+    }
+
+    fn validate_capella_light_client_finality_update(
+        &self,
+        msg: &E::CapellaLightClientFinalityUpdate,
+    ) -> GossipVerdict {
+        (**self).validate_capella_light_client_finality_update(msg)
+    }
+
+    fn validate_capella_light_client_optimistic_update(
+        &self,
+        msg: &E::CapellaLightClientOptimisticUpdate,
+    ) -> GossipVerdict {
+        (**self).validate_capella_light_client_optimistic_update(msg)
     }
 }
 

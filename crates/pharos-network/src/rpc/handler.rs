@@ -364,6 +364,27 @@ mod tests {
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
+
+        fn validate_bls_to_execution_change(
+            &self,
+            _msg: &pharos_types::capella::operations::SignedBLSToExecutionChange,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+
+        fn validate_capella_light_client_finality_update(
+            &self,
+            _msg: &<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientFinalityUpdate,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+
+        fn validate_capella_light_client_optimistic_update(
+            &self,
+            _msg: &<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientOptimisticUpdate,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
     }
 
     impl LightClientProvider<MainnetEthSpec> for MockHost {
@@ -388,6 +409,18 @@ mod tests {
         fn light_client_optimistic_update(
             &self,
         ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate> {
+            None
+        }
+
+        fn light_client_finality_update_capella(
+            &self,
+        ) -> Option<<MainnetEthSpec as EthSpec>::CapellaLightClientFinalityUpdate> {
+            None
+        }
+
+        fn light_client_optimistic_update_capella(
+            &self,
+        ) -> Option<<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate> {
             None
         }
     }

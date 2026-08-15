@@ -434,6 +434,11 @@ where
         host.fork_digest_for(NetworkFork::Phase0)
     } else if E::unwrap_altair_signed_block(signed).is_some() {
         host.fork_digest_for(NetworkFork::Altair)
+    } else if E::unwrap_capella_signed_block(signed).is_some() {
+        // Must precede the Bellatrix fallback: a Capella block tagged with the
+        // Bellatrix digest would be decoded with the wrong schema by peers and
+        // earn an instant InvalidByteLength ban (cf. M5 `D-blocksbyroot-bare-list`).
+        host.fork_digest_for(NetworkFork::Capella)
     } else {
         host.fork_digest_for(NetworkFork::Bellatrix)
     }

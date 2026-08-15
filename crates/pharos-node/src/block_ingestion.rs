@@ -299,49 +299,84 @@ where
         // (i) Publish LC finality + optimistic updates (Tasks 2.4 + 2.5).
         // Gate: only when the head block is post-Altair.
         //
-        // The broadcast is *delayed* to the spec's gossip window: a compliant
-        // node only forwards an LC update received after `get_sync_message_due_ms`
-        // (one `INTERVALS_PER_SLOT` fraction) into `signature_slot`. Publishing
-        // at slot start (block-import time) earns a `TooEarly` /
-        // `light_client_gossip_error` peer penalty. We spawn a short delayed
-        // task per update so the ingestion loop is never blocked; a newer head
-        // arriving meanwhile simply makes the older update stale, which peers
-        // IGNORE (monotonic-slot rule) without penalty. (Fixes the M5 score
-        // bleed; supersedes the `D-lc-broadcast-from-ingestion` immediate-send.)
+        // For Capella blocks, read from the capella-specific LC CFs and publish
+        // under the capella fork-digest per `specs/capella/light-client/p2p-interface.md`.
+        // For Altair/Bellatrix blocks, use the altair LC CFs and the current fork-digest.
+        //
+        // The broadcast is *delayed* to the spec's gossip window so it is not
+        // rejected as TooEarly by peers (D-lc-publish-due-time).
         let has_lc_snapshots = outcome.fork_variant != ForkVariant::Phase0;
         if has_lc_snapshots {
             let digest = host.current_fork_digest();
-            if let Some(fu) = host.light_client_finality_update() {
-                let wait = host.lc_publish_wait(fu.finality_signature_slot());
-                let net = egress.network.clone();
-                tokio::spawn(async move {
-                    if !wait.is_zero() {
-                        tokio::time::sleep(wait).await;
-                    }
-                    let topic = GossipTopic {
-                        fork_digest: digest,
-                        kind: GossipTopicKind::LightClientFinalityUpdate,
-                    };
-                    if let Err(e) = net.publish(topic, &fu).await {
-                        warn!(error = %e, "lc finality update publish failed");
-                    }
-                });
-            }
-            if let Some(ou) = host.light_client_optimistic_update() {
-                let wait = host.lc_publish_wait(ou.optimistic_signature_slot());
-                let net = egress.network.clone();
-                tokio::spawn(async move {
-                    if !wait.is_zero() {
-                        tokio::time::sleep(wait).await;
-                    }
-                    let topic = GossipTopic {
-                        fork_digest: digest,
-                        kind: GossipTopicKind::LightClientOptimisticUpdate,
-                    };
-                    if let Err(e) = net.publish(topic, &ou).await {
-                        warn!(error = %e, "lc optimistic update publish failed");
-                    }
-                });
+            if outcome.fork_variant == ForkVariant::Capella {
+                // Capella LC: read from capella CFs and publish with capella digest.
+                use pharos_network::host::LightClientProvider as _;
+                if let Some(fu) = host.light_client_finality_update_capella() {
+                    let wait = host.lc_publish_wait(fu.finality_signature_slot());
+                    let net = egress.network.clone();
+                    tokio::spawn(async move {
+                        if !wait.is_zero() {
+                            tokio::time::sleep(wait).await;
+                        }
+                        let topic = GossipTopic {
+                            fork_digest: digest,
+                            kind: GossipTopicKind::LightClientFinalityUpdate,
+                        };
+                        if let Err(e) = net.publish(topic, &fu).await {
+                            warn!(error = %e, "capella lc finality update publish failed");
+                        }
+                    });
+                }
+                if let Some(ou) = host.light_client_optimistic_update_capella() {
+                    let wait = host.lc_publish_wait(ou.optimistic_signature_slot());
+                    let net = egress.network.clone();
+                    tokio::spawn(async move {
+                        if !wait.is_zero() {
+                            tokio::time::sleep(wait).await;
+                        }
+                        let topic = GossipTopic {
+                            fork_digest: digest,
+                            kind: GossipTopicKind::LightClientOptimisticUpdate,
+                        };
+                        if let Err(e) = net.publish(topic, &ou).await {
+                            warn!(error = %e, "capella lc optimistic update publish failed");
+                        }
+                    });
+                }
+            } else {
+                // Altair / Bellatrix: use the altair LC CFs.
+                if let Some(fu) = host.light_client_finality_update() {
+                    let wait = host.lc_publish_wait(fu.finality_signature_slot());
+                    let net = egress.network.clone();
+                    tokio::spawn(async move {
+                        if !wait.is_zero() {
+                            tokio::time::sleep(wait).await;
+                        }
+                        let topic = GossipTopic {
+                            fork_digest: digest,
+                            kind: GossipTopicKind::LightClientFinalityUpdate,
+                        };
+                        if let Err(e) = net.publish(topic, &fu).await {
+                            warn!(error = %e, "lc finality update publish failed");
+                        }
+                    });
+                }
+                if let Some(ou) = host.light_client_optimistic_update() {
+                    let wait = host.lc_publish_wait(ou.optimistic_signature_slot());
+                    let net = egress.network.clone();
+                    tokio::spawn(async move {
+                        if !wait.is_zero() {
+                            tokio::time::sleep(wait).await;
+                        }
+                        let topic = GossipTopic {
+                            fork_digest: digest,
+                            kind: GossipTopicKind::LightClientOptimisticUpdate,
+                        };
+                        if let Err(e) = net.publish(topic, &ou).await {
+                            warn!(error = %e, "lc optimistic update publish failed");
+                        }
+                    });
+                }
             }
         }
     }
@@ -547,11 +582,14 @@ where
     E::Phase0SignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::AltairSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::BellatrixSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
+    E::CapellaSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     <E::Phase0SignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_types::views::BeaconBlockView,
     <E::AltairSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_types::views::BeaconBlockView,
     <E::BellatrixSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
+        pharos_types::views::BeaconBlockView,
+    <E::CapellaSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_types::views::BeaconBlockView,
 {
     if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
@@ -559,6 +597,8 @@ where
     } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
         inner.message().parent_root()
     } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed_block) {
+        inner.message().parent_root()
+    } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
         inner.message().parent_root()
     } else {
         Root::default()
@@ -587,8 +627,19 @@ where
         + pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaSignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
 {
     match host.fork_from_context(&topic.fork_digest.into_inner()) {
+        Some(pharos_network::types::Fork::Capella) => {
+            match E::CapellaSignedBeaconBlock::from_ssz_bytes(data) {
+                Ok(inner) => Some(E::capella_into_signed_block(inner)),
+                Err(e) => {
+                    warn!(error = ?e, "block_ingestion: capella SSZ decode failed; dropping");
+                    None
+                }
+            }
+        }
         Some(pharos_network::types::Fork::Bellatrix) => {
             match E::BellatrixSignedBeaconBlock::from_ssz_bytes(data) {
                 Ok(inner) => Some(E::bellatrix_into_signed_block(inner)),
@@ -626,11 +677,14 @@ where
     E::Phase0SignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::AltairSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::BellatrixSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
+    E::CapellaSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     <E::Phase0SignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
     <E::AltairSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
     <E::BellatrixSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
+        pharos_ssz::TreeHash,
+    <E::CapellaSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
 {
     use pharos_ssz::TreeHash as _;
@@ -639,6 +693,8 @@ where
     } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
         inner.message().tree_hash_root()
     } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed_block) {
+        inner.message().tree_hash_root()
+    } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
         inner.message().tree_hash_root()
     } else {
         Root::default()
@@ -659,6 +715,7 @@ where
     E::Phase0SignedBeaconBlock: pharos_ssz::Encode,
     E::AltairSignedBeaconBlock: pharos_ssz::Encode,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Encode,
+    E::CapellaSignedBeaconBlock: pharos_ssz::Encode,
 {
     use pharos_ssz::Encode as _;
     if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
@@ -666,6 +723,8 @@ where
     } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
         inner.as_ssz_bytes()
     } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed_block) {
+        inner.as_ssz_bytes()
+    } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
         inner.as_ssz_bytes()
     } else {
         // Unreachable for any valid EthSpec implementation.

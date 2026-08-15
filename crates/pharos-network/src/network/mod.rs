@@ -2083,7 +2083,9 @@ mod tests {
             // MockHost uses the zero digest for every fork; the explicit match
             // forces an update here if a future Fork variant is added.
             match fork {
-                Fork::Phase0 | Fork::Altair | Fork::Bellatrix => ForkDigest::from_array([0u8; 4]),
+                Fork::Phase0 | Fork::Altair | Fork::Bellatrix | Fork::Capella => {
+                    ForkDigest::from_array([0u8; 4])
+                }
             }
         }
         fn fork_from_context(&self, _ctx: &[u8; 4]) -> Option<crate::types::Fork> {
@@ -2116,6 +2118,18 @@ mod tests {
         fn light_client_optimistic_update(
             &self,
         ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate> {
+            None
+        }
+
+        fn light_client_finality_update_capella(
+            &self,
+        ) -> Option<<MainnetEthSpec as EthSpec>::CapellaLightClientFinalityUpdate> {
+            None
+        }
+
+        fn light_client_optimistic_update_capella(
+            &self,
+        ) -> Option<<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate> {
             None
         }
     }
@@ -2196,6 +2210,27 @@ mod tests {
         fn validate_light_client_optimistic_update(
             &self,
             _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate,
+        ) -> GossipVerdict {
+            unreachable!()
+        }
+
+        fn validate_bls_to_execution_change(
+            &self,
+            _msg: &pharos_types::capella::operations::SignedBLSToExecutionChange,
+        ) -> GossipVerdict {
+            unreachable!()
+        }
+
+        fn validate_capella_light_client_finality_update(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::CapellaLightClientFinalityUpdate,
+        ) -> GossipVerdict {
+            unreachable!()
+        }
+
+        fn validate_capella_light_client_optimistic_update(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate,
         ) -> GossipVerdict {
             unreachable!()
         }

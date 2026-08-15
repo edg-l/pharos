@@ -1,12 +1,13 @@
 //! Cross-fork ENR migration and gossip topic rotation driver.
 //!
-//! This loop handles BOTH the phase0→altair AND altair→bellatrix crossings
-//! (and any future crossings) within a single run. It tracks the last-applied
-//! fork version (`prior`) and fires `do_migration` whenever the wall-clock
-//! epoch enters a new fork. The loop does NOT exit after the first crossing.
+//! This loop handles the phase0→altair→bellatrix→capella crossings within a
+//! single run. It tracks the last-applied fork version (`prior`) and fires
+//! `do_migration` whenever the wall-clock epoch enters a new fork. The loop
+//! does NOT exit after the first crossing.
 //!
-//! Per `specs/altair/p2p-interface.md` and `specs/bellatrix/p2p-interface.md`
-//! cross-fork ENR migration requirements and `D-fork-schedule-source` (M3b).
+//! Per `specs/altair/p2p-interface.md`, `specs/bellatrix/p2p-interface.md`,
+//! and `specs/capella/p2p-interface.md` cross-fork ENR migration requirements
+//! and `D-fork-schedule-source` (M3b).
 //!
 //! **Startup no-op** (`D-bellatrix-migration-startup-no-op`): on the first
 //! tick, if the active fork version is already past the genesis fork version,
@@ -62,10 +63,11 @@ pub async fn run_fork_migration_loop<E: EthSpec>(
     fork_schedule: Arc<ForkSchedule>,
     genesis_time_secs: u64,
 ) {
-    // If both altair and bellatrix are FAR_FUTURE_EPOCH, no migrations will
-    // ever occur; exit immediately to avoid a useless spinning loop.
+    // If altair, bellatrix, and capella are all FAR_FUTURE_EPOCH, no migrations
+    // will ever occur; exit immediately to avoid a useless spinning loop.
     if fork_schedule.altair_fork_epoch == Epoch(u64::MAX)
         && fork_schedule.bellatrix_fork_epoch == Epoch(u64::MAX)
+        && fork_schedule.capella_fork_epoch == Epoch(u64::MAX)
     {
         return;
     }
@@ -197,8 +199,10 @@ async fn do_migration<E: EthSpec>(
 ///
 /// - genesis_fork_version → `phase0_gossip_topics` (5 base topics)
 /// - altair_fork_version  → `altair_gossip_topics` (5 base + altair extras)
-/// - bellatrix_fork_version (or unknown) → `bellatrix_gossip_topics`
+/// - bellatrix_fork_version → `bellatrix_gossip_topics`
 ///   (5 base + same altair extras, all under the bellatrix digest)
+/// - capella_fork_version (or unknown) → `capella_gossip_topics`
+///   (5 base + altair extras + `bls_to_execution_change`)
 fn topics_for_version<E: EthSpec>(
     version: Version,
     fork_schedule: &ForkSchedule,
@@ -208,11 +212,11 @@ fn topics_for_version<E: EthSpec>(
         phase0_gossip_topics(digest)
     } else if version == fork_schedule.altair_fork_version {
         altair_gossip_topics::<E>(digest)
-    } else {
-        // Bellatrix (and any future fork): same topic shape as altair —
-        // per bellatrix/p2p-interface.md only the beacon_block TYPE changes;
-        // all topic names remain the same, only the fork-digest segment bumps.
+    } else if version == fork_schedule.bellatrix_fork_version {
         bellatrix_gossip_topics::<E>(digest)
+    } else {
+        // Capella (and any future fork): bellatrix topic shape + bls_to_execution_change.
+        capella_gossip_topics::<E>(digest)
     }
 }
 
@@ -325,6 +329,27 @@ pub(crate) fn bellatrix_gossip_topics<E: EthSpec>(
     topics
 }
 
+/// The capella gossip topics: bellatrix extras + `bls_to_execution_change`,
+/// all under the capella fork digest.
+///
+/// Per `specs/capella/p2p-interface.md`: Capella changes the `beacon_block`
+/// container type and adds the new `bls_to_execution_change` global topic.
+/// All other topic names remain the same as Bellatrix; the fork-digest segment
+/// bumps at the Capella boundary.
+///
+/// Attestation subnet topics are handled by the subnet rotation driver.
+pub(crate) fn capella_gossip_topics<E: EthSpec>(capella_digest: ForkDigest) -> Vec<GossipTopic> {
+    let mut topics = bellatrix_gossip_topics::<E>(capella_digest);
+
+    // New in Capella: `bls_to_execution_change` topic.
+    topics.push(GossipTopic {
+        fork_digest: capella_digest,
+        kind: GossipTopicKind::BlsToExecutionChange,
+    });
+
+    topics
+}
+
 /// Returns the list of altair topics for a given fork digest.
 ///
 /// Public helper used by integration tests to verify that both nodes subscribed
@@ -341,6 +366,15 @@ pub fn altair_topic_list<E: EthSpec>(altair_digest: ForkDigest) -> Vec<GossipTop
 /// all topics carry the bellatrix fork digest.
 pub fn bellatrix_topic_list<E: EthSpec>(bellatrix_digest: ForkDigest) -> Vec<GossipTopic> {
     bellatrix_gossip_topics::<E>(bellatrix_digest)
+}
+
+/// Returns the list of capella topics for a given fork digest.
+///
+/// Public helper used by integration tests to verify that the migration
+/// correctly subscribes to the capella topic set. The set is the bellatrix
+/// set (5 base + sync_committee_* + light_client_*) plus `bls_to_execution_change`.
+pub fn capella_topic_list<E: EthSpec>(capella_digest: ForkDigest) -> Vec<GossipTopic> {
+    capella_gossip_topics::<E>(capella_digest)
 }
 
 // ── Command helpers ───────────────────────────────────────────────────────────

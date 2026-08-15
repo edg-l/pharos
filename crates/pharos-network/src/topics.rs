@@ -21,11 +21,12 @@ use crate::types::{ForkDigest, SubnetId};
 
 // ── GossipTopicKind ───────────────────────────────────────────────────────────
 
-/// The kind of gossip topic, distinguishing the Phase-0 and Altair topics.
+/// The kind of gossip topic, distinguishing the Phase-0, Altair, and Capella topics.
 ///
 /// Phase-0 topics per `specs/phase0/p2p-interface.md:507-514`.
 /// Altair topics per `specs/altair/p2p-interface.md:184-188` and
 /// `specs/altair/light-client/p2p-interface.md:47-48`.
+/// Capella topics per `specs/capella/p2p-interface.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GossipTopicKind {
     // ── Phase-0 topics ────────────────────────────────────────────────────────
@@ -46,6 +47,12 @@ pub enum GossipTopicKind {
     LightClientFinalityUpdate,
     /// `light_client_optimistic_update` per `specs/altair/light-client/p2p-interface.md:48`.
     LightClientOptimisticUpdate,
+    // ── Capella topics ────────────────────────────────────────────────────────
+    /// `bls_to_execution_change` per `specs/capella/p2p-interface.md`.
+    ///
+    /// Propagates `SignedBLSToExecutionChange` messages to all potential block
+    /// proposers. The message type is defined in `specs/capella/beacon-chain.md`.
+    BlsToExecutionChange,
 }
 
 // ── GossipTopic ───────────────────────────────────────────────────────────────
@@ -180,6 +187,8 @@ fn topic_kind_name(kind: &GossipTopicKind) -> String {
         GossipTopicKind::LightClientOptimisticUpdate => {
             "light_client_optimistic_update".to_string()
         }
+        // Capella topics — `specs/capella/p2p-interface.md`.
+        GossipTopicKind::BlsToExecutionChange => "bls_to_execution_change".to_string(),
     }
 }
 
@@ -198,6 +207,7 @@ fn parse_topic_kind(name: &str) -> Option<GossipTopicKind> {
         }
         "light_client_finality_update" => Some(GossipTopicKind::LightClientFinalityUpdate),
         "light_client_optimistic_update" => Some(GossipTopicKind::LightClientOptimisticUpdate),
+        "bls_to_execution_change" => Some(GossipTopicKind::BlsToExecutionChange),
         _ => {
             // Handle `beacon_attestation_<decimal-subnet-id>`.
             if let Some(subnet_str) = name.strip_prefix("beacon_attestation_") {
@@ -262,6 +272,8 @@ mod tests {
             topic(fd, GossipTopicKind::SyncCommittee(3)),
             topic(fd, GossipTopicKind::LightClientFinalityUpdate),
             topic(fd, GossipTopicKind::LightClientOptimisticUpdate),
+            // Capella topics.
+            topic(fd, GossipTopicKind::BlsToExecutionChange),
         ];
         for t in &cases {
             let s = t.topic_str();

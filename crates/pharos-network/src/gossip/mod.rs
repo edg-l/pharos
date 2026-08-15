@@ -24,6 +24,7 @@ use pharos_ssz::Bitvector;
 use pharos_ssz::Decode as _;
 use pharos_types::EthSpec;
 use pharos_types::altair::SyncCommitteeMessage;
+use pharos_types::capella::operations::SignedBLSToExecutionChange;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::phase0::{
     Attestation, AttesterSlashing, ProposerSlashing, SignedAggregateAndProof, SignedVoluntaryExit,
@@ -181,6 +182,15 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
                         Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
                     }
                 }
+                Some(crate::types::Fork::Capella) => {
+                    match E::CapellaSignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
+                        Ok(inner) => {
+                            let block = E::capella_into_signed_block(inner);
+                            host.validate_beacon_block(&block)
+                        }
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
+                }
                 Some(crate::types::Fork::Bellatrix) => {
                     match E::BellatrixSignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
                         Ok(inner) => {
@@ -244,14 +254,44 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
             }
         }
         GossipTopicKind::LightClientFinalityUpdate => {
-            match E::AltairLightClientFinalityUpdate::from_ssz_bytes(ssz_bytes) {
-                Ok(msg) => host.validate_light_client_finality_update(&msg),
-                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+            // Dispatch by fork-digest: capella LC objects have a different SSZ
+            // layout (execution header + branch). Per
+            // `specs/capella/light-client/p2p-interface.md`.
+            match host.fork_from_context(&topic.fork_digest.into_inner()) {
+                Some(crate::types::Fork::Capella) => {
+                    match E::CapellaLightClientFinalityUpdate::from_ssz_bytes(ssz_bytes) {
+                        Ok(msg) => host.validate_capella_light_client_finality_update(&msg),
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
+                }
+                _ => match E::AltairLightClientFinalityUpdate::from_ssz_bytes(ssz_bytes) {
+                    Ok(msg) => host.validate_light_client_finality_update(&msg),
+                    Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                },
             }
         }
         GossipTopicKind::LightClientOptimisticUpdate => {
-            match E::AltairLightClientOptimisticUpdate::from_ssz_bytes(ssz_bytes) {
-                Ok(msg) => host.validate_light_client_optimistic_update(&msg),
+            match host.fork_from_context(&topic.fork_digest.into_inner()) {
+                Some(crate::types::Fork::Capella) => {
+                    match E::CapellaLightClientOptimisticUpdate::from_ssz_bytes(ssz_bytes) {
+                        Ok(msg) => host.validate_capella_light_client_optimistic_update(&msg),
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
+                }
+                _ => match E::AltairLightClientOptimisticUpdate::from_ssz_bytes(ssz_bytes) {
+                    Ok(msg) => host.validate_light_client_optimistic_update(&msg),
+                    Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                },
+            }
+        }
+        // ── Capella topics ─────────────────────────────────────────────────────
+        // Per `specs/capella/p2p-interface.md`.
+        // BLS verify in `validate_bls_to_execution_change` is sync/CPU-bound;
+        // the caller must run this in `spawn_blocking` (D-no-tokio-from-validator,
+        // D-bls-on-hot-path).
+        GossipTopicKind::BlsToExecutionChange => {
+            match SignedBLSToExecutionChange::from_ssz_bytes(ssz_bytes) {
+                Ok(msg) => host.validate_bls_to_execution_change(&msg),
                 Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
             }
         }
@@ -378,6 +418,27 @@ mod tests {
         fn validate_light_client_optimistic_update(
             &self,
             _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+
+        fn validate_bls_to_execution_change(
+            &self,
+            _msg: &pharos_types::capella::operations::SignedBLSToExecutionChange,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+
+        fn validate_capella_light_client_finality_update(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::CapellaLightClientFinalityUpdate,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+
+        fn validate_capella_light_client_optimistic_update(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }

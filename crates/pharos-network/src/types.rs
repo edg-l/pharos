@@ -19,7 +19,8 @@ use pharos_types::phase0::Status;
 /// is used to tag RPC response chunks with the fork that produced them,
 /// enabling the context-bytes codec dispatch per
 /// `specs/altair/p2p-interface.md:445-461` and
-/// `specs/bellatrix/p2p-interface.md`.
+/// `specs/bellatrix/p2p-interface.md` and
+/// `specs/capella/p2p-interface.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fork {
     /// Phase 0 fork.
@@ -28,6 +29,8 @@ pub enum Fork {
     Altair,
     /// Bellatrix (merge) fork.
     Bellatrix,
+    /// Capella fork.
+    Capella,
 }
 
 // ── SubnetId ──────────────────────────────────────────────────────────────────

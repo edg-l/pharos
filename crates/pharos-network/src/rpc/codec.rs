@@ -166,18 +166,19 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                 None
             };
 
-            // For light-client methods, context bytes MUST indicate Altair.
+            // For light-client methods, context bytes MUST indicate Altair or Capella.
             // Catch misbehaving peers that send wrong-fork context bytes for
-            // altair-only methods per `specs/altair/light-client/p2p-interface.md`.
+            // LC methods per `specs/altair/light-client/p2p-interface.md` and
+            // `specs/capella/light-client/p2p-interface.md`.
             match method {
                 RpcMethod::LightClientBootstrap
                 | RpcMethod::LightClientUpdatesByRange
                 | RpcMethod::LightClientFinalityUpdate
                 | RpcMethod::LightClientOptimisticUpdate
-                    if chunk_fork != Some(Fork::Altair) =>
+                    if !matches!(chunk_fork, Some(Fork::Altair) | Some(Fork::Capella)) =>
                 {
                     return Err(io::Error::other(
-                        "light-client chunk has non-altair context bytes",
+                        "light-client chunk has non-altair/capella context bytes",
                     ));
                 }
                 _ => {}
@@ -221,6 +222,14 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     }
                     // Dispatch SSZ decode based on the chunk's fork (context bytes).
                     let block = match chunk_fork {
+                        Some(Fork::Capella) => {
+                            let inner = read_ssz_snappy_payload::<_, E::CapellaSignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::capella_into_signed_block(inner)
+                        }
                         Some(Fork::Bellatrix) => {
                             let inner =
                                 read_ssz_snappy_payload::<_, E::BellatrixSignedBeaconBlock>(
@@ -431,9 +440,12 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                 })?;
                 for block in &blocks {
                     // Write 4 context bytes (fork digest) before the SSZ payload
-                    // per `specs/altair/p2p-interface.md:445-461`.
+                    // per `specs/altair/p2p-interface.md:445-461` and
+                    // `specs/capella/p2p-interface.md`.
                     // Dispatch to the inner SSZ bytes (no fork discriminant byte).
-                    let (fork, ssz) = if let Some(inner) = E::unwrap_bellatrix_signed_block(block) {
+                    let (fork, ssz) = if let Some(inner) = E::unwrap_capella_signed_block(block) {
+                        (Fork::Capella, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(block) {
                         (Fork::Bellatrix, inner.as_ssz_bytes())
                     } else if let Some(inner) = E::unwrap_altair_signed_block(block) {
                         (Fork::Altair, inner.as_ssz_bytes())

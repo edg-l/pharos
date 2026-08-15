@@ -195,6 +195,8 @@ impl ForkContext for TestHost {
             Fork::Phase0 => self.fork_digest,
             Fork::Altair => self.altair_fork_digest.unwrap_or(self.fork_digest),
             Fork::Bellatrix => self.bellatrix_fork_digest.unwrap_or(self.fork_digest),
+            // Tests don't have a capella digest; fall back to bellatrix if available.
+            Fork::Capella => self.bellatrix_fork_digest.unwrap_or(self.fork_digest),
         }
     }
 
@@ -253,6 +255,18 @@ impl LightClientProvider<MainnetEthSpec> for TestHost {
     fn light_client_optimistic_update(
         &self,
     ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientOptimisticUpdate> {
+        None
+    }
+
+    fn light_client_finality_update_capella(
+        &self,
+    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientFinalityUpdate> {
+        None
+    }
+
+    fn light_client_optimistic_update_capella(
+        &self,
+    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientOptimisticUpdate> {
         None
     }
 }
@@ -388,6 +402,27 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
     fn validate_light_client_optimistic_update(
         &self,
         _msg: &<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientOptimisticUpdate,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    fn validate_bls_to_execution_change(
+        &self,
+        _msg: &pharos_types::capella::operations::SignedBLSToExecutionChange,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    fn validate_capella_light_client_finality_update(
+        &self,
+        _msg: &<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientFinalityUpdate,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    fn validate_capella_light_client_optimistic_update(
+        &self,
+        _msg: &<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientOptimisticUpdate,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }

@@ -1,9 +1,8 @@
 //! Spec verdict-string round-trip test.
 //!
 //! Task 4.2 (M4e Phase 4): assert that every IGNORE/REJECT verdict string in
-//! `host_impl.rs` matches a hard-coded list, and that no string with the
-//! `"block: "`, `"att: "`, or `"agg: "` prefix exists in the source that is
-//! NOT in the list.
+//! `host_impl.rs` matches a hard-coded list, and that no string with a known
+//! topic prefix exists in the source that is NOT in the list.
 //!
 //! Approach: `include_str!` the source files at test build time and check each
 //! known string is present.  The orphan-string assertion (every prefixed string
@@ -13,11 +12,16 @@
 //! `pharos-network/src/host.rs` (single source of truth per D-parent-unseen-sentinel).
 //! Part 1 and Part 2 therefore scan both source files.
 //!
-//! Counts audited from source: block=14, att=15, agg=20, total=49.
+//! Phase 6 extension: adds strings for the 3 folded phase0 validators
+//! (`exit: `, `proposer_slashing: `, `attester_slashing: `) and the new
+//! `bls_to_exec: ` validator.
 //!
-//! This test is the gating mechanism for Phase 6's audit, which will compare
-//! strings against the spec rule inventory.  Do not modify the list without
-//! also updating the corresponding spec-rule mapping in `docs/decisions.md`.
+//! Counts audited from source: block=14, att=15, agg=20, exit=8, ps=8, as=8,
+//! bte=7, total=79 (each of the 4 new validators also has a defensive
+//! "head state unavailable" IGNORE string beyond the spec IGNORE/REJECT rules).
+//!
+//! This test is the gating mechanism for spec rule audit. Do not modify the list
+//! without also updating the corresponding spec-rule mapping in `docs/decisions.md`.
 
 const SRC: &str = include_str!("../src/host_impl.rs");
 /// Also scan the network crate's host.rs where `GOSSIP_REASON_PARENT_UNSEEN` is defined.
@@ -81,12 +85,55 @@ const EXPECTED: &[&str] = &[
     "agg: target not ancestor",
     "agg: voted block invalid",
     "agg: voted block unseen",
+    // ── exit (7: 1 IGNORE + 6 REJECT) ────────────────────────────────────────
+    "exit: already seen for this validator",
+    "exit: exit epoch in the future",
+    "exit: head state unavailable",
+    "exit: invalid signature",
+    "exit: validator already exiting",
+    "exit: validator index out of range",
+    "exit: validator not active",
+    "exit: validator not active long enough",
+    // ── proposer_slashing (7: 1 IGNORE + 6 REJECT) ────────────────────────────
+    "proposer_slashing: already seen for this proposer",
+    "proposer_slashing: header proposer indices do not match",
+    "proposer_slashing: header slots do not match",
+    "proposer_slashing: headers are not different",
+    "proposer_slashing: head state unavailable",
+    "proposer_slashing: invalid signature",
+    "proposer_slashing: proposer index out of range",
+    "proposer_slashing: proposer not slashable",
+    // ── attester_slashing (7: 1 IGNORE + 6 REJECT) ────────────────────────────
+    "attester_slashing: all indices already seen",
+    "attester_slashing: attestation data not slashable",
+    "attester_slashing: head state unavailable",
+    "attester_slashing: index out of range in attestation_1",
+    "attester_slashing: index out of range in attestation_2",
+    "attester_slashing: invalid indexed attestation_1",
+    "attester_slashing: invalid indexed attestation_2",
+    "attester_slashing: no slashable validators in intersection",
+    // ── bls_to_exec (6: 2 IGNORE + 4 REJECT) ─────────────────────────────────
+    "bls_to_exec: already seen for this validator",
+    "bls_to_exec: current epoch is pre-capella",
+    "bls_to_exec: head state unavailable",
+    "bls_to_exec: invalid signature",
+    "bls_to_exec: not BLS withdrawal credentials",
+    "bls_to_exec: pubkey hash mismatch",
+    "bls_to_exec: validator index out of range",
 ];
 
 /// Extract all quoted strings from `src` that start with one of the topic
 /// prefixes.  Returns a sorted, deduplicated `Vec<String>`.
 fn extract_prefixed_strings(src: &str) -> Vec<String> {
-    let prefixes = ["block: ", "att: ", "agg: "];
+    let prefixes = [
+        "block: ",
+        "att: ",
+        "agg: ",
+        "exit: ",
+        "proposer_slashing: ",
+        "attester_slashing: ",
+        "bls_to_exec: ",
+    ];
     let mut found = std::collections::BTreeSet::new();
     let mut chars = src.chars().peekable();
     while let Some(c) = chars.next() {
@@ -133,9 +180,8 @@ fn verdict_strings_match_known_list() {
     }
 
     // ── Part 2: no orphan strings in the source not in the expected list ──────
-    // Every string with a "block: "/"att: "/"agg: " prefix that appears in
-    // either source must be in EXPECTED, UNLESS it is
-    // `GOSSIP_REASON_PARENT_UNSEEN` (handled separately in Part 4).
+    // Every string with a known prefix that appears in either source must be in
+    // EXPECTED, UNLESS it is `GOSSIP_REASON_PARENT_UNSEEN` (handled separately).
     let mut in_source = extract_prefixed_strings(SRC);
     in_source.extend(extract_prefixed_strings(NETWORK_HOST_SRC));
     in_source.sort();
@@ -165,13 +211,40 @@ fn verdict_strings_match_known_list() {
     let block_count = EXPECTED.iter().filter(|s| s.starts_with("block: ")).count();
     let att_count = EXPECTED.iter().filter(|s| s.starts_with("att: ")).count();
     let agg_count = EXPECTED.iter().filter(|s| s.starts_with("agg: ")).count();
+    let exit_count = EXPECTED.iter().filter(|s| s.starts_with("exit: ")).count();
+    let ps_count = EXPECTED
+        .iter()
+        .filter(|s| s.starts_with("proposer_slashing: "))
+        .count();
+    let as_count = EXPECTED
+        .iter()
+        .filter(|s| s.starts_with("attester_slashing: "))
+        .count();
+    let bte_count = EXPECTED
+        .iter()
+        .filter(|s| s.starts_with("bls_to_exec: "))
+        .count();
     assert_eq!(
         block_count, 13,
         "expected 13 inline block: strings (parent-unseen lives in const)"
     );
     assert_eq!(att_count, 15, "expected 15 att: strings");
     assert_eq!(agg_count, 20, "expected 20 agg: strings");
-    assert_eq!(EXPECTED.len(), 48, "expected 48 inline verdict strings");
+    assert_eq!(
+        exit_count, 8,
+        "expected 8 exit: strings (1 IGNORE + 7 REJECT incl. head-state)"
+    );
+    assert_eq!(ps_count, 8, "expected 8 proposer_slashing: strings");
+    assert_eq!(as_count, 8, "expected 8 attester_slashing: strings");
+    assert_eq!(
+        bte_count, 7,
+        "expected 7 bls_to_exec: strings (2 IGNORE + 5 incl. head-state)"
+    );
+    assert_eq!(
+        EXPECTED.len(),
+        79,
+        "expected 79 total inline verdict strings"
+    );
 
     // ── Part 4: GOSSIP_REASON_PARENT_UNSEEN const is the canonical definition ──
     // The literal "block: parent unseen" must NOT appear anywhere in host_impl.rs

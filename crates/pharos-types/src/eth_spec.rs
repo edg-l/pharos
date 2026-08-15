@@ -798,7 +798,7 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + Send
         + Sync
         + 'static
-        + crate::views::SignedBeaconBlockView;
+        + crate::views::SignedBeaconBlockView<Message = Self::BellatrixBeaconBlock>;
 
     /// Bellatrix inner `BeaconBlockBody` (unwrapped).
     type BellatrixBeaconBlockBody: pharos_ssz::Encode
