@@ -110,6 +110,19 @@ pub struct RuntimeConfig {
     pub bytes_per_logs_bloom: u64,
     /// `MAX_EXTRA_DATA_BYTES` — dimension-bearing; drives `ByteList` SSZ container size.
     pub max_extra_data_bytes: u64,
+
+    // -- Deposit contract --
+    /// `DEPOSIT_CONTRACT_ADDRESS` from `configs/{mainnet,minimal}.yaml`.
+    ///
+    /// Mainnet: `0x00000000219ab540356cBB839Cbe05303d7705Fa`.
+    /// Consumed by the `config/deposit_contract` Beacon API endpoint.
+    pub deposit_contract_address: [u8; 20],
+
+    /// `DEPOSIT_CHAIN_ID` from `configs/{mainnet,minimal}.yaml`.
+    ///
+    /// Mainnet: `1` (Ethereum mainnet). Consumed by the
+    /// `config/deposit_contract` Beacon API endpoint.
+    pub deposit_chain_id: u64,
 }
 
 impl Default for RuntimeConfig {

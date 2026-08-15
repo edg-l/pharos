@@ -1,4 +1,4 @@
-//! Beacon API router: wires all Phase-1 and Phase-2 routes.
+//! Beacon API router: wires all Phase-1, Phase-2, and Phase-3 routes.
 
 use std::sync::Arc;
 
@@ -7,12 +7,14 @@ use axum::routing::get;
 use pharos_types::EthSpec;
 
 use crate::handlers::beacon_basic;
+use crate::handlers::blocks as blocks_handlers;
 use crate::handlers::config as config_handlers;
+use crate::handlers::config_extra;
 use crate::handlers::node;
 use crate::handlers::states;
 use crate::state::ApiState;
 
-/// Build the Beacon API router (Phase 1 + Phase 2).
+/// Build the Beacon API router (Phase 1 + Phase 2 + Phase 3).
 ///
 /// Routes wired:
 /// **Phase 1 — Tier-1 probes**
@@ -34,6 +36,15 @@ use crate::state::ApiState;
 /// - `GET /eth/v1/beacon/states/{state_id}/committees`
 /// - `GET /eth/v1/beacon/states/{state_id}/randao`
 /// - `GET /eth/v1/beacon/states/{state_id}/sync_committees`
+///
+/// **Phase 3 — Blocks, headers, fork-tagging, config extras**
+/// - `GET /eth/v1/beacon/blocks/{block_id}/root`
+/// - `GET /eth/v1/beacon/headers`
+/// - `GET /eth/v1/beacon/headers/{block_id}`
+/// - `GET /eth/v2/beacon/blocks/{block_id}`
+/// - `GET /eth/v2/beacon/blocks/{block_id}/attestations`
+/// - `GET /eth/v1/config/fork_schedule`
+/// - `GET /eth/v1/config/deposit_contract`
 pub fn build_router<E: EthSpec>(state: Arc<ApiState<E>>) -> Router {
     Router::new()
         // Node namespace (Phase 1)
@@ -88,6 +99,36 @@ pub fn build_router<E: EthSpec>(state: Arc<ApiState<E>>) -> Router {
         .route(
             "/eth/v1/beacon/states/{state_id}/sync_committees",
             get(states::get_sync_committees::<E>),
+        )
+        // Blocks namespace (Phase 3)
+        .route(
+            "/eth/v1/beacon/blocks/{block_id}/root",
+            get(blocks_handlers::get_block_root::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/headers",
+            get(blocks_handlers::get_headers::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/headers/{block_id}",
+            get(blocks_handlers::get_header::<E>),
+        )
+        .route(
+            "/eth/v2/beacon/blocks/{block_id}",
+            get(blocks_handlers::get_block_v2::<E>),
+        )
+        .route(
+            "/eth/v2/beacon/blocks/{block_id}/attestations",
+            get(blocks_handlers::get_block_attestations_v2::<E>),
+        )
+        // Config extras (Phase 3)
+        .route(
+            "/eth/v1/config/fork_schedule",
+            get(config_extra::get_fork_schedule::<E>),
+        )
+        .route(
+            "/eth/v1/config/deposit_contract",
+            get(config_extra::get_deposit_contract::<E>),
         )
         .with_state(state)
 }

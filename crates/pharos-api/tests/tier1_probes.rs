@@ -149,6 +149,13 @@ impl ChainStateApi<MainnetEthSpec> for MockChain {
     fn sync_committee_pubkeys(&self, _root: Root) -> Option<(Vec<[u8; 48]>, Vec<[u8; 48]>)> {
         None
     }
+
+    fn block_by_root_for_api(
+        &self,
+        _root: Root,
+    ) -> Result<Option<pharos_api::dto::block::SignedBlockForApi>, pharos_api::ApiError> {
+        Ok(None)
+    }
 }
 
 /// A minimal mock that delegates everything to `MockChain` but overrides
@@ -228,6 +235,13 @@ impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
 
     fn sync_committee_pubkeys(&self, root: Root) -> Option<(Vec<[u8; 48]>, Vec<[u8; 48]>)> {
         self.inner.sync_committee_pubkeys(root)
+    }
+
+    fn block_by_root_for_api(
+        &self,
+        root: Root,
+    ) -> Result<Option<pharos_api::dto::block::SignedBlockForApi>, pharos_api::ApiError> {
+        self.inner.block_by_root_for_api(root)
     }
 }
 

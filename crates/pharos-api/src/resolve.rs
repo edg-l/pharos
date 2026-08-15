@@ -286,6 +286,13 @@ mod tests {
         fn sync_committee_pubkeys(&self, _root: Root) -> Option<(Vec<[u8; 48]>, Vec<[u8; 48]>)> {
             None
         }
+
+        fn block_by_root_for_api(
+            &self,
+            _root: Root,
+        ) -> Result<Option<crate::dto::block::SignedBlockForApi>, ApiError> {
+            Ok(None)
+        }
     }
 
     #[test]

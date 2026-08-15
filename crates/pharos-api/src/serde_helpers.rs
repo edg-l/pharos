@@ -110,6 +110,18 @@ pub fn deserialize_hex48<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[u8; 
         .map_err(|_| serde::de::Error::custom("expected exactly 48 bytes"))
 }
 
+/// Serialize a `[u8; 20]` as `0x`-prefixed lowercase hex (Ethereum execution address).
+pub fn serialize_hex20<S: serde::Serializer>(v: &[u8; 20], s: S) -> Result<S::Ok, S::Error> {
+    hex_bytes::serialize(v.as_slice(), s)
+}
+
+/// Deserialize a `0x`-hex string into a `[u8; 20]`.
+pub fn deserialize_hex20<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[u8; 20], D::Error> {
+    let v: Vec<u8> = hex_bytes::deserialize(d)?;
+    v.try_into()
+        .map_err(|_| serde::de::Error::custom("expected exactly 20 bytes"))
+}
+
 /// Serialize a `[u8; 96]` as `0x`-prefixed lowercase hex (BLS signature).
 pub fn serialize_hex96<S: serde::Serializer>(v: &[u8; 96], s: S) -> Result<S::Ok, S::Error> {
     hex_bytes::serialize(v.as_slice(), s)
@@ -298,6 +310,41 @@ mod tests {
         let json = serde_json::to_string(&orig).unwrap();
         assert!(json.contains("\"0xab"));
         let back: WithPubkey = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, orig);
+    }
+
+    // ── [u8; 20] round-trip (execution address) ───────────────────────────────
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct WithAddr {
+        #[serde(
+            serialize_with = "serialize_hex20",
+            deserialize_with = "deserialize_hex20"
+        )]
+        addr: [u8; 20],
+    }
+
+    #[test]
+    fn fixed20_zero_round_trip() {
+        let orig = WithAddr { addr: [0u8; 20] };
+        let json = serde_json::to_string(&orig).unwrap();
+        assert_eq!(
+            json,
+            r#"{"addr":"0x0000000000000000000000000000000000000000"}"#
+        );
+        let back: WithAddr = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, orig);
+    }
+
+    #[test]
+    fn fixed20_nonzero_round_trip() {
+        let mut addr = [0u8; 20];
+        addr[0] = 0xab;
+        addr[19] = 0xcd;
+        let orig = WithAddr { addr };
+        let json = serde_json::to_string(&orig).unwrap();
+        assert!(json.contains("\"0xab"));
+        let back: WithAddr = serde_json::from_str(&json).unwrap();
         assert_eq!(back, orig);
     }
 

@@ -146,6 +146,8 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
     let bellatrix_fork_epoch = extract_u64(&config_map, "BELLATRIX_FORK_EPOCH")?;
     let capella_fork_version = extract_version(&config_map, "CAPELLA_FORK_VERSION")?;
     let capella_fork_epoch = extract_u64(&config_map, "CAPELLA_FORK_EPOCH")?;
+    let deposit_chain_id = extract_u64(&config_map, "DEPOSIT_CHAIN_ID")?;
+    let deposit_contract_address = extract_address20(&config_map, "DEPOSIT_CONTRACT_ADDRESS")?;
     let terminal_total_difficulty = extract_uint256(&config_map, "TERMINAL_TOTAL_DIFFICULTY")?;
     let terminal_block_hash = extract_hash256(&config_map, "TERMINAL_BLOCK_HASH")?;
     let terminal_block_hash_activation_epoch =
@@ -219,6 +221,8 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         max_transactions_per_payload,
         bytes_per_logs_bloom,
         max_extra_data_bytes,
+        deposit_contract_address,
+        deposit_chain_id,
     })
 }
 
@@ -338,6 +342,42 @@ fn extract_u64(map: &HashMap<String, String>, field: &'static str) -> Result<u64
             value: raw.to_string(),
         })
     }
+}
+
+/// Parse a 20-byte Ethereum execution address from a `0x`-prefixed 40-hex-char string.
+///
+/// Used for `DEPOSIT_CONTRACT_ADDRESS` (e.g. `0x00000000219ab540356cBB839Cbe05303d7705Fa`).
+fn extract_address20(
+    map: &HashMap<String, String>,
+    field: &'static str,
+) -> Result<[u8; 20], ConfigError> {
+    let raw = map
+        .get(field)
+        .ok_or(ConfigError::MissingField(field))?
+        .trim();
+    let hex = raw
+        .strip_prefix("0x")
+        .or_else(|| raw.strip_prefix("0X"))
+        .ok_or_else(|| ConfigError::InvalidValue {
+            field,
+            value: raw.to_string(),
+        })?;
+    if hex.len() != 40 {
+        return Err(ConfigError::InvalidValue {
+            field,
+            value: raw.to_string(),
+        });
+    }
+    let mut bytes = [0u8; 20];
+    for i in 0..20 {
+        bytes[i] = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).map_err(|_| {
+            ConfigError::InvalidValue {
+                field,
+                value: raw.to_string(),
+            }
+        })?;
+    }
+    Ok(bytes)
 }
 
 /// Parse a 4-byte fork version from a hex string like `0x00000000` or decimal `0`.

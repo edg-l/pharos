@@ -3,7 +3,9 @@
 //! Implements the OpenAPI surface defined in `beacon-APIs/`. Built on
 //! `axum`. Endpoints under `/eth/v1`, `/eth/v2`, ... including SSE streams.
 
+pub mod dto;
 pub mod error;
+pub mod fork_tag;
 pub mod handlers;
 pub mod resolve;
 pub mod respond;

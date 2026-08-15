@@ -20,6 +20,9 @@ use pharos_types::{
     phase0::{BeaconBlockHeader, Checkpoint, Root, Slot},
 };
 
+use crate::dto::block::{BlockApiSerializer, SignedBlockForApi};
+use crate::error::ApiError;
+
 // ── NodeIdentityCache ─────────────────────────────────────────────────────────
 
 /// Snapshot of node identity data captured at startup.
@@ -105,6 +108,15 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
     /// Each pubkey is a 48-byte BLS public key (`BLSPubkey = FixedBytes<48>`).
     /// Returns `None` when the block root is not in-memory, or the state is Phase0.
     fn sync_committee_pubkeys(&self, block_root: Root) -> Option<SyncCommitteePubkeys>;
+
+    /// Return the full `SignedBeaconBlock` for `root` serialized as API data,
+    /// or `None` if not found in cold storage.
+    ///
+    /// The returned `SignedBlockForApi` contains the fork variant, JSON DTO value,
+    /// canonical SSZ bytes (inner fork variant, no discriminant byte), and
+    /// attestations as a JSON array. The implementation fetches from `RocksStore`
+    /// and pattern-matches on the concrete fork-enum variant to build the DTOs.
+    fn block_by_root_for_api(&self, root: Root) -> Result<Option<SignedBlockForApi>, ApiError>;
 }
 
 // ── NodeChainState ────────────────────────────────────────────────────────────
@@ -137,7 +149,13 @@ impl<E: EthSpec> NodeChainState<E> {
     }
 }
 
-impl<E: EthSpec> ChainStateApi<E> for NodeChainState<E> {
+impl<E: EthSpec> ChainStateApi<E> for NodeChainState<E>
+where
+    E::Phase0SignedBeaconBlock: BlockApiSerializer,
+    E::AltairSignedBeaconBlock: BlockApiSerializer,
+    E::BellatrixSignedBeaconBlock: BlockApiSerializer,
+    E::CapellaSignedBeaconBlock: BlockApiSerializer,
+{
     fn head_root(&self) -> Root {
         let fc = self.fork_choice.read();
         pharos_fork_choice::get_head(&fc)
@@ -281,6 +299,37 @@ impl<E: EthSpec> ChainStateApi<E> for NodeChainState<E> {
         // Delegate to BeaconStateView::sync_committee_pubkeys which has
         // per-fork overrides returning the committee pubkeys (Phase0 returns None).
         fc.block_states.get(&block_root)?.sync_committee_pubkeys()
+    }
+
+    fn block_by_root_for_api(&self, root: Root) -> Result<Option<SignedBlockForApi>, ApiError> {
+        // Fetch from cold storage (the only place full signed blocks are kept).
+        // A genuine DB read error is surfaced as 500, distinct from a missing
+        // block (Ok(None) → 404 at the handler).
+        let block = match <RocksStore as DbStore<E>>::get_block(&self.store, &root)
+            .map_err(|e| ApiError::Internal(format!("block store read failed: {e}")))?
+        {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        // Use the `EthSpec` unwrap helpers to dispatch to the correct fork-specific
+        // DTO builder via the `BlockApiSerializer` trait. Each helper returns
+        // `Option<&Inner>` where `Inner: BlockApiSerializer` (guaranteed by the impl
+        // bounds on this `NodeChainState<E>` impl block).
+        if let Some(b) = E::unwrap_phase0_signed_block(&block) {
+            return Ok(Some(b.to_block_for_api()?));
+        }
+        if let Some(b) = E::unwrap_altair_signed_block(&block) {
+            return Ok(Some(b.to_block_for_api()?));
+        }
+        if let Some(b) = E::unwrap_bellatrix_signed_block(&block) {
+            return Ok(Some(b.to_block_for_api()?));
+        }
+        if let Some(b) = E::unwrap_capella_signed_block(&block) {
+            return Ok(Some(b.to_block_for_api()?));
+        }
+        // All four forks are exhaustive — reaching here indicates a new unknown fork.
+        unreachable!("unknown fork variant in SignedBeaconBlock — update block_by_root_for_api")
     }
 }
 

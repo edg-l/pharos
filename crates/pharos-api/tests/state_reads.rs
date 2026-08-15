@@ -183,6 +183,13 @@ impl ChainStateApi<MainnetEthSpec> for StateMock {
         // Phase0 state: no sync committee.
         None
     }
+
+    fn block_by_root_for_api(
+        &self,
+        _root: Root,
+    ) -> Result<Option<pharos_api::dto::block::SignedBlockForApi>, pharos_api::ApiError> {
+        Ok(None)
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

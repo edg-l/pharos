@@ -1330,6 +1330,13 @@ impl EthSpec for MainnetEthSpec {
             max_transactions_per_payload: Self::MAX_TRANSACTIONS_PER_PAYLOAD,
             bytes_per_logs_bloom: Self::BYTES_PER_LOGS_BLOOM,
             max_extra_data_bytes: Self::MAX_EXTRA_DATA_BYTES,
+            // configs/mainnet.yaml: DEPOSIT_CONTRACT_ADDRESS
+            deposit_contract_address: [
+                0x00, 0x00, 0x00, 0x00, 0x21, 0x9a, 0xb5, 0x40, 0x35, 0x6c, 0xbb, 0x83, 0x9c, 0xbe,
+                0x05, 0x30, 0x3d, 0x77, 0x05, 0xfa,
+            ],
+            // configs/mainnet.yaml: DEPOSIT_CHAIN_ID: 1 (Ethereum mainnet)
+            deposit_chain_id: 1,
         }
     }
 
@@ -1953,6 +1960,13 @@ impl EthSpec for MinimalEthSpec {
             max_transactions_per_payload: Self::MAX_TRANSACTIONS_PER_PAYLOAD,
             bytes_per_logs_bloom: Self::BYTES_PER_LOGS_BLOOM,
             max_extra_data_bytes: Self::MAX_EXTRA_DATA_BYTES,
+            // configs/minimal.yaml: DEPOSIT_CONTRACT_ADDRESS (same as mainnet)
+            deposit_contract_address: [
+                0x00, 0x00, 0x00, 0x00, 0x21, 0x9a, 0xb5, 0x40, 0x35, 0x6c, 0xbb, 0x83, 0x9c, 0xbe,
+                0x05, 0x30, 0x3d, 0x77, 0x05, 0xfa,
+            ],
+            // configs/minimal.yaml: DEPOSIT_CHAIN_ID: 1
+            deposit_chain_id: 1,
         }
     }
 
