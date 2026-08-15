@@ -33,6 +33,8 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
 
+use rayon::prelude::*;
+
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
     load_bellatrix_state, load_phase0_signed_block, load_pre_post_altair_state,
@@ -123,36 +125,42 @@ where
     E::Phase0SignedBeaconBlock:
         pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
-    let mut out = SanityResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "sanity",
         Some("blocks"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("phase0/sanity/blocks/{preset}/{}", dir_name(&case_dir));
+    )
+    .collect();
 
-        // blocks_count is required for the blocks sub-category.
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("phase0/sanity/blocks/{preset}/{}", dir_name(&case_dir));
 
-        // bls_setting == 2 → skip BLS verification; anything else → verify.
-        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            // blocks_count is required for the blocks sub-category.
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
 
-        let result = run_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
-        match result {
+            // bls_setting == 2 → skip BLS verification; anything else → verify.
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            run_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
+        })
+        .collect();
+
+    let mut out = SanityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -243,8 +251,7 @@ where
     E::Phase0BeaconState: pharos_ssz::Decode,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
-    let mut out = SanityResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
@@ -254,15 +261,26 @@ where
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("phase0/sanity/slots/{preset}/{}", dir_name(&case_dir));
-        let result = run_slots_case::<E>(&case_dir, &case_name);
-        match result {
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("phase0/sanity/slots/{preset}/{}", dir_name(&case_dir));
+            run_slots_case::<E>(&case_dir, &case_name)
+        })
+        .collect();
+
+    let mut out = SanityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -361,35 +379,40 @@ where
     E::Phase0SignedBeaconBlock:
         pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
-    let mut out = SanityResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "altair",
         "sanity",
         Some("blocks"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("altair/sanity/blocks/{preset}/{}", dir_name(&case_dir));
+    )
+    .collect();
 
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("altair/sanity/blocks/{preset}/{}", dir_name(&case_dir));
 
-        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
 
-        let result =
-            run_altair_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
-        match result {
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            run_altair_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
+        })
+        .collect();
+
+    let mut out = SanityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -471,8 +494,7 @@ where
 // ── altair/sanity/slots ───────────────────────────────────────────────────────
 
 fn run_altair_slots_preset_mainnet(root: &Path) -> SanityResult {
-    let mut out = SanityResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "mainnet",
         "altair",
@@ -482,23 +504,33 @@ fn run_altair_slots_preset_mainnet(root: &Path) -> SanityResult {
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("altair/sanity/slots/mainnet/{}", dir_name(&case_dir));
-        let result = run_altair_slots_case_mainnet(&case_dir, &case_name);
-        match result {
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("altair/sanity/slots/mainnet/{}", dir_name(&case_dir));
+            run_altair_slots_case_mainnet(&case_dir, &case_name)
+        })
+        .collect();
+
+    let mut out = SanityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
 }
 
 fn run_altair_slots_preset_minimal(root: &Path) -> SanityResult {
-    let mut out = SanityResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "minimal",
         "altair",
@@ -508,15 +540,26 @@ fn run_altair_slots_preset_minimal(root: &Path) -> SanityResult {
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("altair/sanity/slots/minimal/{}", dir_name(&case_dir));
-        let result = run_altair_slots_case_minimal(&case_dir, &case_name);
-        match result {
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("altair/sanity/slots/minimal/{}", dir_name(&case_dir));
+            run_altair_slots_case_minimal(&case_dir, &case_name)
+        })
+        .collect();
+
+    let mut out = SanityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -636,35 +679,40 @@ where
     E::Phase0SignedBeaconBlock:
         pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
-    let mut out = SanityResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "bellatrix",
         "sanity",
         Some("blocks"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("bellatrix/sanity/blocks/{preset}/{}", dir_name(&case_dir));
+    )
+    .collect();
 
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("bellatrix/sanity/blocks/{preset}/{}", dir_name(&case_dir));
 
-        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
 
-        let result =
-            run_bellatrix_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
-        match result {
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            run_bellatrix_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
+        })
+        .collect();
+
+    let mut out = SanityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -747,8 +795,7 @@ where
 // ── bellatrix/sanity/slots ────────────────────────────────────────────────────
 
 fn run_bellatrix_slots_preset_mainnet(root: &Path) -> SanityResult {
-    let mut out = SanityResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "mainnet",
         "bellatrix",
@@ -758,23 +805,33 @@ fn run_bellatrix_slots_preset_mainnet(root: &Path) -> SanityResult {
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("bellatrix/sanity/slots/mainnet/{}", dir_name(&case_dir));
-        let result = run_bellatrix_slots_case_mainnet(&case_dir, &case_name);
-        match result {
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("bellatrix/sanity/slots/mainnet/{}", dir_name(&case_dir));
+            run_bellatrix_slots_case_mainnet(&case_dir, &case_name)
+        })
+        .collect();
+
+    let mut out = SanityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
 }
 
 fn run_bellatrix_slots_preset_minimal(root: &Path) -> SanityResult {
-    let mut out = SanityResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "minimal",
         "bellatrix",
@@ -784,15 +841,26 @@ fn run_bellatrix_slots_preset_minimal(root: &Path) -> SanityResult {
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("bellatrix/sanity/slots/minimal/{}", dir_name(&case_dir));
-        let result = run_bellatrix_slots_case_minimal(&case_dir, &case_name);
-        match result {
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("bellatrix/sanity/slots/minimal/{}", dir_name(&case_dir));
+            run_bellatrix_slots_case_minimal(&case_dir, &case_name)
+        })
+        .collect();
+
+    let mut out = SanityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -887,4 +955,5 @@ fn run_bellatrix_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseRes
 enum CaseResult {
     Pass,
     Fail(String),
+    Skip,
 }

@@ -33,6 +33,8 @@ use pharos_types::{
     EthSpec, MainnetEthSpec, MinimalEthSpec, phase0::Attestation, views::BeaconBlockBodyView,
 };
 
+use rayon::prelude::*;
+
 use crate::fixture_walker::{
     WalkOpts, load_pre_post_altair_state, load_pre_post_bellatrix_state,
     load_pre_post_phase0_state, walk_category,
@@ -142,26 +144,35 @@ fn epoch_walk_opts() -> WalkOpts {
     }
 }
 
-fn run_sub<E, F>(root: &Path, preset: &str, sub: &str, mut apply: F) -> EpochResult
+fn run_sub<E, F>(root: &Path, preset: &str, sub: &str, apply: F) -> EpochResult
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + pharos_ssz::Decode,
-    F: FnMut(&mut E::BeaconState) -> Result<(), String>,
+    F: Fn(&mut E::BeaconState) -> Result<(), String> + Sync + Send,
 {
-    let mut out = EpochResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "epoch_processing",
         Some(sub),
         epoch_walk_opts(),
-    ) {
-        let case_name = format!(
-            "phase0/epoch_processing/{preset}/{sub}/{}",
-            dir_name(&case_dir)
-        );
-        let result = run_epoch_case::<E, _>(&case_dir, &case_name, &mut apply);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "phase0/epoch_processing/{preset}/{sub}/{}",
+                dir_name(&case_dir)
+            );
+            run_epoch_case::<E, _>(&case_dir, &case_name, &apply)
+        })
+        .collect();
+
+    let mut out = EpochResult::new();
+    for result in outcomes {
         match result {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
@@ -178,11 +189,11 @@ enum CaseResult {
     Fail(String),
 }
 
-fn run_epoch_case<E, F>(case_dir: &Path, case_name: &str, apply: &mut F) -> CaseResult
+fn run_epoch_case<E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + pharos_ssz::Decode,
-    F: FnMut(&mut E::BeaconState) -> Result<(), String>,
+    F: Fn(&mut E::BeaconState) -> Result<(), String>,
 {
     let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
         Ok(v) => v,
@@ -482,26 +493,35 @@ pub fn run_epoch_processing_altair_minimal(root: &Path) -> EpochResult {
 /// `S` is the concrete altair `BeaconState<...>` type for this preset.
 /// `E` is the `EthSpec` impl.
 /// `F` is the sub-routine closure: `FnMut(&mut S) -> Result<(), String>`.
-fn run_altair_sub<S, E, F>(root: &Path, preset: &str, sub: &str, mut apply: F) -> EpochResult
+fn run_altair_sub<S, E, F>(root: &Path, preset: &str, sub: &str, apply: F) -> EpochResult
 where
-    S: pharos_ssz::Decode + pharos_ssz::Encode,
+    S: pharos_ssz::Decode + pharos_ssz::Encode + Send,
     E: EthSpec<AltairBeaconState = S>,
-    F: FnMut(&mut S) -> Result<(), String>,
+    F: Fn(&mut S) -> Result<(), String> + Sync + Send,
 {
-    let mut out = EpochResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "altair",
         "epoch_processing",
         Some(sub),
         epoch_walk_opts(),
-    ) {
-        let case_name = format!(
-            "altair/epoch_processing/{preset}/{sub}/{}",
-            dir_name(&case_dir)
-        );
-        let result = run_altair_epoch_case::<S, E, _>(&case_dir, &case_name, &mut apply);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "altair/epoch_processing/{preset}/{sub}/{}",
+                dir_name(&case_dir)
+            );
+            run_altair_epoch_case::<S, E, _>(&case_dir, &case_name, &apply)
+        })
+        .collect();
+
+    let mut out = EpochResult::new();
+    for result in outcomes {
         match result {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
@@ -513,11 +533,11 @@ where
     out
 }
 
-fn run_altair_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &mut F) -> CaseResult
+fn run_altair_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
 where
     S: pharos_ssz::Decode + pharos_ssz::Encode,
     E: EthSpec<AltairBeaconState = S>,
-    F: FnMut(&mut S) -> Result<(), String>,
+    F: Fn(&mut S) -> Result<(), String>,
 {
     let (mut pre, post) = match load_pre_post_altair_state::<E>(case_dir) {
         Ok(v) => v,
@@ -964,26 +984,35 @@ pub fn run_epoch_processing_bellatrix_minimal(root: &Path) -> EpochResult {
 }
 
 /// Walk a bellatrix epoch sub-category and run each case with a concrete closure.
-fn run_bellatrix_sub<S, E, F>(root: &Path, preset: &str, sub: &str, mut apply: F) -> EpochResult
+fn run_bellatrix_sub<S, E, F>(root: &Path, preset: &str, sub: &str, apply: F) -> EpochResult
 where
-    S: pharos_ssz::Decode + pharos_ssz::Encode,
+    S: pharos_ssz::Decode + pharos_ssz::Encode + Send,
     E: EthSpec<BellatrixBeaconState = S>,
-    F: FnMut(&mut S) -> Result<(), String>,
+    F: Fn(&mut S) -> Result<(), String> + Sync + Send,
 {
-    let mut out = EpochResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "bellatrix",
         "epoch_processing",
         Some(sub),
         epoch_walk_opts(),
-    ) {
-        let case_name = format!(
-            "bellatrix/epoch_processing/{preset}/{sub}/{}",
-            dir_name(&case_dir)
-        );
-        let result = run_bellatrix_epoch_case::<S, E, _>(&case_dir, &case_name, &mut apply);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "bellatrix/epoch_processing/{preset}/{sub}/{}",
+                dir_name(&case_dir)
+            );
+            run_bellatrix_epoch_case::<S, E, _>(&case_dir, &case_name, &apply)
+        })
+        .collect();
+
+    let mut out = EpochResult::new();
+    for result in outcomes {
         match result {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
@@ -995,11 +1024,11 @@ where
     out
 }
 
-fn run_bellatrix_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &mut F) -> CaseResult
+fn run_bellatrix_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
 where
     S: pharos_ssz::Decode + pharos_ssz::Encode,
     E: EthSpec<BellatrixBeaconState = S>,
-    F: FnMut(&mut S) -> Result<(), String>,
+    F: Fn(&mut S) -> Result<(), String>,
 {
     let (pre, post) = match load_pre_post_bellatrix_state::<E>(case_dir) {
         Ok(v) => v,

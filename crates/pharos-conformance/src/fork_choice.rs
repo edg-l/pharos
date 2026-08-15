@@ -44,6 +44,8 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
 
+use rayon::prelude::*;
+
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
     load_bellatrix_state, load_phase0_state, load_ssz_snappy, walk_category,
@@ -273,8 +275,7 @@ where
     E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
 {
-    let mut out = ForkChoiceResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         fork,
@@ -284,12 +285,21 @@ where
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!(
-            "{fork}/fork_choice/{sub_category}/{preset}/{}",
-            dir_name(&case_dir)
-        );
-        match run_bellatrix_case::<E>(&case_dir, &case_name) {
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "{fork}/fork_choice/{sub_category}/{preset}/{}",
+                dir_name(&case_dir)
+            );
+            run_bellatrix_case::<E>(&case_dir, &case_name)
+        })
+        .collect();
+    let mut out = ForkChoiceResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Skip => out.skip += 1,
             CaseResult::Fail(msg) => {
@@ -338,8 +348,7 @@ where
     E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
 {
-    let mut out = ForkChoiceResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         fork,
@@ -349,12 +358,21 @@ where
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!(
-            "{fork}/fork_choice/{sub_category}/{preset}/{}",
-            dir_name(&case_dir)
-        );
-        match run_case::<E>(&case_dir, &case_name) {
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "{fork}/fork_choice/{sub_category}/{preset}/{}",
+                dir_name(&case_dir)
+            );
+            run_case::<E>(&case_dir, &case_name)
+        })
+        .collect();
+    let mut out = ForkChoiceResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Skip => out.skip += 1,
             CaseResult::Fail(msg) => {

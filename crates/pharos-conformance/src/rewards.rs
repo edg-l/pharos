@@ -31,6 +31,8 @@ use pharos_types::{
 };
 use pharos_utils::Gwei;
 
+use rayon::prelude::*;
+
 use crate::fixture_walker::{
     WalkOpts, load_altair_state, load_bellatrix_state, load_phase0_state, load_ssz_snappy,
     walk_category,
@@ -99,8 +101,7 @@ where
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
-    let mut out = RewardsResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
@@ -110,10 +111,18 @@ where
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("phase0/rewards/{sub}/{preset}/{}", dir_name(&case_dir));
-        let result = run_rewards_case::<E>(&case_dir, &case_name);
-        match result {
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("phase0/rewards/{sub}/{preset}/{}", dir_name(&case_dir));
+            run_rewards_case::<E>(&case_dir, &case_name)
+        })
+        .collect();
+    let mut out = RewardsResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
@@ -196,8 +205,7 @@ fn run_altair_rewards_sub_mainnet(root: &Path, sub: &str) -> RewardsResult {
     use pharos_stf::altair::helpers::{get_flag_index_deltas, get_inactivity_penalty_deltas};
     use pharos_types::{MainnetEthSpec as E, altair::MainnetBeaconState};
 
-    let mut out = RewardsResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "mainnet",
         "altair",
@@ -207,39 +215,47 @@ fn run_altair_rewards_sub_mainnet(root: &Path, sub: &str) -> RewardsResult {
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("altair/rewards/{sub}/mainnet/{}", dir_name(&case_dir));
-        let result = run_altair_rewards_case_mainnet::<E, MainnetBeaconState>(
-            &case_dir,
-            &case_name,
-            |s, fi| {
-                get_flag_index_deltas::<
-                    8192,
-                    16_777_216,
-                    2048,
-                    1_099_511_627_776,
-                    65536,
-                    8192,
-                    4,
-                    512,
-                    E,
-                >(s, fi)
-            },
-            |s| {
-                get_inactivity_penalty_deltas::<
-                    8192,
-                    16_777_216,
-                    2048,
-                    1_099_511_627_776,
-                    65536,
-                    8192,
-                    4,
-                    512,
-                    E,
-                >(s)
-            },
-        );
-        match result {
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("altair/rewards/{sub}/mainnet/{}", dir_name(&case_dir));
+            run_altair_rewards_case_mainnet::<E, MainnetBeaconState>(
+                &case_dir,
+                &case_name,
+                |s, fi| {
+                    get_flag_index_deltas::<
+                        8192,
+                        16_777_216,
+                        2048,
+                        1_099_511_627_776,
+                        65536,
+                        8192,
+                        4,
+                        512,
+                        E,
+                    >(s, fi)
+                },
+                |s| {
+                    get_inactivity_penalty_deltas::<
+                        8192,
+                        16_777_216,
+                        2048,
+                        1_099_511_627_776,
+                        65536,
+                        8192,
+                        4,
+                        512,
+                        E,
+                    >(s)
+                },
+            )
+        })
+        .collect();
+    let mut out = RewardsResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
@@ -254,8 +270,7 @@ fn run_altair_rewards_sub_minimal(root: &Path, sub: &str) -> RewardsResult {
     use pharos_stf::altair::helpers::{get_flag_index_deltas, get_inactivity_penalty_deltas};
     use pharos_types::{MinimalEthSpec as E, altair::MinimalBeaconState};
 
-    let mut out = RewardsResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "minimal",
         "altair",
@@ -265,31 +280,48 @@ fn run_altair_rewards_sub_minimal(root: &Path, sub: &str) -> RewardsResult {
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("altair/rewards/{sub}/minimal/{}", dir_name(&case_dir));
-        let result = run_altair_rewards_case_mainnet::<E, MinimalBeaconState>(
-            &case_dir,
-            &case_name,
-            |s, fi| {
-                get_flag_index_deltas::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                    s, fi,
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> =
+        cases
+            .into_par_iter()
+            .map(|(case_dir, _meta)| {
+                let case_name = format!("altair/rewards/{sub}/minimal/{}", dir_name(&case_dir));
+                run_altair_rewards_case_mainnet::<E, MinimalBeaconState>(
+                    &case_dir,
+                    &case_name,
+                    |s, fi| {
+                        get_flag_index_deltas::<
+                            64,
+                            16_777_216,
+                            32,
+                            1_099_511_627_776,
+                            64,
+                            64,
+                            4,
+                            32,
+                            E,
+                        >(s, fi)
+                    },
+                    |s| {
+                        get_inactivity_penalty_deltas::<
+                            64,
+                            16_777_216,
+                            32,
+                            1_099_511_627_776,
+                            64,
+                            64,
+                            4,
+                            32,
+                            E,
+                        >(s)
+                    },
                 )
-            },
-            |s| {
-                get_inactivity_penalty_deltas::<
-                    64,
-                    16_777_216,
-                    32,
-                    1_099_511_627_776,
-                    64,
-                    64,
-                    4,
-                    32,
-                    E,
-                >(s)
-            },
-        );
-        match result {
+            })
+            .collect();
+    let mut out = RewardsResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
@@ -393,8 +425,7 @@ fn run_bellatrix_rewards_sub_mainnet(root: &Path, sub: &str) -> RewardsResult {
     };
     use pharos_types::{MainnetEthSpec as E, bellatrix::MainnetBeaconState};
 
-    let mut out = RewardsResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "mainnet",
         "bellatrix",
@@ -404,42 +435,50 @@ fn run_bellatrix_rewards_sub_mainnet(root: &Path, sub: &str) -> RewardsResult {
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("bellatrix/rewards/{sub}/mainnet/{}", dir_name(&case_dir));
-        let result = run_bellatrix_rewards_case::<E, MainnetBeaconState>(
-            &case_dir,
-            &case_name,
-            |s, fi| {
-                let a = bellatrix_state_to_altair(s);
-                get_flag_index_deltas::<
-                    8192,
-                    16_777_216,
-                    2048,
-                    1_099_511_627_776,
-                    65536,
-                    8192,
-                    4,
-                    512,
-                    E,
-                >(&a, fi)
-            },
-            |s| {
-                get_inactivity_penalty_deltas_bellatrix::<
-                    8192,
-                    16_777_216,
-                    2048,
-                    1_099_511_627_776,
-                    65536,
-                    8192,
-                    4,
-                    512,
-                    256,
-                    32,
-                    E,
-                >(s)
-            },
-        );
-        match result {
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("bellatrix/rewards/{sub}/mainnet/{}", dir_name(&case_dir));
+            run_bellatrix_rewards_case::<E, MainnetBeaconState>(
+                &case_dir,
+                &case_name,
+                |s, fi| {
+                    let a = bellatrix_state_to_altair(s);
+                    get_flag_index_deltas::<
+                        8192,
+                        16_777_216,
+                        2048,
+                        1_099_511_627_776,
+                        65536,
+                        8192,
+                        4,
+                        512,
+                        E,
+                    >(&a, fi)
+                },
+                |s| {
+                    get_inactivity_penalty_deltas_bellatrix::<
+                        8192,
+                        16_777_216,
+                        2048,
+                        1_099_511_627_776,
+                        65536,
+                        8192,
+                        4,
+                        512,
+                        256,
+                        32,
+                        E,
+                    >(s)
+                },
+            )
+        })
+        .collect();
+    let mut out = RewardsResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
@@ -457,8 +496,7 @@ fn run_bellatrix_rewards_sub_minimal(root: &Path, sub: &str) -> RewardsResult {
     };
     use pharos_types::{MinimalEthSpec as E, bellatrix::MinimalBeaconState};
 
-    let mut out = RewardsResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "minimal",
         "bellatrix",
@@ -468,34 +506,51 @@ fn run_bellatrix_rewards_sub_minimal(root: &Path, sub: &str) -> RewardsResult {
             meta_required: false,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("bellatrix/rewards/{sub}/minimal/{}", dir_name(&case_dir));
-        let result = run_bellatrix_rewards_case::<E, MinimalBeaconState>(
-            &case_dir,
-            &case_name,
-            |s, fi| {
-                let a = bellatrix_state_to_altair(s);
-                get_flag_index_deltas::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                    &a, fi,
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> =
+        cases
+            .into_par_iter()
+            .map(|(case_dir, _meta)| {
+                let case_name = format!("bellatrix/rewards/{sub}/minimal/{}", dir_name(&case_dir));
+                run_bellatrix_rewards_case::<E, MinimalBeaconState>(
+                    &case_dir,
+                    &case_name,
+                    |s, fi| {
+                        let a = bellatrix_state_to_altair(s);
+                        get_flag_index_deltas::<
+                            64,
+                            16_777_216,
+                            32,
+                            1_099_511_627_776,
+                            64,
+                            64,
+                            4,
+                            32,
+                            E,
+                        >(&a, fi)
+                    },
+                    |s| {
+                        get_inactivity_penalty_deltas_bellatrix::<
+                            64,
+                            16_777_216,
+                            32,
+                            1_099_511_627_776,
+                            64,
+                            64,
+                            4,
+                            32,
+                            256,
+                            32,
+                            E,
+                        >(s)
+                    },
                 )
-            },
-            |s| {
-                get_inactivity_penalty_deltas_bellatrix::<
-                    64,
-                    16_777_216,
-                    32,
-                    1_099_511_627_776,
-                    64,
-                    64,
-                    4,
-                    32,
-                    256,
-                    32,
-                    E,
-                >(s)
-            },
-        );
-        match result {
+            })
+            .collect();
+    let mut out = RewardsResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;

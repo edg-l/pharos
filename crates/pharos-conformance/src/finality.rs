@@ -20,6 +20,8 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
 
+use rayon::prelude::*;
+
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_bellatrix_signed_block, load_phase0_signed_block,
     load_pre_post_altair_state, load_pre_post_bellatrix_state, load_pre_post_phase0_state,
@@ -76,34 +78,40 @@ where
         >,
     E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
-    let mut out = FinalityResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "finality",
         Some("finality"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("phase0/finality/finality/{preset}/{}", dir_name(&case_dir));
+    )
+    .collect();
 
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("phase0/finality/finality/{preset}/{}", dir_name(&case_dir));
 
-        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
 
-        let result = run_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
-        match result {
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            run_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
+        })
+        .collect();
+
+    let mut out = FinalityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -212,35 +220,40 @@ where
         >,
     E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
-    let mut out = FinalityResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "altair",
         "finality",
         Some("finality"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("altair/finality/finality/{preset}/{}", dir_name(&case_dir));
+    )
+    .collect();
 
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("altair/finality/finality/{preset}/{}", dir_name(&case_dir));
 
-        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
 
-        let result =
-            run_altair_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
-        match result {
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            run_altair_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
+        })
+        .collect();
+
+    let mut out = FinalityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -349,38 +362,43 @@ where
         >,
     E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
-    let mut out = FinalityResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "bellatrix",
         "finality",
         Some("finality"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!(
-            "bellatrix/finality/finality/{preset}/{}",
-            dir_name(&case_dir)
-        );
+    )
+    .collect();
 
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "bellatrix/finality/finality/{preset}/{}",
+                dir_name(&case_dir)
+            );
 
-        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
 
-        let result =
-            run_bellatrix_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
-        match result {
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            run_bellatrix_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
+        })
+        .collect();
+
+    let mut out = FinalityResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -464,4 +482,5 @@ where
 enum CaseResult {
     Pass,
     Fail(String),
+    Skip,
 }

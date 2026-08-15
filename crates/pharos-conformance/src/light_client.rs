@@ -40,6 +40,8 @@ use pharos_types::{
 };
 use pharos_utils::Bytes32;
 
+use rayon::prelude::*;
+
 use crate::fixture_walker::{WalkOpts, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
 
@@ -224,18 +226,25 @@ where
 // ── sync ──────────────────────────────────────────────────────────────────────
 
 fn run_sync_mainnet(root: &Path) -> LightClientResult {
-    let mut out = LightClientResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "mainnet",
         "altair",
         "light_client",
         Some("sync"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("altair/light_client/sync/mainnet/{}", dir_name(&case_dir));
-        let result = run_sync_case_mainnet(&case_dir, &case_name);
-        match result {
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("altair/light_client/sync/mainnet/{}", dir_name(&case_dir));
+            run_sync_case_mainnet(&case_dir, &case_name)
+        })
+        .collect();
+    let mut out = LightClientResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
@@ -248,18 +257,25 @@ fn run_sync_mainnet(root: &Path) -> LightClientResult {
 }
 
 fn run_sync_minimal(root: &Path) -> LightClientResult {
-    let mut out = LightClientResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "minimal",
         "altair",
         "light_client",
         Some("sync"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("altair/light_client/sync/minimal/{}", dir_name(&case_dir));
-        let result = run_sync_case_minimal(&case_dir, &case_name);
-        match result {
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("altair/light_client/sync/minimal/{}", dir_name(&case_dir));
+            run_sync_case_minimal(&case_dir, &case_name)
+        })
+        .collect();
+    let mut out = LightClientResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;

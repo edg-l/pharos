@@ -11,6 +11,7 @@ use std::path::Path;
 
 use pharos_stf::phase0::shuffling::compute_shuffled_permutation;
 use pharos_utils::Hash256;
+use rayon::prelude::*;
 
 use crate::fixture_walker::{WalkOpts, walk_category};
 use crate::fs_util::dir_name;
@@ -38,17 +39,26 @@ pub fn run_shuffling_preset(root: &Path, preset: &str, round_count: u64) -> Shuf
         inner_dir: None,
     };
 
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "shuffling",
         Some("core/shuffle"),
         opts,
-    ) {
-        let case_name = format!("phase0/shuffling/{}/{}", preset, dir_name(&case_dir));
+    )
+    .collect();
 
-        match run_shuffling_case(&case_dir, &case_name, round_count) {
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("phase0/shuffling/{}/{}", preset, dir_name(&case_dir));
+            run_shuffling_case(&case_dir, &case_name, round_count)
+        })
+        .collect();
+
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => pass += 1,
             CaseResult::Fail(msg) => {
                 fail += 1;

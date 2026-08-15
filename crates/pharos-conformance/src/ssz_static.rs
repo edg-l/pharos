@@ -62,6 +62,8 @@ use pharos_types::phase0::{
 };
 use pharos_utils::Hash256;
 
+use rayon::prelude::*;
+
 use crate::error::ConformanceError;
 use crate::fs_util::{dir_name, read_dir_sorted};
 use crate::snappy::decompress_raw;
@@ -90,16 +92,12 @@ pub fn run_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResu
         };
     }
 
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-
     let type_dirs = read_dir_sorted(&base).unwrap_or_default();
 
+    // Collect all (type_name, case_dir, case_label) tuples first.
+    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
     for type_dir in type_dirs {
         let type_name = dir_name(&type_dir);
-        // Each type_dir contains suite dirs (e.g. "ssz_random", "ssz_random_chaos", etc.)
         let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
         for suite_dir in suite_dirs {
             let suite_name = dir_name(&suite_dir);
@@ -108,16 +106,34 @@ pub fn run_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResu
                 let case_name = dir_name(&case_dir);
                 let case_label =
                     format!("{preset_name}/phase0/ssz_static/{type_name}/{suite_name}/{case_name}");
+                all_cases.push((type_name.clone(), case_dir, case_label));
+            }
+        }
+    }
 
-                let result = run_static_case(preset_name, &type_name, &case_dir, &case_label);
-                match result {
-                    Ok(true) => pass += 1,
-                    Ok(false) => skip += 1,
-                    Err(e) => {
-                        fail += 1;
-                        failures.push(format!("`{case_label}`: {e}"));
-                    }
-                }
+    let results: Vec<(bool, Option<String>)> = all_cases
+        .into_par_iter()
+        .map(|(type_name, case_dir, case_label)| {
+            let result = run_static_case(preset_name, &type_name, &case_dir, &case_label);
+            match result {
+                Ok(true) => (true, None),
+                Ok(false) => (false, None),
+                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
+            }
+        })
+        .collect();
+
+    let mut pass = 0u64;
+    let mut fail = 0u64;
+    let mut skip = 0u64;
+    let mut failures = Vec::new();
+    for (passed, err) in results {
+        match (passed, err) {
+            (true, _) => pass += 1,
+            (false, None) => skip += 1,
+            (false, Some(msg)) => {
+                fail += 1;
+                failures.push(msg);
             }
         }
     }
@@ -342,13 +358,9 @@ pub fn run_altair_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> Sta
         };
     }
 
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-
     let type_dirs = read_dir_sorted(&base).unwrap_or_default();
 
+    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
     for type_dir in type_dirs {
         let type_name = dir_name(&type_dir);
         let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
@@ -359,17 +371,34 @@ pub fn run_altair_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> Sta
                 let case_name = dir_name(&case_dir);
                 let case_label =
                     format!("{preset_name}/altair/ssz_static/{type_name}/{suite_name}/{case_name}");
+                all_cases.push((type_name.clone(), case_dir, case_label));
+            }
+        }
+    }
 
-                let result =
-                    run_altair_static_case(preset_name, &type_name, &case_dir, &case_label);
-                match result {
-                    Ok(true) => pass += 1,
-                    Ok(false) => skip += 1,
-                    Err(e) => {
-                        fail += 1;
-                        failures.push(format!("`{case_label}`: {e}"));
-                    }
-                }
+    let results: Vec<(bool, Option<String>)> = all_cases
+        .into_par_iter()
+        .map(|(type_name, case_dir, case_label)| {
+            let result = run_altair_static_case(preset_name, &type_name, &case_dir, &case_label);
+            match result {
+                Ok(true) => (true, None),
+                Ok(false) => (false, None),
+                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
+            }
+        })
+        .collect();
+
+    let mut pass = 0u64;
+    let mut fail = 0u64;
+    let mut skip = 0u64;
+    let mut failures = Vec::new();
+    for (passed, err) in results {
+        match (passed, err) {
+            (true, _) => pass += 1,
+            (false, None) => skip += 1,
+            (false, Some(msg)) => {
+                fail += 1;
+                failures.push(msg);
             }
         }
     }
@@ -619,13 +648,9 @@ fn run_bellatrix_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> Stat
         };
     }
 
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-
     let type_dirs = read_dir_sorted(&base).unwrap_or_default();
 
+    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
     for type_dir in type_dirs {
         let type_name = dir_name(&type_dir);
         let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
@@ -637,17 +662,34 @@ fn run_bellatrix_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> Stat
                 let case_label = format!(
                     "{preset_name}/bellatrix/ssz_static/{type_name}/{suite_name}/{case_name}"
                 );
+                all_cases.push((type_name.clone(), case_dir, case_label));
+            }
+        }
+    }
 
-                let result =
-                    run_bellatrix_static_case(preset_name, &type_name, &case_dir, &case_label);
-                match result {
-                    Ok(true) => pass += 1,
-                    Ok(false) => skip += 1,
-                    Err(e) => {
-                        fail += 1;
-                        failures.push(format!("`{case_label}`: {e}"));
-                    }
-                }
+    let results: Vec<(bool, Option<String>)> = all_cases
+        .into_par_iter()
+        .map(|(type_name, case_dir, case_label)| {
+            let result = run_bellatrix_static_case(preset_name, &type_name, &case_dir, &case_label);
+            match result {
+                Ok(true) => (true, None),
+                Ok(false) => (false, None),
+                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
+            }
+        })
+        .collect();
+
+    let mut pass = 0u64;
+    let mut fail = 0u64;
+    let mut skip = 0u64;
+    let mut failures = Vec::new();
+    for (passed, err) in results {
+        match (passed, err) {
+            (true, _) => pass += 1,
+            (false, None) => skip += 1,
+            (false, Some(msg)) => {
+                fail += 1;
+                failures.push(msg);
             }
         }
     }

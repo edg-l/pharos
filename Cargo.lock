@@ -2933,6 +2933,7 @@ dependencies = [
  "pharos-stf",
  "pharos-types",
  "pharos-utils",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",

@@ -16,6 +16,8 @@ use pharos_stf::phase0::{
 };
 use pharos_types::{EthSpec, MinimalEthSpec, phase0::Deposit};
 
+use rayon::prelude::*;
+
 use crate::fixture_walker::{WalkOpts, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
 
@@ -29,49 +31,52 @@ pub struct GenesisResult {
 
 /// Run genesis/initialization and genesis/validity tests for the minimal preset.
 pub fn run_genesis_minimal(root: &Path) -> GenesisResult {
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-
     // ── initialization ────────────────────────────────────────────────────────
-    for (case_dir, meta) in walk_category(
+    let init_cases: Vec<_> = walk_category(
         root,
         "minimal",
         "phase0",
         "genesis",
         Some("initialization"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!(
-            "phase0/genesis/minimal/initialization/{}",
-            dir_name(&case_dir)
-        );
-
-        let result = run_initialization_case::<MinimalEthSpec>(&case_dir, &case_name, meta);
-        match result {
-            CaseResult::Pass => pass += 1,
-            CaseResult::Fail(msg) => {
-                fail += 1;
-                failures.push(msg);
-            }
-            CaseResult::Skip => skip += 1,
-        }
-    }
+    )
+    .collect();
+    let init_outcomes: Vec<CaseResult> = init_cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "phase0/genesis/minimal/initialization/{}",
+                dir_name(&case_dir)
+            );
+            run_initialization_case::<MinimalEthSpec>(&case_dir, &case_name, meta)
+        })
+        .collect();
 
     // ── validity ──────────────────────────────────────────────────────────────
-    for (case_dir, _meta) in walk_category(
+    let validity_cases: Vec<_> = walk_category(
         root,
         "minimal",
         "phase0",
         "genesis",
         Some("validity"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("phase0/genesis/minimal/validity/{}", dir_name(&case_dir));
+    )
+    .collect();
+    let validity_outcomes: Vec<CaseResult> = validity_cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("phase0/genesis/minimal/validity/{}", dir_name(&case_dir));
+            run_validity_case::<MinimalEthSpec>(&case_dir, &case_name)
+        })
+        .collect();
 
-        let result = run_validity_case::<MinimalEthSpec>(&case_dir, &case_name);
-        match result {
+    let mut pass = 0u64;
+    let mut fail = 0u64;
+    let mut skip = 0u64;
+    let mut failures = Vec::new();
+
+    for outcome in init_outcomes.into_iter().chain(validity_outcomes) {
+        match outcome {
             CaseResult::Pass => pass += 1,
             CaseResult::Fail(msg) => {
                 fail += 1;

@@ -20,6 +20,8 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
 
+use rayon::prelude::*;
+
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_bellatrix_signed_block, load_phase0_signed_block,
     load_pre_post_altair_state, load_pre_post_bellatrix_state, load_pre_post_phase0_state,
@@ -76,34 +78,39 @@ where
         >,
     E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
-    let mut out = RandomResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "random",
         Some("random"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("phase0/random/random/{preset}/{}", dir_name(&case_dir));
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("phase0/random/random/{preset}/{}", dir_name(&case_dir));
 
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
 
-        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
 
-        let result = run_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
-        match result {
+            run_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
+        })
+        .collect();
+    let mut out = RandomResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -214,35 +221,39 @@ where
     E::Phase0SignedBeaconBlock:
         pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
-    let mut out = RandomResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "altair",
         "random",
         Some("random"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("altair/random/random/{preset}/{}", dir_name(&case_dir));
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("altair/random/random/{preset}/{}", dir_name(&case_dir));
 
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
 
-        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
 
-        let result =
-            run_altair_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
-        match result {
+            run_altair_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
+        })
+        .collect();
+    let mut out = RandomResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -352,35 +363,39 @@ where
         >,
     E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
-    let mut out = RandomResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "bellatrix",
         "random",
         Some("random"),
         WalkOpts::default(),
-    ) {
-        let case_name = format!("bellatrix/random/random/{preset}/{}", dir_name(&case_dir));
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("bellatrix/random/random/{preset}/{}", dir_name(&case_dir));
 
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
 
-        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
 
-        let result =
-            run_bellatrix_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
-        match result {
+            run_bellatrix_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
+        })
+        .collect();
+    let mut out = RandomResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
                 out.failures.push(msg);
             }
+            CaseResult::Skip => out.skip += 1,
         }
     }
     out
@@ -465,4 +480,5 @@ where
 enum CaseResult {
     Pass,
     Fail(String),
+    Skip,
 }

@@ -32,6 +32,8 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView},
 };
 
+use rayon::prelude::*;
+
 use crate::fixture_walker::{WalkOpts, load_pre_post_phase0_state, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
 
@@ -137,20 +139,29 @@ where
     E::Phase0BeaconBlock: BeaconBlockView + Decode,
     <E::Phase0BeaconBlock as BeaconBlockView>::Body: pharos_ssz::TreeHash,
 {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "operations",
         Some("block_header"),
         ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "phase0/operations/{preset}/block_header/{}",
-            dir_name(&case_dir)
-        );
-        let result = run_block_header_case::<E>(&case_dir, &case_name, meta);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "phase0/operations/{preset}/block_header/{}",
+                dir_name(&case_dir)
+            );
+            run_block_header_case::<E>(&case_dir, &case_name, meta)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -209,21 +220,30 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
 {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "operations",
         Some("proposer_slashing"),
         ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "phase0/operations/{preset}/proposer_slashing/{}",
-            dir_name(&case_dir)
-        );
-        let verify_signatures = bls_verify(&meta);
-        let result = run_proposer_slashing_case::<E>(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "phase0/operations/{preset}/proposer_slashing/{}",
+                dir_name(&case_dir)
+            );
+            let verify_signatures = bls_verify(&meta);
+            run_proposer_slashing_case::<E>(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -281,21 +301,30 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
 {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "operations",
         Some("attester_slashing"),
         ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "phase0/operations/{preset}/attester_slashing/{}",
-            dir_name(&case_dir)
-        );
-        let verify_signatures = bls_verify(&meta);
-        let result = run_attester_slashing_case::<E>(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "phase0/operations/{preset}/attester_slashing/{}",
+                dir_name(&case_dir)
+            );
+            let verify_signatures = bls_verify(&meta);
+            run_attester_slashing_case::<E>(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -353,18 +382,27 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
 {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "operations",
         Some("deposit"),
         ops_walk_opts(),
-    ) {
-        let case_name = format!("phase0/operations/{preset}/deposit/{}", dir_name(&case_dir));
-        let verify_signatures = bls_verify(&meta);
-        let result = run_deposit_case::<E>(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("phase0/operations/{preset}/deposit/{}", dir_name(&case_dir));
+            let verify_signatures = bls_verify(&meta);
+            run_deposit_case::<E>(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -416,21 +454,30 @@ where
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "operations",
         Some("attestation"),
         ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "phase0/operations/{preset}/attestation/{}",
-            dir_name(&case_dir)
-        );
-        let verify_signatures = bls_verify(&meta);
-        let result = run_attestation_case::<E>(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "phase0/operations/{preset}/attestation/{}",
+                dir_name(&case_dir)
+            );
+            let verify_signatures = bls_verify(&meta);
+            run_attestation_case::<E>(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -483,21 +530,30 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
 {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "phase0",
         "operations",
         Some("voluntary_exit"),
         ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "phase0/operations/{preset}/voluntary_exit/{}",
-            dir_name(&case_dir)
-        );
-        let verify_signatures = bls_verify(&meta);
-        let result = run_voluntary_exit_case::<E>(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "phase0/operations/{preset}/voluntary_exit/{}",
+                dir_name(&case_dir)
+            );
+            let verify_signatures = bls_verify(&meta);
+            run_voluntary_exit_case::<E>(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -587,20 +643,29 @@ fn altair_ops_walk_opts() -> WalkOpts {
 // ── altair/block_header ───────────────────────────────────────────────────────
 
 fn run_altair_block_header_mainnet(root: &Path) -> OpsResult {
-    let mut out = OpsResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "mainnet",
         "altair",
         "operations",
         Some("block_header"),
         altair_ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "altair/operations/mainnet/block_header/{}",
-            dir_name(&case_dir)
-        );
-        let result = run_altair_block_header_case_mainnet(&case_dir, &case_name);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "altair/operations/mainnet/block_header/{}",
+                dir_name(&case_dir)
+            );
+            run_altair_block_header_case_mainnet(&case_dir, &case_name)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -669,20 +734,29 @@ fn run_altair_block_header_case_mainnet(case_dir: &Path, case_name: &str) -> Cas
 }
 
 fn run_altair_block_header_minimal(root: &Path) -> OpsResult {
-    let mut out = OpsResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "minimal",
         "altair",
         "operations",
         Some("block_header"),
         altair_ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "altair/operations/minimal/block_header/{}",
-            dir_name(&case_dir)
-        );
-        let result = run_altair_block_header_case_minimal(&case_dir, &case_name);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "altair/operations/minimal/block_header/{}",
+                dir_name(&case_dir)
+            );
+            run_altair_block_header_case_minimal(&case_dir, &case_name)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -1323,22 +1397,30 @@ fn run_altair_voluntary_exit_minimal(root: &Path) -> OpsResult {
 // ── altair/sync_aggregate ─────────────────────────────────────────────────────
 
 fn run_altair_sync_aggregate_mainnet(root: &Path) -> OpsResult {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "mainnet",
         "altair",
         "operations",
         Some("sync_aggregate"),
         altair_ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "altair/operations/mainnet/sync_aggregate/{}",
-            dir_name(&case_dir)
-        );
-        let verify_signatures = bls_verify(&meta);
-        let result =
-            run_altair_sync_aggregate_case_mainnet(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "altair/operations/mainnet/sync_aggregate/{}",
+                dir_name(&case_dir)
+            );
+            let verify_signatures = bls_verify(&meta);
+            run_altair_sync_aggregate_case_mainnet(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -1399,22 +1481,30 @@ fn run_altair_sync_aggregate_case_mainnet(
 }
 
 fn run_altair_sync_aggregate_minimal(root: &Path) -> OpsResult {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "minimal",
         "altair",
         "operations",
         Some("sync_aggregate"),
         altair_ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "altair/operations/minimal/sync_aggregate/{}",
-            dir_name(&case_dir)
-        );
-        let verify_signatures = bls_verify(&meta);
-        let result =
-            run_altair_sync_aggregate_case_minimal(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "altair/operations/minimal/sync_aggregate/{}",
+                dir_name(&case_dir)
+            );
+            let verify_signatures = bls_verify(&meta);
+            run_altair_sync_aggregate_case_minimal(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -1511,23 +1601,32 @@ fn run_bellatrix_op_preset(
     root: &Path,
     preset: &str,
     sub: &str,
-    mut run_case: impl FnMut(&Path, &str, bool) -> CaseResult,
+    run_case: impl Fn(&Path, &str, bool) -> CaseResult + Sync + Send,
 ) -> OpsResult {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "bellatrix",
         "operations",
         Some(sub),
         bellatrix_ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "bellatrix/operations/{preset}/{sub}/{}",
-            dir_name(&case_dir)
-        );
-        let verify_signatures = bls_verify(&meta);
-        let result = run_case(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "bellatrix/operations/{preset}/{sub}/{}",
+                dir_name(&case_dir)
+            );
+            let verify_signatures = bls_verify(&meta);
+            run_case(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -2261,22 +2360,30 @@ fn run_bellatrix_voluntary_exit_minimal(root: &Path) -> OpsResult {
 // ── bellatrix/sync_aggregate ──────────────────────────────────────────────────
 
 fn run_bellatrix_sync_aggregate_mainnet(root: &Path) -> OpsResult {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "mainnet",
         "bellatrix",
         "operations",
         Some("sync_aggregate"),
         bellatrix_ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "bellatrix/operations/mainnet/sync_aggregate/{}",
-            dir_name(&case_dir)
-        );
-        let verify_signatures = bls_verify(&meta);
-        let result =
-            run_bellatrix_sync_aggregate_case_mainnet(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "bellatrix/operations/mainnet/sync_aggregate/{}",
+                dir_name(&case_dir)
+            );
+            let verify_signatures = bls_verify(&meta);
+            run_bellatrix_sync_aggregate_case_mainnet(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -2338,22 +2445,30 @@ fn run_bellatrix_sync_aggregate_case_mainnet(
 }
 
 fn run_bellatrix_sync_aggregate_minimal(root: &Path) -> OpsResult {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "minimal",
         "bellatrix",
         "operations",
         Some("sync_aggregate"),
         bellatrix_ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "bellatrix/operations/minimal/sync_aggregate/{}",
-            dir_name(&case_dir)
-        );
-        let verify_signatures = bls_verify(&meta);
-        let result =
-            run_bellatrix_sync_aggregate_case_minimal(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!(
+                "bellatrix/operations/minimal/sync_aggregate/{}",
+                dir_name(&case_dir)
+            );
+            let verify_signatures = bls_verify(&meta);
+            run_bellatrix_sync_aggregate_case_minimal(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -2411,20 +2526,29 @@ fn run_bellatrix_sync_aggregate_case_minimal(
 // ── bellatrix/execution_payload ───────────────────────────────────────────────
 
 fn run_bellatrix_execution_payload_mainnet(root: &Path) -> OpsResult {
-    let mut out = OpsResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "mainnet",
         "bellatrix",
         "operations",
         Some("execution_payload"),
         bellatrix_ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "bellatrix/operations/mainnet/execution_payload/{}",
-            dir_name(&case_dir)
-        );
-        let result = run_bellatrix_execution_payload_case_mainnet(&case_dir, &case_name);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "bellatrix/operations/mainnet/execution_payload/{}",
+                dir_name(&case_dir)
+            );
+            run_bellatrix_execution_payload_case_mainnet(&case_dir, &case_name)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -2493,20 +2617,29 @@ fn run_bellatrix_execution_payload_case_mainnet(case_dir: &Path, case_name: &str
 }
 
 fn run_bellatrix_execution_payload_minimal(root: &Path) -> OpsResult {
-    let mut out = OpsResult::new();
-    for (case_dir, _meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         "minimal",
         "bellatrix",
         "operations",
         Some("execution_payload"),
         bellatrix_ops_walk_opts(),
-    ) {
-        let case_name = format!(
-            "bellatrix/operations/minimal/execution_payload/{}",
-            dir_name(&case_dir)
-        );
-        let result = run_bellatrix_execution_payload_case_minimal(&case_dir, &case_name);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "bellatrix/operations/minimal/execution_payload/{}",
+                dir_name(&case_dir)
+            );
+            run_bellatrix_execution_payload_case_minimal(&case_dir, &case_name)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out
@@ -2617,20 +2750,29 @@ fn run_altair_op_preset(
     root: &Path,
     preset: &str,
     sub: &str,
-    mut run_case: impl FnMut(&Path, &str, bool) -> CaseResult,
+    run_case: impl Fn(&Path, &str, bool) -> CaseResult + Sync + Send,
 ) -> OpsResult {
-    let mut out = OpsResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "altair",
         "operations",
         Some(sub),
         altair_ops_walk_opts(),
-    ) {
-        let case_name = format!("altair/operations/{preset}/{sub}/{}", dir_name(&case_dir));
-        let verify_signatures = bls_verify(&meta);
-        let result = run_case(&case_dir, &case_name, verify_signatures);
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("altair/operations/{preset}/{sub}/{}", dir_name(&case_dir));
+            let verify_signatures = bls_verify(&meta);
+            run_case(&case_dir, &case_name, verify_signatures)
+        })
+        .collect();
+
+    let mut out = OpsResult::new();
+    for result in outcomes {
         tally(result, &mut out);
     }
     out

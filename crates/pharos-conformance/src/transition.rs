@@ -42,6 +42,7 @@ use pharos_types::{
     phase0::{Epoch, Slot},
     views::BeaconStateView,
 };
+use rayon::prelude::*;
 
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
@@ -96,10 +97,9 @@ pub fn run_transition_bellatrix_minimal(root: &Path) -> TransitionResult {
 fn run_transition_impl(
     root: &Path,
     preset: &'static str,
-    run_case: &dyn Fn(&Path, &str, Epoch, u64) -> CaseResult,
+    run_case: &(dyn Fn(&Path, &str, Epoch, u64) -> CaseResult + Sync),
 ) -> TransitionResult {
-    let mut out = TransitionResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "altair",
@@ -109,25 +109,30 @@ fn run_transition_impl(
             meta_required: true,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("altair/transition/core/{preset}/{}", dir_name(&case_dir));
+    )
+    .collect();
 
-        let fork_epoch = match meta.as_ref().and_then(|m| m.fork_epoch) {
-            Some(e) => Epoch(e),
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("altair/transition/core/{preset}/{}", dir_name(&case_dir));
 
-        match run_case(&case_dir, &case_name, fork_epoch, blocks_count) {
+            let fork_epoch = match meta.as_ref().and_then(|m| m.fork_epoch) {
+                Some(e) => Epoch(e),
+                None => return CaseResult::Skip,
+            };
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
+
+            run_case(&case_dir, &case_name, fork_epoch, blocks_count)
+        })
+        .collect();
+
+    let mut out = TransitionResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
@@ -142,10 +147,9 @@ fn run_transition_impl(
 fn run_bellatrix_transition_impl(
     root: &Path,
     preset: &'static str,
-    run_case: &dyn Fn(&Path, &str, Epoch, u64) -> CaseResult,
+    run_case: &(dyn Fn(&Path, &str, Epoch, u64) -> CaseResult + Sync),
 ) -> TransitionResult {
-    let mut out = TransitionResult::new();
-    for (case_dir, meta) in walk_category(
+    let cases: Vec<_> = walk_category(
         root,
         preset,
         "bellatrix",
@@ -155,25 +159,30 @@ fn run_bellatrix_transition_impl(
             meta_required: true,
             inner_dir: Some("pyspec_tests"),
         },
-    ) {
-        let case_name = format!("bellatrix/transition/core/{preset}/{}", dir_name(&case_dir));
+    )
+    .collect();
 
-        let fork_epoch = match meta.as_ref().and_then(|m| m.fork_epoch) {
-            Some(e) => Epoch(e),
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
-        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-            Some(n) => n,
-            None => {
-                out.skip += 1;
-                continue;
-            }
-        };
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("bellatrix/transition/core/{preset}/{}", dir_name(&case_dir));
 
-        match run_case(&case_dir, &case_name, fork_epoch, blocks_count) {
+            let fork_epoch = match meta.as_ref().and_then(|m| m.fork_epoch) {
+                Some(e) => Epoch(e),
+                None => return CaseResult::Skip,
+            };
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
+
+            run_case(&case_dir, &case_name, fork_epoch, blocks_count)
+        })
+        .collect();
+
+    let mut out = TransitionResult::new();
+    for outcome in outcomes {
+        match outcome {
             CaseResult::Pass => out.pass += 1,
             CaseResult::Fail(msg) => {
                 out.fail += 1;
