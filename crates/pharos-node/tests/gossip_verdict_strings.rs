@@ -16,9 +16,13 @@
 //! (`exit: `, `proposer_slashing: `, `attester_slashing: `) and the new
 //! `bls_to_exec: ` validator.
 //!
-//! Counts audited from source: block=14, att=15, agg=20, exit=8, ps=8, as=8,
-//! bte=7, total=79 (each of the 4 new validators also has a defensive
+//! Counts audited from source: block=13, att=15, agg=20, exit=8, ps=8, as=8,
+//! bte=7, total=78 (each of the 4 new validators also has a defensive
 //! "head state unavailable" IGNORE string beyond the spec IGNORE/REJECT rules).
+//!
+//! `"block: unrecognised fork variant"` was removed in M7 commit 2598fb5: the
+//! `EthSpec::signed_block_message` refactor made an unrecognised fork a compile
+//! error (exhaustive match), so the runtime Reject string no longer exists.
 //!
 //! This test is the gating mechanism for spec rule audit. Do not modify the list
 //! without also updating the corresponding spec-rule mapping in `docs/decisions.md`.
@@ -34,7 +38,7 @@ const NETWORK_HOST_SRC: &str = include_str!("../../../crates/pharos-network/src/
 /// `pharos-network/src/host.rs`.  The `verdict_strings_match_known_list` test
 /// verifies it separately via `pharos_network::host::GOSSIP_REASON_PARENT_UNSEEN`.
 const EXPECTED: &[&str] = &[
-    // ── block (13) ────────────────────────────────────────────────────────────
+    // ── block (12) ────────────────────────────────────────────────────────────
     "block: clock unavailable",
     "block: duplicate proposer/slot",
     "block: finalized not ancestor",
@@ -47,7 +51,6 @@ const EXPECTED: &[&str] = &[
     "block: proposer index out of range",
     "block: proposer mismatch",
     "block: shuffling unavailable",
-    "block: unrecognised fork variant",
     // ── att (15) ──────────────────────────────────────────────────────────────
     "att: agg bits length mismatch",
     "att: clock unavailable",
@@ -207,7 +210,8 @@ fn verdict_strings_match_known_list() {
 
     // ── Part 3: counts match expectation ─────────────────────────────────────
     // "block: parent unseen" is NOT in EXPECTED (it lives in the const); the
-    // count therefore shows 13 inline block strings, not 14.
+    // count therefore shows 12 inline block strings, not 13. (M7 commit 2598fb5
+    // removed "block: unrecognised fork variant" — now a compile-time guarantee.)
     let block_count = EXPECTED.iter().filter(|s| s.starts_with("block: ")).count();
     let att_count = EXPECTED.iter().filter(|s| s.starts_with("att: ")).count();
     let agg_count = EXPECTED.iter().filter(|s| s.starts_with("agg: ")).count();
@@ -225,8 +229,8 @@ fn verdict_strings_match_known_list() {
         .filter(|s| s.starts_with("bls_to_exec: "))
         .count();
     assert_eq!(
-        block_count, 13,
-        "expected 13 inline block: strings (parent-unseen lives in const)"
+        block_count, 12,
+        "expected 12 inline block: strings (parent-unseen lives in const)"
     );
     assert_eq!(att_count, 15, "expected 15 att: strings");
     assert_eq!(agg_count, 20, "expected 20 agg: strings");
@@ -242,8 +246,8 @@ fn verdict_strings_match_known_list() {
     );
     assert_eq!(
         EXPECTED.len(),
-        79,
-        "expected 79 total inline verdict strings"
+        78,
+        "expected 78 total inline verdict strings"
     );
 
     // ── Part 4: GOSSIP_REASON_PARENT_UNSEEN const is the canonical definition ──
