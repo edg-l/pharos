@@ -344,7 +344,7 @@ where
 /// finalized root, which after checkpoint sync is the trusted anchor and is
 /// always present in `blocks`. In genesis operation the justified root is always
 /// present, so this is a no-op there.
-fn effective_base<E: EthSpec>(store: &Store<E>) -> Root
+pub(crate) fn effective_base<E: EthSpec>(store: &Store<E>) -> Root
 where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,

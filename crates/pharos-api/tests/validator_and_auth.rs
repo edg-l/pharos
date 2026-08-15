@@ -144,6 +144,9 @@ impl ChainStateApi<MainnetEthSpec> for DutiesMock {
     fn is_optimistic_for_root(&self, _root: Root) -> bool {
         false
     }
+    fn is_optimistic_node(&self) -> bool {
+        false
+    }
     fn is_syncing(&self) -> bool {
         false
     }
@@ -478,6 +481,9 @@ impl ChainStateApi<MainnetEthSpec> for SyncingMock {
     fn is_optimistic_for_root(&self, _root: Root) -> bool {
         false
     }
+    fn is_optimistic_node(&self) -> bool {
+        false
+    }
     fn is_syncing(&self) -> bool {
         true
     }
@@ -757,6 +763,9 @@ async fn debug_state_altair_has_fork_specific_fields() {
             false
         }
         fn is_optimistic_for_root(&self, _root: Root) -> bool {
+            false
+        }
+        fn is_optimistic_node(&self) -> bool {
             false
         }
         fn is_syncing(&self) -> bool {

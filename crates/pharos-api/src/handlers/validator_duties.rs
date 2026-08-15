@@ -9,6 +9,23 @@
 //! - `~/dev/beacon-APIs/apis/validator/duties/attester.yaml`
 //! - `~/dev/beacon-APIs/apis/validator/duties/sync.yaml`
 //!
+//! ## Optimistic node behaviour
+//!
+//! Per `consensus-specs/sync/optimistic.md` "Validator assignments":
+//! - Duty-READ endpoints (proposer/attester/sync duties) MUST return HTTP 200
+//!   even when the node is optimistic, with `execution_optimistic: true` in the
+//!   response body.  Validators may read duties to prepare; they just MUST NOT
+//!   act on them while optimistic.
+//! - Production/signing endpoints (produce_block, produce_attestation_data,
+//!   aggregate selection, sync_committee_contribution) MUST return HTTP 503
+//!   when `chain.is_optimistic_node()` is true.  Those endpoints are not yet
+//!   implemented (deferred past M7); the 503 contract is documented in
+//!   `Task 5.4` below and is wired at the point of implementation.
+//!
+//! The `execution_optimistic` field is sourced from `chain.is_optimistic_node()`
+//! (node-level flag, not just head-level) so it correctly reflects the case
+//! where all viable FFG branches are Invalid and the node is stuck.
+//!
 //! STF helpers used:
 //! - `pharos_stf::phase0::accessors::get_beacon_proposer_index` — proposer for `state.slot`
 //! - `pharos_stf::phase0::accessors::compute_start_slot_at_epoch` — epoch → start slot
@@ -251,7 +268,10 @@ pub async fn get_proposer_duties<E: EthSpec>(
         let target_epoch = Epoch(epoch);
         let head_root = chain.head_root();
         let genesis_block_root = chain.genesis_block_root();
-        let is_optimistic = chain.is_optimistic();
+        // Duty reads stay 200 even when optimistic; reflect the flag in the
+        // response body per `consensus-specs/sync/optimistic.md` "Validator
+        // assignments". Use is_optimistic_node for node-level accuracy.
+        let is_optimistic = chain.is_optimistic_node();
 
         // Use the head state for duty computation (best available view of shuffling).
         let beacon_state = chain
@@ -348,7 +368,10 @@ pub async fn post_attester_duties<E: EthSpec>(
         let indices = parse_validator_indices(&body)?;
         let head_root = chain.head_root();
         let genesis_block_root = chain.genesis_block_root();
-        let is_optimistic = chain.is_optimistic();
+        // Duty reads stay 200 even when optimistic; reflect the flag in the
+        // response body per `consensus-specs/sync/optimistic.md` "Validator
+        // assignments". Use is_optimistic_node for node-level accuracy.
+        let is_optimistic = chain.is_optimistic_node();
 
         let beacon_state = chain
             .state_by_block_root(head_root)
@@ -441,7 +464,10 @@ pub async fn post_sync_duties<E: EthSpec>(
         let target_epoch = Epoch(epoch);
         let indices = parse_validator_indices(&body)?;
         let head_root = chain.head_root();
-        let is_optimistic = chain.is_optimistic();
+        // Duty reads stay 200 even when optimistic; reflect the flag in the
+        // response body per `consensus-specs/sync/optimistic.md` "Validator
+        // assignments". Use is_optimistic_node for node-level accuracy.
+        let is_optimistic = chain.is_optimistic_node();
 
         let beacon_state = chain
             .state_by_block_root(head_root)

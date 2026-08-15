@@ -284,6 +284,15 @@ where
     let mut unrealized_justifications = HashMap::new();
     unrealized_justifications.insert(anchor_root, justified_checkpoint.clone());
 
+    // Per `specs/sync/optimistic.md` "Checkpoint Sync (Weak Subjectivity Sync)":
+    // a CL MAY assume the anchor's ExecutionPayload is VALID.  Seed it here so
+    // `is_optimistic(store, anchor_root)` returns false for a post-merge anchor
+    // and `latest_verified_ancestor` never walks past the trusted anchor root.
+    // For pre-merge (phase0/altair) anchors this is harmless: `is_optimistic`
+    // short-circuits via `block_is_execution_enabled` = false regardless.
+    let mut payload_statuses = HashMap::new();
+    payload_statuses.insert(anchor_root, PayloadStatus::Valid);
+
     // Advance the current slot from genesis to anchor_state.slot.
     let store = Store {
         time,
@@ -300,7 +309,7 @@ where
         checkpoint_states,
         latest_messages: HashMap::new(),
         unrealized_justifications,
-        payload_statuses: HashMap::new(),
+        payload_statuses,
         // Terminal-block constants default to zero (no merge configured).
         // Production callers set these via `Store::set_terminal_config`.
         terminal_total_difficulty: Uint256::ZERO,

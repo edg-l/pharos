@@ -463,6 +463,26 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
     /// optimistic blocks".
     fn is_optimistic_for_root(&self, root: Root) -> bool;
 
+    /// Whether the whole node is in an optimistic state.
+    ///
+    /// Returns `true` when EITHER:
+    /// 1. The current head is optimistic (head payload not yet EL-validated), OR
+    /// 2. Every viable (non-INVALIDATED) FFG branch is gone — the filtered block
+    ///    tree is degenerate (all execution-carrying branches were marked Invalid),
+    ///    leaving the LMD-GHOST head equal to the justified base with no viable
+    ///    children.
+    ///
+    /// Duty-READ endpoints (proposer/attester/sync duties) MUST stay 200 and
+    /// reflect this flag in their `execution_optimistic` response field.
+    ///
+    /// Production/signing endpoints (produce_block, produce_attestation_data,
+    /// aggregate selection, sync_committee_contribution — not yet implemented)
+    /// MUST return HTTP 503 when this returns `true`.
+    ///
+    /// Per `consensus-specs/sync/optimistic.md` "Validator assignments".
+    /// ADR `D-optimistic-node-no-viable-branch`.
+    fn is_optimistic_node(&self) -> bool;
+
     /// Whether the node is still syncing (sync_distance > 0).
     fn is_syncing(&self) -> bool;
 
@@ -718,6 +738,14 @@ where
         // Per `consensus-specs/sync/optimistic.md` "Ethereum Beacon APIs".
         let fc = self.fork_choice.read();
         pharos_fork_choice::is_optimistic(&fc, root)
+    }
+
+    fn is_optimistic_node(&self) -> bool {
+        // Per `consensus-specs/sync/optimistic.md` "Validator assignments":
+        // true when head is optimistic OR all viable FFG branches are Invalid.
+        // ADR `D-optimistic-node-no-viable-branch`.
+        let fc = self.fork_choice.read();
+        pharos_fork_choice::is_optimistic_node(&fc)
     }
 
     fn is_syncing(&self) -> bool {

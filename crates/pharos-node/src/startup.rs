@@ -448,10 +448,18 @@ where
     }
 
     // ── Step 5: rehydrate payload_statuses ───────────────────────────────────
-    let payload_statuses: HashMap<Root, PayloadStatus> = {
+    let mut payload_statuses: HashMap<Root, PayloadStatus> = {
         let raw = <RocksStore as Store<E>>::payload_statuses_iter(store)?;
         raw.into_iter().collect()
     };
+    // Per `specs/sync/optimistic.md` "Checkpoint Sync (Weak Subjectivity Sync)":
+    // the anchor is a trusted weak-subjectivity root; its payload is VALID.
+    // `or_insert` preserves an explicit Valid already written by `apply_anchor`
+    // (via the BlockTransition payload_status field) while also covering any
+    // older DB that predates that write.
+    payload_statuses
+        .entry(anchor_root)
+        .or_insert(PayloadStatus::Valid);
 
     // ── Step 6: build the Store ───────────────────────────────────────────────
     // Terminal-block constants are zeroed here; the caller (main.rs) sets them
@@ -581,6 +589,13 @@ mod tests {
             fc_store.payload_statuses.get(&root_c),
             Some(&PayloadStatus::NotValidated)
         );
-        assert_eq!(fc_store.payload_statuses.len(), 3);
+        // Fix 1c: anchor root is seeded as Valid by rehydrate_fork_choice_store.
+        let anchor_root = snap.finalized_checkpoint.root;
+        assert_eq!(
+            fc_store.payload_statuses.get(&anchor_root),
+            Some(&PayloadStatus::Valid),
+            "rehydrate must seed anchor root as Valid"
+        );
+        assert_eq!(fc_store.payload_statuses.len(), 4);
     }
 }

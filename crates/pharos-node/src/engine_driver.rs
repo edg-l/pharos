@@ -365,20 +365,33 @@ pub struct NewPayloadRequest<E: EthSpec> {
 /// considers proposer-boost state) is deferred to M11 alongside the full
 /// proposer-boost re-org logic.
 ///
+/// Resolves `latest_verified_ancestor` of the justified checkpoint root FIRST,
+/// so an optimistically-imported block is NEVER sent to the EL as `safe`.
+/// Per `consensus-specs/sync/optimistic.md` "Validator assignments / Re-orgs":
+/// "the safe block hash MUST be the `latest_verified_ancestor` of the justified
+/// checkpoint block". ADR `D-fcu-safe-finalized-verified-ancestor`.
+///
 /// Per `D-engine-head-driver` ADR: full `get_safe_execution_block_hash` is
 /// deferred to M11.
 pub fn compute_safe_block_hash<E: EthSpec>(store: &FcStore<E>) -> Hash256 {
-    use pharos_fork_choice::execution_block_hash_at_root;
-    execution_block_hash_at_root(store, store.justified_checkpoint.root)
+    use pharos_fork_choice::{execution_block_hash_at_root, latest_verified_ancestor};
+    let verified = latest_verified_ancestor::<E>(store, store.justified_checkpoint.root);
+    execution_block_hash_at_root(store, verified)
 }
 
 /// Derive the `finalized_block_hash` for `engine_forkchoiceUpdatedV1`.
 ///
 /// Uses the finalized-checkpoint block's EL block hash.
 /// Returns `Hash256::default()` (zero hash) for pre-merge (Phase0/Altair) blocks.
+///
+/// Resolves `latest_verified_ancestor` of the finalized checkpoint root FIRST,
+/// so an optimistically-imported block is NEVER sent to the EL as `finalized`.
+/// Per `consensus-specs/sync/optimistic.md` "Validator assignments / Re-orgs".
+/// ADR `D-fcu-safe-finalized-verified-ancestor`.
 pub fn compute_finalized_block_hash<E: EthSpec>(store: &FcStore<E>) -> Hash256 {
-    use pharos_fork_choice::execution_block_hash_at_root;
-    execution_block_hash_at_root(store, store.finalized_checkpoint.root)
+    use pharos_fork_choice::{execution_block_hash_at_root, latest_verified_ancestor};
+    let verified = latest_verified_ancestor::<E>(store, store.finalized_checkpoint.root);
+    execution_block_hash_at_root(store, verified)
 }
 
 /// Format a `Hash256` as a `0x`-prefixed lowercase hex string.

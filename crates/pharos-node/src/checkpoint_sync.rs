@@ -17,6 +17,7 @@
 use pharos_ssz::{Decode, TreeHash};
 use pharos_storage::{BlockTransition, ForkChoiceSnapshot, RocksStore, Store};
 use pharos_types::EthSpec;
+use pharos_types::PayloadStatus;
 use pharos_types::phase0::misc::Checkpoint;
 use pharos_types::phase0::operations::BeaconBlockHeader;
 use pharos_types::phase0::primitives::{Epoch, Root, Slot, ValidatorIndex};
@@ -326,6 +327,12 @@ pub fn apply_anchor<E: EthSpec>(
     batch.state = Some((anchor.state_root, anchor.state));
     batch.forkchoice = Some(snap.clone());
     batch.slot_index = Some((state_slot, anchor.block_root));
+    // Per `specs/sync/optimistic.md` "Checkpoint Sync (Weak Subjectivity Sync)":
+    // a CL MAY assume the anchor's ExecutionPayload is VALID.  Seed it here so
+    // `is_optimistic(store, anchor_root)` returns false for a post-merge anchor
+    // and `latest_verified_ancestor` never walks past the trusted weak-subjectivity
+    // root.  Also persists the status to RocksDB so restart rehydration reads it.
+    batch.payload_status = Some((anchor.block_root, PayloadStatus::Valid));
     batch
         .metadata
         .push((b"split_slot", anchor_slot_be.to_vec()));
@@ -1091,6 +1098,122 @@ mod tests {
                 }) if expected == wrong_expected
             ),
             "expected TamperFlagMismatch, got {result:?}"
+        );
+    }
+
+    // ── Test (h): apply_anchor seeds payload_status Valid for post-merge anchor ─
+
+    /// Verifies that `apply_anchor` writes `PayloadStatus::Valid` to the
+    /// `CF_PAYLOAD_STATUS` RocksDB column family for the anchor block root.
+    ///
+    /// After `apply_anchor`, rebuilding a fork-choice store via
+    /// `get_forkchoice_store` AND rehydrating via `rehydrate_fork_choice_store`
+    /// must both show `is_optimistic(store, anchor_root) == false` for a
+    /// post-merge (Bellatrix) anchor block.
+    ///
+    /// Per `specs/sync/optimistic.md` "Checkpoint Sync (Weak Subjectivity Sync)".
+    #[test]
+    fn apply_anchor_seeds_payload_status_valid_for_bellatrix_anchor() {
+        use pharos_fork_choice::optimistic::is_optimistic;
+        use pharos_fork_choice::store::get_forkchoice_store;
+        use pharos_storage::{RocksStore, RocksStoreConfig, Store as StoreTrait};
+        use pharos_types::PayloadStatus;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let rocks = RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            path: dir.path().join("db"),
+            create_if_missing: true,
+        })
+        .expect("open rocksdb");
+
+        // Build a valid Bellatrix anchor state + signed block.
+        let body = MinimalBeaconBlockBody::default();
+        let body_root: Root = body.tree_hash_root();
+        let state_inner = MinimalBeaconState {
+            genesis_time: 1_600_000_000u64,
+            slot: Slot(64),
+            latest_block_header: BeaconBlockHeader {
+                slot: Slot(64),
+                state_root: Root::default(),
+                body_root,
+                ..BeaconBlockHeader::default()
+            },
+            ..MinimalBeaconState::default()
+        };
+        let fork_state = ForkMinimalBeaconState::Bellatrix(state_inner.clone());
+        let state_root: Root = fork_state.tree_hash_root();
+
+        let signed_block_inner = MinimalSignedBeaconBlock {
+            message: MinimalBeaconBlock {
+                slot: Slot(64),
+                state_root,
+                body: body.clone(),
+                ..MinimalBeaconBlock::default()
+            },
+            ..MinimalSignedBeaconBlock::default()
+        };
+
+        let block_root: Root = {
+            let mut h = state_inner.latest_block_header.clone();
+            h.state_root = state_root;
+            h.tree_hash_root()
+        };
+
+        // Build the CheckpointAnchor manually (bypassing the HTTP fetch).
+        let fork_signed_block =
+            <MinimalEthSpec as pharos_types::EthSpec>::bellatrix_into_signed_block(
+                signed_block_inner,
+            );
+
+        let anchor = CheckpointAnchor {
+            state: fork_state,
+            signed_block: fork_signed_block,
+            state_root,
+            block_root,
+        };
+
+        // Apply anchor — this should persist PayloadStatus::Valid for block_root.
+        apply_anchor::<MinimalEthSpec>(anchor, &rocks).expect("apply_anchor");
+
+        // Confirm the persisted status is Valid.
+        let stored_status =
+            <RocksStore as StoreTrait<MinimalEthSpec>>::payload_status(&rocks, block_root)
+                .expect("payload_status lookup")
+                .expect("status must be present after apply_anchor");
+        assert_eq!(
+            stored_status,
+            PayloadStatus::Valid,
+            "apply_anchor must persist PayloadStatus::Valid for the anchor block root"
+        );
+
+        // Confirm that get_forkchoice_store (which also seeds Valid) results in
+        // is_optimistic == false for the anchor.
+        let anchor_state_in = MinimalBeaconState {
+            genesis_time: 1_600_000_000u64,
+            slot: Slot(64),
+            latest_block_header: BeaconBlockHeader {
+                slot: Slot(64),
+                state_root: Root::default(),
+                body_root,
+                ..BeaconBlockHeader::default()
+            },
+            ..MinimalBeaconState::default()
+        };
+        let anchor_fork_state2 = ForkMinimalBeaconState::Bellatrix(anchor_state_in);
+        let state_root2: Root = anchor_fork_state2.tree_hash_root();
+        let raw_block = MinimalBeaconBlock {
+            slot: Slot(64),
+            state_root: state_root2,
+            body: body.clone(),
+            ..MinimalBeaconBlock::default()
+        };
+        let anchor_block2 = pharos_types::BeaconBlock::Bellatrix(raw_block);
+
+        let fc_store = get_forkchoice_store::<MinimalEthSpec>(anchor_fork_state2, anchor_block2);
+        let anchor_root2 = fc_store.finalized_checkpoint.root;
+        assert!(
+            !is_optimistic::<MinimalEthSpec>(&fc_store, anchor_root2),
+            "post-merge anchor must not be optimistic in get_forkchoice_store"
         );
     }
 }
