@@ -22,6 +22,14 @@ use crate::types::{Fork, SubnetId};
 
 // ── GossipVerdict ─────────────────────────────────────────────────────────────
 
+/// Sentinel reason string for RB6: the gossip block's parent has not been seen.
+///
+/// Used in `GossipVerdict::Ignore` by `validate_beacon_block` (pharos-node) and
+/// compared by the network dispatcher to decide whether to emit
+/// `NetworkEvent::UnknownParentBlock`. Single source of truth; callers must
+/// reference this const rather than re-typing the literal.
+pub const GOSSIP_REASON_PARENT_UNSEEN: &str = "block: parent unseen";
+
 /// The verdict returned by a `GossipValidator` method.
 ///
 /// Used to drive libp2p gossipsub message acceptance; maps directly onto

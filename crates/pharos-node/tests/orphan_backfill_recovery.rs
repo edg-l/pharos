@@ -242,6 +242,7 @@ async fn orphan_defers_and_backfill_heals() {
         payload_tx: payload_tx.clone(),
         network: net_sender,
         notify_backfill: notify_backfill.clone(),
+        lookup_tx: tokio::sync::mpsc::channel(1).0,
     };
 
     // The unknown parent root is NOT in fc_store.
@@ -322,6 +323,7 @@ async fn orphan_defers_and_backfill_heals() {
             BACKFILL_GENESIS_TIME_SECS,
             shutdown_rx,
             notify2,
+            None,
         )
         .await
     });

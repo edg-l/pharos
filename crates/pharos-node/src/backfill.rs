@@ -16,7 +16,6 @@
 //! `PeerPicker` uses `#[async_trait::async_trait]` because it IS used as
 //! `Arc<dyn PeerPicker>` (dyn-safety is the genuine reason).
 
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -25,19 +24,14 @@ use tokio::sync::{Notify, mpsc, watch};
 use tracing::{debug, info, warn};
 
 use pharos_fork_choice::Store as FcStore;
-use pharos_stf::{StateTransitionError, state_transition};
+use pharos_stf::StateTransitionError;
 use pharos_types::views::BeaconBlockView as _;
-use pharos_types::{
-    EthSpec,
-    phase0::primitives::{Root, Slot},
-};
+use pharos_types::{EthSpec, phase0::primitives::Slot};
 
 use crate::block_ingestion::{extract_block_root, extract_parent_root};
-use crate::engine_driver::{
-    HeadChange, NewPayloadRequest, PayloadToWire, compute_finalized_block_hash,
-    compute_safe_block_hash, hash_to_hex,
-};
+use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire};
 use crate::host_impl::HostImpl;
+use crate::lookup::LookupRequest;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -109,6 +103,11 @@ pub trait BackfillBlockProvider<E: EthSpec>: Send + Sync + 'static {
 /// - `on_block` is idempotent on re-insertion (HashMap::insert semantics,
 ///   verified by `on_block_is_idempotent_on_reapplication`); no BlockKnown
 ///   variant in `ForkChoiceError`.
+///
+/// `lookup_tx`: optional channel to the lookup loop.  When `Some`, a
+/// `LookupRequest::ParentImported` is sent after each successful import so the
+/// lookup loop can drain any queued descendants of the imported block.  Pass
+/// `None` in test contexts that do not instantiate a lookup loop.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_backfill_loop<E, P, EE, PP>(
     provider: P,
@@ -121,6 +120,7 @@ pub async fn run_backfill_loop<E, P, EE, PP>(
     genesis_time_secs: u64,
     mut shutdown_rx: watch::Receiver<bool>,
     notify: std::sync::Arc<Notify>,
+    lookup_tx: Option<mpsc::Sender<LookupRequest>>,
 ) -> Result<(), BackfillError>
 where
     E: EthSpec,
@@ -241,109 +241,64 @@ where
                 return Ok(());
             }
 
-            // Task 3.2(c): both helpers raised to pub(crate) in block_ingestion.rs.
             let parent_root = extract_parent_root::<E>(&signed);
 
-            let pre_state = {
-                let s = fc_store.read();
-                s.block_states.get(&parent_root).cloned()
-            };
-
-            let pre_state = match pre_state {
-                Some(s) => s,
-                None => {
+            // Core import: pre-state fetch → STF → on_block → payload push → HeadChange.
+            let outcome = match crate::import::import_block::<E, EE, PP>(
+                &signed,
+                &fc_store,
+                &execution_engine,
+                &pow_provider,
+                &payload_tx,
+                true,
+                &cfg,
+            )
+            .await
+            {
+                Ok(o) => o,
+                Err(crate::import::ImportError::MissingParentState) => {
                     debug!(
                         %parent_root,
                         "backfill: missing parent state; aborting chunk"
                     );
                     break;
                 }
-            };
-
-            // Run state transition in spawn_blocking (CPU-bound; M3a invariant).
-            let signed_clone = signed.clone();
-            let ee = Arc::clone(&execution_engine);
-            let cfg_clone = cfg.clone();
-            let post = tokio::task::spawn_blocking(move || {
-                state_transition::<E, EE>(pre_state, &signed_clone, &ee, true, &cfg_clone)
-            })
-            .await??;
-
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-
-            let block_root: Root = extract_block_root::<E>(&signed);
-
-            // on_block is idempotent on re-insertion (HashMap::insert semantics).
-            // A JoinError (panic) is fatal; a fork-choice rejection is NOT — a
-            // block momentarily ahead of the slot-clock's on_tick cursor would
-            // otherwise kill the follower permanently. Back off and retry from
-            // the recomputed head on the next iteration.
-            let fc_clone = Arc::clone(&fc_store);
-            let block_for_on_block = signed.clone();
-            let pow_clone = Arc::clone(&pow_provider);
-            let on_block_res = tokio::task::spawn_blocking(move || {
-                let mut store = fc_clone.write();
-                pharos_fork_choice::on_block::<E, PP>(
-                    &mut store,
-                    &block_for_on_block,
-                    post,
-                    now,
-                    &pow_clone,
-                )
-            })
-            .await?;
-            if let Err(e) = on_block_res {
-                warn!(%block_root, error = %e, "backfill: on_block rejected; backing off and retrying");
-                if *shutdown_rx.borrow() {
-                    return Ok(());
+                Err(crate::import::ImportError::Join(e)) => {
+                    return Err(BackfillError::Join(e));
                 }
-                tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
-                break;
-            }
-
-            // Forward execution payload to the engine driver for newPayloadV1.
-            if let Some(payload) = E::get_execution_payload(&signed) {
-                let req = NewPayloadRequest {
-                    block_root,
-                    payload: payload.to_execution_payload_v1(),
-                    _marker: PhantomData,
-                };
-                // try_send: drop silently if channel is full (non-fatal).
-                if payload_tx.try_send(req).is_err() {
-                    warn!(
-                        %block_root,
-                        "backfill: payload_tx full or closed; dropping newPayload"
-                    );
+                Err(crate::import::ImportError::StateTransition(e)) => {
+                    let block_root = extract_block_root::<E>(&signed);
+                    warn!(%block_root, error = %e, "backfill: state_transition failed; backing off and retrying");
+                    if *shutdown_rx.borrow() {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
+                    break;
                 }
-            }
-
-            // Compute new head and publish HeadChange — single read guard to
-            // avoid TOCTOU races with concurrent attestations.
-            let change = {
-                let s = fc_store.read();
-                let new_head_root = pharos_fork_choice::get_head::<E>(&s);
-                let safe_hash = compute_safe_block_hash::<E>(&s);
-                let finalized_hash = compute_finalized_block_hash::<E>(&s);
-                let head_block_hash = hash_to_hex(
-                    E::get_execution_block_hash(
-                        s.blocks
-                            .get(&new_head_root)
-                            .expect("new head root must be in store after on_block"),
-                    )
-                    .unwrap_or_default(),
-                );
-                HeadChange {
-                    head_root: new_head_root,
-                    head_block_hash,
-                    safe_block_hash: hash_to_hex(safe_hash),
-                    finalized_block_hash: hash_to_hex(finalized_hash),
+                Err(crate::import::ImportError::ForkChoice(e)) => {
+                    let block_root = extract_block_root::<E>(&signed);
+                    warn!(%block_root, error = %e, "backfill: on_block rejected; backing off and retrying");
+                    if *shutdown_rx.borrow() {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
+                    break;
+                }
+                Err(crate::import::ImportError::Storage(e)) => {
+                    return Err(BackfillError::Storage(e));
                 }
             };
-            host.on_head_change(change.clone());
-            let _ = head_tx.send(Some(change));
+
+            host.on_head_change(outcome.head_change.clone());
+            let _ = head_tx.send(Some(outcome.head_change));
+
+            // Signal the lookup loop so it can drain any queued descendants of
+            // this just-imported block.
+            if let Some(tx) = &lookup_tx {
+                let _ = tx.try_send(LookupRequest::ParentImported {
+                    root: outcome.block_root,
+                });
+            }
         }
     }
 }
@@ -838,6 +793,7 @@ mod tests {
                 genesis_time_secs,
                 shutdown_rx,
                 notify,
+                None,
             )
             .await
         });
@@ -921,6 +877,7 @@ mod tests {
                 genesis_time_secs,
                 shutdown_rx,
                 Arc::new(Notify::new()),
+                None,
             )
             .await
         });
@@ -1047,6 +1004,7 @@ mod tests {
                 genesis_time_secs,
                 shutdown_rx,
                 Arc::new(Notify::new()),
+                None,
             )
             .await
         });

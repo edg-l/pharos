@@ -13,7 +13,8 @@ use libp2p::{Multiaddr, PeerId};
 pub use pharos_network::NetworkEvent;
 use pharos_network::discovery::enr::Enr;
 use pharos_network::host::{
-    BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
+    BlockProvider, ForkContext, GOSSIP_REASON_PARENT_UNSEEN, GossipValidator, GossipVerdict,
+    LightClientProvider,
 };
 use pharos_network::scoring::{PeerScorer, ScoreEvent};
 use pharos_network::types::{Fork, SubnetId};
@@ -49,6 +50,11 @@ pub struct TestHost {
     /// When `Some(idx)`, `validate_beacon_block` rejects any block with
     /// `proposer_index == idx`.
     reject_proposer_index: Option<u64>,
+    /// When `Some(slot)`, `validate_beacon_block` returns
+    /// `GossipVerdict::Ignore(GOSSIP_REASON_PARENT_UNSEEN)` for any block at
+    /// that slot.  Used by `unknown_parent_block_emitted` to exercise the RB6
+    /// emit path.
+    ignore_parent_unseen_for_slot: Option<u64>,
     /// The slot to report as the chain head, used to pass the historical window
     /// check in `handle_request` for `BlocksByRange`. Must be large enough that
     /// `start_slot >= head_slot - (min_epochs * SLOTS_PER_EPOCH)`.
@@ -71,6 +77,7 @@ impl TestHost {
             bellatrix_fork_digest: None,
             blocks: Arc::new(Mutex::new(HashMap::new())),
             reject_proposer_index: None,
+            ignore_parent_unseen_for_slot: None,
             head_slot: Slot(2_000_000),
             lc_bootstraps: Arc::new(Mutex::new(HashMap::new())),
             lc_updates: Arc::new(Mutex::new(Vec::new())),
@@ -95,6 +102,16 @@ impl TestHost {
     /// that rejects the special-cased block, preventing propagation to node C.
     pub fn reject_blocks_with_proposer(mut self, proposer_index: u64) -> Self {
         self.reject_proposer_index = Some(proposer_index);
+        self
+    }
+
+    /// Return `GossipVerdict::Ignore(GOSSIP_REASON_PARENT_UNSEEN)` for any
+    /// beacon block whose slot equals `slot`.
+    ///
+    /// Used by `unknown_parent_block_emitted` to exercise the RB6 dispatcher
+    /// path and verify `NetworkEvent::UnknownParentBlock` is emitted.
+    pub fn ignore_parent_unseen_at_slot(mut self, slot: u64) -> Self {
+        self.ignore_parent_unseen_for_slot = Some(slot);
         self
     }
 
@@ -297,6 +314,16 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
         block: &<MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock,
     ) -> GossipVerdict {
         use pharos_types::SignedBeaconBlock;
+        let slot = match block {
+            SignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
+            SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+            SignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
+        };
+        if let Some(ignore_slot) = self.ignore_parent_unseen_for_slot {
+            if slot == ignore_slot {
+                return GossipVerdict::Ignore(GOSSIP_REASON_PARENT_UNSEEN.into());
+            }
+        }
         if let Some(reject_idx) = self.reject_proposer_index {
             let proposer_index = match block {
                 SignedBeaconBlock::Phase0(inner) => inner.message.proposer_index.0,

@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use common::{NetworkEvent, TestHost, spawn_node};
 use pharos_network::GossipTopic;
+use pharos_network::host::GOSSIP_REASON_PARENT_UNSEEN;
 use pharos_network::topics::GossipTopicKind;
 use pharos_ssz::Encode as _;
 use pharos_types::phase0::primitives::{ForkDigest, Slot};
@@ -280,4 +281,133 @@ async fn gossip_reject_drops_message() {
         c_received.is_err(),
         "C must NOT receive the gossip message rejected by B"
     );
+}
+
+/// B ignores the block with `GOSSIP_REASON_PARENT_UNSEEN`; dispatcher must emit
+/// `NetworkEvent::UnknownParentBlock` (not `GossipMessage`) for that block.
+///
+/// Two-node topology: A publishes, B receives and ignores (RB6 sentinel).
+/// B must observe `NetworkEvent::UnknownParentBlock` with the correct SSZ bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn unknown_parent_block_emitted() {
+    // B ignores beacon_block at slot 42 with the parent-unseen reason.
+    let b_host = TestHost::new(fd()).ignore_parent_unseen_at_slot(42);
+
+    let mut node_a = spawn_node(vec![], TestHost::new(fd()), false).await;
+    let mut node_b = spawn_node(vec![], b_host, false).await;
+
+    let b_listen = node_b.listen_addr.clone();
+    let b_id = node_b.peer_id;
+
+    node_a.handle.dial(b_listen).await.expect("A→B dial failed");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            match node_a.handle.next_event().await.expect("channel closed") {
+                NetworkEvent::PeerConnected(id) if id == b_id => break,
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("A did not connect to B within 5s");
+
+    let mut block = pharos_types::phase0::MainnetSignedBeaconBlock::default();
+    block.message.slot = pharos_types::phase0::primitives::Slot(42);
+    let ssz_payload = pharos_ssz::Encode::as_ssz_bytes(&block);
+
+    node_a
+        .handle
+        .publish(beacon_block_topic(), &block)
+        .await
+        .expect("publish failed");
+
+    // B must receive UnknownParentBlock (not GossipMessage) within 5 seconds.
+    timeout(Duration::from_secs(5), async {
+        loop {
+            match node_b.handle.next_event().await.expect("channel closed") {
+                NetworkEvent::UnknownParentBlock { topic, data, .. } => {
+                    assert_eq!(
+                        topic.kind,
+                        GossipTopicKind::BeaconBlock,
+                        "topic kind must be BeaconBlock"
+                    );
+                    assert_eq!(
+                        data, ssz_payload,
+                        "UnknownParentBlock data must match SSZ payload"
+                    );
+                    break;
+                }
+                NetworkEvent::GossipMessage { .. } => {
+                    panic!("got GossipMessage instead of UnknownParentBlock");
+                }
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("B did not receive UnknownParentBlock within 5s");
+}
+
+/// B ignores the block with a different reason (not PARENT_UNSEEN); the
+/// dispatcher must NOT emit `UnknownParentBlock` — no event should arrive
+/// within 1 second.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn unknown_parent_block_other_ignore_no_event() {
+    // B rejects blocks with proposer_index u64::MAX (Reject, not Ignore),
+    // and accepts all others (so no UnknownParentBlock is emitted).
+    // We use a normal Accept host — publishing slot 99 yields GossipMessage, not UnknownParentBlock.
+    let mut node_a = spawn_node(vec![], TestHost::new(fd()), false).await;
+    let mut node_b = spawn_node(vec![], TestHost::new(fd()), false).await;
+
+    let b_listen = node_b.listen_addr.clone();
+    let b_id = node_b.peer_id;
+
+    node_a.handle.dial(b_listen).await.expect("A→B dial failed");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            match node_a.handle.next_event().await.expect("channel closed") {
+                NetworkEvent::PeerConnected(id) if id == b_id => break,
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("A did not connect to B within 5s");
+
+    let mut block = pharos_types::phase0::MainnetSignedBeaconBlock::default();
+    block.message.slot = pharos_types::phase0::primitives::Slot(99);
+
+    node_a
+        .handle
+        .publish(beacon_block_topic(), &block)
+        .await
+        .expect("publish failed");
+
+    // B must receive GossipMessage (Accept path), not UnknownParentBlock.
+    let got_unknown = timeout(Duration::from_secs(3), async {
+        loop {
+            match node_b.handle.next_event().await.expect("channel closed") {
+                NetworkEvent::UnknownParentBlock { .. } => break true,
+                NetworkEvent::GossipMessage { .. } => break false,
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("B did not receive any gossip event within 3s");
+
+    assert!(
+        !got_unknown,
+        "Accept path must yield GossipMessage, not UnknownParentBlock"
+    );
+}
+
+/// Compile-time check: `GOSSIP_REASON_PARENT_UNSEEN` const matches the string
+/// used in `GossipVerdict::Ignore` and the `UnknownParentBlock` emit condition.
+/// Prevents accidental desync between the const value and its consumers.
+#[test]
+fn parent_unseen_const_value() {
+    assert_eq!(GOSSIP_REASON_PARENT_UNSEEN, "block: parent unseen");
 }

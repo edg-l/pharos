@@ -10,7 +10,6 @@
 //! because `state_transition` is sync and CPU-bound (M3a invariant).
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use thiserror::Error;
@@ -18,26 +17,21 @@ use tokio::sync::{Notify, mpsc, watch};
 use tracing::{debug, warn};
 
 use pharos_fork_choice::Store as FcStore;
-use pharos_fork_choice::{get_head, on_block};
 use pharos_network::NetworkCommandSender;
 use pharos_network::host::{ForkContext as _, LightClientProvider as _};
 use pharos_network::network::NetworkEvent;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
-use pharos_network::types::Fork;
 use pharos_ssz::Decode;
 use pharos_stf::{
     AltairDispatchBounds, BellatrixDispatchBounds, ExecutionEngine, StateTransitionError,
-    state_transition,
 };
 use pharos_storage::StorageError;
 use pharos_types::views::{BeaconBlockView as _, ForkVariant, SignedBeaconBlockView as _};
 use pharos_types::{EthSpec, phase0::primitives::Root};
 
-use crate::engine_driver::{
-    HeadChange, NewPayloadRequest, PayloadToWire, compute_finalized_block_hash,
-    compute_safe_block_hash, hash_to_hex,
-};
+use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire};
 use crate::host_impl::HostImpl;
+use crate::lookup::LookupRequest;
 use crate::pow_block::EnginePowBlockProvider;
 
 // ── IngestionError ────────────────────────────────────────────────────────────
@@ -71,6 +65,10 @@ pub enum IngestionError {
     /// `spawn_blocking` join error (tokio thread pool failure).
     #[error("spawn_blocking join error: {0}")]
     Join(#[from] tokio::task::JoinError),
+
+    /// Delegated import error (from the shared import core).
+    #[error(transparent)]
+    Import(#[from] crate::import::ImportError),
 }
 
 // ── IngestionEgress ───────────────────────────────────────────────────────────
@@ -91,6 +89,9 @@ pub struct IngestionEgress<E: EthSpec> {
     pub network: NetworkCommandSender<E>,
     /// Wakes the backfill loop when an orphan block is deferred.
     pub notify_backfill: std::sync::Arc<Notify>,
+    /// Forwards unknown-parent orphans and parent-imported signals to the
+    /// lookup loop.  Not generic over `E` — `LookupRequest` carries raw bytes.
+    pub lookup_tx: mpsc::Sender<LookupRequest>,
 }
 
 // ── run_block_ingestion_loop ──────────────────────────────────────────────────
@@ -161,6 +162,14 @@ where
     let cfg = pharos_types::config::RuntimeConfig::default();
 
     while let Some(event) = event_rx.recv().await {
+        // Forward unknown-parent gossip blocks to the lookup loop.
+        if let NetworkEvent::UnknownParentBlock { topic, peer, data } = event {
+            let _ = egress
+                .lookup_tx
+                .try_send(LookupRequest::UnknownParent { topic, peer, data });
+            continue;
+        }
+
         let (topic, data) = match event {
             NetworkEvent::GossipMessage { topic, data, .. }
                 if topic.kind == GossipTopicKind::BeaconBlock =>
@@ -174,124 +183,48 @@ where
         // (b) Decode SSZ bytes by the topic's fork-digest. Gossip beacon_block
         // carries raw per-fork SSZ with no discriminant prefix — the fork is
         // determined by the topic's fork-digest, not a leading byte.
-        let signed_block: E::SignedBeaconBlock = match host
-            .fork_from_context(&topic.fork_digest.into_inner())
+        let signed_block: E::SignedBeaconBlock =
+            match decode_block_by_topic::<E, _>(&*host, &topic, &data) {
+                Some(b) => b,
+                None => continue,
+            };
+
+        // (c)-(h) Core import: pre-state fetch → STF → on_block → payload push → HeadChange.
+        let parent_root = extract_parent_root::<E>(&signed_block);
+        let outcome = match crate::import::import_block::<E, EE, EnginePowBlockProvider>(
+            &signed_block,
+            &fc_store,
+            &execution_engine,
+            &pow_provider,
+            &egress.payload_tx,
+            validate_result,
+            &cfg,
+        )
+        .await
         {
-            Some(Fork::Bellatrix) => match E::BellatrixSignedBeaconBlock::from_ssz_bytes(&data) {
-                Ok(inner) => E::bellatrix_into_signed_block(inner),
-                Err(e) => {
-                    warn!(error = ?e, "block_ingestion: bellatrix SSZ decode failed; dropping");
-                    continue;
-                }
-            },
-            Some(Fork::Altair) => match E::AltairSignedBeaconBlock::from_ssz_bytes(&data) {
-                Ok(inner) => E::altair_into_signed_block(inner),
-                Err(e) => {
-                    warn!(error = ?e, "block_ingestion: altair SSZ decode failed; dropping");
-                    continue;
-                }
-            },
-            Some(Fork::Phase0) | None => match E::Phase0SignedBeaconBlock::from_ssz_bytes(&data) {
-                Ok(inner) => E::phase0_into_signed_block(inner),
-                Err(e) => {
-                    warn!(error = ?e, "block_ingestion: phase0 SSZ decode failed; dropping");
-                    continue;
-                }
-            },
-        };
-
-        // (c) Fetch pre_state from the fork-choice store.
-        let pre_state = {
-            // The fork-enum SignedBeaconBlock doesn't have a working message() —
-            // extract parent_root via the inner variant.
-            let parent_root = extract_parent_root::<E>(&signed_block);
-            let store = fc_store.read();
-            match store.block_states.get(&parent_root).cloned() {
-                Some(s) => s,
-                None => {
-                    debug!(%parent_root, "block_ingestion: missing parent; deferring to backfill");
-                    egress.notify_backfill.notify_one();
-                    continue;
-                }
-            }
-        };
-
-        // (d) Run state transition in spawn_blocking (M3a invariant).
-        let signed_block_clone = signed_block.clone();
-        let ee = Arc::clone(&execution_engine);
-        let cfg_clone = cfg.clone();
-        let post_result = tokio::task::spawn_blocking(move || {
-            state_transition::<E, EE>(
-                pre_state,
-                &signed_block_clone,
-                &ee,
-                validate_result,
-                &cfg_clone,
-            )
-        })
-        .await;
-
-        let post_state = match post_result {
-            Err(join_err) => {
-                warn!(error = %join_err, "block_ingestion: spawn_blocking join error");
+            Ok(o) => o,
+            Err(crate::import::ImportError::MissingParentState) => {
+                debug!(%parent_root, "block_ingestion: missing parent; deferring to backfill");
+                egress.notify_backfill.notify_one();
                 continue;
             }
-            Ok(Err(stf_err)) => {
-                warn!(error = %stf_err, "block_ingestion: state_transition failed; dropping block");
+            Err(e) => {
+                warn!(error = %e, "block_ingestion: import_block failed; dropping block");
                 continue;
             }
-            Ok(Ok(ps)) => ps,
         };
 
-        // (e) Call on_block in spawn_blocking so any blocking HTTP inside
-        // validate_merge_block (PoW-block lookup) does not stall the tokio
-        // worker while holding fc_store.write() (M3a spawn_blocking invariant).
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let block_root: Root = extract_block_root::<E>(&signed_block);
-
-        let fc_clone = Arc::clone(&fc_store);
-        let block_for_on_block = signed_block.clone();
-        let pow_clone = Arc::clone(&pow_provider);
-        // Capture fork variant and clone for LC snapshot dispatch before moving post_state.
-        let post_state_fork_variant = {
-            use pharos_types::views::BeaconStateView as _;
-            post_state.fork_variant()
-        };
-        let post_state_for_snap = post_state.clone();
-        let on_block_result = tokio::task::spawn_blocking(move || {
-            let mut store = fc_clone.write();
-            on_block::<E, EnginePowBlockProvider>(
-                &mut store,
-                &block_for_on_block,
-                post_state,
-                now,
-                &pow_clone,
-            )
-        })
-        .await;
-
-        let on_block_outcome = match on_block_result {
-            Err(join_err) => {
-                warn!(error = %join_err, "block_ingestion: on_block spawn_blocking join error");
-                continue;
-            }
-            Ok(outcome) => outcome,
-        };
-
-        if let Err(e) = on_block_outcome {
-            warn!(error = %e, "block_ingestion: on_block failed; dropping block");
-            continue;
-        }
+        // Signal the lookup loop so it can drain any queued descendants of
+        // this just-imported block.
+        let _ = egress.lookup_tx.try_send(LookupRequest::ParentImported {
+            root: outcome.block_root,
+        });
 
         // (e2) Write LC snapshots before publishing (Task 2.2).
         // spawn_blocking per M3a invariant (R8); .await to ensure write completes
         // before the publish step below reads from the snapshot CF.
         {
-            let post_state_snap = post_state_for_snap;
+            let post_state_snap = outcome.post_state.clone();
             let signed_block_snap = signed_block.clone();
             let fc_snap = Arc::clone(&fc_store);
             let store_snap = Arc::clone(&host.store_arc());
@@ -310,52 +243,13 @@ where
             }
         }
 
-        // (f) For Bellatrix blocks, push the execution payload to the engine driver.
-        if let Some(payload) = E::get_execution_payload(&signed_block) {
-            let req = NewPayloadRequest {
-                block_root,
-                payload: payload.to_execution_payload_v1(),
-                _marker: std::marker::PhantomData,
-            };
-            if egress.payload_tx.try_send(req).is_err() {
-                warn!(%block_root, "block_ingestion: payload_tx full or closed; dropping newPayload");
-            }
-        }
-
-        // (g) Get the new head and release the lock.
-        let (head_root, safe_hash, finalized_hash) = {
-            let store = fc_store.read();
-            let head_root = get_head::<E>(&store);
-            let safe = compute_safe_block_hash::<E>(&store);
-            let finalized = compute_finalized_block_hash::<E>(&store);
-            (head_root, safe, finalized)
-        };
-
-        // (h) Build HeadChange and publish.
-        let head_block_hash = {
-            let store = fc_store.read();
-            hash_to_hex(
-                E::get_execution_block_hash(
-                    store.blocks.get(&head_root).expect("head must be in store"),
-                )
-                .unwrap_or_default(),
-            )
-        };
-
-        let change = HeadChange {
-            head_root,
-            head_block_hash,
-            safe_block_hash: hash_to_hex(safe_hash),
-            finalized_block_hash: hash_to_hex(finalized_hash),
-        };
-
         // Also notify HostImpl for any subscribers.
-        host.on_head_change(change.clone());
-        let _ = egress.head_tx.send(Some(change));
+        host.on_head_change(outcome.head_change.clone());
+        let _ = egress.head_tx.send(Some(outcome.head_change));
 
         // (i) Publish LC finality + optimistic updates (Tasks 2.4 + 2.5).
         // Gate: only when the head block is post-Altair.
-        let has_lc_snapshots = post_state_fork_variant != ForkVariant::Phase0;
+        let has_lc_snapshots = outcome.fork_variant != ForkVariant::Phase0;
         if has_lc_snapshots {
             if let Some(fu) = host.light_client_finality_update() {
                 let topic = GossipTopic {
@@ -515,6 +409,60 @@ where
     }
 }
 
+/// Decode a gossip beacon-block payload into a fork-enum `SignedBeaconBlock<E>`.
+///
+/// The topic's fork-digest identifies which per-fork SSZ layout to use.
+/// Returns `None` (logging a warning) on decode failure or an unrecognised
+/// fork digest.
+///
+/// Extracted from the inline match in `run_block_ingestion_loop` so it can be
+/// reused by the lookup loop (Phase 4).
+pub(crate) fn decode_block_by_topic<E, H>(
+    host: &H,
+    topic: &GossipTopic,
+    data: &[u8],
+) -> Option<E::SignedBeaconBlock>
+where
+    E: EthSpec,
+    H: pharos_network::host::ForkContext,
+    E::Phase0SignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairSignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+{
+    match host.fork_from_context(&topic.fork_digest.into_inner()) {
+        Some(pharos_network::types::Fork::Bellatrix) => {
+            match E::BellatrixSignedBeaconBlock::from_ssz_bytes(data) {
+                Ok(inner) => Some(E::bellatrix_into_signed_block(inner)),
+                Err(e) => {
+                    warn!(error = ?e, "block_ingestion: bellatrix SSZ decode failed; dropping");
+                    None
+                }
+            }
+        }
+        Some(pharos_network::types::Fork::Altair) => {
+            match E::AltairSignedBeaconBlock::from_ssz_bytes(data) {
+                Ok(inner) => Some(E::altair_into_signed_block(inner)),
+                Err(e) => {
+                    warn!(error = ?e, "block_ingestion: altair SSZ decode failed; dropping");
+                    None
+                }
+            }
+        }
+        Some(pharos_network::types::Fork::Phase0) | None => {
+            match E::Phase0SignedBeaconBlock::from_ssz_bytes(data) {
+                Ok(inner) => Some(E::phase0_into_signed_block(inner)),
+                Err(e) => {
+                    warn!(error = ?e, "block_ingestion: phase0 SSZ decode failed; dropping");
+                    None
+                }
+            }
+        }
+    }
+}
+
 /// Extract the block_root (hash_tree_root) from a fork-enum `SignedBeaconBlock<E>`.
 pub(crate) fn extract_block_root<E: EthSpec>(signed_block: &E::SignedBeaconBlock) -> Root
 where
@@ -538,5 +486,33 @@ where
         inner.message().tree_hash_root()
     } else {
         Root::default()
+    }
+}
+
+/// Encode a fork-enum `SignedBeaconBlock<E>` as raw per-fork SSZ bytes (no
+/// discriminant), matching the wire format used by gossip and stored in
+/// `PendingBlocks`.
+///
+/// The fork-enum `Encode` impl prepends a 1-byte discriminant; this helper
+/// encodes the inner variant directly so the bytes are compatible with
+/// `decode_block_by_topic`.
+pub(crate) fn encode_signed_block_as_gossip_bytes<E: EthSpec>(
+    signed_block: &E::SignedBeaconBlock,
+) -> Vec<u8>
+where
+    E::Phase0SignedBeaconBlock: pharos_ssz::Encode,
+    E::AltairSignedBeaconBlock: pharos_ssz::Encode,
+    E::BellatrixSignedBeaconBlock: pharos_ssz::Encode,
+{
+    use pharos_ssz::Encode as _;
+    if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
+        inner.as_ssz_bytes()
+    } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
+        inner.as_ssz_bytes()
+    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed_block) {
+        inner.as_ssz_bytes()
+    } else {
+        // Unreachable for any valid EthSpec implementation.
+        Vec::new()
     }
 }

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
@@ -49,14 +49,15 @@ use crate::gossip::{
     dispatch_gossip_message, subscribe_altair_extra_topics, subscribe_base_topics,
 };
 use crate::handle::NetworkHandle;
-use crate::host::{GossipVerdict, Host, LightClientProvider};
+use crate::host::{GOSSIP_REASON_PARENT_UNSEEN, GossipVerdict, Host, LightClientProvider};
 use crate::peer::manager::PeerManager;
 use crate::rpc::handler::handle_request;
 use crate::rpc::types::{RpcRequest, RpcResponse};
 use crate::scoring::{HandshakeFailKind, PeerScorer, RpcErrorKind, RpcMethod, ScoreEvent};
-use crate::topics::GossipTopic;
+use crate::topics::{GossipTopic, GossipTopicKind};
 use crate::types::{
     ConnectionDirection, GOODBYE_CLIENT_SHUTDOWN, GOODBYE_FAULT_ERROR, GOODBYE_IRRELEVANT_NETWORK,
+    PeerState,
 };
 
 use behaviour::{PharosBehaviour, PharosBehaviourEvent};
@@ -192,6 +193,22 @@ pub enum NetworkEvent {
     /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
     /// Phase 3. ENR update is deferred to M3b (cross-fork ENR migration).
     ExternalAddrConfirmed { address: libp2p::Multiaddr },
+
+    /// A `beacon_block` gossip message was IGNOREd because its parent has not
+    /// been seen (RB6).
+    ///
+    /// `data` is the snappy-decompressed SSZ bytes of the signed beacon block.
+    /// `topic` carries the fork-digest so the consumer can select the correct
+    /// fork variant when decoding via `decode_block_by_topic`.  `peer` is the
+    /// forwarding (propagation-source) peer.
+    ///
+    /// Emitted by the network dispatcher so the lookup loop (Phase 4) can fetch
+    /// the missing parent by root and replay the orphaned block on import.
+    UnknownParentBlock {
+        topic: GossipTopic,
+        peer: PeerId,
+        data: Vec<u8>,
+    },
 }
 
 impl NetworkEvent {
@@ -212,11 +229,22 @@ impl NetworkEvent {
             Self::PeerIdentified { .. } => "PeerIdentified",
             Self::DialFailed { .. } => "DialFailed",
             Self::ExternalAddrConfirmed { .. } => "ExternalAddrConfirmed",
+            Self::UnknownParentBlock { .. } => "UnknownParentBlock",
         }
     }
 }
 
 // ── Network ───────────────────────────────────────────────────────────────────
+
+/// TTL for entries in `Network::pending_dials`.
+///
+/// When an addr-only bootnode dial fails, `OutgoingConnectionError.peer_id` is
+/// `None`, so the `OutgoingConnectionError` arm cannot clear the entry by
+/// `PeerId`.  The sweep in `discovery_tick` removes any entry older than this
+/// duration so a peer is never permanently blocked from re-dial.  30 s matches
+/// the discovery tick interval, so every peer gets at most one extra tick of
+/// suppression beyond the actual dial timeout.
+const DIAL_PENDING_TTL: Duration = Duration::from_secs(30);
 
 /// The running network task.
 ///
@@ -283,12 +311,62 @@ pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScore
     score_prune_tick: Interval,
     /// Bootstrap ENRs; dialed once at startup to seed the peer table.
     bootnodes: Vec<Enr>,
+    /// In-flight dial dedup set.
+    ///
+    /// Maps a `PeerId` to the `Instant` the dial was initiated.  A peer is
+    /// skipped in `dial_peer` if it already has an entry here, is already
+    /// connected, or is in a post-connect peer-manager state.  Entries are
+    /// cleared in three places:
+    ///   1. `on_swarm_connection_established` — connection succeeded.
+    ///   2. `OutgoingConnectionError` arm — dial failed with a known `PeerId`.
+    ///   3. `discovery_tick` TTL sweep — self-heals entries from addr-only
+    ///      bootnode dial failures where `OutgoingConnectionError.peer_id=None`
+    ///      cannot key into this map.
+    pending_dials: HashMap<PeerId, Instant>,
     _phantom: PhantomData<E>,
 }
 
 impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S: PeerScorer>
     Network<E, H, S>
 {
+    /// Attempt an outbound dial to `peer_id` at `addr`, deduplicating concurrent dials.
+    ///
+    /// Returns `true` if a new dial was initiated, `false` if the dial was
+    /// suppressed because one of the following is true:
+    ///   - a dial to `peer_id` is already in flight (`pending_dials`),
+    ///   - `peer_id` is already connected at the swarm level, or
+    ///   - the peer manager already tracks `peer_id` in `Connecting`,
+    ///     `Handshaking`, or `Connected` state.
+    ///
+    /// On a synchronous dial error the entry is immediately removed from
+    /// `pending_dials` so the peer is not permanently blocked.
+    pub fn dial_peer(&mut self, peer_id: PeerId, addr: libp2p::Multiaddr) -> bool {
+        if self.pending_dials.contains_key(&peer_id) {
+            tracing::debug!(%peer_id, "dial suppressed: already in pending_dials");
+            return false;
+        }
+        if self.swarm.is_connected(&peer_id) {
+            tracing::debug!(%peer_id, "dial suppressed: already connected");
+            return false;
+        }
+        if matches!(
+            self.peer_manager.peer_state(&peer_id),
+            Some(PeerState::Connecting | PeerState::Handshaking | PeerState::Connected)
+        ) {
+            tracing::debug!(%peer_id, "dial suppressed: peer_manager state precludes re-dial");
+            return false;
+        }
+        self.pending_dials.insert(peer_id, Instant::now());
+        match self.swarm.dial(addr.clone()) {
+            Ok(()) => true,
+            Err(e) => {
+                self.pending_dials.remove(&peer_id);
+                tracing::debug!(error = %e, %peer_id, "dial failed synchronously");
+                false
+            }
+        }
+    }
+
     /// Drive the network event loop.
     ///
     /// Returns when a `NetworkCommand::Shutdown` is received or when
@@ -303,21 +381,34 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
         // Dial bootnodes directly at startup.  discv5 FINDNODE against a fresh
         // bootnode with an empty routing table may return nothing, so we dial
         // bootnodes unconditionally via libp2p to seed the connection table.
+        // Routed through dial_peer so that a simultaneous discovery-tick dial
+        // to the same bootnode (which may fire within milliseconds) is deduped.
         let mut booted = 0u32;
         for enr in &self.bootnodes.clone() {
-            match enr_to_dial_multiaddr(enr) {
-                Some(addr) => match self.swarm.dial(addr.clone()) {
-                    Ok(()) => {
-                        booted += 1;
-                        tracing::debug!(addr = %addr, "dialing bootnode");
-                    }
-                    Err(e) => {
-                        tracing::debug!(addr = %addr, err = %e, "bootnode dial failed");
-                    }
-                },
+            let addr = match enr_to_dial_multiaddr(enr) {
+                Some(a) => a,
                 None => {
                     tracing::debug!(enr = %enr, "bootnode ENR has no dialable address; skipping");
+                    continue;
                 }
+            };
+            // Extract the PeerId embedded by enr_to_dial_multiaddr (/p2p/<pid>).
+            let peer_id = match addr.iter().find_map(|p| {
+                if let libp2p::multiaddr::Protocol::P2p(pid) = p {
+                    Some(pid)
+                } else {
+                    None
+                }
+            }) {
+                Some(pid) => pid,
+                None => {
+                    tracing::debug!(addr = %addr, "bootnode multiaddr has no /p2p component; skipping");
+                    continue;
+                }
+            };
+            if self.dial_peer(peer_id, addr.clone()) {
+                booted += 1;
+                tracing::debug!(addr = %addr, "dialing bootnode");
             }
         }
         if booted > 0 {
@@ -344,6 +435,13 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                     }
                 }
                 _ = self.discovery_tick.tick() => {
+                    // Sweep stale pending_dials entries before dialing new peers.
+                    // Addr-only bootnode dial failures report peer_id=None in
+                    // OutgoingConnectionError, so those entries cannot be cleared
+                    // in the error arm.  This TTL sweep self-heals them so a peer
+                    // is never permanently blocked from re-dial.
+                    self.pending_dials.retain(|_, t| t.elapsed() < DIAL_PENDING_TTL);
+
                     // Run a discv5 FINDNODE query and dial any discovered peers.
                     let peers = self.discovery.find_peers().await;
                     let discovered = peers.len();
@@ -359,36 +457,24 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                                 continue;
                             }
                         };
-                        // Skip already-connected peers when the peer id is
-                        // embedded in the multiaddr (with_p2p appends it).
-                        // Extract the PeerId from the last Protocol::P2p component.
-                        let already_connected = addr
-                            .iter()
-                            .find_map(|p| {
-                                if let libp2p::multiaddr::Protocol::P2p(peer_id) = p {
-                                    Some(peer_id)
-                                } else {
-                                    None
-                                }
-                            })
-                            .map(|pid| self.swarm.is_connected(&pid))
-                            .unwrap_or(false);
-                        if already_connected {
-                            tracing::debug!(addr = %addr, "discovered peer already connected; skipping dial");
-                            continue;
-                        }
-                        match self.swarm.dial(addr.clone()) {
-                            Ok(()) => {
-                                dialed += 1;
-                                tracing::debug!(addr = %addr, "dialing discovered peer");
+                        // Extract the PeerId from the /p2p/<pid> component appended
+                        // by enr_to_dial_multiaddr.  If absent, skip (no key to dedup on).
+                        let peer_id = match addr.iter().find_map(|p| {
+                            if let libp2p::multiaddr::Protocol::P2p(pid) = p {
+                                Some(pid)
+                            } else {
+                                None
                             }
-                            Err(e) => {
-                                tracing::debug!(
-                                    addr = %addr,
-                                    err = %e,
-                                    "dial to discovered peer failed"
-                                );
+                        }) {
+                            Some(pid) => pid,
+                            None => {
+                                tracing::debug!(addr = %addr, "discovered peer addr has no /p2p component; skipping dial");
+                                continue;
                             }
+                        };
+                        if self.dial_peer(peer_id, addr.clone()) {
+                            dialed += 1;
+                            tracing::debug!(addr = %addr, "dialing discovered peer");
                         }
                     }
                     tracing::debug!(discovered, dialed, "discovery tick complete");
@@ -500,6 +586,9 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                             kind: HandshakeFailKind::Timeout,
                         },
                     );
+                }
+                if let Some(pid) = peer_id {
+                    self.pending_dials.remove(&pid);
                 }
                 self.peer_manager.note_dial_failure(peer_id);
             }
@@ -656,14 +745,31 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
             tracing::debug!(%message_id, "report_message_validation_result returned false (message not in cache)");
         }
 
-        // Move the decompressed bytes into the event on Accept (no second decompress).
-        if matches!(&verdict, GossipVerdict::Accept) {
-            self.emit_event(NetworkEvent::GossipMessage {
-                topic,
-                peer: propagation_source,
-                data: ssz_bytes,
-            })
-            .await;
+        // Emit topic-specific events for accepted and selected-ignore messages.
+        match &verdict {
+            GossipVerdict::Accept => {
+                // Move the decompressed bytes into the event (no second decompress).
+                self.emit_event(NetworkEvent::GossipMessage {
+                    topic,
+                    peer: propagation_source,
+                    data: ssz_bytes,
+                })
+                .await;
+            }
+            GossipVerdict::Ignore(reason)
+                if topic.kind == GossipTopicKind::BeaconBlock
+                    && reason == GOSSIP_REASON_PARENT_UNSEEN =>
+            {
+                // RB6: parent unseen — surface to the lookup loop so it can
+                // fetch the missing ancestor and replay the orphaned block.
+                self.emit_event(NetworkEvent::UnknownParentBlock {
+                    topic,
+                    peer: propagation_source,
+                    data: ssz_bytes,
+                })
+                .await;
+            }
+            _ => {}
         }
 
         // Record score event for the peer.
@@ -1124,6 +1230,12 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
         endpoint: ConnectedPoint,
         num_established: std::num::NonZeroU32,
     ) {
+        // Clear before the num_established gate so that BOTH the first
+        // connection (n==1) AND a simultaneous mutual-dial second connection
+        // (n>1) remove the pending entry.  Leaving it in on n>1 would suppress
+        // a future re-dial after the redundant connection is torn down.
+        self.pending_dials.remove(&peer_id);
+
         if num_established.get() == 1 {
             let dir = if endpoint.is_dialer() {
                 ConnectionDirection::Outbound
@@ -1853,6 +1965,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
             ping_tick,
             score_prune_tick,
             bootnodes: bootnodes_for_network,
+            pending_dials: HashMap::new(),
             _phantom: PhantomData,
         };
 
@@ -1910,6 +2023,24 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
     #[doc(hidden)]
     pub fn test_peer_is_registered(&self, peer_id: &PeerId) -> bool {
         self.peer_manager.peer_state(peer_id).is_some()
+    }
+
+    /// Returns the number of entries currently in `pending_dials`.
+    ///
+    /// Only for test use; not part of the production API.
+    /// Unconditionally `pub` so integration tests in `tests/` (separate crates) can access it.
+    #[doc(hidden)]
+    pub fn test_pending_dials_len(&self) -> usize {
+        self.pending_dials.len()
+    }
+
+    /// Returns `true` if `peer_id` is in `pending_dials`.
+    ///
+    /// Only for test use; not part of the production API.
+    /// Unconditionally `pub` so integration tests in `tests/` (separate crates) can access it.
+    #[doc(hidden)]
+    pub fn test_pending_dials_contains(&self, p: &PeerId) -> bool {
+        self.pending_dials.contains_key(p)
     }
 }
 

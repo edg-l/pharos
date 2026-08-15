@@ -33,7 +33,8 @@ use tokio::sync::{mpsc, watch};
 use tracing::warn;
 
 use pharos_network::host::{
-    BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
+    BlockProvider, ForkContext, GOSSIP_REASON_PARENT_UNSEEN, GossipValidator, GossipVerdict,
+    LightClientProvider,
 };
 use pharos_network::types::{Fork, SubnetId};
 use pharos_ssz::{Bitvector, TreeHash};
@@ -708,7 +709,7 @@ where
 
             // Step 6 — RB6: block's parent has been seen (IGNORE if unseen).
             if !fc.blocks.contains_key(&block_msg.parent_root()) {
-                return GossipVerdict::Ignore("block: parent unseen".into());
+                return GossipVerdict::Ignore(GOSSIP_REASON_PARENT_UNSEEN.into());
             }
 
             // Step 7 — defensive: parent is in blocks but state is missing (REJECT).
@@ -2231,7 +2232,7 @@ mod tests {
         );
         assert_eq!(
             host.validate_beacon_block(&block),
-            GossipVerdict::Ignore("block: parent unseen".into()),
+            GossipVerdict::Ignore(GOSSIP_REASON_PARENT_UNSEEN.into()),
         );
     }
 

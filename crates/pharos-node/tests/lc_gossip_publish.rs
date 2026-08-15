@@ -302,6 +302,7 @@ async fn snapshots_written_after_altair_block() {
         payload_tx,
         network: net_sender,
         notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
+        lookup_tx: tokio::sync::mpsc::channel(1).0,
     };
 
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(4);
@@ -385,6 +386,7 @@ async fn publish_called_after_head_change() {
         payload_tx,
         network: net_sender,
         notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
+        lookup_tx: tokio::sync::mpsc::channel(1).0,
     };
 
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(4);
@@ -635,6 +637,7 @@ async fn no_publish_for_phase0_block() {
         payload_tx,
         network: net_sender,
         notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
+        lookup_tx: tokio::sync::mpsc::channel(1).0,
     };
 
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(4);

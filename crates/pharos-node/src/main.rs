@@ -31,6 +31,10 @@ use pharos_node::engine_keepalive::{hex_to_u256, run_transition_config_keepalive
 use pharos_node::fork_migration::run_fork_migration_loop;
 use pharos_node::host_impl::HostImpl;
 use pharos_node::jwt_autogen::ensure_jwt_secret;
+use pharos_node::lookup::{LookupRequest, run_lookup_loop};
+use pharos_node::network_backfill_provider::NetworkHandlePeerPicker;
+use pharos_node::network_lookup_provider::NetworkLookupProvider;
+use pharos_node::pending_blocks::PendingBlocks;
 use pharos_node::pow_block::EnginePowBlockProvider;
 use pharos_node::startup::rehydrate_fork_choice_store;
 use pharos_node::subnet_rotation::run_subnet_rotation_loop;
@@ -604,6 +608,10 @@ async fn main() -> anyhow::Result<()> {
         // the backfill loop for tip re-convergence.
         let notify_backfill = std::sync::Arc::new(tokio::sync::Notify::new());
 
+        // Lookup-sync channels and shared pending-blocks store.
+        let (lookup_tx, lookup_rx) = mpsc::channel::<LookupRequest>(256);
+        let pending = Arc::new(PendingBlocks::default());
+
         // Take the network event receiver and spawn the block-ingestion loop.
         let event_rx = handle.take_event_receiver();
         {
@@ -618,6 +626,7 @@ async fn main() -> anyhow::Result<()> {
                 payload_tx: payload_tx_clone,
                 network: handle.command_sender(),
                 notify_backfill: notify_backfill.clone(),
+                lookup_tx: lookup_tx.clone(),
             };
             tokio::spawn(async move {
                 if let Err(e) = run_block_ingestion_loop::<MainnetEthSpec, ExecutionEngineHandle>(
@@ -640,15 +649,19 @@ async fn main() -> anyhow::Result<()> {
         // Spawn forward backfill loop.
         {
             use pharos_node::backfill::run_backfill_loop;
-            use pharos_node::network_backfill_provider::{
-                NetworkBackfillProvider, NetworkHandlePeerPicker,
-            };
+            use pharos_node::network_backfill_provider::NetworkBackfillProvider;
 
             let peer_picker = Arc::new(NetworkHandlePeerPicker::new(handle.command_sender()));
             let provider = NetworkBackfillProvider::new(handle.command_sender(), peer_picker);
             let shutdown_rx = pharos_node_shutdown_rx.clone();
             let fc = Arc::clone(&fork_choice);
             let h = Arc::clone(&host);
+            let exec_engine_bf = Arc::clone(&exec_engine);
+            let pow_provider_bf = Arc::clone(&pow_provider);
+            let head_tx_bf = head_tx.clone();
+            let payload_tx_bf = payload_tx.clone();
+            let notify_backfill_bf = notify_backfill.clone();
+            let lookup_tx_bf = lookup_tx.clone();
             tokio::spawn(async move {
                 if let Err(e) = run_backfill_loop::<
                     MainnetEthSpec,
@@ -659,13 +672,14 @@ async fn main() -> anyhow::Result<()> {
                     provider,
                     h,
                     fc,
-                    exec_engine,
-                    pow_provider,
-                    head_tx,
-                    payload_tx,
+                    exec_engine_bf,
+                    pow_provider_bf,
+                    head_tx_bf,
+                    payload_tx_bf,
                     genesis_time_secs,
                     shutdown_rx,
-                    notify_backfill,
+                    notify_backfill_bf,
+                    Some(lookup_tx_bf),
                 )
                 .await
                 {
@@ -674,6 +688,41 @@ async fn main() -> anyhow::Result<()> {
             });
         }
         info!("backfill loop started");
+
+        // Spawn lookup-sync loop.
+        {
+            let lookup_picker = Arc::new(NetworkHandlePeerPicker::new(handle.command_sender()));
+            let lookup_provider =
+                NetworkLookupProvider::new(handle.command_sender(), lookup_picker);
+            let fc = Arc::clone(&fork_choice);
+            let h = Arc::clone(&host);
+            let shutdown_rx = pharos_node_shutdown_rx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = run_lookup_loop::<
+                    MainnetEthSpec,
+                    _,
+                    ExecutionEngineHandle,
+                    EnginePowBlockProvider,
+                >(
+                    lookup_rx,
+                    lookup_provider,
+                    h,
+                    fc,
+                    exec_engine,
+                    pow_provider,
+                    head_tx,
+                    payload_tx,
+                    pending,
+                    notify_backfill,
+                    shutdown_rx,
+                )
+                .await
+                {
+                    tracing::error!(error = %e, "lookup loop exited with error");
+                }
+            });
+        }
+        info!("lookup loop started");
     }
 
     // Block until Ctrl-C.
