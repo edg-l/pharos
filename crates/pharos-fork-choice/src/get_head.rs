@@ -325,13 +325,36 @@ where
     false
 }
 
+/// Root the fork-choice search anchors at.
+///
+/// The spec uses `store.justified_checkpoint.root` unconditionally. After a
+/// weak-subjectivity / checkpoint-sync start that root can name a block we never
+/// fetched: `on_block` -> `update_checkpoints` adopts the imported block state's
+/// *real* justified checkpoint (a pre-anchor block), overwriting the synthetic
+/// anchor checkpoint `apply_anchor` seeded. The justified block (and its state)
+/// only land once backfill walks back to them. Until then, fall back to the
+/// finalized root, which after checkpoint sync is the trusted anchor and is
+/// always present in `blocks`. In genesis operation the justified root is always
+/// present, so this is a no-op there.
+fn effective_base<E: EthSpec>(store: &Store<E>) -> Root
+where
+    E::BeaconBlock: BeaconBlockView + Clone,
+    E::BeaconState: BeaconStateView,
+{
+    if store.blocks.contains_key(&store.justified_checkpoint.root) {
+        store.justified_checkpoint.root
+    } else {
+        store.finalized_checkpoint.root
+    }
+}
+
 /// `get_filtered_block_tree` per `specs/phase0/fork-choice.md:408-419`.
 fn get_filtered_block_tree<E: EthSpec>(store: &Store<E>) -> HashMap<Root, E::BeaconBlock>
 where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,
 {
-    let base = store.justified_checkpoint.root;
+    let base = effective_base(store);
     let mut blocks = HashMap::new();
     filter_block_tree(store, base, &mut blocks);
     blocks
@@ -349,7 +372,7 @@ where
     E::BeaconState: BeaconStateView,
 {
     let blocks = get_filtered_block_tree(store);
-    let mut head = store.justified_checkpoint.root;
+    let mut head = effective_base(store);
     loop {
         let children: Vec<Root> = blocks
             .iter()

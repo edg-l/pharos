@@ -721,6 +721,8 @@ where
         pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
 {
     /// Validate a gossip `beacon_block` message per `specs/phase0/p2p-interface.md:540-620`.
     ///
@@ -757,6 +759,8 @@ where
             E::altair_into_block(inner.message().clone())
         } else if let Some(inner) = E::unwrap_bellatrix_signed_block(block) {
             E::bellatrix_into_block(inner.message().clone())
+        } else if let Some(inner) = E::unwrap_capella_signed_block(block) {
+            E::capella_into_block(inner.message().clone())
         } else {
             return GossipVerdict::Reject("block: unrecognised fork variant".into());
         };
