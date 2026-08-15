@@ -197,6 +197,20 @@ async fn orphan_defers_and_backfill_heals() {
 
     let (genesis_state, anchor_block) = build_genesis();
     let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
+    // Install the minimal-preset runtime config + fork-epoch schedule, exactly as
+    // `main.rs` does after rehydration. `get_forkchoice_store` defaults `runtime_cfg`
+    // to mainnet (12s slots); the backfill import path threads this cfg into
+    // `state_transition`, so without it the STF validates the minimal-preset (6s)
+    // bellatrix payload timestamps against `genesis_time + slot * 12` and rejects
+    // every block — the head never advances (same root cause as the
+    // checkpoint_backfill_pipeline / lookup_replay fixes).
+    let minimal_cfg = MinimalEthSpec::default_runtime_config();
+    fc.set_fork_epochs(
+        minimal_cfg.altair_fork_epoch,
+        minimal_cfg.bellatrix_fork_epoch,
+        minimal_cfg.capella_fork_epoch,
+    );
+    fc.runtime_cfg = minimal_cfg;
     fc.time = 10_000_000;
     fc.set_terminal_config(
         pharos_utils::Uint256::default(),

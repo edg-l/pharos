@@ -91,6 +91,20 @@ async fn lookup_replay_fetches_and_replays_chain() {
     let anchor_block = ForkBeaconBlock::Bellatrix(anchor_signed.message.clone());
 
     let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+    // Install the minimal-preset runtime config + fork-epoch schedule, exactly as
+    // `main.rs` does after rehydration. `get_forkchoice_store` defaults `runtime_cfg`
+    // to the mainnet `RuntimeConfig::default()` (12s slots); the import path threads
+    // this cfg into `state_transition`, so without it the STF validates the fixture's
+    // bellatrix `execution_payload.timestamp` (built with minimal 6s slots) against
+    // `genesis_time + slot * 12` and rejects every block — the head never advances
+    // (same root cause as the checkpoint_backfill_pipeline fix).
+    let minimal_cfg = MinimalEthSpec::default_runtime_config();
+    fc.set_fork_epochs(
+        minimal_cfg.altair_fork_epoch,
+        minimal_cfg.bellatrix_fork_epoch,
+        minimal_cfg.capella_fork_epoch,
+    );
+    fc.runtime_cfg = minimal_cfg;
     // Advance time so on_block's "future slot" guard doesn't reject blocks.
     fc.time = 10_000_000;
     fc.set_terminal_config(
@@ -290,6 +304,17 @@ async fn lookup_direct_import_holds_future_block() {
     let anchor_block = ForkBeaconBlock::Bellatrix(anchor_signed.message.clone());
 
     let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+    // Install the minimal-preset runtime config + fork-epoch schedule (see the
+    // first test for the full rationale): `get_forkchoice_store` defaults
+    // `runtime_cfg` to mainnet (12s slots), which makes the STF reject the
+    // minimal-preset (6s) bellatrix payload timestamps and stalls the head.
+    let minimal_cfg = MinimalEthSpec::default_runtime_config();
+    fc.set_fork_epochs(
+        minimal_cfg.altair_fork_epoch,
+        minimal_cfg.bellatrix_fork_epoch,
+        minimal_cfg.capella_fork_epoch,
+    );
+    fc.runtime_cfg = minimal_cfg;
     // Store clock at genesis ⇒ current_slot == 0; block1 (slot 1) is one slot
     // ahead of wall-now and rejected as FutureSlot by on_block.
     fc.time = genesis_time;

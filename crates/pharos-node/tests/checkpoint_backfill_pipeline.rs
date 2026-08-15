@@ -365,6 +365,23 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     let mut fc_store = rehydrate_fork_choice_store::<MinimalEthSpec>(&store, &snapshot)
         .expect("rehydrate_fork_choice_store must succeed");
 
+    // Install the minimal-preset runtime config + fork-epoch schedule, exactly as
+    // `main.rs` does from the loaded `--config-dir` after rehydration. `rehydrate_
+    // fork_choice_store` defaults `runtime_cfg` to the mainnet `RuntimeConfig::
+    // default()` (12s slots, mainnet fork epochs); the backfill loop reads this cfg
+    // and threads it into `state_transition`, so without this the STF validates the
+    // fixture's `execution_payload.timestamp` (built with minimal 6s slots) against
+    // `genesis_time + slot * 12` and fails with a timestamp mismatch — the chain
+    // never advances past the anchor (see D-live-fork-trigger / D-runtime-cfg-
+    // threading-live-loops).
+    let minimal_cfg = MinimalEthSpec::default_runtime_config();
+    fc_store.set_fork_epochs(
+        minimal_cfg.altair_fork_epoch,
+        minimal_cfg.bellatrix_fork_epoch,
+        minimal_cfg.capella_fork_epoch,
+    );
+    fc_store.runtime_cfg = minimal_cfg;
+
     // Advance store time so that the fork-choice `current_slot` >=
     // `ANCHOR_SLOT + N_BACKFILL_BLOCKS`.  `genesis_time = wall_now -
     // ANCHOR_SLOT * seconds_per_slot`, so we need
