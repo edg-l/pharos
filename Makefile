@@ -152,7 +152,7 @@ bench: ## Run criterion benches. Captured to $(LOGS)/bench.log. Records bench-hi
 	@: > $(LOGS)/bench.log
 	$(CARGO) bench -p pharos-stf --bench process_block 2>&1 | tee -a $(LOGS)/bench.log
 	$(CARGO) bench -p pharos-ssz --bench tree_hash_beacon_state 2>&1 | tee -a $(LOGS)/bench.log
-	$(CARGO) bench -p pharos-network --bench gossip_validation 2>&1 | tee -a $(LOGS)/bench.log
+	$(CARGO) bench -p pharos-node --bench gossip_validation 2>&1 | tee -a $(LOGS)/bench.log
 	$(CARGO) bench -p pharos-network --bench rpc_roundtrip 2>&1 | tee -a $(LOGS)/bench.log
 	./scripts/bench-summary.sh
 
