@@ -599,8 +599,76 @@ exercised against real peer processes.
   are fixed in M4d, not deferred to M5.
 
 ### M5 — Capella
-- Withdrawals, BLS-to-execution-change.
-- Spec tests `capella` green.
+Capella is a CL-only fork in pharos terms: no new cryptographic primitive
+(unlike Deneb/KZG), so the work is STF + containers + Engine API V2 + a
+fork-digest gossip migration that mirrors the M4d Bellatrix bring-up. EL-side
+withdrawals are EIP-4895; the CL side is `specs/capella/*`.
+
+- **EIPs / specs**: EIP-4895 (beacon-chain push withdrawals as operations,
+  EL side). CL side: `specs/capella/beacon-chain.md`, `fork.md`,
+  `p2p-interface.md`, `validator.md`, `light-client/*`.
+- **New containers** (`specs/capella/beacon-chain.md`): `Withdrawal`,
+  `BLSToExecutionChange`, `SignedBLSToExecutionChange`, `HistoricalSummary`.
+  New type `WithdrawalIndex` (`uint64`). New domain
+  `DOMAIN_BLS_TO_EXECUTION_CHANGE` (`0x0A000000`). New presets
+  `MAX_BLS_TO_EXECUTION_CHANGES` (16), `MAX_WITHDRAWALS_PER_PAYLOAD` (16),
+  `MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP` (16384).
+- **Modified containers**: `ExecutionPayload` (+`withdrawals`),
+  `ExecutionPayloadHeader` (+`withdrawals_root`), `BeaconBlockBody`
+  (+`bls_to_execution_changes`), `BeaconState` (+`next_withdrawal_index`,
+  +`next_withdrawal_validator_index`, +`historical_summaries`;
+  `historical_roots` is frozen — no longer appended to). Per the enum-of-forks
+  pattern: new `Capella*` variants in `BeaconState<E>` / `BeaconBlock<E>` /
+  payload types, `CachedRoot` wired into the new state variant, `Tree`-backend
+  field list re-checked for the new hot fields (`historical_summaries`).
+- **STF — block processing** (`process_block` is per-step, NOT a delegate to
+  `bellatrix::process_block`; the Capella order inserts `process_withdrawals`
+  **before** `process_execution_payload`, which itself stays before
+  `process_randao`):
+  - `process_withdrawals(state, payload)` + helpers
+    `get_expected_withdrawals`, `get_validators_sweep_withdrawals`,
+    `get_balance_after_withdrawals`, `apply_withdrawals`,
+    `update_next_withdrawal_index`, `update_next_withdrawal_validator_index`,
+    and predicates `has_eth1_withdrawal_credential`,
+    `is_fully_withdrawable_validator`, `is_partially_withdrawable_validator`.
+    The `assert payload.withdrawals == expected` equality is the spec's
+    consensus check on the EL-supplied list.
+  - Modified `process_execution_payload` (caches `withdrawals_root`, drops the
+    merge-transition-complete check).
+  - Modified `process_operations` adds `process_bls_to_execution_change`
+    (fork-agnostic signing domain, flips `BLS_WITHDRAWAL_PREFIX` →
+    `ETH1_ADDRESS_WITHDRAWAL_PREFIX` credentials).
+- **STF — epoch processing**: `process_historical_summaries_update` replaces
+  `process_historical_roots_update` (appends a `HistoricalSummary` instead of a
+  root). `upgrade_to_capella` transition (`specs/capella/fork.md`).
+- **Engine API V2** (`pharos-engine`): `engine_newPayloadV2` and
+  `engine_forkchoiceUpdatedV2` are required for import (payloads now carry
+  `withdrawals`); `engine_getPayloadV2` is block-production-only and can defer
+  to M8 if pharos is still follow-only. Per-method version enums + capability
+  advertisement extended; conformance examples added to the engine runner.
+- **Networking**: Capella `fork-digest` + the generalized fork-migration loop
+  extended (`phase0→altair→bellatrix→capella`), new gossip topic
+  `bls_to_execution_change` with a `validate_bls_to_execution_change` gossip
+  validator (`specs/capella/p2p-interface.md`), context-bytes codec gains the
+  Capella digest, ENR migration driver covers the new fork.
+- **Light client**: Capella `LightClientHeader` gains the execution-payload
+  header + execution branch (`specs/capella/light-client/*`); the LC snapshot
+  writer and gossip bodies updated for the Capella header shape.
+- **Conformance**: all `capella` categories green on both presets
+  (`transition`, `ssz_static`, `operations` incl. `bls_to_execution_change` +
+  `withdrawals`, `epoch_processing`, `sanity`, `finality`, `random`, `rewards`,
+  `fork_choice`, `light_client`).
+- **Devnet acceptance**: re-run the M4d-style hand-rolled Lighthouse + ethrex
+  devnet on a Capella-genesis (or Bellatrix→Capella fork-transition) config;
+  acceptance = pharos follows head past the fork epoch with withdrawals applied,
+  0 bans, `engine_newPayloadV2` accepted `VALID`.
+- **Fold-in opportunity**: the three deferred phase0 gossip validators
+  (`validate_voluntary_exit`, `validate_proposer_slashing`,
+  `validate_attester_slashing`, currently `Accept` stubs) are natural to land
+  here alongside `validate_bls_to_execution_change`.
+- **Expected cost**: smaller than M4 (no new EL-pairing infra, no new crypto).
+  Likely a 2–3 slice milestone: (a) types + STF + conformance, (b) Engine API
+  V2 + gossip/fork-digest migration, (c) devnet acceptance + wrap-up.
 
 ### M6 — Deneb
 - KZG commitments via `c-kzg`, blob sidecars, blob gossip topics.
