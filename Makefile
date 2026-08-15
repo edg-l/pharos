@@ -156,6 +156,10 @@ bench: ## Run criterion benches. Captured to $(LOGS)/bench.log. Records bench-hi
 	$(CARGO) bench -p pharos-network --bench rpc_roundtrip 2>&1 | tee -a $(LOGS)/bench.log
 	./scripts/bench-summary.sh
 
+.PHONY: bench-check
+bench-check: ## Compare HEAD's bench-history/<sha>.json vs the latest baseline; fail on regression. Run on PERF_HOST after `make bench`. Tune with REGRESSION_PCT / NOISE_SIGMA. NOT part of `make ci` (benches are slow + PERF_HOST-only).
+	./scripts/bench-check.sh
+
 .PHONY: clean
 clean: ## Clear the cargo target directory.
 	$(CARGO) clean

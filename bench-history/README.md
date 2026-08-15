@@ -22,6 +22,37 @@ Field meanings:
 - `ns` — mean wall time in nanoseconds as reported by criterion's `estimates.json`.
 - `stderr_ns` — standard error of the mean in nanoseconds.
 
+## Regression check
+
+`scripts/bench-check.sh` (target: `make bench-check`) compares HEAD's record
+against the most recent prior baseline and exits non-zero on regression. Run it
+on `PERF_HOST` after `make bench`:
+
+```
+make bench        # writes bench-history/<sha>.json for the current commit
+make bench-check  # compares that record vs the latest prior baseline
+```
+
+A bench is flagged `REGRESS` only when it is **both** slower by more than
+`REGRESSION_PCT` (default 10) **and** the slowdown clears a `NOISE_SIGMA`
+(default 2) band built from criterion's reported standard error — so run-to-run
+jitter on small benches does not trip the gate. Tune per-run:
+
+```
+REGRESSION_PCT=5 NOISE_SIGMA=3 make bench-check
+```
+
+It can also be pointed at explicit files for ad-hoc comparisons:
+
+```
+./scripts/bench-check.sh bench-history/<new>.json bench-history/<old>.json
+```
+
+Per the PERF_HOST invariant below, if HEAD's record `host` differs from the
+baseline's, the comparison is printed but **not** used to gate (informational
+only). The check is deliberately **not** wired into `make ci`: the benches are
+slow, CPU-bound, and only comparable on `PERF_HOST`.
+
 ## Overwriting an existing record
 
 `scripts/bench-summary.sh` refuses to overwrite a file for the same SHA. To

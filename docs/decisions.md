@@ -1710,9 +1710,31 @@ for re-runs from the same SHA. Rejected alternatives: appending to a single
 `bench-history.jsonl` (merge conflicts on every parallel feature branch);
 checking in HTML criterion reports under `target/criterion/` (huge, regenerated
 on every run, not human-diffable). Retention: every committed SHA's JSON is
-permanent — these files are the diff target for future perf-regression checks
-in CI (M4d work). Enforced in `scripts/bench-summary.sh` and the `bench`
-target in `Makefile`.
+permanent — these files are the diff target for `D-bench-regression-check`.
+Enforced in `scripts/bench-summary.sh` and the `bench` target in `Makefile`.
+
+### D-bench-regression-check — local, PERF_HOST-gated perf-regression check
+
+**Status**: Accepted. **Date**: 2026-05-29.
+
+`scripts/bench-check.sh` (target `make bench-check`) compares HEAD's
+`bench-history/<sha>.json` against the most recent prior baseline (by `date`,
+or explicit positional args for ad-hoc comparison) and exits non-zero on
+regression. A bench is flagged `REGRESS` only when it is **both** slower by more
+than `REGRESSION_PCT` (default 10) **and** the slowdown clears a `NOISE_SIGMA`
+(default 2) band derived from criterion's reported `stderr_ns` — the two-gate
+rule keeps run-to-run jitter on sub-microsecond benches from tripping the check.
+
+Decided against a cloud-CI bench gate: there is no GitHub Actions in this repo,
+and per `D-bench-history-format`'s PERF_HOST invariant bench numbers are only
+comparable on the canonical machine — a hosted runner's numbers are noise. The
+script enforces this by reading the `host` field of both records: on mismatch it
+prints the comparison but does **not** gate (informational only). Deliberately
+**not** wired into `make ci`/`pre-push`: the benches are slow, CPU-bound, and
+PERF_HOST-only, so the gate would be machine-dependent and slow the general
+loop. Run manually on PERF_HOST after `make bench`. Resolves the
+"continuous benchmarking / CI bench-gate" carry-in deferred at M4c
+(`docs/m4c-plan.md:235`) and the M5-follow deferred ledger item.
 
 ## M4e decisions
 
