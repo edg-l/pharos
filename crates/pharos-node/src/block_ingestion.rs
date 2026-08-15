@@ -487,6 +487,9 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
                 store,
             );
         }
+        ForkVariant::Capella => {
+            // Phase 5: capella LC snapshot dispatch — implemented in M6 Phase 5.
+        }
     }
 }
 

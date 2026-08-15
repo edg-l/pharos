@@ -283,6 +283,7 @@ impl BlockProvider<MainnetEthSpec> for TestHost {
                     SignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
                     SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
                     SignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
+                    SignedBeaconBlock::Capella(inner) => inner.message.slot.0,
                 };
                 s >= start_slot.0 && s < start_slot.0 + count
             })
@@ -292,6 +293,7 @@ impl BlockProvider<MainnetEthSpec> for TestHost {
             SignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
             SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
             SignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
+            SignedBeaconBlock::Capella(inner) => inner.message.slot.0,
         });
         results
     }
@@ -318,6 +320,7 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
             SignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
             SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
             SignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
+            SignedBeaconBlock::Capella(inner) => inner.message.slot.0,
         };
         if let Some(ignore_slot) = self.ignore_parent_unseen_for_slot {
             if slot == ignore_slot {
@@ -329,6 +332,7 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
                 SignedBeaconBlock::Phase0(inner) => inner.message.proposer_index.0,
                 SignedBeaconBlock::Altair(inner) => inner.message.proposer_index.0,
                 SignedBeaconBlock::Bellatrix(inner) => inner.message.proposer_index.0,
+                SignedBeaconBlock::Capella(inner) => inner.message.proposer_index.0,
             };
             if proposer_index == reject_idx {
                 return GossipVerdict::Reject(format!(

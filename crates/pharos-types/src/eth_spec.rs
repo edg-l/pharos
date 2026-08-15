@@ -376,6 +376,28 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// `configs/minimal.yaml:41`.
     const BELLATRIX_FORK_EPOCH: u64;
 
+    // ── Capella preset constants ───────────────────────────────────────────────
+
+    /// `MAX_BLS_TO_EXECUTION_CHANGES` from `presets/{mainnet,minimal}/capella.yaml`.
+    ///
+    /// Both presets: `2**4 = 16`.
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64;
+
+    /// `MAX_WITHDRAWALS_PER_PAYLOAD` from `presets/{mainnet,minimal}/capella.yaml`.
+    ///
+    /// Mainnet: `2**4 = 16`. Minimal: `2**2 = 4`.
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64;
+
+    /// `MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP` from `presets/{mainnet,minimal}/capella.yaml`.
+    ///
+    /// Mainnet: `2**14 = 16384`. Minimal: `2**4 = 16`.
+    const MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: u64;
+
+    /// `CAPELLA_FORK_VERSION` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
+    ///
+    /// Mainnet: `0x03000000`. Minimal: `0x03000001`.
+    const CAPELLA_FORK_VERSION: [u8; 4];
+
     // -- Altair participation flag weights --
     // Source: `specs/altair/beacon-chain.md:84-89,105`
     // These are non-configurable spec constants, uniform across all presets.
@@ -541,7 +563,9 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Extract a clone of the `ExecutionPayload` from a fork-enum `SignedBeaconBlock`.
     ///
     /// Returns `Some(payload)` for Bellatrix blocks; `None` for Phase0 / Altair
-    /// (pre-merge, no execution payload).
+    /// (pre-merge, no execution payload). NOTE: Capella currently returns `None`
+    /// (the assoc `ExecutionPayload` is the Bellatrix type) — Phase 4 wires the
+    /// V2 Capella payload path; until then a Capella head must not rely on this.
     ///
     /// Used by the block-ingestion loop to push the wire-format payload to the
     /// engine driver via `engine_newPayloadV1`. The clone is unavoidable because
@@ -808,6 +832,111 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + Sync
         + 'static;
 
+    /// Capella inner `BeaconState` (unwrapped; used by capella STF entry).
+    type CapellaBeaconState: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconStateView;
+
+    /// Capella inner `BeaconBlock` (unwrapped).
+    type CapellaBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockView;
+
+    /// Capella inner `SignedBeaconBlock` (unwrapped).
+    type CapellaSignedBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::SignedBeaconBlockView;
+
+    /// Capella inner `BeaconBlockBody` (unwrapped).
+    type CapellaBeaconBlockBody: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockBodyView;
+
+    /// Capella `ExecutionPayload` for this preset.
+    type CapellaExecutionPayload: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Capella `ExecutionPayloadHeader` for this preset.
+    type CapellaExecutionPayloadHeader: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Wrap a concrete capella `BeaconState` into the fork-enum `BeaconState`.
+    fn capella_into_state(s: Self::CapellaBeaconState) -> Self::BeaconState;
+
+    /// Wrap a concrete capella `BeaconBlock` into the fork-enum `BeaconBlock`.
+    fn capella_into_block(s: Self::CapellaBeaconBlock) -> Self::BeaconBlock;
+
+    /// Wrap a concrete capella `SignedBeaconBlock` into the fork-enum `SignedBeaconBlock`.
+    fn capella_into_signed_block(s: Self::CapellaSignedBeaconBlock) -> Self::SignedBeaconBlock;
+
+    /// Unwrap a fork-enum `SignedBeaconBlock` to the inner capella variant.
+    fn unwrap_capella_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::CapellaSignedBeaconBlock>;
+
+    /// Unwrap a fork-enum `BeaconState` to the inner capella variant.
+    fn unwrap_capella_state(s: &Self::BeaconState) -> Option<&Self::CapellaBeaconState>;
+
+    /// Unwrap a fork-enum `BeaconState` to the inner capella variant (by value).
+    fn into_capella_state(s: Self::BeaconState) -> Option<Self::CapellaBeaconState>;
+
+    /// Unwrap a fork-enum `BeaconBlock` to the inner capella variant.
+    fn unwrap_capella_block(s: &Self::BeaconBlock) -> Option<&Self::CapellaBeaconBlock>;
+
     /// Altair `SignedContributionAndProof` for this preset.
     ///
     /// Mainnet: `SYNC_SUBCOMMITTEE_SIZE = 128` (`SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT`).
@@ -1073,6 +1202,20 @@ impl EthSpec for MainnetEthSpec {
     /// `BELLATRIX_FORK_EPOCH` from `configs/mainnet.yaml:45`.
     const BELLATRIX_FORK_EPOCH: u64 = 144_896;
 
+    // ── Capella preset constants ─────────────────────────────────────────────
+
+    // -- Capella max operations --
+    /// `MAX_BLS_TO_EXECUTION_CHANGES` from `presets/mainnet/capella.yaml`.
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64 = 16;
+    /// `MAX_WITHDRAWALS_PER_PAYLOAD` from `presets/mainnet/capella.yaml`.
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64 = 16;
+    /// `MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP` from `presets/mainnet/capella.yaml`.
+    const MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: u64 = 16_384;
+
+    // -- Capella fork schedule --
+    /// `CAPELLA_FORK_VERSION` from `configs/mainnet.yaml`.
+    const CAPELLA_FORK_VERSION: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
+
     fn name() -> &'static str {
         "mainnet"
     }
@@ -1099,6 +1242,8 @@ impl EthSpec for MainnetEthSpec {
             genesis_validators_root: [0u8; 32],
             bellatrix_fork_version: Self::BELLATRIX_FORK_VERSION,
             bellatrix_fork_epoch: Self::BELLATRIX_FORK_EPOCH,
+            capella_fork_version: Self::CAPELLA_FORK_VERSION,
+            capella_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (mainnet real epoch loaded from config at runtime)
             // configs/mainnet.yaml: TERMINAL_TOTAL_DIFFICULTY: 58750000000000000000000
             terminal_total_difficulty: pharos_utils::Uint256::from_str("58750000000000000000000")
                 .expect("valid TTD literal"),
@@ -1134,6 +1279,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetSignedBeaconBlock::Phase0(inner) => Some(inner),
             crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
             crate::state::MainnetSignedBeaconBlock::Bellatrix(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1144,6 +1290,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetSignedBeaconBlock::Altair(inner) => Some(inner),
             crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
             crate::state::MainnetSignedBeaconBlock::Bellatrix(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1152,6 +1299,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetBeaconState::Altair(inner) => Some(inner),
             crate::state::MainnetBeaconState::Phase0(_) => None,
             crate::state::MainnetBeaconState::Bellatrix(_) => None,
+            crate::state::MainnetBeaconState::Capella(_) => None,
         }
     }
 
@@ -1160,6 +1308,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetBeaconState::Phase0(inner) => Some(inner),
             crate::state::MainnetBeaconState::Altair(_) => None,
             crate::state::MainnetBeaconState::Bellatrix(_) => None,
+            crate::state::MainnetBeaconState::Capella(_) => None,
         }
     }
 
@@ -1168,6 +1317,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetBeaconState::Altair(inner) => Some(inner),
             crate::state::MainnetBeaconState::Phase0(_) => None,
             crate::state::MainnetBeaconState::Bellatrix(_) => None,
+            crate::state::MainnetBeaconState::Capella(_) => None,
         }
     }
 
@@ -1176,6 +1326,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetBeaconState::Bellatrix(inner) => Some(inner),
             crate::state::MainnetBeaconState::Phase0(_) => None,
             crate::state::MainnetBeaconState::Altair(_) => None,
+            crate::state::MainnetBeaconState::Capella(_) => None,
         }
     }
 
@@ -1198,6 +1349,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetSignedBeaconBlock::Bellatrix(inner) => Some(inner),
             crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
             crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1206,6 +1358,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetBeaconState::Bellatrix(inner) => Some(inner),
             crate::state::MainnetBeaconState::Phase0(_) => None,
             crate::state::MainnetBeaconState::Altair(_) => None,
+            crate::state::MainnetBeaconState::Capella(_) => None,
         }
     }
 
@@ -1226,6 +1379,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetBeaconBlock::Phase0(inner) => Some(inner),
             crate::state::MainnetBeaconBlock::Altair(_) => None,
             crate::state::MainnetBeaconBlock::Bellatrix(_) => None,
+            crate::state::MainnetBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1234,6 +1388,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetBeaconBlock::Altair(inner) => Some(inner),
             crate::state::MainnetBeaconBlock::Phase0(_) => None,
             crate::state::MainnetBeaconBlock::Bellatrix(_) => None,
+            crate::state::MainnetBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1242,6 +1397,7 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetBeaconBlock::Bellatrix(inner) => Some(inner),
             crate::state::MainnetBeaconBlock::Phase0(_) => None,
             crate::state::MainnetBeaconBlock::Altair(_) => None,
+            crate::state::MainnetBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1266,6 +1422,9 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetBeaconBlock::Bellatrix(b) => {
                 Some(b.body.execution_payload.block_hash)
             }
+            crate::state::MainnetBeaconBlock::Capella(b) => {
+                Some(b.body.execution_payload.block_hash)
+            }
             crate::state::MainnetBeaconBlock::Phase0(_) => None,
             crate::state::MainnetBeaconBlock::Altair(_) => None,
         }
@@ -1278,6 +1437,9 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetBeaconBlock::Bellatrix(b) => {
                 Some(b.body.execution_payload.parent_hash)
             }
+            crate::state::MainnetBeaconBlock::Capella(b) => {
+                Some(b.body.execution_payload.parent_hash)
+            }
             crate::state::MainnetBeaconBlock::Phase0(_) => None,
             crate::state::MainnetBeaconBlock::Altair(_) => None,
         }
@@ -1288,8 +1450,59 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetSignedBeaconBlock::Bellatrix(b) => {
                 Some(b.message.body.execution_payload.clone())
             }
+            crate::state::MainnetSignedBeaconBlock::Capella(_) => None, // Phase 4 wires Capella payload
             crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
             crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn capella_into_state(s: Self::CapellaBeaconState) -> Self::BeaconState {
+        crate::state::MainnetBeaconState::Capella(s)
+    }
+
+    fn capella_into_block(s: Self::CapellaBeaconBlock) -> Self::BeaconBlock {
+        crate::state::MainnetBeaconBlock::Capella(s)
+    }
+
+    fn capella_into_signed_block(s: Self::CapellaSignedBeaconBlock) -> Self::SignedBeaconBlock {
+        crate::state::MainnetSignedBeaconBlock::Capella(s)
+    }
+
+    fn unwrap_capella_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::CapellaSignedBeaconBlock> {
+        match s {
+            crate::state::MainnetSignedBeaconBlock::Capella(inner) => Some(inner),
+            crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Bellatrix(_) => None,
+        }
+    }
+
+    fn unwrap_capella_state(s: &Self::BeaconState) -> Option<&Self::CapellaBeaconState> {
+        match s {
+            crate::state::MainnetBeaconState::Capella(inner) => Some(inner),
+            crate::state::MainnetBeaconState::Phase0(_) => None,
+            crate::state::MainnetBeaconState::Altair(_) => None,
+            crate::state::MainnetBeaconState::Bellatrix(_) => None,
+        }
+    }
+
+    fn into_capella_state(s: Self::BeaconState) -> Option<Self::CapellaBeaconState> {
+        match s {
+            crate::state::MainnetBeaconState::Capella(inner) => Some(inner),
+            crate::state::MainnetBeaconState::Phase0(_) => None,
+            crate::state::MainnetBeaconState::Altair(_) => None,
+            crate::state::MainnetBeaconState::Bellatrix(_) => None,
+        }
+    }
+
+    fn unwrap_capella_block(s: &Self::BeaconBlock) -> Option<&Self::CapellaBeaconBlock> {
+        match s {
+            crate::state::MainnetBeaconBlock::Capella(inner) => Some(inner),
+            crate::state::MainnetBeaconBlock::Phase0(_) => None,
+            crate::state::MainnetBeaconBlock::Altair(_) => None,
+            crate::state::MainnetBeaconBlock::Bellatrix(_) => None,
         }
     }
 
@@ -1311,6 +1524,8 @@ impl EthSpec for MainnetEthSpec {
         1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
         256,           // BYTES_PER_LOGS_BLOOM
         32,            // MAX_EXTRA_DATA_BYTES
+        16,            // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet capella)
+        16,            // MAX_BLS_TO_EXECUTION_CHANGES
     >;
     type Phase0BeaconBlock = crate::phase0::MainnetBeaconBlock;
     type AltairBeaconBlock = crate::altair::MainnetBeaconBlock;
@@ -1328,6 +1543,8 @@ impl EthSpec for MainnetEthSpec {
         1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
         256,           // BYTES_PER_LOGS_BLOOM
         32,            // MAX_EXTRA_DATA_BYTES
+        16,            // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet capella)
+        16,            // MAX_BLS_TO_EXECUTION_CHANGES
     >;
     type Phase0SignedBeaconBlock = crate::phase0::MainnetSignedBeaconBlock;
     type AltairSignedBeaconBlock = crate::altair::MainnetSignedBeaconBlock;
@@ -1345,6 +1562,8 @@ impl EthSpec for MainnetEthSpec {
         1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
         256,           // BYTES_PER_LOGS_BLOOM
         32,            // MAX_EXTRA_DATA_BYTES
+        16,            // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet capella)
+        16,            // MAX_BLS_TO_EXECUTION_CHANGES
     >;
     type Phase0BeaconBlockBody = crate::phase0::MainnetBeaconBlockBody;
     type AltairBeaconBlockBody = crate::altair::MainnetBeaconBlockBody;
@@ -1352,10 +1571,18 @@ impl EthSpec for MainnetEthSpec {
     type BellatrixBeaconBlock = crate::bellatrix::MainnetBeaconBlock;
     type BellatrixSignedBeaconBlock = crate::bellatrix::MainnetSignedBeaconBlock;
     type BellatrixBeaconBlockBody = crate::bellatrix::MainnetBeaconBlockBody;
-    /// Mainnet: `ExecutionPayload<1_073_741_824, 1_048_576, 256, 32>`.
+    type CapellaBeaconState = crate::capella::MainnetBeaconState;
+    type CapellaBeaconBlock = crate::capella::MainnetBeaconBlock;
+    type CapellaSignedBeaconBlock = crate::capella::MainnetSignedBeaconBlock;
+    type CapellaBeaconBlockBody = crate::capella::MainnetBeaconBlockBody;
+    /// Mainnet: `ExecutionPayload<1_073_741_824, 1_048_576, 256, 32>` (bellatrix).
     type ExecutionPayload = crate::bellatrix::MainnetExecutionPayload;
-    /// Mainnet: `ExecutionPayloadHeader<256, 32>`.
+    /// Mainnet: `ExecutionPayloadHeader<256, 32>` (bellatrix).
     type ExecutionPayloadHeader = crate::bellatrix::MainnetExecutionPayloadHeader;
+    /// Mainnet capella `ExecutionPayload`.
+    type CapellaExecutionPayload = crate::capella::MainnetExecutionPayload;
+    /// Mainnet capella `ExecutionPayloadHeader`.
+    type CapellaExecutionPayloadHeader = crate::capella::MainnetExecutionPayloadHeader;
     /// Mainnet: `SYNC_SUBCOMMITTEE_SIZE = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT = 512 / 4 = 128`.
     type AltairSignedContributionAndProof = crate::altair::SignedContributionAndProof<128>;
     /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`.
@@ -1566,6 +1793,20 @@ impl EthSpec for MinimalEthSpec {
     /// `BELLATRIX_FORK_EPOCH` from `configs/minimal.yaml:41` (FAR_FUTURE_EPOCH).
     const BELLATRIX_FORK_EPOCH: u64 = u64::MAX;
 
+    // ── Capella preset constants ─────────────────────────────────────────────
+
+    // -- Capella max operations --
+    /// `MAX_BLS_TO_EXECUTION_CHANGES` from `presets/minimal/capella.yaml`.
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64 = 16;
+    /// `MAX_WITHDRAWALS_PER_PAYLOAD` from `presets/minimal/capella.yaml`.
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64 = 4;
+    /// `MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP` from `presets/minimal/capella.yaml`.
+    const MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: u64 = 16;
+
+    // -- Capella fork schedule --
+    /// `CAPELLA_FORK_VERSION` from `configs/minimal.yaml`.
+    const CAPELLA_FORK_VERSION: [u8; 4] = [0x03, 0x00, 0x00, 0x01];
+
     fn name() -> &'static str {
         "minimal"
     }
@@ -1592,6 +1833,8 @@ impl EthSpec for MinimalEthSpec {
             genesis_validators_root: [0u8; 32],
             bellatrix_fork_version: Self::BELLATRIX_FORK_VERSION,
             bellatrix_fork_epoch: Self::BELLATRIX_FORK_EPOCH,
+            capella_fork_version: Self::CAPELLA_FORK_VERSION,
+            capella_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (minimal real epoch loaded from config at runtime)
             // configs/minimal.yaml: large TTD to prevent accidental merge on test networks
             terminal_total_difficulty: pharos_utils::Uint256::from_str(
                 "115792089237316195423570985008687907853269984665640564039457584007913129638912",
@@ -1629,6 +1872,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalSignedBeaconBlock::Phase0(inner) => Some(inner),
             crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
             crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1639,6 +1883,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalSignedBeaconBlock::Altair(inner) => Some(inner),
             crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
             crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1647,6 +1892,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconState::Altair(inner) => Some(inner),
             crate::state::MinimalBeaconState::Phase0(_) => None,
             crate::state::MinimalBeaconState::Bellatrix(_) => None,
+            crate::state::MinimalBeaconState::Capella(_) => None,
         }
     }
 
@@ -1655,6 +1901,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconState::Phase0(inner) => Some(inner),
             crate::state::MinimalBeaconState::Altair(_) => None,
             crate::state::MinimalBeaconState::Bellatrix(_) => None,
+            crate::state::MinimalBeaconState::Capella(_) => None,
         }
     }
 
@@ -1663,6 +1910,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconState::Altair(inner) => Some(inner),
             crate::state::MinimalBeaconState::Phase0(_) => None,
             crate::state::MinimalBeaconState::Bellatrix(_) => None,
+            crate::state::MinimalBeaconState::Capella(_) => None,
         }
     }
 
@@ -1671,6 +1919,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconState::Bellatrix(inner) => Some(inner),
             crate::state::MinimalBeaconState::Phase0(_) => None,
             crate::state::MinimalBeaconState::Altair(_) => None,
+            crate::state::MinimalBeaconState::Capella(_) => None,
         }
     }
 
@@ -1693,6 +1942,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalSignedBeaconBlock::Bellatrix(inner) => Some(inner),
             crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
             crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1701,6 +1951,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconState::Bellatrix(inner) => Some(inner),
             crate::state::MinimalBeaconState::Phase0(_) => None,
             crate::state::MinimalBeaconState::Altair(_) => None,
+            crate::state::MinimalBeaconState::Capella(_) => None,
         }
     }
 
@@ -1721,6 +1972,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconBlock::Phase0(inner) => Some(inner),
             crate::state::MinimalBeaconBlock::Altair(_) => None,
             crate::state::MinimalBeaconBlock::Bellatrix(_) => None,
+            crate::state::MinimalBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1729,6 +1981,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconBlock::Altair(inner) => Some(inner),
             crate::state::MinimalBeaconBlock::Phase0(_) => None,
             crate::state::MinimalBeaconBlock::Bellatrix(_) => None,
+            crate::state::MinimalBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1737,6 +1990,7 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconBlock::Bellatrix(inner) => Some(inner),
             crate::state::MinimalBeaconBlock::Phase0(_) => None,
             crate::state::MinimalBeaconBlock::Altair(_) => None,
+            crate::state::MinimalBeaconBlock::Capella(_) => None,
         }
     }
 
@@ -1761,6 +2015,9 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconBlock::Bellatrix(b) => {
                 Some(b.body.execution_payload.block_hash)
             }
+            crate::state::MinimalBeaconBlock::Capella(b) => {
+                Some(b.body.execution_payload.block_hash)
+            }
             crate::state::MinimalBeaconBlock::Phase0(_) => None,
             crate::state::MinimalBeaconBlock::Altair(_) => None,
         }
@@ -1773,6 +2030,9 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconBlock::Bellatrix(b) => {
                 Some(b.body.execution_payload.parent_hash)
             }
+            crate::state::MinimalBeaconBlock::Capella(b) => {
+                Some(b.body.execution_payload.parent_hash)
+            }
             crate::state::MinimalBeaconBlock::Phase0(_) => None,
             crate::state::MinimalBeaconBlock::Altair(_) => None,
         }
@@ -1783,8 +2043,59 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalSignedBeaconBlock::Bellatrix(b) => {
                 Some(b.message.body.execution_payload.clone())
             }
+            crate::state::MinimalSignedBeaconBlock::Capella(_) => None, // Phase 4 wires Capella payload
             crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
             crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn capella_into_state(s: Self::CapellaBeaconState) -> Self::BeaconState {
+        crate::state::MinimalBeaconState::Capella(s)
+    }
+
+    fn capella_into_block(s: Self::CapellaBeaconBlock) -> Self::BeaconBlock {
+        crate::state::MinimalBeaconBlock::Capella(s)
+    }
+
+    fn capella_into_signed_block(s: Self::CapellaSignedBeaconBlock) -> Self::SignedBeaconBlock {
+        crate::state::MinimalSignedBeaconBlock::Capella(s)
+    }
+
+    fn unwrap_capella_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::CapellaSignedBeaconBlock> {
+        match s {
+            crate::state::MinimalSignedBeaconBlock::Capella(inner) => Some(inner),
+            crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
+        }
+    }
+
+    fn unwrap_capella_state(s: &Self::BeaconState) -> Option<&Self::CapellaBeaconState> {
+        match s {
+            crate::state::MinimalBeaconState::Capella(inner) => Some(inner),
+            crate::state::MinimalBeaconState::Phase0(_) => None,
+            crate::state::MinimalBeaconState::Altair(_) => None,
+            crate::state::MinimalBeaconState::Bellatrix(_) => None,
+        }
+    }
+
+    fn into_capella_state(s: Self::BeaconState) -> Option<Self::CapellaBeaconState> {
+        match s {
+            crate::state::MinimalBeaconState::Capella(inner) => Some(inner),
+            crate::state::MinimalBeaconState::Phase0(_) => None,
+            crate::state::MinimalBeaconState::Altair(_) => None,
+            crate::state::MinimalBeaconState::Bellatrix(_) => None,
+        }
+    }
+
+    fn unwrap_capella_block(s: &Self::BeaconBlock) -> Option<&Self::CapellaBeaconBlock> {
+        match s {
+            crate::state::MinimalBeaconBlock::Capella(inner) => Some(inner),
+            crate::state::MinimalBeaconBlock::Phase0(_) => None,
+            crate::state::MinimalBeaconBlock::Altair(_) => None,
+            crate::state::MinimalBeaconBlock::Bellatrix(_) => None,
         }
     }
 
@@ -1806,6 +2117,8 @@ impl EthSpec for MinimalEthSpec {
         1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
         256,           // BYTES_PER_LOGS_BLOOM
         32,            // MAX_EXTRA_DATA_BYTES
+        4,             // MAX_WITHDRAWALS_PER_PAYLOAD (minimal capella)
+        16,            // MAX_BLS_TO_EXECUTION_CHANGES
     >;
     type Phase0BeaconBlock = crate::phase0::MinimalBeaconBlock;
     type AltairBeaconBlock = crate::altair::MinimalBeaconBlock;
@@ -1823,6 +2136,8 @@ impl EthSpec for MinimalEthSpec {
         1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
         256,           // BYTES_PER_LOGS_BLOOM
         32,            // MAX_EXTRA_DATA_BYTES
+        4,             // MAX_WITHDRAWALS_PER_PAYLOAD (minimal capella)
+        16,            // MAX_BLS_TO_EXECUTION_CHANGES
     >;
     type Phase0SignedBeaconBlock = crate::phase0::MinimalSignedBeaconBlock;
     type AltairSignedBeaconBlock = crate::altair::MinimalSignedBeaconBlock;
@@ -1840,6 +2155,8 @@ impl EthSpec for MinimalEthSpec {
         1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
         256,           // BYTES_PER_LOGS_BLOOM
         32,            // MAX_EXTRA_DATA_BYTES
+        4,             // MAX_WITHDRAWALS_PER_PAYLOAD (minimal capella)
+        16,            // MAX_BLS_TO_EXECUTION_CHANGES
     >;
     type Phase0BeaconBlockBody = crate::phase0::MinimalBeaconBlockBody;
     type AltairBeaconBlockBody = crate::altair::MinimalBeaconBlockBody;
@@ -1847,10 +2164,18 @@ impl EthSpec for MinimalEthSpec {
     type BellatrixBeaconBlock = crate::bellatrix::MinimalBeaconBlock;
     type BellatrixSignedBeaconBlock = crate::bellatrix::MinimalSignedBeaconBlock;
     type BellatrixBeaconBlockBody = crate::bellatrix::MinimalBeaconBlockBody;
-    /// Minimal: `ExecutionPayload<1_073_741_824, 1_048_576, 256, 32>`.
+    type CapellaBeaconState = crate::capella::MinimalBeaconState;
+    type CapellaBeaconBlock = crate::capella::MinimalBeaconBlock;
+    type CapellaSignedBeaconBlock = crate::capella::MinimalSignedBeaconBlock;
+    type CapellaBeaconBlockBody = crate::capella::MinimalBeaconBlockBody;
+    /// Minimal: `ExecutionPayload<1_073_741_824, 1_048_576, 256, 32>` (bellatrix).
     type ExecutionPayload = crate::bellatrix::MinimalExecutionPayload;
-    /// Minimal: `ExecutionPayloadHeader<256, 32>`.
+    /// Minimal: `ExecutionPayloadHeader<256, 32>` (bellatrix).
     type ExecutionPayloadHeader = crate::bellatrix::MinimalExecutionPayloadHeader;
+    /// Minimal capella `ExecutionPayload`.
+    type CapellaExecutionPayload = crate::capella::MinimalExecutionPayload;
+    /// Minimal capella `ExecutionPayloadHeader`.
+    type CapellaExecutionPayloadHeader = crate::capella::MinimalExecutionPayloadHeader;
     /// Minimal: `SYNC_SUBCOMMITTEE_SIZE = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT = 32 / 4 = 8`.
     type AltairSignedContributionAndProof = crate::altair::SignedContributionAndProof<8>;
     /// Minimal: `SYNC_COMMITTEE_SIZE = 32`.

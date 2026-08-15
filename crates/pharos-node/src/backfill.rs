@@ -360,8 +360,22 @@ mod tests {
 
     // ── Type aliases for the minimal-preset fork-enum types ───────────────────
 
-    type MinForkSignedBlock =
-        ForkSignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>;
+    type MinForkSignedBlock = ForkSignedBeaconBlock<
+        16,
+        2,
+        128,
+        16,
+        16,
+        2048,
+        33,
+        32,
+        1_073_741_824,
+        1_048_576,
+        256,
+        32,
+        4,
+        16,
+    >;
     type MinForkState = ForkMinState;
 
     // ── Test constants ────────────────────────────────────────────────────────
@@ -394,7 +408,7 @@ mod tests {
 
     fn build_genesis_for_test() -> (
         MinForkState,
-        ForkBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>,
+        ForkBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32, 4, 16>,
     ) {
         use pharos_types::phase0::{Fork, operations::BeaconBlockHeader};
 
@@ -679,6 +693,8 @@ mod tests {
             1_048_576,
             256,
             32,
+            4,
+            16,
         >,
     ) -> TestBackfillHarness {
         let anchor_root: Root = anchor_block.tree_hash_root();
@@ -711,6 +727,8 @@ mod tests {
             altair_fork_epoch: Epoch(0),
             bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
             bellatrix_fork_epoch: Epoch(0),
+            capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+            capella_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root,
         };
         let host = Arc::new(HostImpl::<MinimalEthSpec>::new(

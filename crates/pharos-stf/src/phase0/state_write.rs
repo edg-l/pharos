@@ -390,6 +390,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -401,6 +404,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -414,6 +420,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -425,6 +434,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -438,6 +450,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -449,6 +464,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -462,6 +480,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -473,6 +494,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -486,6 +510,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -498,6 +525,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -509,6 +539,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -525,6 +558,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -540,6 +576,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -551,6 +590,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -564,6 +606,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -575,6 +620,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -588,6 +636,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -599,6 +650,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -612,6 +666,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -623,6 +680,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -639,6 +699,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -654,6 +717,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -665,6 +731,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -678,6 +747,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -689,6 +761,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -702,6 +777,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -714,6 +792,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -725,6 +806,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }
@@ -742,6 +826,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
+            }
         }
     }
 
@@ -757,6 +844,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("phase0 STF called on Capella BeaconState")
             }
         }
     }

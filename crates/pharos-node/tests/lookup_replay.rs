@@ -144,6 +144,8 @@ async fn lookup_replay_fetches_and_replays_chain() {
         altair_fork_epoch: Epoch(0),
         bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
+        capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+        capella_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
@@ -343,6 +345,8 @@ async fn lookup_direct_import_holds_future_block() {
         altair_fork_epoch: Epoch(0),
         bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
+        capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+        capella_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(

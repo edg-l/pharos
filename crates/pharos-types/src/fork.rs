@@ -36,12 +36,18 @@ pub fn compute_fork_digest(current_version: Version, genesis_validators_root: &R
 
 // ── ForkSchedule ──────────────────────────────────────────────────────────────
 
+/// `DOMAIN_BLS_TO_EXECUTION_CHANGE` per `specs/capella/beacon-chain.md`.
+///
+/// Used by `bls_to_execution_change` signing domain (fork-agnostic: uses
+/// `GENESIS_FORK_VERSION`, not the current fork version).
+pub const DOMAIN_BLS_TO_EXECUTION_CHANGE: [u8; 4] = [0x0A, 0x00, 0x00, 0x00];
+
 /// Fork transition schedule shared by `pharos-node` and `pharos-network`.
 ///
 /// Lives in `pharos-types::fork` so both crates can depend on it without a
 /// back-edge through the node crate.
 ///
-/// Three-fork shape (Phase 0 → Altair → Bellatrix). Accessors use a
+/// Four-fork shape (Phase 0 → Altair → Bellatrix → Capella). Accessors use a
 /// `[(epoch, version)]` lookup table sorted ascending by activation epoch.
 /// `FAR_FUTURE_EPOCH` (`Epoch(u64::MAX)`) deactivates a fork.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +66,12 @@ pub struct ForkSchedule {
     ///
     /// `Epoch(u64::MAX)` (`FAR_FUTURE_EPOCH`) keeps Altair active (no Bellatrix).
     pub bellatrix_fork_epoch: Epoch,
+    /// Capella fork version.
+    pub capella_fork_version: Version,
+    /// Epoch at which the Capella fork activates.
+    ///
+    /// `Epoch(u64::MAX)` (`FAR_FUTURE_EPOCH`) keeps Bellatrix active (no Capella).
+    pub capella_fork_epoch: Epoch,
     /// Genesis validators root used in fork-digest computation.
     pub genesis_validators_root: Root,
 }
@@ -70,7 +82,7 @@ impl ForkSchedule {
     ///
     /// Used by `fork_at_epoch`, `current_fork_version`, `next_fork_version`,
     /// and `next_fork_epoch` to avoid per-fork `if` chains.
-    fn fork_table(&self) -> [(Epoch, Version, Version, Epoch); 2] {
+    fn fork_table(&self) -> [(Epoch, Version, Version, Epoch); 3] {
         [
             (
                 self.altair_fork_epoch,
@@ -83,6 +95,12 @@ impl ForkSchedule {
                 self.altair_fork_version,
                 self.bellatrix_fork_version,
                 self.bellatrix_fork_epoch,
+            ),
+            (
+                self.capella_fork_epoch,
+                self.bellatrix_fork_version,
+                self.capella_fork_version,
+                self.capella_fork_epoch,
             ),
         ]
     }
@@ -127,7 +145,7 @@ impl ForkSchedule {
             }
         }
         // Already at or past the last known fork.
-        self.bellatrix_fork_version
+        self.capella_fork_version
     }
 
     /// The epoch at which the next fork after `epoch` activates.
@@ -155,6 +173,8 @@ mod tests {
             altair_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
             bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
             bellatrix_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+            capella_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
             genesis_validators_root: Root::default(),
         }
     }
@@ -166,6 +186,21 @@ mod tests {
             altair_fork_epoch: Epoch(10),
             bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
             bellatrix_fork_epoch: Epoch(20),
+            capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+            capella_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            genesis_validators_root: Root::default(),
+        }
+    }
+
+    fn four_fork_schedule() -> ForkSchedule {
+        ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(10),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(20),
+            capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+            capella_fork_epoch: Epoch(30),
             genesis_validators_root: Root::default(),
         }
     }
@@ -268,10 +303,10 @@ mod tests {
             sched.next_fork_version(Epoch(10)),
             Version::from_array([0x02, 0x00, 0x00, 0x00])
         );
-        // In Bellatrix, no further fork: returns bellatrix version.
+        // In Bellatrix, next fork is Capella (capella_fork_epoch = FAR_FUTURE_EPOCH in three_fork_schedule).
         assert_eq!(
             sched.next_fork_version(Epoch(20)),
-            Version::from_array([0x02, 0x00, 0x00, 0x00])
+            Version::from_array([0x03, 0x00, 0x00, 0x00])
         );
     }
 
@@ -282,6 +317,7 @@ mod tests {
         assert_eq!(sched.next_fork_epoch(Epoch(9)), Epoch(10));
         assert_eq!(sched.next_fork_epoch(Epoch(10)), Epoch(20));
         assert_eq!(sched.next_fork_epoch(Epoch(19)), Epoch(20));
+        // In Bellatrix (epoch 20), next fork = capella (FAR_FUTURE_EPOCH).
         assert_eq!(sched.next_fork_epoch(Epoch(20)), Epoch(u64::MAX));
         assert_eq!(sched.next_fork_epoch(Epoch(100)), Epoch(u64::MAX));
     }
@@ -357,6 +393,8 @@ mod tests {
             altair_fork_epoch: Epoch(MainnetEthSpec::ALTAIR_FORK_EPOCH),
             bellatrix_fork_version: Version::from_array(MainnetEthSpec::BELLATRIX_FORK_VERSION),
             bellatrix_fork_epoch: Epoch(MainnetEthSpec::BELLATRIX_FORK_EPOCH),
+            capella_fork_version: Version::from_array(MainnetEthSpec::CAPELLA_FORK_VERSION),
+            capella_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH for test
             genesis_validators_root: Root::default(),
         };
         // At epoch 144_896, Bellatrix is active.
@@ -370,6 +408,56 @@ mod tests {
         assert_eq!(
             fork.current_version,
             Version::from_array([0x01, 0x00, 0x00, 0x00])
+        );
+    }
+
+    #[test]
+    fn capella_fork_digest_differs_from_bellatrix() {
+        let gvr = Root::default();
+        let bellatrix_version = Version::from_array([0x02, 0x00, 0x00, 0x00]);
+        let capella_version = Version::from_array([0x03, 0x00, 0x00, 0x00]);
+
+        let bellatrix_digest = compute_fork_digest(bellatrix_version, &gvr);
+        let capella_digest = compute_fork_digest(capella_version, &gvr);
+
+        assert_ne!(
+            capella_digest, bellatrix_digest,
+            "Capella digest must differ from Bellatrix digest"
+        );
+    }
+
+    #[test]
+    fn four_fork_capella_range() {
+        let sched = four_fork_schedule();
+        for epoch_n in [30u64, 31, 194048, u64::MAX - 1] {
+            let fork = sched.fork_at_epoch(Epoch(epoch_n));
+            assert_eq!(
+                fork.current_version,
+                Version::from_array([0x03, 0x00, 0x00, 0x00]),
+                "epoch {epoch_n}: expected Capella"
+            );
+            assert_eq!(
+                fork.previous_version,
+                Version::from_array([0x02, 0x00, 0x00, 0x00])
+            );
+            assert_eq!(fork.epoch, Epoch(30));
+        }
+    }
+
+    #[test]
+    fn four_fork_next_fork_epoch_after_capella() {
+        let sched = four_fork_schedule();
+        // After capella, no further fork: next_fork_epoch == FAR_FUTURE_EPOCH.
+        assert_eq!(sched.next_fork_epoch(Epoch(30)), Epoch(u64::MAX));
+        assert_eq!(sched.next_fork_epoch(Epoch(100)), Epoch(u64::MAX));
+    }
+
+    #[test]
+    fn domain_bls_to_execution_change_value() {
+        // Per specs/capella/beacon-chain.md, DOMAIN_BLS_TO_EXECUTION_CHANGE = 0x0A000000.
+        assert_eq!(
+            super::DOMAIN_BLS_TO_EXECUTION_CHANGE,
+            [0x0A, 0x00, 0x00, 0x00]
         );
     }
 }

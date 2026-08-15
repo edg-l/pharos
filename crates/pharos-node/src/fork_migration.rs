@@ -395,6 +395,8 @@ mod tests {
             altair_fork_epoch: Epoch(10),
             bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
             bellatrix_fork_epoch: Epoch(20),
+            capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+            capella_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: Root::default(),
         }
     }

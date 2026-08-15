@@ -76,6 +76,11 @@ pub struct RuntimeConfig {
     pub bellatrix_fork_version: [u8; 4],
     /// `BELLATRIX_FORK_EPOCH` from `configs/{mainnet,minimal}.yaml`.
     pub bellatrix_fork_epoch: u64,
+    // -- Capella fork schedule --
+    /// `CAPELLA_FORK_VERSION` from `configs/{mainnet,minimal}.yaml`.
+    pub capella_fork_version: [u8; 4],
+    /// `CAPELLA_FORK_EPOCH` from `configs/{mainnet,minimal}.yaml`.
+    pub capella_fork_epoch: u64,
     /// `TERMINAL_TOTAL_DIFFICULTY` from `configs/{mainnet,minimal}.yaml`.
     ///
     /// `Uint256` because the mainnet value (`58750000000000000000000`) and especially

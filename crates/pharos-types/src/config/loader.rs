@@ -144,6 +144,8 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         extract_u64(&config_map, "INACTIVITY_SCORE_RECOVERY_RATE")?;
     let bellatrix_fork_version = extract_version(&config_map, "BELLATRIX_FORK_VERSION")?;
     let bellatrix_fork_epoch = extract_u64(&config_map, "BELLATRIX_FORK_EPOCH")?;
+    let capella_fork_version = extract_version(&config_map, "CAPELLA_FORK_VERSION")?;
+    let capella_fork_epoch = extract_u64(&config_map, "CAPELLA_FORK_EPOCH")?;
     let terminal_total_difficulty = extract_uint256(&config_map, "TERMINAL_TOTAL_DIFFICULTY")?;
     let terminal_block_hash = extract_hash256(&config_map, "TERMINAL_BLOCK_HASH")?;
     let terminal_block_hash_activation_epoch =
@@ -205,6 +207,8 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         genesis_validators_root: [0u8; 32],
         bellatrix_fork_version,
         bellatrix_fork_epoch,
+        capella_fork_version,
+        capella_fork_epoch,
         terminal_total_difficulty,
         terminal_block_hash,
         terminal_block_hash_activation_epoch,

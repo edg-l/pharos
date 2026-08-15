@@ -339,6 +339,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis query called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis query called on Capella BeaconState")
+            }
         }
     }
 
@@ -350,6 +353,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis mutation called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis mutation called on Capella BeaconState")
             }
         }
     }
@@ -363,6 +369,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis query called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis query called on Capella BeaconState")
+            }
         }
     }
 
@@ -374,6 +383,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis query called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis query called on Capella BeaconState")
             }
         }
     }
@@ -387,6 +399,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis query called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis query called on Capella BeaconState")
+            }
         }
     }
 
@@ -398,6 +413,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis mutation called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis mutation called on Capella BeaconState")
             }
         }
     }
@@ -411,6 +429,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis mutation called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis mutation called on Capella BeaconState")
+            }
         }
     }
 
@@ -422,6 +443,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis mutation called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis mutation called on Capella BeaconState")
             }
         }
     }
@@ -435,6 +459,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis mutation called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis mutation called on Capella BeaconState")
+            }
         }
     }
 
@@ -447,6 +474,9 @@ where
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis query called on Bellatrix BeaconState")
             }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis query called on Capella BeaconState")
+            }
         }
     }
 
@@ -458,6 +488,9 @@ where
             }
             ForkBeaconState::Bellatrix(_) => {
                 unreachable!("genesis mutation called on Bellatrix BeaconState")
+            }
+            ForkBeaconState::Capella(_) => {
+                unreachable!("genesis mutation called on Capella BeaconState")
             }
         }
     }

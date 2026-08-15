@@ -165,6 +165,8 @@ async fn run_migration_once() {
         altair_fork_epoch: Epoch(1),
         bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
         bellatrix_fork_epoch: Epoch(u64::MAX),
+        capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+        capella_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root: gvr(),
     };
     let enr_fork_id = ENRForkID {

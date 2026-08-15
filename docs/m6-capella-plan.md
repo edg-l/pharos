@@ -105,8 +105,10 @@ Depends: none. Touches `pharos-types` only (network `Fork` enum is Phase 6).
 - 1.4 `crates/pharos-types/src/capella/block.rs`: `BeaconBlock`/`SignedBeaconBlock` + views.
 - 1.5 `crates/pharos-types/src/capella/state.rs`: `BeaconState<…>` (+`next_withdrawal_index`,
   +`next_withdrawal_validator_index`, +`historical_summaries`, `cached_root: CachedRoot`
-  `#[ssz(skip)]`); hand `Decode`+`Default`+`BeaconStateView`+`into_tree_backend` (same 7
-  hot fields as bellatrix; `historical_summaries` Naive); preset aliases.
+  `#[ssz(skip)]`); hand `Decode`+`Default`+`BeaconStateView`+`into_tree_backend` (same 5
+  hot fields as bellatrix — `block_roots`, `state_roots`, `historical_roots`, `validators`,
+  `randao_mixes`; the phase0-only attestation lists do NOT exist in bellatrix/capella;
+  `historical_summaries` stays Naive); preset aliases.
 - 1.6 `crates/pharos-types/src/capella/mod.rs` + `pub mod capella;` in `lib.rs`.
 - 1.7 `crates/pharos-types/src/state.rs`: add `Capella` variant to `BeaconState`,
   `BeaconBlock`, `BeaconBlockBody` enums; extend EVERY match arm.

@@ -205,7 +205,7 @@ async fn spawn_mock() -> Mock {
 /// the concrete inner types into the fork-enum variants used by this test.
 fn build_genesis() -> (
     ForkMinimalBeaconState,
-    ForkBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>,
+    ForkBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32, 4, 16>,
 ) {
     let (state_inner, signed_block_inner) = build_anchor_bellatrix(Slot(0), 0);
 
@@ -481,6 +481,8 @@ async fn engine_pipeline_drives_bellatrix_chain() {
         altair_fork_epoch: Epoch(0),
         bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
+        capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+        capella_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(

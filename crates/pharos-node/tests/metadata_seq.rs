@@ -50,6 +50,8 @@ fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
         altair_fork_epoch: Epoch(u64::MAX),
         bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
         bellatrix_fork_epoch: Epoch(u64::MAX),
+        capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+        capella_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root: gvr,
     };
     HostImpl::new(

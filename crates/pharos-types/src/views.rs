@@ -48,6 +48,7 @@ pub enum ForkVariant {
     Phase0,
     Altair,
     Bellatrix,
+    Capella,
 }
 
 // ── BeaconBlockBodyView ───────────────────────────────────────────────────────

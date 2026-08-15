@@ -31,8 +31,22 @@ use pharos_utils::bls::BLS_DST;
 use pharos_utils::{BLSPubkey, BLSSignature, Hash256};
 
 /// Type alias for the fork-enum `SignedBeaconBlock` over minimal-preset params.
-pub type MinForkSignedBlock =
-    ForkSignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>;
+pub type MinForkSignedBlock = ForkSignedBeaconBlock<
+    16,
+    2,
+    128,
+    16,
+    16,
+    2048,
+    33,
+    32,
+    1_073_741_824,
+    1_048_576,
+    256,
+    32,
+    4,
+    16,
+>;
 
 /// `TERMINAL_BLOCK_HASH` bytes used in the checkpoint-sync fixture chain.
 ///

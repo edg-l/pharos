@@ -10,6 +10,7 @@
 
 use crate::altair;
 use crate::bellatrix;
+use crate::capella;
 use crate::phase0;
 use crate::phase0::{
     BLSSignature, BeaconBlockHeader, Checkpoint, Eth1Data, Fork, ProposerSlashing, Root,
@@ -25,11 +26,12 @@ use pharos_utils::{Bytes32, Gwei, Hash256};
 
 /// Fork-enum `BeaconState`.
 ///
-/// `Phase0`, `Altair`, and `Bellatrix` variants carry the concrete preset-stamped structs.
+/// `Phase0`, `Altair`, `Bellatrix`, and `Capella` variants carry the concrete
+/// preset-stamped structs.
 ///
 /// For ergonomic use, prefer the preset aliases defined below:
 /// `MainnetBeaconState`, `MinimalBeaconState`.
-// Bellatrix is larger than Phase0/Altair. Boxing variants would add heap indirection
+// Capella is larger than prior forks. Boxing variants would add heap indirection
 // on every fork-enum access in the hot STF path; the size difference is acceptable.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +82,21 @@ pub enum BeaconState<
     /// Bellatrix inner state.
     Bellatrix(
         bellatrix::BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+        >,
+    ),
+    /// Capella inner state.
+    Capella(
+        capella::BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
             ETH1_DATA_VOTES_LIMIT,
@@ -174,6 +191,7 @@ impl<
             BeaconState::Phase0(s) => s.cached_tree_hash_root(),
             BeaconState::Altair(s) => s.cached_tree_hash_root(),
             BeaconState::Bellatrix(s) => s.cached_tree_hash_root(),
+            BeaconState::Capella(s) => s.cached_tree_hash_root(),
         }
     }
 
@@ -184,6 +202,7 @@ impl<
             BeaconState::Phase0(s) => s.invalidate_root_cache(),
             BeaconState::Altair(s) => s.invalidate_root_cache(),
             BeaconState::Bellatrix(s) => s.invalidate_root_cache(),
+            BeaconState::Capella(s) => s.invalidate_root_cache(),
         }
     }
 
@@ -198,6 +217,7 @@ impl<
             BeaconState::Phase0(s) => Ok(BeaconState::Phase0(s.into_tree_backend()?)),
             BeaconState::Altair(s) => Ok(BeaconState::Altair(s.into_tree_backend()?)),
             BeaconState::Bellatrix(s) => Ok(BeaconState::Bellatrix(s.into_tree_backend()?)),
+            BeaconState::Capella(s) => Ok(BeaconState::Capella(s.into_tree_backend()?)),
         }
     }
 }
@@ -236,6 +256,7 @@ impl<
             BeaconState::Phase0(_) => ForkVariant::Phase0,
             BeaconState::Altair(_) => ForkVariant::Altair,
             BeaconState::Bellatrix(_) => ForkVariant::Bellatrix,
+            BeaconState::Capella(_) => ForkVariant::Capella,
         }
     }
 
@@ -244,6 +265,7 @@ impl<
             BeaconState::Phase0(s) => s.genesis_time(),
             BeaconState::Altair(s) => s.genesis_time(),
             BeaconState::Bellatrix(s) => s.genesis_time(),
+            BeaconState::Capella(s) => s.genesis_time(),
         }
     }
     fn genesis_validators_root(&self) -> Root {
@@ -251,6 +273,7 @@ impl<
             BeaconState::Phase0(s) => s.genesis_validators_root(),
             BeaconState::Altair(s) => s.genesis_validators_root(),
             BeaconState::Bellatrix(s) => s.genesis_validators_root(),
+            BeaconState::Capella(s) => s.genesis_validators_root(),
         }
     }
     fn slot(&self) -> Slot {
@@ -258,6 +281,7 @@ impl<
             BeaconState::Phase0(s) => s.slot(),
             BeaconState::Altair(s) => s.slot(),
             BeaconState::Bellatrix(s) => s.slot(),
+            BeaconState::Capella(s) => s.slot(),
         }
     }
     fn fork(&self) -> &Fork {
@@ -265,6 +289,7 @@ impl<
             BeaconState::Phase0(s) => s.fork(),
             BeaconState::Altair(s) => s.fork(),
             BeaconState::Bellatrix(s) => s.fork(),
+            BeaconState::Capella(s) => s.fork(),
         }
     }
     fn latest_block_header(&self) -> &BeaconBlockHeader {
@@ -272,6 +297,7 @@ impl<
             BeaconState::Phase0(s) => s.latest_block_header(),
             BeaconState::Altair(s) => s.latest_block_header(),
             BeaconState::Bellatrix(s) => s.latest_block_header(),
+            BeaconState::Capella(s) => s.latest_block_header(),
         }
     }
     fn validators(&self) -> Vec<Validator> {
@@ -279,6 +305,7 @@ impl<
             BeaconState::Phase0(s) => s.validators(),
             BeaconState::Altair(s) => s.validators(),
             BeaconState::Bellatrix(s) => s.validators(),
+            BeaconState::Capella(s) => s.validators(),
         }
     }
     fn validators_iter(&self) -> Box<dyn Iterator<Item = &Validator> + '_> {
@@ -286,6 +313,7 @@ impl<
             BeaconState::Phase0(s) => s.validators_iter(),
             BeaconState::Altair(s) => s.validators_iter(),
             BeaconState::Bellatrix(s) => s.validators_iter(),
+            BeaconState::Capella(s) => s.validators_iter(),
         }
     }
     fn validator(&self, idx: usize) -> Option<&Validator> {
@@ -293,6 +321,7 @@ impl<
             BeaconState::Phase0(s) => s.validator(idx),
             BeaconState::Altair(s) => s.validator(idx),
             BeaconState::Bellatrix(s) => s.validator(idx),
+            BeaconState::Capella(s) => s.validator(idx),
         }
     }
     fn num_validators(&self) -> usize {
@@ -300,6 +329,7 @@ impl<
             BeaconState::Phase0(s) => s.num_validators(),
             BeaconState::Altair(s) => s.num_validators(),
             BeaconState::Bellatrix(s) => s.num_validators(),
+            BeaconState::Capella(s) => s.num_validators(),
         }
     }
     fn balances(&self) -> &[Gwei] {
@@ -307,6 +337,7 @@ impl<
             BeaconState::Phase0(s) => s.balances(),
             BeaconState::Altair(s) => s.balances(),
             BeaconState::Bellatrix(s) => s.balances(),
+            BeaconState::Capella(s) => s.balances(),
         }
     }
     fn block_roots(&self) -> Vec<Root> {
@@ -314,6 +345,7 @@ impl<
             BeaconState::Phase0(s) => s.block_roots(),
             BeaconState::Altair(s) => s.block_roots(),
             BeaconState::Bellatrix(s) => s.block_roots(),
+            BeaconState::Capella(s) => s.block_roots(),
         }
     }
     fn block_root_at(&self, idx: usize) -> Option<Root> {
@@ -321,6 +353,7 @@ impl<
             BeaconState::Phase0(s) => s.block_root_at(idx),
             BeaconState::Altair(s) => s.block_root_at(idx),
             BeaconState::Bellatrix(s) => s.block_root_at(idx),
+            BeaconState::Capella(s) => s.block_root_at(idx),
         }
     }
     fn state_roots(&self) -> Vec<Root> {
@@ -328,6 +361,7 @@ impl<
             BeaconState::Phase0(s) => s.state_roots(),
             BeaconState::Altair(s) => s.state_roots(),
             BeaconState::Bellatrix(s) => s.state_roots(),
+            BeaconState::Capella(s) => s.state_roots(),
         }
     }
     fn state_root_at(&self, idx: usize) -> Option<Root> {
@@ -335,6 +369,7 @@ impl<
             BeaconState::Phase0(s) => s.state_root_at(idx),
             BeaconState::Altair(s) => s.state_root_at(idx),
             BeaconState::Bellatrix(s) => s.state_root_at(idx),
+            BeaconState::Capella(s) => s.state_root_at(idx),
         }
     }
     fn randao_mixes(&self) -> Vec<Hash256> {
@@ -342,6 +377,7 @@ impl<
             BeaconState::Phase0(s) => s.randao_mixes(),
             BeaconState::Altair(s) => s.randao_mixes(),
             BeaconState::Bellatrix(s) => s.randao_mixes(),
+            BeaconState::Capella(s) => s.randao_mixes(),
         }
     }
     fn randao_mix_at(&self, idx: usize) -> Option<Hash256> {
@@ -349,6 +385,7 @@ impl<
             BeaconState::Phase0(s) => s.randao_mix_at(idx),
             BeaconState::Altair(s) => s.randao_mix_at(idx),
             BeaconState::Bellatrix(s) => s.randao_mix_at(idx),
+            BeaconState::Capella(s) => s.randao_mix_at(idx),
         }
     }
     fn slashings(&self) -> &[Gwei] {
@@ -356,6 +393,7 @@ impl<
             BeaconState::Phase0(s) => s.slashings(),
             BeaconState::Altair(s) => s.slashings(),
             BeaconState::Bellatrix(s) => s.slashings(),
+            BeaconState::Capella(s) => s.slashings(),
         }
     }
     fn eth1_data(&self) -> &Eth1Data {
@@ -363,6 +401,7 @@ impl<
             BeaconState::Phase0(s) => s.eth1_data(),
             BeaconState::Altair(s) => s.eth1_data(),
             BeaconState::Bellatrix(s) => s.eth1_data(),
+            BeaconState::Capella(s) => s.eth1_data(),
         }
     }
     fn previous_justified_checkpoint(&self) -> &Checkpoint {
@@ -370,6 +409,7 @@ impl<
             BeaconState::Phase0(s) => s.previous_justified_checkpoint(),
             BeaconState::Altair(s) => s.previous_justified_checkpoint(),
             BeaconState::Bellatrix(s) => s.previous_justified_checkpoint(),
+            BeaconState::Capella(s) => s.previous_justified_checkpoint(),
         }
     }
     fn current_justified_checkpoint(&self) -> &Checkpoint {
@@ -377,6 +417,7 @@ impl<
             BeaconState::Phase0(s) => s.current_justified_checkpoint(),
             BeaconState::Altair(s) => s.current_justified_checkpoint(),
             BeaconState::Bellatrix(s) => s.current_justified_checkpoint(),
+            BeaconState::Capella(s) => s.current_justified_checkpoint(),
         }
     }
     fn finalized_checkpoint(&self) -> &Checkpoint {
@@ -384,6 +425,7 @@ impl<
             BeaconState::Phase0(s) => s.finalized_checkpoint(),
             BeaconState::Altair(s) => s.finalized_checkpoint(),
             BeaconState::Bellatrix(s) => s.finalized_checkpoint(),
+            BeaconState::Capella(s) => s.finalized_checkpoint(),
         }
     }
     fn invalidate_root_cache(&mut self) {
@@ -391,6 +433,7 @@ impl<
             BeaconState::Phase0(s) => s.invalidate_root_cache(),
             BeaconState::Altair(s) => s.invalidate_root_cache(),
             BeaconState::Bellatrix(s) => s.invalidate_root_cache(),
+            BeaconState::Capella(s) => s.invalidate_root_cache(),
         }
     }
     fn into_tree_backend(self) -> Result<Self, SszError> {
@@ -447,6 +490,7 @@ impl<
             BeaconState::Phase0(s) => s.ssz_bytes_len(),
             BeaconState::Altair(s) => s.ssz_bytes_len(),
             BeaconState::Bellatrix(s) => s.ssz_bytes_len(),
+            BeaconState::Capella(s) => s.ssz_bytes_len(),
         }
     }
 
@@ -462,6 +506,10 @@ impl<
             }
             BeaconState::Bellatrix(s) => {
                 buf.push(0x02);
+                s.ssz_append(buf);
+            }
+            BeaconState::Capella(s) => {
+                buf.push(0x03);
                 s.ssz_append(buf);
             }
         }
@@ -543,6 +591,18 @@ impl<
                 BYTES_PER_LOGS_BLOOM,
                 MAX_EXTRA_DATA_BYTES,
             >::from_ssz_bytes(rest)?)),
+            0x03 => Ok(BeaconState::Capella(capella::BeaconState::<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >::from_ssz_bytes(rest)?)),
             _ => Err(SszError::Custom(format!(
                 "unknown BeaconState fork discriminant: {disc:#04x}"
             ))),
@@ -586,6 +646,7 @@ impl<
             BeaconState::Phase0(s) => s.tree_hash_root(),
             BeaconState::Altair(s) => s.tree_hash_root(),
             BeaconState::Bellatrix(s) => s.tree_hash_root(),
+            BeaconState::Capella(s) => s.tree_hash_root(),
         }
     }
 
@@ -631,7 +692,7 @@ pub type MinimalBeaconState = BeaconState<
 // ── BeaconBlockBody enum ──────────────────────────────────────────────────────
 
 /// Fork-enum `BeaconBlockBody`.
-// Bellatrix is larger than Phase0/Altair. Boxing would add heap indirection; size difference is acceptable.
+// Capella is larger than prior forks. Boxing would add heap indirection; size difference is acceptable.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BeaconBlockBody<
@@ -649,6 +710,9 @@ pub enum BeaconBlockBody<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    // Capella params
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > {
     Phase0(
         phase0::BeaconBlockBody<
@@ -689,6 +753,24 @@ pub enum BeaconBlockBody<
             MAX_EXTRA_DATA_BYTES,
         >,
     ),
+    Capella(
+        capella::BeaconBlockBody<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+            MAX_BLS_TO_EXECUTION_CHANGES,
+        >,
+    ),
 }
 
 impl<
@@ -704,6 +786,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > Default
     for BeaconBlockBody<
         MAX_PROPOSER_SLASHINGS,
@@ -718,6 +802,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     fn default() -> Self {
@@ -738,6 +824,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > BeaconBlockBodyView
     for BeaconBlockBody<
         MAX_PROPOSER_SLASHINGS,
@@ -752,6 +840,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     type Attestation = phase0::Attestation<MAX_VALIDATORS_PER_COMMITTEE>;
@@ -763,6 +853,7 @@ impl<
             BeaconBlockBody::Phase0(b) => b.randao_reveal(),
             BeaconBlockBody::Altair(b) => b.randao_reveal(),
             BeaconBlockBody::Bellatrix(b) => b.randao_reveal(),
+            BeaconBlockBody::Capella(b) => b.randao_reveal(),
         }
     }
     fn eth1_data(&self) -> &Eth1Data {
@@ -770,6 +861,7 @@ impl<
             BeaconBlockBody::Phase0(b) => b.eth1_data(),
             BeaconBlockBody::Altair(b) => b.eth1_data(),
             BeaconBlockBody::Bellatrix(b) => b.eth1_data(),
+            BeaconBlockBody::Capella(b) => b.eth1_data(),
         }
     }
     fn graffiti(&self) -> &Bytes32 {
@@ -777,6 +869,7 @@ impl<
             BeaconBlockBody::Phase0(b) => b.graffiti(),
             BeaconBlockBody::Altair(b) => b.graffiti(),
             BeaconBlockBody::Bellatrix(b) => b.graffiti(),
+            BeaconBlockBody::Capella(b) => b.graffiti(),
         }
     }
     fn proposer_slashings(&self) -> &[ProposerSlashing] {
@@ -784,6 +877,7 @@ impl<
             BeaconBlockBody::Phase0(b) => b.proposer_slashings(),
             BeaconBlockBody::Altair(b) => b.proposer_slashings(),
             BeaconBlockBody::Bellatrix(b) => b.proposer_slashings(),
+            BeaconBlockBody::Capella(b) => b.proposer_slashings(),
         }
     }
     fn attester_slashings(&self) -> &[Self::AttesterSlashing] {
@@ -791,6 +885,7 @@ impl<
             BeaconBlockBody::Phase0(b) => b.attester_slashings(),
             BeaconBlockBody::Altair(b) => b.attester_slashings(),
             BeaconBlockBody::Bellatrix(b) => b.attester_slashings(),
+            BeaconBlockBody::Capella(b) => b.attester_slashings(),
         }
     }
     fn attestations(&self) -> &[Self::Attestation] {
@@ -798,6 +893,7 @@ impl<
             BeaconBlockBody::Phase0(b) => b.attestations(),
             BeaconBlockBody::Altair(b) => b.attestations(),
             BeaconBlockBody::Bellatrix(b) => b.attestations(),
+            BeaconBlockBody::Capella(b) => b.attestations(),
         }
     }
     fn deposits(&self) -> &[Self::Deposit] {
@@ -805,6 +901,7 @@ impl<
             BeaconBlockBody::Phase0(b) => b.deposits(),
             BeaconBlockBody::Altair(b) => b.deposits(),
             BeaconBlockBody::Bellatrix(b) => b.deposits(),
+            BeaconBlockBody::Capella(b) => b.deposits(),
         }
     }
     fn voluntary_exits(&self) -> &[SignedVoluntaryExit] {
@@ -812,6 +909,7 @@ impl<
             BeaconBlockBody::Phase0(b) => b.voluntary_exits(),
             BeaconBlockBody::Altair(b) => b.voluntary_exits(),
             BeaconBlockBody::Bellatrix(b) => b.voluntary_exits(),
+            BeaconBlockBody::Capella(b) => b.voluntary_exits(),
         }
     }
 }
@@ -829,6 +927,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > Encode
     for BeaconBlockBody<
         MAX_PROPOSER_SLASHINGS,
@@ -843,6 +943,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     const IS_FIXED_SIZE: bool = false;
@@ -856,6 +958,7 @@ impl<
             BeaconBlockBody::Phase0(b) => b.ssz_bytes_len(),
             BeaconBlockBody::Altair(b) => b.ssz_bytes_len(),
             BeaconBlockBody::Bellatrix(b) => b.ssz_bytes_len(),
+            BeaconBlockBody::Capella(b) => b.ssz_bytes_len(),
         }
     }
 
@@ -873,6 +976,10 @@ impl<
                 buf.push(0x02);
                 b.ssz_append(buf);
             }
+            BeaconBlockBody::Capella(b) => {
+                buf.push(0x03);
+                b.ssz_append(buf);
+            }
         }
     }
 }
@@ -890,6 +997,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > Decode
     for BeaconBlockBody<
         MAX_PROPOSER_SLASHINGS,
@@ -904,6 +1013,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     const IS_FIXED_SIZE: bool = false;
@@ -954,6 +1065,24 @@ impl<
             >::from_ssz_bytes(
                 rest
             )?)),
+            0x03 => Ok(BeaconBlockBody::Capella(capella::BeaconBlockBody::<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+            >::from_ssz_bytes(
+                rest
+            )?)),
             _ => Err(SszError::Custom(format!(
                 "unknown BeaconBlockBody fork discriminant: {disc:#04x}"
             ))),
@@ -974,6 +1103,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > TreeHash
     for BeaconBlockBody<
         MAX_PROPOSER_SLASHINGS,
@@ -988,6 +1119,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     const TREE_HASH_TYPE: TreeHashType = TreeHashType::Container;
@@ -997,6 +1130,7 @@ impl<
             BeaconBlockBody::Phase0(b) => b.tree_hash_root(),
             BeaconBlockBody::Altair(b) => b.tree_hash_root(),
             BeaconBlockBody::Bellatrix(b) => b.tree_hash_root(),
+            BeaconBlockBody::Capella(b) => b.tree_hash_root(),
         }
     }
 
@@ -1008,7 +1142,7 @@ impl<
 // ── BeaconBlock enum ──────────────────────────────────────────────────────────
 
 /// Fork-enum `BeaconBlock`.
-// Bellatrix is larger than Phase0/Altair. Boxing would add heap indirection; size difference is acceptable.
+// Capella is larger than prior forks. Boxing would add heap indirection; size difference is acceptable.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BeaconBlock<
@@ -1024,6 +1158,8 @@ pub enum BeaconBlock<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > {
     Phase0(
         phase0::BeaconBlock<
@@ -1064,6 +1200,24 @@ pub enum BeaconBlock<
             MAX_EXTRA_DATA_BYTES,
         >,
     ),
+    Capella(
+        capella::BeaconBlock<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+            MAX_BLS_TO_EXECUTION_CHANGES,
+        >,
+    ),
 }
 
 impl<
@@ -1079,6 +1233,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > Default
     for BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -1093,6 +1249,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     fn default() -> Self {
@@ -1113,6 +1271,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > BeaconBlockView
     for BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -1127,6 +1287,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     type Body = BeaconBlockBody<
@@ -1142,6 +1304,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >;
 
     fn slot(&self) -> Slot {
@@ -1149,6 +1313,7 @@ impl<
             BeaconBlock::Phase0(b) => b.slot(),
             BeaconBlock::Altair(b) => b.slot(),
             BeaconBlock::Bellatrix(b) => b.slot(),
+            BeaconBlock::Capella(b) => b.slot(),
         }
     }
     fn proposer_index(&self) -> ValidatorIndex {
@@ -1156,6 +1321,7 @@ impl<
             BeaconBlock::Phase0(b) => b.proposer_index(),
             BeaconBlock::Altair(b) => b.proposer_index(),
             BeaconBlock::Bellatrix(b) => b.proposer_index(),
+            BeaconBlock::Capella(b) => b.proposer_index(),
         }
     }
     fn parent_root(&self) -> Root {
@@ -1163,6 +1329,7 @@ impl<
             BeaconBlock::Phase0(b) => b.parent_root(),
             BeaconBlock::Altair(b) => b.parent_root(),
             BeaconBlock::Bellatrix(b) => b.parent_root(),
+            BeaconBlock::Capella(b) => b.parent_root(),
         }
     }
     fn state_root(&self) -> Root {
@@ -1170,6 +1337,7 @@ impl<
             BeaconBlock::Phase0(b) => b.state_root(),
             BeaconBlock::Altair(b) => b.state_root(),
             BeaconBlock::Bellatrix(b) => b.state_root(),
+            BeaconBlock::Capella(b) => b.state_root(),
         }
     }
     fn body(&self) -> &Self::Body {
@@ -1201,6 +1369,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > Encode
     for BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -1215,6 +1385,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     const IS_FIXED_SIZE: bool = false;
@@ -1228,6 +1400,7 @@ impl<
             BeaconBlock::Phase0(b) => b.ssz_bytes_len(),
             BeaconBlock::Altair(b) => b.ssz_bytes_len(),
             BeaconBlock::Bellatrix(b) => b.ssz_bytes_len(),
+            BeaconBlock::Capella(b) => b.ssz_bytes_len(),
         }
     }
 
@@ -1243,6 +1416,10 @@ impl<
             }
             BeaconBlock::Bellatrix(b) => {
                 buf.push(0x02);
+                b.ssz_append(buf);
+            }
+            BeaconBlock::Capella(b) => {
+                buf.push(0x03);
                 b.ssz_append(buf);
             }
         }
@@ -1262,6 +1439,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > Decode
     for BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -1276,6 +1455,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     const IS_FIXED_SIZE: bool = false;
@@ -1324,6 +1505,22 @@ impl<
                 BYTES_PER_LOGS_BLOOM,
                 MAX_EXTRA_DATA_BYTES,
             >::from_ssz_bytes(rest)?)),
+            0x03 => Ok(BeaconBlock::Capella(capella::BeaconBlock::<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+            >::from_ssz_bytes(rest)?)),
             _ => Err(SszError::Custom(format!(
                 "unknown BeaconBlock fork discriminant: {disc:#04x}"
             ))),
@@ -1344,6 +1541,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > TreeHash
     for BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -1358,6 +1557,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     const TREE_HASH_TYPE: TreeHashType = TreeHashType::Container;
@@ -1367,6 +1568,7 @@ impl<
             BeaconBlock::Phase0(b) => b.tree_hash_root(),
             BeaconBlock::Altair(b) => b.tree_hash_root(),
             BeaconBlock::Bellatrix(b) => b.tree_hash_root(),
+            BeaconBlock::Capella(b) => b.tree_hash_root(),
         }
     }
 
@@ -1378,7 +1580,7 @@ impl<
 // ── SignedBeaconBlock enum ────────────────────────────────────────────────────
 
 /// Fork-enum `SignedBeaconBlock`.
-// Bellatrix is larger than Phase0/Altair. Boxing would add heap indirection; size difference is acceptable.
+// Capella is larger than prior forks. Boxing would add heap indirection; size difference is acceptable.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignedBeaconBlock<
@@ -1394,6 +1596,8 @@ pub enum SignedBeaconBlock<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > {
     Phase0(
         phase0::SignedBeaconBlock<
@@ -1434,6 +1638,24 @@ pub enum SignedBeaconBlock<
             MAX_EXTRA_DATA_BYTES,
         >,
     ),
+    Capella(
+        capella::SignedBeaconBlock<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+            MAX_BLS_TO_EXECUTION_CHANGES,
+        >,
+    ),
 }
 
 impl<
@@ -1449,6 +1671,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > Default
     for SignedBeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -1463,6 +1687,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     fn default() -> Self {
@@ -1483,6 +1709,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > SignedBeaconBlockView
     for SignedBeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -1497,6 +1725,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     type Message = BeaconBlock<
@@ -1512,6 +1742,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >;
 
     fn message(&self) -> &Self::Message {
@@ -1529,6 +1761,7 @@ impl<
             SignedBeaconBlock::Phase0(b) => b.signature(),
             SignedBeaconBlock::Altair(b) => b.signature(),
             SignedBeaconBlock::Bellatrix(b) => b.signature(),
+            SignedBeaconBlock::Capella(b) => b.signature(),
         }
     }
 }
@@ -1546,6 +1779,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > Encode
     for SignedBeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -1560,6 +1795,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     const IS_FIXED_SIZE: bool = false;
@@ -1573,6 +1810,7 @@ impl<
             SignedBeaconBlock::Phase0(b) => b.ssz_bytes_len(),
             SignedBeaconBlock::Altair(b) => b.ssz_bytes_len(),
             SignedBeaconBlock::Bellatrix(b) => b.ssz_bytes_len(),
+            SignedBeaconBlock::Capella(b) => b.ssz_bytes_len(),
         }
     }
 
@@ -1590,6 +1828,10 @@ impl<
                 buf.push(0x02);
                 b.ssz_append(buf);
             }
+            SignedBeaconBlock::Capella(b) => {
+                buf.push(0x03);
+                b.ssz_append(buf);
+            }
         }
     }
 }
@@ -1607,6 +1849,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > Decode
     for SignedBeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -1621,6 +1865,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     const IS_FIXED_SIZE: bool = false;
@@ -1675,6 +1921,24 @@ impl<
                     MAX_EXTRA_DATA_BYTES,
                 >::from_ssz_bytes(rest)?,
             )),
+            0x03 => Ok(SignedBeaconBlock::Capella(capella::SignedBeaconBlock::<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+            >::from_ssz_bytes(
+                rest
+            )?)),
             _ => Err(SszError::Custom(format!(
                 "unknown SignedBeaconBlock fork discriminant: {disc:#04x}"
             ))),
@@ -1695,6 +1959,8 @@ impl<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
 > TreeHash
     for SignedBeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -1709,6 +1975,8 @@ impl<
         MAX_TRANSACTIONS_PER_PAYLOAD,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
     >
 {
     const TREE_HASH_TYPE: TreeHashType = TreeHashType::Container;
@@ -1718,6 +1986,7 @@ impl<
             SignedBeaconBlock::Phase0(b) => b.tree_hash_root(),
             SignedBeaconBlock::Altair(b) => b.tree_hash_root(),
             SignedBeaconBlock::Bellatrix(b) => b.tree_hash_root(),
+            SignedBeaconBlock::Capella(b) => b.tree_hash_root(),
         }
     }
 
@@ -1730,24 +1999,24 @@ impl<
 
 /// Mainnet fork-enum `BeaconBlockBody`.
 pub type MainnetBeaconBlockBody =
-    BeaconBlockBody<16, 2, 128, 16, 16, 2048, 33, 512, 1_073_741_824, 1_048_576, 256, 32>;
+    BeaconBlockBody<16, 2, 128, 16, 16, 2048, 33, 512, 1_073_741_824, 1_048_576, 256, 32, 16, 16>;
 
 /// Minimal fork-enum `BeaconBlockBody`.
 pub type MinimalBeaconBlockBody =
-    BeaconBlockBody<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>;
+    BeaconBlockBody<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32, 4, 16>;
 
 /// Mainnet fork-enum `BeaconBlock`.
 pub type MainnetBeaconBlock =
-    BeaconBlock<16, 2, 128, 16, 16, 2048, 33, 512, 1_073_741_824, 1_048_576, 256, 32>;
+    BeaconBlock<16, 2, 128, 16, 16, 2048, 33, 512, 1_073_741_824, 1_048_576, 256, 32, 16, 16>;
 
 /// Minimal fork-enum `BeaconBlock`.
 pub type MinimalBeaconBlock =
-    BeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>;
+    BeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32, 4, 16>;
 
 /// Mainnet fork-enum `SignedBeaconBlock`.
 pub type MainnetSignedBeaconBlock =
-    SignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 512, 1_073_741_824, 1_048_576, 256, 32>;
+    SignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 512, 1_073_741_824, 1_048_576, 256, 32, 16, 16>;
 
 /// Minimal fork-enum `SignedBeaconBlock`.
 pub type MinimalSignedBeaconBlock =
-    SignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>;
+    SignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32, 4, 16>;

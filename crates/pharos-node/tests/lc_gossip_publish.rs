@@ -252,6 +252,8 @@ fn build_altair_test_infra() -> (
         altair_fork_epoch: Epoch(0),
         bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(u64::MAX),
+        capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+        capella_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
@@ -590,6 +592,8 @@ async fn no_publish_for_phase0_block() {
         altair_fork_epoch: Epoch(u64::MAX),
         bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(u64::MAX),
+        capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+        capella_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(

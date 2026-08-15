@@ -133,6 +133,10 @@ where
             wrapped.invalidate_root_cache();
             return Ok(wrapped);
         }
+        ForkVariant::Capella => {
+            // Phase 2: capella STF dispatch — implemented in M6 Phase 2.
+            todo!("capella state_transition not yet implemented (Phase 2)")
+        }
     }
     // STF mutated `state` (phase0 + altair arms operate on `&mut state`); reset
     // the cached top-level root so the next `cached_tree_hash_root` call
@@ -239,6 +243,10 @@ where
             *state = E::bellatrix_into_state(inner);
             Ok(())
         }
+        ForkVariant::Capella => {
+            // Phase 2: capella process_justification_and_finalization_fork — Phase 2.
+            todo!("capella process_jaf not yet implemented (Phase 2)")
+        }
     }
 }
 
@@ -274,6 +282,10 @@ where
             inner.process_slots_bellatrix(target_slot)?;
             *state = E::bellatrix_into_state(inner);
             Ok(())
+        }
+        ForkVariant::Capella => {
+            // Phase 2: capella process_slots_fork — Phase 2.
+            todo!("capella process_slots not yet implemented (Phase 2)")
         }
     }
 }
