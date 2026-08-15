@@ -5,6 +5,7 @@
 
 pub mod block_ingestion;
 pub mod engine_driver;
+pub mod engine_keepalive;
 pub mod fork_migration;
 pub mod host_impl;
 pub mod jwt_autogen;

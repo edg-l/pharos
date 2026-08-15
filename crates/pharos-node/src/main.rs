@@ -26,6 +26,7 @@ use tracing::info;
 use pharos_node::ExecutionEngineHandle;
 use pharos_node::block_ingestion::run_block_ingestion_loop;
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
+use pharos_node::engine_keepalive::{hex_to_u256, run_transition_config_keepalive, u256_to_hex};
 use pharos_node::fork_migration::run_fork_migration_loop;
 use pharos_node::host_impl::HostImpl;
 use pharos_node::jwt_autogen::ensure_jwt_secret;
@@ -126,6 +127,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Shutdown broadcast: set to `true` on Ctrl-C to signal long-lived tasks.
+    let (pharos_node_shutdown_tx, pharos_node_shutdown_rx) = watch::channel(false);
 
     // ── Step 0: Load RuntimeConfig ─────────────────────────────────────────
     //
@@ -290,6 +294,56 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // ── Step 4b: Cold-start TTD check + keepalive ─────────────────────────
+
+    if let Some(ref engine_handle) = engine_handle_opt {
+        let cl_cfg = pharos_engine::TransitionConfigurationV1 {
+            terminal_total_difficulty: u256_to_hex(runtime_cfg.terminal_total_difficulty),
+            terminal_block_hash: format!(
+                "0x{}",
+                hex::encode(runtime_cfg.terminal_block_hash.as_slice())
+            ),
+            terminal_block_number: "0x0".into(),
+        };
+        match engine_handle
+            .exchange_transition_configuration_async(cl_cfg)
+            .await
+        {
+            Ok(el_cfg) => {
+                info!(
+                    el_ttd = %el_cfg.terminal_total_difficulty,
+                    "exchange_transition_configuration succeeded"
+                );
+                match hex_to_u256(&el_cfg.terminal_total_difficulty) {
+                    Ok(el_ttd) => {
+                        if el_ttd != runtime_cfg.terminal_total_difficulty {
+                            tracing::warn!(
+                                cl_ttd = %runtime_cfg.terminal_total_difficulty,
+                                el_ttd = %el_ttd,
+                                "TTD mismatch with execution layer (cold-start check)",
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to parse EL TTD from cold-start response");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cold-start exchange_transition_configuration failed");
+            }
+        }
+
+        // Spawn keepalive task.
+        let eng = engine_handle.clone();
+        let ttd = runtime_cfg.terminal_total_difficulty;
+        let shutdown_rx = pharos_node_shutdown_rx.clone();
+        tokio::spawn(async move {
+            run_transition_config_keepalive(eng, ttd, shutdown_rx).await;
+        });
+        info!("transition_config keepalive task started");
+    }
+
     // ── Step 5: Construct host + network ──────────────────────────────────
 
     // Wrap in Arc so we can retain a handle for record_attnets_change after
@@ -434,6 +488,8 @@ async fn main() -> anyhow::Result<()> {
         .context("ctrl_c signal handler failed")?;
 
     info!("received shutdown signal");
+    // Signal long-lived tasks (keepalive, etc.) to shut down.
+    let _ = pharos_node_shutdown_tx.send(true);
     handle.shutdown().await;
     info!("network shutdown complete");
 

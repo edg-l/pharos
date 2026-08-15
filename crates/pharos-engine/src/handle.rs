@@ -17,7 +17,7 @@ use crate::client::{EngineClient, ForkchoiceUpdatedVersion, GetPayloadVersion, N
 use crate::error::EngineError;
 use crate::types::{
     ExecutionPayloadV1, ForkchoiceStateV1, ForkchoiceUpdatedV1Response, PayloadAttributesV1,
-    PayloadIdV1, PayloadStatusV1, SyncingStatus,
+    PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
 };
 
 /// Capacity of the EngineHandle → actor request channel.
@@ -61,6 +61,10 @@ pub enum EngineRequest {
     },
     Syncing {
         reply: oneshot::Sender<Result<SyncingStatus, EngineError>>,
+    },
+    ExchangeTransitionConfiguration {
+        config: TransitionConfigurationV1,
+        reply: oneshot::Sender<Result<TransitionConfigurationV1, EngineError>>,
     },
 }
 
@@ -147,6 +151,23 @@ impl EngineHandle {
         hash: String,
     ) -> Result<Option<crate::types::BlockHeader>, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::GetBlockByHash { hash, reply })
+    }
+
+    /// Async `engine_exchangeTransitionConfigurationV1`.
+    ///
+    /// Sends the CL's transition configuration to the EL and returns the EL's
+    /// configuration.  Used by the keepalive task in `pharos-node`.
+    pub async fn exchange_transition_configuration_async(
+        &self,
+        config: TransitionConfigurationV1,
+    ) -> Result<TransitionConfigurationV1, EngineError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(EngineRequest::ExchangeTransitionConfiguration { config, reply })
+            .await
+            .map_err(|_| EngineError::UnexpectedResponse("engine actor dropped".into()))?;
+        rx.await
+            .map_err(|_| EngineError::UnexpectedResponse("engine actor dropped reply".into()))?
     }
 }
 
@@ -250,5 +271,172 @@ async fn dispatch(client: &EngineClient, req: EngineRequest) {
         EngineRequest::Syncing { reply } => {
             let _ = reply.send(client.syncing().await);
         }
+        EngineRequest::ExchangeTransitionConfiguration { config, reply } => {
+            let _ = reply.send(client.exchange_transition_configuration(config).await);
+        }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use axum::{
+        Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post,
+    };
+    use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+    use parking_lot::Mutex;
+    use serde::Deserialize;
+    use serde_json::{Value, json};
+    use tokio::net::TcpListener;
+
+    use super::*;
+    use crate::jwt::JwtSecret;
+
+    // ── Minimal mock EL ───────────────────────────────────────────────────────
+
+    #[derive(Clone)]
+    struct MockState {
+        secret: Arc<JwtSecret>,
+        responses: Arc<Mutex<HashMap<String, Value>>>,
+    }
+
+    #[derive(Deserialize)]
+    struct RpcEnvelope {
+        method: String,
+        #[allow(dead_code)]
+        params: Value,
+        id: u64,
+    }
+
+    async fn mock_handler(
+        State(s): State<MockState>,
+        headers: axum::http::HeaderMap,
+        Json(req): Json<RpcEnvelope>,
+    ) -> impl IntoResponse {
+        let bearer = headers
+            .get("authorization")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+        let Some(token) = bearer else {
+            return (StatusCode::UNAUTHORIZED, Json(json!({"error": "no token"}))).into_response();
+        };
+        let mut val = Validation::new(Algorithm::HS256);
+        val.required_spec_claims.clear();
+        val.required_spec_claims.insert("iat".into());
+        val.validate_exp = false;
+        if decode::<Value>(token, &DecodingKey::from_secret(s.secret.as_bytes()), &val).is_err() {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "bad token"})),
+            )
+                .into_response();
+        }
+        let result = s
+            .responses
+            .lock()
+            .get(&req.method)
+            .cloned()
+            .unwrap_or(json!(null));
+        (
+            StatusCode::OK,
+            Json(json!({"jsonrpc": "2.0", "id": req.id, "result": result})),
+        )
+            .into_response()
+    }
+
+    struct MockServer {
+        url: reqwest::Url,
+        secret: JwtSecret,
+        responses: Arc<Mutex<HashMap<String, Value>>>,
+    }
+
+    impl MockServer {
+        fn set(&self, method: &str, value: Value) {
+            self.responses.lock().insert(method.into(), value);
+        }
+    }
+
+    async fn spawn_mock() -> MockServer {
+        let secret = JwtSecret::from_bytes([0xAB; 32]);
+        let responses: Arc<Mutex<HashMap<String, Value>>> = Arc::new(Mutex::new(HashMap::new()));
+        let state = MockState {
+            secret: Arc::new(secret.clone()),
+            responses: responses.clone(),
+        };
+        let app = Router::new()
+            .route("/", post(mock_handler))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let url = format!("http://{addr}/").parse().unwrap();
+        MockServer {
+            url,
+            secret,
+            responses,
+        }
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn exchange_transition_configuration_async_dispatch() {
+        let mock = spawn_mock().await;
+        // The mock echoes back the same TTD/hash/number the caller sends.
+        mock.set(
+            "engine_exchangeTransitionConfigurationV1",
+            json!({
+                "terminalTotalDifficulty": "0x123",
+                "terminalBlockHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "terminalBlockNumber": "0x0",
+            }),
+        );
+
+        let primary = EngineClient::new(mock.url.clone(), mock.secret.clone()).unwrap();
+
+        // Wire actor directly on the current test tokio runtime to avoid
+        // nesting a new runtime inside an async context (which panics on drop).
+        let (tx, rx) = mpsc::channel(8);
+
+        // Build two runtimes we need to supply but must not drop in async context.
+        // `std::mem::forget` prevents the drop-in-async-context panic; this is
+        // acceptable in tests (the OS reclaims memory at process exit).
+        let actor_rt: Arc<Runtime> = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let placeholder_rt: Arc<Runtime> = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let rt_for_actor = actor_rt.clone();
+        tokio::spawn(async move {
+            run_engine_actor(rt_for_actor, primary, None, rx).await;
+        });
+        std::mem::forget(actor_rt);
+
+        let handle = EngineHandle::new(placeholder_rt.clone(), tx);
+        std::mem::forget(placeholder_rt);
+
+        let config = TransitionConfigurationV1 {
+            terminal_total_difficulty: "0x123".into(),
+            terminal_block_hash:
+                "0x0000000000000000000000000000000000000000000000000000000000000000".into(),
+            terminal_block_number: "0x0".into(),
+        };
+        let result = handle
+            .exchange_transition_configuration_async(config)
+            .await
+            .expect("exchange_transition_configuration_async must succeed");
+        assert_eq!(result.terminal_total_difficulty, "0x123");
+        assert_eq!(result.terminal_block_number, "0x0");
     }
 }
