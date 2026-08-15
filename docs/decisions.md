@@ -248,3 +248,22 @@ pair (`mainnet` + `minimal`), matching `ssz_static`. Exceptions:
 
 Enforced in: `crates/pharos-conformance/src/lib.rs` (the
 `all_categories()` table and the per-category dispatch blocks).
+
+## M2 — Networking layer (pharos-network Phase 1)
+
+### Q-quic-enr — ENR QUIC port keys
+
+**Status**: Accepted. **Date**: 2026-05-21.
+
+Two custom ENR keys are used to advertise QUIC transport endpoints:
+`"quic"` (IPv4 QUIC UDP port, u16) and `"quic6"` (IPv6 QUIC UDP port,
+u16). Values are stored via `Enr::builder().add_value(key, &port)`, which
+RLP-encodes the u16; `get_decodable::<u16>(key)` round-trips correctly.
+
+Source/precedent: the de facto Rust CL ecosystem convention (Lighthouse and
+other CL clients use these exact key names). The consensus-specs
+`p2p-interface.md` is silent on QUIC ENR keys for Phase 0; the key names
+follow established inter-client practice.
+
+Enforced in: `crates/pharos-network/src/discovery/enr.rs`
+(`build_local_enr`, `read_quic_port`, `read_quic6_port`).

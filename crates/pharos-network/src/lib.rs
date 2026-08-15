@@ -20,5 +20,7 @@ pub mod types;
 
 pub use error::NetworkError;
 pub use handle::NetworkHandle;
+pub use host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict};
 pub use network::{Network, NetworkBuilder};
 pub use scoring::{NoopScorer, PeerScorer, ScoreEvent};
+pub use types::{ConnectionDirection, DisconnectReason, ForkDigest, PeerInfo, SubnetId};

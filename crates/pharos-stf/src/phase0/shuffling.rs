@@ -2,10 +2,14 @@
 //!
 //! Per `specs/phase0/beacon-chain.md:816-853`.
 //!
-//! The spec defines `compute_shuffled_index` in terms of
-//! `compute_shuffled_permutation`. We implement the single-index form
-//! directly, which avoids allocating a full permutation array when only one
-//! position is needed.
+//! The canonical single-index function lives in `pharos-types::shuffling` so
+//! that `pharos-network` can call it for subnet assignment without depending on
+//! `pharos-stf`. The re-export below keeps all STF call sites unchanged.
+//!
+//! `compute_shuffled_permutation` (the batched form) remains here; it amortises
+//! hashing across a full permutation and is only used internally by the STF.
+
+pub use pharos_types::shuffling::compute_shuffled_index;
 
 use pharos_utils::Hash256;
 use pharos_utils::hash::hash;
@@ -63,55 +67,6 @@ pub fn compute_shuffled_permutation(
     }
 
     indices
-}
-
-/// Return the shuffled index corresponding to `seed` and `index_count`.
-///
-/// Per `specs/phase0/beacon-chain.md:848-853`.
-///
-/// Implements the single-index swap-or-not algorithm from the Swap-or-Not
-/// Feistel shuffle paper (Hoang et al., 2012). This is O(round_count) and
-/// equivalent to indexing into the full permutation, but avoids allocating
-/// the complete permutation array.
-pub fn compute_shuffled_index(
-    index: u64,
-    index_count: u64,
-    seed: &Hash256,
-    round_count: u64,
-) -> u64 {
-    assert!(
-        index < index_count,
-        "index {index} >= index_count {index_count}"
-    );
-
-    // 37-byte buffer: 32-byte seed + 1-byte round + 4-byte bucket.
-    let mut buf = [0u8; 37];
-    buf[..32].copy_from_slice(seed.as_slice());
-
-    let mut cur = index;
-    for current_round in 0..round_count {
-        buf[32] = current_round as u8;
-
-        // pivot = hash(seed ++ round)[0:8] % index_count
-        let pivot_hash = hash(&buf[..33]);
-        let pivot = bytes_to_uint64(&pivot_hash.as_slice()[..8]) % index_count;
-
-        // flip = (pivot + index_count - cur) % index_count
-        let flip = (pivot + index_count - cur) % index_count;
-
-        // Swap cur <- flip depending on the bit at position max(cur, flip).
-        let position = cur.max(flip);
-        let bucket = (position / 256) as u32;
-        buf[33..37].copy_from_slice(&bucket.to_le_bytes());
-
-        let source = hash(&buf[..37]);
-        let byte_val = source.as_slice()[(position % 256 / 8) as usize];
-        let bit = (byte_val >> (position % 8)) & 1;
-        if bit != 0 {
-            cur = flip;
-        }
-    }
-    cur
 }
 
 #[cfg(test)]
