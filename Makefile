@@ -18,7 +18,7 @@ CARGO         ?= cargo
 DATA_DIR      ?= ./data
 GENESIS_PATH  ?=
 CONFIG_DIR    ?=
-SPEC_TESTS_TAG?= v1.6.1
+SPEC_TESTS_TAG?= v1.7.0-alpha.8
 LOGS          := target/test-logs
 
 # Forward extra args after `--` to cargo. Example: `make run ARGS="--metrics"`.
