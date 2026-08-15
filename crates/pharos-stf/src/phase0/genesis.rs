@@ -305,6 +305,8 @@ impl<
     const MAX_PENDING_ATTESTATIONS: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
 > BeaconStateMut
     for ForkBeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -317,6 +319,8 @@ impl<
         JUSTIFICATION_BITS_LENGTH,
         2048, // MAX_VALIDATORS_PER_COMMITTEE
         SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
     >
 where
     pharos_utils::Hash256: Default + Clone,
@@ -329,6 +333,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis query called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis query called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -337,6 +344,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_eth1_deposit_root(root),
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis mutation called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis mutation called on Bellatrix BeaconState")
             }
         }
     }
@@ -347,6 +357,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis query called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis query called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -355,6 +368,9 @@ where
             ForkBeaconState::Phase0(s) => s.validator_pubkey_at(idx),
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis query called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis query called on Bellatrix BeaconState")
             }
         }
     }
@@ -365,6 +381,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis query called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis query called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -373,6 +392,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_balance_at(idx, val),
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis mutation called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis mutation called on Bellatrix BeaconState")
             }
         }
     }
@@ -383,6 +405,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis mutation called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis mutation called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -391,6 +416,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_validator_activation_eligibility_epoch(idx, epoch),
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis mutation called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis mutation called on Bellatrix BeaconState")
             }
         }
     }
@@ -401,6 +429,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis mutation called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis mutation called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -410,6 +441,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis query called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis query called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -418,6 +452,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_genesis_validators_root(root),
             ForkBeaconState::Altair(_) => {
                 unreachable!("genesis mutation called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("genesis mutation called on Bellatrix BeaconState")
             }
         }
     }

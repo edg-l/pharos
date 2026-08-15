@@ -113,6 +113,7 @@ fn blocks_by_range_ordering() {
         .map(|b: &MainnetSignedBeaconBlock| match b {
             MainnetSignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
             MainnetSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+            MainnetSignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
         })
         .collect();
     assert_eq!(slots, vec![1, 3, 5, 7], "must be in ascending slot order");

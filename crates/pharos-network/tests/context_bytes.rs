@@ -132,6 +132,7 @@ async fn context_bytes_codec() {
             sorted.sort_by_key(|b| match b {
                 MainnetSignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
                 MainnetSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+                MainnetSignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
             });
 
             // Slot 10 must be Phase0.

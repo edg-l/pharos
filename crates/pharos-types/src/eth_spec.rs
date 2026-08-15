@@ -465,6 +465,27 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// fixture files.
     fn altair_into_signed_block(s: Self::AltairSignedBeaconBlock) -> Self::SignedBeaconBlock;
 
+    /// Unwrap a fork-enum `SignedBeaconBlock` to the inner bellatrix variant.
+    ///
+    /// Returns `Some` if the block is a `Bellatrix` variant, `None` otherwise.
+    fn unwrap_bellatrix_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::BellatrixSignedBeaconBlock>;
+
+    /// Unwrap a fork-enum `BeaconState` to the inner bellatrix variant.
+    ///
+    /// Returns `Some` if the state is a `Bellatrix` variant, `None` otherwise.
+    fn unwrap_bellatrix_state(s: &Self::BeaconState) -> Option<&Self::BellatrixBeaconState>;
+
+    /// Wrap a concrete bellatrix `BeaconState` into the fork-enum `BeaconState`.
+    fn bellatrix_into_state(s: Self::BellatrixBeaconState) -> Self::BeaconState;
+
+    /// Wrap a concrete bellatrix `BeaconBlock` into the fork-enum `BeaconBlock`.
+    fn bellatrix_into_block(s: Self::BellatrixBeaconBlock) -> Self::BeaconBlock;
+
+    /// Wrap a concrete bellatrix `SignedBeaconBlock` into the fork-enum `SignedBeaconBlock`.
+    fn bellatrix_into_signed_block(s: Self::BellatrixSignedBeaconBlock) -> Self::SignedBeaconBlock;
+
     // -- Container associated types (D7) --
     // These allow STF code to be generic over `<E: EthSpec>` and reference
     // `E::BeaconState`, `E::BeaconBlock`, etc. without naming the concrete
@@ -642,6 +663,88 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + Sync
         + 'static
         + crate::views::BeaconBlockBodyView;
+
+    /// Bellatrix inner `BeaconState` (unwrapped; used by bellatrix STF entry).
+    type BellatrixBeaconState: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconStateView;
+
+    /// Bellatrix inner `BeaconBlock` (unwrapped).
+    type BellatrixBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockView;
+
+    /// Bellatrix inner `SignedBeaconBlock` (unwrapped).
+    type BellatrixSignedBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::SignedBeaconBlockView;
+
+    /// Bellatrix inner `BeaconBlockBody` (unwrapped).
+    type BellatrixBeaconBlockBody: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockBodyView;
+
+    /// Bellatrix `ExecutionPayload` for this preset.
+    type ExecutionPayload: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Bellatrix `ExecutionPayloadHeader` for this preset.
+    type ExecutionPayloadHeader: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
 
     /// Altair `SignedContributionAndProof` for this preset.
     ///
@@ -964,6 +1067,7 @@ impl EthSpec for MainnetEthSpec {
         match s {
             crate::state::MainnetSignedBeaconBlock::Phase0(inner) => Some(inner),
             crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Bellatrix(_) => None,
         }
     }
 
@@ -973,6 +1077,7 @@ impl EthSpec for MainnetEthSpec {
         match s {
             crate::state::MainnetSignedBeaconBlock::Altair(inner) => Some(inner),
             crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Bellatrix(_) => None,
         }
     }
 
@@ -980,6 +1085,7 @@ impl EthSpec for MainnetEthSpec {
         match s {
             crate::state::MainnetBeaconState::Altair(inner) => Some(inner),
             crate::state::MainnetBeaconState::Phase0(_) => None,
+            crate::state::MainnetBeaconState::Bellatrix(_) => None,
         }
     }
 
@@ -987,6 +1093,7 @@ impl EthSpec for MainnetEthSpec {
         match s {
             crate::state::MainnetBeaconState::Phase0(inner) => Some(inner),
             crate::state::MainnetBeaconState::Altair(_) => None,
+            crate::state::MainnetBeaconState::Bellatrix(_) => None,
         }
     }
 
@@ -994,6 +1101,7 @@ impl EthSpec for MainnetEthSpec {
         match s {
             crate::state::MainnetBeaconState::Altair(inner) => Some(inner),
             crate::state::MainnetBeaconState::Phase0(_) => None,
+            crate::state::MainnetBeaconState::Bellatrix(_) => None,
         }
     }
 
@@ -1009,49 +1117,99 @@ impl EthSpec for MainnetEthSpec {
         crate::state::MainnetSignedBeaconBlock::Altair(s)
     }
 
+    fn unwrap_bellatrix_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::BellatrixSignedBeaconBlock> {
+        match s {
+            crate::state::MainnetSignedBeaconBlock::Bellatrix(inner) => Some(inner),
+            crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn unwrap_bellatrix_state(s: &Self::BeaconState) -> Option<&Self::BellatrixBeaconState> {
+        match s {
+            crate::state::MainnetBeaconState::Bellatrix(inner) => Some(inner),
+            crate::state::MainnetBeaconState::Phase0(_) => None,
+            crate::state::MainnetBeaconState::Altair(_) => None,
+        }
+    }
+
+    fn bellatrix_into_state(s: Self::BellatrixBeaconState) -> Self::BeaconState {
+        crate::state::MainnetBeaconState::Bellatrix(s)
+    }
+
+    fn bellatrix_into_block(s: Self::BellatrixBeaconBlock) -> Self::BeaconBlock {
+        crate::state::MainnetBeaconBlock::Bellatrix(s)
+    }
+
+    fn bellatrix_into_signed_block(s: Self::BellatrixSignedBeaconBlock) -> Self::SignedBeaconBlock {
+        crate::state::MainnetSignedBeaconBlock::Bellatrix(s)
+    }
+
     // Fork-enum types (D7 / Task 1.9)
     type BeaconState = crate::state::MainnetBeaconState;
     type Phase0BeaconState = crate::phase0::MainnetBeaconState;
     type AltairBeaconState = crate::altair::MainnetBeaconState;
 
     type BeaconBlock = crate::state::BeaconBlock<
-        16,   // MAX_PROPOSER_SLASHINGS
-        2,    // MAX_ATTESTER_SLASHINGS
-        128,  // MAX_ATTESTATIONS
-        16,   // MAX_DEPOSITS
-        16,   // MAX_VOLUNTARY_EXITS
-        2048, // MAX_VALIDATORS_PER_COMMITTEE
-        33,   // DEPOSIT_PROOF_LENGTH
-        512,  // SYNC_COMMITTEE_SIZE
+        16,            // MAX_PROPOSER_SLASHINGS
+        2,             // MAX_ATTESTER_SLASHINGS
+        128,           // MAX_ATTESTATIONS
+        16,            // MAX_DEPOSITS
+        16,            // MAX_VOLUNTARY_EXITS
+        2048,          // MAX_VALIDATORS_PER_COMMITTEE
+        33,            // DEPOSIT_PROOF_LENGTH
+        512,           // SYNC_COMMITTEE_SIZE
+        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
+        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
+        256,           // BYTES_PER_LOGS_BLOOM
+        32,            // MAX_EXTRA_DATA_BYTES
     >;
     type Phase0BeaconBlock = crate::phase0::MainnetBeaconBlock;
     type AltairBeaconBlock = crate::altair::MainnetBeaconBlock;
 
     type SignedBeaconBlock = crate::state::SignedBeaconBlock<
-        16,   // MAX_PROPOSER_SLASHINGS
-        2,    // MAX_ATTESTER_SLASHINGS
-        128,  // MAX_ATTESTATIONS
-        16,   // MAX_DEPOSITS
-        16,   // MAX_VOLUNTARY_EXITS
-        2048, // MAX_VALIDATORS_PER_COMMITTEE
-        33,   // DEPOSIT_PROOF_LENGTH
-        512,  // SYNC_COMMITTEE_SIZE
+        16,            // MAX_PROPOSER_SLASHINGS
+        2,             // MAX_ATTESTER_SLASHINGS
+        128,           // MAX_ATTESTATIONS
+        16,            // MAX_DEPOSITS
+        16,            // MAX_VOLUNTARY_EXITS
+        2048,          // MAX_VALIDATORS_PER_COMMITTEE
+        33,            // DEPOSIT_PROOF_LENGTH
+        512,           // SYNC_COMMITTEE_SIZE
+        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
+        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
+        256,           // BYTES_PER_LOGS_BLOOM
+        32,            // MAX_EXTRA_DATA_BYTES
     >;
     type Phase0SignedBeaconBlock = crate::phase0::MainnetSignedBeaconBlock;
     type AltairSignedBeaconBlock = crate::altair::MainnetSignedBeaconBlock;
 
     type BeaconBlockBody = crate::state::BeaconBlockBody<
-        16,   // MAX_PROPOSER_SLASHINGS
-        2,    // MAX_ATTESTER_SLASHINGS
-        128,  // MAX_ATTESTATIONS
-        16,   // MAX_DEPOSITS
-        16,   // MAX_VOLUNTARY_EXITS
-        2048, // MAX_VALIDATORS_PER_COMMITTEE
-        33,   // DEPOSIT_PROOF_LENGTH
-        512,  // SYNC_COMMITTEE_SIZE
+        16,            // MAX_PROPOSER_SLASHINGS
+        2,             // MAX_ATTESTER_SLASHINGS
+        128,           // MAX_ATTESTATIONS
+        16,            // MAX_DEPOSITS
+        16,            // MAX_VOLUNTARY_EXITS
+        2048,          // MAX_VALIDATORS_PER_COMMITTEE
+        33,            // DEPOSIT_PROOF_LENGTH
+        512,           // SYNC_COMMITTEE_SIZE
+        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
+        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
+        256,           // BYTES_PER_LOGS_BLOOM
+        32,            // MAX_EXTRA_DATA_BYTES
     >;
     type Phase0BeaconBlockBody = crate::phase0::MainnetBeaconBlockBody;
     type AltairBeaconBlockBody = crate::altair::MainnetBeaconBlockBody;
+    type BellatrixBeaconState = crate::bellatrix::MainnetBeaconState;
+    type BellatrixBeaconBlock = crate::bellatrix::MainnetBeaconBlock;
+    type BellatrixSignedBeaconBlock = crate::bellatrix::MainnetSignedBeaconBlock;
+    type BellatrixBeaconBlockBody = crate::bellatrix::MainnetBeaconBlockBody;
+    /// Mainnet: `ExecutionPayload<1_073_741_824, 1_048_576, 256, 32>`.
+    type ExecutionPayload = crate::bellatrix::MainnetExecutionPayload;
+    /// Mainnet: `ExecutionPayloadHeader<256, 32>`.
+    type ExecutionPayloadHeader = crate::bellatrix::MainnetExecutionPayloadHeader;
     /// Mainnet: `SYNC_SUBCOMMITTEE_SIZE = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT = 512 / 4 = 128`.
     type AltairSignedContributionAndProof = crate::altair::SignedContributionAndProof<128>;
     /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`.
@@ -1324,6 +1482,7 @@ impl EthSpec for MinimalEthSpec {
         match s {
             crate::state::MinimalSignedBeaconBlock::Phase0(inner) => Some(inner),
             crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
         }
     }
 
@@ -1333,6 +1492,7 @@ impl EthSpec for MinimalEthSpec {
         match s {
             crate::state::MinimalSignedBeaconBlock::Altair(inner) => Some(inner),
             crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
         }
     }
 
@@ -1340,6 +1500,7 @@ impl EthSpec for MinimalEthSpec {
         match s {
             crate::state::MinimalBeaconState::Altair(inner) => Some(inner),
             crate::state::MinimalBeaconState::Phase0(_) => None,
+            crate::state::MinimalBeaconState::Bellatrix(_) => None,
         }
     }
 
@@ -1347,6 +1508,7 @@ impl EthSpec for MinimalEthSpec {
         match s {
             crate::state::MinimalBeaconState::Phase0(inner) => Some(inner),
             crate::state::MinimalBeaconState::Altair(_) => None,
+            crate::state::MinimalBeaconState::Bellatrix(_) => None,
         }
     }
 
@@ -1354,6 +1516,7 @@ impl EthSpec for MinimalEthSpec {
         match s {
             crate::state::MinimalBeaconState::Altair(inner) => Some(inner),
             crate::state::MinimalBeaconState::Phase0(_) => None,
+            crate::state::MinimalBeaconState::Bellatrix(_) => None,
         }
     }
 
@@ -1369,49 +1532,99 @@ impl EthSpec for MinimalEthSpec {
         crate::state::MinimalSignedBeaconBlock::Altair(s)
     }
 
+    fn unwrap_bellatrix_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::BellatrixSignedBeaconBlock> {
+        match s {
+            crate::state::MinimalSignedBeaconBlock::Bellatrix(inner) => Some(inner),
+            crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn unwrap_bellatrix_state(s: &Self::BeaconState) -> Option<&Self::BellatrixBeaconState> {
+        match s {
+            crate::state::MinimalBeaconState::Bellatrix(inner) => Some(inner),
+            crate::state::MinimalBeaconState::Phase0(_) => None,
+            crate::state::MinimalBeaconState::Altair(_) => None,
+        }
+    }
+
+    fn bellatrix_into_state(s: Self::BellatrixBeaconState) -> Self::BeaconState {
+        crate::state::MinimalBeaconState::Bellatrix(s)
+    }
+
+    fn bellatrix_into_block(s: Self::BellatrixBeaconBlock) -> Self::BeaconBlock {
+        crate::state::MinimalBeaconBlock::Bellatrix(s)
+    }
+
+    fn bellatrix_into_signed_block(s: Self::BellatrixSignedBeaconBlock) -> Self::SignedBeaconBlock {
+        crate::state::MinimalSignedBeaconBlock::Bellatrix(s)
+    }
+
     // Fork-enum types (D7 / Task 1.9)
     type BeaconState = crate::state::MinimalBeaconState;
     type Phase0BeaconState = crate::phase0::MinimalBeaconState;
     type AltairBeaconState = crate::altair::MinimalBeaconState;
 
     type BeaconBlock = crate::state::BeaconBlock<
-        16,   // MAX_PROPOSER_SLASHINGS
-        2,    // MAX_ATTESTER_SLASHINGS
-        128,  // MAX_ATTESTATIONS
-        16,   // MAX_DEPOSITS
-        16,   // MAX_VOLUNTARY_EXITS
-        2048, // MAX_VALIDATORS_PER_COMMITTEE
-        33,   // DEPOSIT_PROOF_LENGTH
-        32,   // SYNC_COMMITTEE_SIZE
+        16,            // MAX_PROPOSER_SLASHINGS
+        2,             // MAX_ATTESTER_SLASHINGS
+        128,           // MAX_ATTESTATIONS
+        16,            // MAX_DEPOSITS
+        16,            // MAX_VOLUNTARY_EXITS
+        2048,          // MAX_VALIDATORS_PER_COMMITTEE
+        33,            // DEPOSIT_PROOF_LENGTH
+        32,            // SYNC_COMMITTEE_SIZE
+        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
+        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
+        256,           // BYTES_PER_LOGS_BLOOM
+        32,            // MAX_EXTRA_DATA_BYTES
     >;
     type Phase0BeaconBlock = crate::phase0::MinimalBeaconBlock;
     type AltairBeaconBlock = crate::altair::MinimalBeaconBlock;
 
     type SignedBeaconBlock = crate::state::SignedBeaconBlock<
-        16,   // MAX_PROPOSER_SLASHINGS
-        2,    // MAX_ATTESTER_SLASHINGS
-        128,  // MAX_ATTESTATIONS
-        16,   // MAX_DEPOSITS
-        16,   // MAX_VOLUNTARY_EXITS
-        2048, // MAX_VALIDATORS_PER_COMMITTEE
-        33,   // DEPOSIT_PROOF_LENGTH
-        32,   // SYNC_COMMITTEE_SIZE
+        16,            // MAX_PROPOSER_SLASHINGS
+        2,             // MAX_ATTESTER_SLASHINGS
+        128,           // MAX_ATTESTATIONS
+        16,            // MAX_DEPOSITS
+        16,            // MAX_VOLUNTARY_EXITS
+        2048,          // MAX_VALIDATORS_PER_COMMITTEE
+        33,            // DEPOSIT_PROOF_LENGTH
+        32,            // SYNC_COMMITTEE_SIZE
+        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
+        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
+        256,           // BYTES_PER_LOGS_BLOOM
+        32,            // MAX_EXTRA_DATA_BYTES
     >;
     type Phase0SignedBeaconBlock = crate::phase0::MinimalSignedBeaconBlock;
     type AltairSignedBeaconBlock = crate::altair::MinimalSignedBeaconBlock;
 
     type BeaconBlockBody = crate::state::BeaconBlockBody<
-        16,   // MAX_PROPOSER_SLASHINGS
-        2,    // MAX_ATTESTER_SLASHINGS
-        128,  // MAX_ATTESTATIONS
-        16,   // MAX_DEPOSITS
-        16,   // MAX_VOLUNTARY_EXITS
-        2048, // MAX_VALIDATORS_PER_COMMITTEE
-        33,   // DEPOSIT_PROOF_LENGTH
-        32,   // SYNC_COMMITTEE_SIZE
+        16,            // MAX_PROPOSER_SLASHINGS
+        2,             // MAX_ATTESTER_SLASHINGS
+        128,           // MAX_ATTESTATIONS
+        16,            // MAX_DEPOSITS
+        16,            // MAX_VOLUNTARY_EXITS
+        2048,          // MAX_VALIDATORS_PER_COMMITTEE
+        33,            // DEPOSIT_PROOF_LENGTH
+        32,            // SYNC_COMMITTEE_SIZE
+        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
+        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
+        256,           // BYTES_PER_LOGS_BLOOM
+        32,            // MAX_EXTRA_DATA_BYTES
     >;
     type Phase0BeaconBlockBody = crate::phase0::MinimalBeaconBlockBody;
     type AltairBeaconBlockBody = crate::altair::MinimalBeaconBlockBody;
+    type BellatrixBeaconState = crate::bellatrix::MinimalBeaconState;
+    type BellatrixBeaconBlock = crate::bellatrix::MinimalBeaconBlock;
+    type BellatrixSignedBeaconBlock = crate::bellatrix::MinimalSignedBeaconBlock;
+    type BellatrixBeaconBlockBody = crate::bellatrix::MinimalBeaconBlockBody;
+    /// Minimal: `ExecutionPayload<1_073_741_824, 1_048_576, 256, 32>`.
+    type ExecutionPayload = crate::bellatrix::MinimalExecutionPayload;
+    /// Minimal: `ExecutionPayloadHeader<256, 32>`.
+    type ExecutionPayloadHeader = crate::bellatrix::MinimalExecutionPayloadHeader;
     /// Minimal: `SYNC_SUBCOMMITTEE_SIZE = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT = 32 / 4 = 8`.
     type AltairSignedContributionAndProof = crate::altair::SignedContributionAndProof<8>;
     /// Minimal: `SYNC_COMMITTEE_SIZE = 32`.

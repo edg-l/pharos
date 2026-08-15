@@ -248,6 +248,7 @@ impl BlockProvider<MainnetEthSpec> for TestHost {
                 let s = match b {
                     SignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
                     SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+                    SignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
                 };
                 s >= start_slot.0 && s < start_slot.0 + count
             })
@@ -256,6 +257,7 @@ impl BlockProvider<MainnetEthSpec> for TestHost {
         results.sort_by_key(|b| match b {
             SignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
             SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+            SignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
         });
         results
     }
@@ -282,6 +284,7 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
             let proposer_index = match block {
                 SignedBeaconBlock::Phase0(inner) => inner.message.proposer_index.0,
                 SignedBeaconBlock::Altair(inner) => inner.message.proposer_index.0,
+                SignedBeaconBlock::Bellatrix(inner) => inner.message.proposer_index.0,
             };
             if proposer_index == reject_idx {
                 return GossipVerdict::Reject(format!(

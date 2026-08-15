@@ -5,6 +5,7 @@
 //! `EthSpec` trait (`MainnetEthSpec`, `MinimalEthSpec`, ...).
 
 pub mod altair;
+pub mod bellatrix;
 pub mod config;
 pub mod eth_spec;
 pub mod fork;

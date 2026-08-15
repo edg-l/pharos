@@ -55,7 +55,7 @@ pub enum StateTransitionError {
     #[error("ssz error: {0}")]
     Ssz(#[from] pharos_ssz::SszError),
 
-    #[error("unsupported fork: altair STF not yet implemented")]
+    #[error("unsupported fork: STF not yet implemented for this fork")]
     UnsupportedFork,
 
     #[error("sync committee pubkey not found in validator registry")]
@@ -156,6 +156,8 @@ pub enum EpochProcessingError {
     BlockRootUnavailable,
     #[error("invalid epoch for attestation lookup (not current or previous)")]
     InvalidEpochForAttestation,
+    #[error("unsupported fork for this epoch processing path")]
+    UnsupportedFork,
     #[error("ssz error: {0}")]
     Ssz(#[from] pharos_ssz::SszError),
 }

@@ -102,6 +102,9 @@ where
             // Wrap the result back into the fork-enum.
             return Ok(E::altair_into_state(updated));
         }
+        ForkVariant::Bellatrix => {
+            return Err(StateTransitionError::UnsupportedFork);
+        }
     }
     Ok(state)
 }
@@ -196,6 +199,7 @@ where
             *state = E::altair_into_state(inner);
             Ok(())
         }
+        ForkVariant::Bellatrix => Err(EpochProcessingError::UnsupportedFork),
     }
 }
 
@@ -224,5 +228,6 @@ where
             *state = E::altair_into_state(inner);
             Ok(())
         }
+        ForkVariant::Bellatrix => Err(StateTransitionError::UnsupportedFork),
     }
 }

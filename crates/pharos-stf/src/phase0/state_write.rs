@@ -354,6 +354,8 @@ impl<
     const MAX_PENDING_ATTESTATIONS: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
 > BeaconStateWrite
     for ForkBeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -366,6 +368,8 @@ impl<
         JUSTIFICATION_BITS_LENGTH,
         2048, // MAX_VALIDATORS_PER_COMMITTEE
         SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
     >
 where
     pharos_utils::Hash256: Default + Clone,
@@ -378,6 +382,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -386,6 +393,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_latest_block_header(header),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -396,6 +406,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -404,6 +417,9 @@ where
             ForkBeaconState::Phase0(s) => s.push_eth1_data_vote(data),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -414,6 +430,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -422,6 +441,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_validator(idx, v),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -432,6 +454,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -440,6 +465,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_balance(idx, val),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -450,6 +478,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -459,6 +490,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -467,6 +501,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_randao_mix(idx, mix),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -480,6 +517,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -492,6 +532,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -500,6 +543,9 @@ where
             ForkBeaconState::Phase0(s) => s.eth1_deposit_index(),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -510,6 +556,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -518,6 +567,9 @@ where
             ForkBeaconState::Phase0(s) => s.eth1_data_votes_count_matching(data),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -528,6 +580,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -536,6 +591,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_previous_justified_checkpoint(cp),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -546,6 +604,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -554,6 +615,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_finalized_checkpoint(cp),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -567,6 +631,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -579,6 +646,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -587,6 +657,9 @@ where
             ForkBeaconState::Phase0(s) => s.clear_current_epoch_attestations(),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -597,6 +670,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -605,6 +681,9 @@ where
             ForkBeaconState::Phase0(s) => s.previous_epoch_attestations(),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -615,6 +694,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -624,6 +706,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -632,6 +717,9 @@ where
             ForkBeaconState::Phase0(s) => s.historical_roots_len(),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }
@@ -646,6 +734,9 @@ where
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
             }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
+            }
         }
     }
 
@@ -658,6 +749,9 @@ where
             ForkBeaconState::Phase0(s) => s.set_block_root(idx, root),
             ForkBeaconState::Altair(_) => {
                 unreachable!("phase0 STF called on Altair BeaconState")
+            }
+            ForkBeaconState::Bellatrix(_) => {
+                unreachable!("phase0 STF called on Bellatrix BeaconState")
             }
         }
     }

@@ -45,6 +45,7 @@ use pharos_utils::{Bytes32, Gwei, Hash256};
 pub enum ForkVariant {
     Phase0,
     Altair,
+    Bellatrix,
 }
 
 // ── BeaconBlockBodyView ───────────────────────────────────────────────────────
