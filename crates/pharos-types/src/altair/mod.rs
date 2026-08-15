@@ -22,7 +22,8 @@ pub mod state;
 pub use block::{BeaconBlock, SignedBeaconBlock};
 pub use body::BeaconBlockBody;
 pub use constants::{
-    ParticipationFlags, TIMELY_HEAD_FLAG_INDEX, TIMELY_SOURCE_FLAG_INDEX, TIMELY_TARGET_FLAG_INDEX,
+    ParticipationFlags, SYNC_COMMITTEE_SUBNET_COUNT, TIMELY_HEAD_FLAG_INDEX,
+    TIMELY_SOURCE_FLAG_INDEX, TIMELY_TARGET_FLAG_INDEX,
 };
 pub use light_client::{
     CURRENT_SYNC_COMMITTEE_GINDEX, FINALIZED_ROOT_GINDEX, LightClientBootstrap,

@@ -10,13 +10,14 @@
 use std::sync::Arc;
 
 use pharos_types::EthSpec;
+use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
     AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, MetaData,
     ProposerSlashing, Root, SignedVoluntaryExit, Slot,
 };
 
-use crate::types::SubnetId;
+use crate::types::{Fork, SubnetId};
 
 // ── GossipVerdict ─────────────────────────────────────────────────────────────
 
@@ -48,6 +49,18 @@ pub trait ForkContext: Send + Sync + 'static {
 
     /// The genesis validators root used in fork-digest computation.
     fn genesis_validators_root(&self) -> Root;
+
+    /// Returns the fork digest for the given `Fork`.
+    ///
+    /// Used by the context-bytes codec to prefix response chunks with the
+    /// 4-byte fork digest per `specs/altair/p2p-interface.md:445-461`.
+    fn fork_digest_for(&self, fork: Fork) -> ForkDigest;
+
+    /// Maps a raw 4-byte context to a `Fork`.
+    ///
+    /// Returns `None` for any context bytes that do not correspond to a known
+    /// fork digest. The codec emits a decode error on `None`.
+    fn fork_from_context(&self, ctx: &[u8; 4]) -> Option<Fork>;
 
     /// The local node's current `MetaData`.
     ///
@@ -126,6 +139,41 @@ pub trait GossipValidator<E: EthSpec>: Send + Sync + 'static {
     ///
     /// `MAX_VALIDATORS_PER_COMMITTEE = 2048` for both mainnet and minimal.
     fn validate_attester_slashing(&self, slashing: &AttesterSlashing<2048>) -> GossipVerdict;
+
+    // ── Altair gossip topics ──────────────────────────────────────────────────
+    //
+    // Per `specs/altair/p2p-interface.md:184-188` and
+    // `specs/altair/light-client/p2p-interface.md:47-48`.
+
+    /// Validate a `sync_committee_<subnet_id>` message.
+    ///
+    /// `SyncCommitteeMessage` is not generic; it has no bitvector fields.
+    fn validate_sync_committee_message(
+        &self,
+        subnet: SubnetId,
+        msg: &SyncCommitteeMessage,
+    ) -> GossipVerdict;
+
+    /// Validate a `sync_committee_contribution_and_proof` message.
+    ///
+    /// `SYNC_SUBCOMMITTEE_SIZE` differs per preset:
+    /// mainnet = 128, minimal = 8 (`SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT`).
+    fn validate_sync_committee_contribution_and_proof(
+        &self,
+        msg: &E::AltairSignedContributionAndProof,
+    ) -> GossipVerdict;
+
+    /// Validate a `light_client_finality_update` message.
+    fn validate_light_client_finality_update(
+        &self,
+        msg: &E::AltairLightClientFinalityUpdate,
+    ) -> GossipVerdict;
+
+    /// Validate a `light_client_optimistic_update` message.
+    fn validate_light_client_optimistic_update(
+        &self,
+        msg: &E::AltairLightClientOptimisticUpdate,
+    ) -> GossipVerdict;
 }
 
 // ── Host ──────────────────────────────────────────────────────────────────────
@@ -166,6 +214,14 @@ where
 
     fn genesis_validators_root(&self) -> Root {
         (**self).genesis_validators_root()
+    }
+
+    fn fork_digest_for(&self, fork: Fork) -> ForkDigest {
+        (**self).fork_digest_for(fork)
+    }
+
+    fn fork_from_context(&self, ctx: &[u8; 4]) -> Option<Fork> {
+        (**self).fork_from_context(ctx)
     }
 
     fn local_metadata(&self) -> MetaData {
@@ -222,6 +278,35 @@ where
 
     fn validate_attester_slashing(&self, slashing: &AttesterSlashing<2048>) -> GossipVerdict {
         (**self).validate_attester_slashing(slashing)
+    }
+
+    fn validate_sync_committee_message(
+        &self,
+        subnet: SubnetId,
+        msg: &SyncCommitteeMessage,
+    ) -> GossipVerdict {
+        (**self).validate_sync_committee_message(subnet, msg)
+    }
+
+    fn validate_sync_committee_contribution_and_proof(
+        &self,
+        msg: &E::AltairSignedContributionAndProof,
+    ) -> GossipVerdict {
+        (**self).validate_sync_committee_contribution_and_proof(msg)
+    }
+
+    fn validate_light_client_finality_update(
+        &self,
+        msg: &E::AltairLightClientFinalityUpdate,
+    ) -> GossipVerdict {
+        (**self).validate_light_client_finality_update(msg)
+    }
+
+    fn validate_light_client_optimistic_update(
+        &self,
+        msg: &E::AltairLightClientOptimisticUpdate,
+    ) -> GossipVerdict {
+        (**self).validate_light_client_optimistic_update(msg)
     }
 }
 

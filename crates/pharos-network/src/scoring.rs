@@ -40,6 +40,9 @@ pub enum ScoreEvent {
 }
 
 /// RPC methods tracked for scoring purposes.
+///
+/// Light-client variants added per `specs/altair/p2p-interface.md:445-461`.
+/// Handlers land in Phase 6; variant declarations are here so Phase 5 compiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcMethod {
     Status,
@@ -48,6 +51,14 @@ pub enum RpcMethod {
     MetaData,
     BlocksByRange,
     BlocksByRoot,
+    /// `light_client_bootstrap/1/ssz_snappy` — `specs/altair/light-client/p2p-interface.md`.
+    LightClientBootstrap,
+    /// `light_client_updates_by_range/1/ssz_snappy` — `specs/altair/light-client/p2p-interface.md`.
+    LightClientUpdatesByRange,
+    /// `light_client_finality_update/1/ssz_snappy` — `specs/altair/light-client/p2p-interface.md`.
+    LightClientFinalityUpdate,
+    /// `light_client_optimistic_update/1/ssz_snappy` — `specs/altair/light-client/p2p-interface.md`.
+    LightClientOptimisticUpdate,
 }
 
 /// Kinds of RPC error that affect scoring.

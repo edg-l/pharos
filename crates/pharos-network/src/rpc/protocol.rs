@@ -33,6 +33,10 @@ impl RpcMethod {
     /// - MetaData:      line 1494 (v2 — v1 deprecated)
     /// - BlocksByRange: line 1545 (v2 — v1 deprecated)
     /// - BlocksByRoot:  line 1579 (v2 — v1 deprecated)
+    ///
+    /// Light-client protocol IDs per `specs/altair/light-client/p2p-interface.md`.
+    /// Handlers are wired in Phase 6 (Task 6.5); IDs are declared here so the
+    /// codec can match on them in Phase 5.
     pub fn protocol_id(&self) -> &'static str {
         match self {
             RpcMethod::Status => "/eth2/beacon_chain/req/status/1/ssz_snappy",
@@ -43,7 +47,37 @@ impl RpcMethod {
                 "/eth2/beacon_chain/req/beacon_blocks_by_range/2/ssz_snappy"
             }
             RpcMethod::BlocksByRoot => "/eth2/beacon_chain/req/beacon_blocks_by_root/2/ssz_snappy",
+            RpcMethod::LightClientBootstrap => {
+                "/eth2/beacon_chain/req/light_client_bootstrap/1/ssz_snappy"
+            }
+            RpcMethod::LightClientUpdatesByRange => {
+                "/eth2/beacon_chain/req/light_client_updates_by_range/1/ssz_snappy"
+            }
+            RpcMethod::LightClientFinalityUpdate => {
+                "/eth2/beacon_chain/req/light_client_finality_update/1/ssz_snappy"
+            }
+            RpcMethod::LightClientOptimisticUpdate => {
+                "/eth2/beacon_chain/req/light_client_optimistic_update/1/ssz_snappy"
+            }
         }
+    }
+
+    /// Returns `true` if this method's response chunks are prefixed with 4
+    /// context bytes (the fork digest) per `specs/altair/p2p-interface.md:445-461`.
+    ///
+    /// `BlocksByRange` and `BlocksByRoot` use v2 protocol IDs and therefore carry
+    /// context bytes. All four light-client methods also carry context bytes per
+    /// the altair light-client p2p-interface spec.
+    pub fn has_context_bytes(&self) -> bool {
+        matches!(
+            self,
+            RpcMethod::BlocksByRange
+                | RpcMethod::BlocksByRoot
+                | RpcMethod::LightClientBootstrap
+                | RpcMethod::LightClientUpdatesByRange
+                | RpcMethod::LightClientFinalityUpdate
+                | RpcMethod::LightClientOptimisticUpdate
+        )
     }
 }
 
@@ -79,5 +113,51 @@ mod tests {
             RpcMethod::BlocksByRoot.protocol_id(),
             "/eth2/beacon_chain/req/beacon_blocks_by_root/2/ssz_snappy"
         );
+        assert_eq!(
+            RpcMethod::LightClientBootstrap.protocol_id(),
+            "/eth2/beacon_chain/req/light_client_bootstrap/1/ssz_snappy"
+        );
+        assert_eq!(
+            RpcMethod::LightClientUpdatesByRange.protocol_id(),
+            "/eth2/beacon_chain/req/light_client_updates_by_range/1/ssz_snappy"
+        );
+        assert_eq!(
+            RpcMethod::LightClientFinalityUpdate.protocol_id(),
+            "/eth2/beacon_chain/req/light_client_finality_update/1/ssz_snappy"
+        );
+        assert_eq!(
+            RpcMethod::LightClientOptimisticUpdate.protocol_id(),
+            "/eth2/beacon_chain/req/light_client_optimistic_update/1/ssz_snappy"
+        );
+    }
+
+    #[test]
+    fn has_context_bytes_correct() {
+        // Methods WITH context bytes.
+        for method in [
+            RpcMethod::BlocksByRange,
+            RpcMethod::BlocksByRoot,
+            RpcMethod::LightClientBootstrap,
+            RpcMethod::LightClientUpdatesByRange,
+            RpcMethod::LightClientFinalityUpdate,
+            RpcMethod::LightClientOptimisticUpdate,
+        ] {
+            assert!(
+                method.has_context_bytes(),
+                "{method:?} should have context bytes"
+            );
+        }
+        // Methods WITHOUT context bytes.
+        for method in [
+            RpcMethod::Status,
+            RpcMethod::Goodbye,
+            RpcMethod::Ping,
+            RpcMethod::MetaData,
+        ] {
+            assert!(
+                !method.has_context_bytes(),
+                "{method:?} should not have context bytes"
+            );
+        }
     }
 }

@@ -11,6 +11,7 @@ use pharos_types::EthSpec;
 use crate::codec::MAX_PAYLOAD_SIZE;
 use crate::error::NetworkError;
 use crate::gossip::message_id::compute_message_id;
+use crate::types::ForkDigest;
 
 /// Maximum gossipsub transmit size.
 ///
@@ -26,12 +27,22 @@ const fn max_message_size() -> usize {
 /// The `duplicate_cache_time` window is `2 * SLOTS_PER_EPOCH * SLOT_DURATION_MS`
 /// so that it scales with the preset (mainnet: 12 s × 32 × 2 = 768 s).
 ///
+/// `phase0_fork_digest` is captured once from the `ForkContext` at construction
+/// time and used to dispatch between the phase-0 and altair message-id formulas
+/// per `specs/altair/p2p-interface.md:163-171`.
+///
 /// Parameters per `p2p-interface.md:439-450`.
-pub fn gossipsub_config<E: EthSpec>() -> Result<gossipsub::Config, NetworkError> {
+pub fn gossipsub_config<E: EthSpec>(
+    phase0_fork_digest: ForkDigest,
+) -> Result<gossipsub::Config, NetworkError> {
     let cache_ms = E::SLOT_DURATION_MS
         .saturating_mul(E::SLOTS_PER_EPOCH)
         .saturating_mul(2);
     let cache_duration = Duration::from_millis(cache_ms);
+
+    // Capture the phase-0 fork digest once; the closure is called for every
+    // incoming message, so we keep it as a `[u8; 4]` (Copy).
+    let phase0_fd_bytes = phase0_fork_digest.into_inner();
 
     let cfg = gossipsub::ConfigBuilder::default()
         .mesh_n(8)
@@ -44,7 +55,11 @@ pub fn gossipsub_config<E: EthSpec>() -> Result<gossipsub::Config, NetworkError>
         .history_gossip(3)
         .duplicate_cache_time(cache_duration)
         .validation_mode(ValidationMode::Anonymous)
-        .message_id_fn(|m| gossipsub::MessageId::from(compute_message_id(&m.data).to_vec()))
+        .message_id_fn(move |m| {
+            gossipsub::MessageId::from(
+                compute_message_id(m.topic.as_str(), &m.data, &phase0_fd_bytes).to_vec(),
+            )
+        })
         .max_transmit_size(max_message_size())
         .validate_messages()
         .build()
@@ -57,8 +72,13 @@ pub fn gossipsub_config<E: EthSpec>() -> Result<gossipsub::Config, NetworkError>
 ///
 /// Anonymous mode matches `StrictNoSign` from the Ethereum gossipsub spec
 /// (`p2p-interface.md:482-484`): no source, no seqno, no signature.
-pub fn gossipsub_behaviour<E: EthSpec>() -> Result<gossipsub::Behaviour, NetworkError> {
-    let cfg = gossipsub_config::<E>()?;
+///
+/// `phase0_fork_digest` is used to dispatch between the phase-0 and altair
+/// message-id formulas per `specs/altair/p2p-interface.md:163-171`.
+pub fn gossipsub_behaviour<E: EthSpec>(
+    phase0_fork_digest: ForkDigest,
+) -> Result<gossipsub::Behaviour, NetworkError> {
+    let cfg = gossipsub_config::<E>(phase0_fork_digest)?;
     gossipsub::Behaviour::new(MessageAuthenticity::Anonymous, cfg)
         .map_err(|e| NetworkError::Libp2p(format!("gossipsub behaviour: {e}")))
 }
@@ -70,11 +90,16 @@ mod tests {
     use super::*;
     use pharos_types::MainnetEthSpec;
 
+    fn dummy_fork_digest() -> ForkDigest {
+        ForkDigest::from_array([0x00, 0x00, 0x00, 0x01])
+    }
+
     /// `gossipsub_config::<MainnetEthSpec>()` succeeds and produces a config
     /// where `mesh_n_low <= mesh_n <= mesh_n_high`.
     #[test]
     fn config_builds_for_mainnet() {
-        let cfg = gossipsub_config::<MainnetEthSpec>().expect("config build failed");
+        let cfg =
+            gossipsub_config::<MainnetEthSpec>(dummy_fork_digest()).expect("config build failed");
         assert!(
             cfg.mesh_n_low() <= cfg.mesh_n() && cfg.mesh_n() <= cfg.mesh_n_high(),
             "mesh invariant violated: low={} n={} high={}",
@@ -87,7 +112,8 @@ mod tests {
     /// Verify the specific mesh parameters match the spec.
     #[test]
     fn config_mesh_params() {
-        let cfg = gossipsub_config::<MainnetEthSpec>().expect("config build failed");
+        let cfg =
+            gossipsub_config::<MainnetEthSpec>(dummy_fork_digest()).expect("config build failed");
         assert_eq!(cfg.mesh_n(), 8);
         assert_eq!(cfg.mesh_n_low(), 6);
         assert_eq!(cfg.mesh_n_high(), 12);

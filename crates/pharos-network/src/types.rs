@@ -10,6 +10,23 @@ use libp2p::{Multiaddr, PeerId};
 
 use pharos_types::phase0::Status;
 
+// ── Fork ──────────────────────────────────────────────────────────────────────
+
+/// Ethereum consensus fork identifier used by the network layer.
+///
+/// Distinct from `pharos_types::phase0::misc::Fork` (which is a beacon-chain
+/// container with `previous_version`, `current_version`, `epoch`). This enum
+/// is used to tag RPC response chunks with the fork that produced them,
+/// enabling the context-bytes codec dispatch per
+/// `specs/altair/p2p-interface.md:445-461`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fork {
+    /// Phase 0 fork.
+    Phase0,
+    /// Altair fork.
+    Altair,
+}
+
 // ── SubnetId ──────────────────────────────────────────────────────────────────
 
 /// Attestation subnet identifier (0..ATTESTATION_SUBNET_COUNT).

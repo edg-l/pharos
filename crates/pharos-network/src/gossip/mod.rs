@@ -22,6 +22,7 @@ use libp2p::gossipsub::{self, IdentTopic, TopicHash};
 use pharos_ssz::Bitvector;
 use pharos_ssz::Decode as _;
 use pharos_types::EthSpec;
+use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::phase0::{
     Attestation, AttesterSlashing, ProposerSlashing, SignedAggregateAndProof, SignedVoluntaryExit,
@@ -134,6 +135,33 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
                 Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
             }
         }
+        // ── Altair topics ─────────────────────────────────────────────────────
+        // Per `specs/altair/p2p-interface.md:184-188` and
+        // `specs/altair/light-client/p2p-interface.md:47-48`.
+        GossipTopicKind::SyncCommittee(subnet) => {
+            match SyncCommitteeMessage::from_ssz_bytes(ssz_bytes) {
+                Ok(msg) => host.validate_sync_committee_message(*subnet, &msg),
+                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+            }
+        }
+        GossipTopicKind::SyncCommitteeContributionAndProof => {
+            match E::AltairSignedContributionAndProof::from_ssz_bytes(ssz_bytes) {
+                Ok(msg) => host.validate_sync_committee_contribution_and_proof(&msg),
+                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+            }
+        }
+        GossipTopicKind::LightClientFinalityUpdate => {
+            match E::AltairLightClientFinalityUpdate::from_ssz_bytes(ssz_bytes) {
+                Ok(msg) => host.validate_light_client_finality_update(&msg),
+                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+            }
+        }
+        GossipTopicKind::LightClientOptimisticUpdate => {
+            match E::AltairLightClientOptimisticUpdate::from_ssz_bytes(ssz_bytes) {
+                Ok(msg) => host.validate_light_client_optimistic_update(&msg),
+                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+            }
+        }
     }
 }
 
@@ -173,6 +201,12 @@ mod tests {
         }
         fn genesis_validators_root(&self) -> Root {
             Root::default()
+        }
+        fn fork_digest_for(&self, _fork: crate::types::Fork) -> ForkDigest {
+            ForkDigest::from_array([0u8; 4])
+        }
+        fn fork_from_context(&self, _ctx: &[u8; 4]) -> Option<crate::types::Fork> {
+            None
         }
     }
 
@@ -224,12 +258,38 @@ mod tests {
         fn validate_attester_slashing(&self, _slashing: &AttesterSlashing<2048>) -> GossipVerdict {
             GossipVerdict::Accept
         }
+        fn validate_sync_committee_message(
+            &self,
+            _subnet: crate::types::SubnetId,
+            _msg: &pharos_types::altair::SyncCommitteeMessage,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+        fn validate_sync_committee_contribution_and_proof(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::AltairSignedContributionAndProof,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+        fn validate_light_client_finality_update(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientFinalityUpdate,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+        fn validate_light_client_optimistic_update(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
     }
 
     // ── subscribe_phase0_topics tests ─────────────────────────────────────────
 
     fn make_gossipsub() -> gossipsub::Behaviour {
-        let cfg = gossipsub_config::<MainnetEthSpec>().expect("config failed");
+        let fd = ForkDigest::from_array([0u8; 4]);
+        let cfg = gossipsub_config::<MainnetEthSpec>(fd).expect("config failed");
         gossipsub::Behaviour::new(MessageAuthenticity::Anonymous, cfg).expect("behaviour failed")
     }
 

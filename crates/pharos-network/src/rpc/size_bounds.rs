@@ -30,6 +30,13 @@ pub fn type_size_bounds(method: &RpcMethod) -> (usize, usize) {
         RpcMethod::BlocksByRange => (24, 24),
         // SszList<Root, MAX_REQUEST_BLOCKS>: 0 to MAX_REQUEST_BLOCKS * 32 bytes
         RpcMethod::BlocksByRoot => (0, (MAX_REQUEST_BLOCKS as usize) * 32),
+        // Light-client request bodies: bounded by respective spec limits.
+        // LightClientBootstrap request: one Root = 32 bytes.
+        RpcMethod::LightClientBootstrap => (32, 32),
+        // LightClientUpdatesByRange request: start_period(8) + count(8) = 16 bytes.
+        RpcMethod::LightClientUpdatesByRange => (16, 16),
+        // LightClientFinalityUpdate and LightClientOptimisticUpdate have no request body.
+        RpcMethod::LightClientFinalityUpdate | RpcMethod::LightClientOptimisticUpdate => (0, 0),
     }
 }
 

@@ -14,7 +14,7 @@ pub use pharos_network::NetworkEvent;
 use pharos_network::discovery::enr::Enr;
 use pharos_network::host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict};
 use pharos_network::scoring::{PeerScorer, ScoreEvent};
-use pharos_network::types::SubnetId;
+use pharos_network::types::{Fork, SubnetId};
 use pharos_network::{NetworkBuilder, NetworkHandle};
 use pharos_types::MainnetEthSpec;
 use pharos_types::phase0::primitives::ForkDigest;
@@ -32,6 +32,9 @@ use pharos_utils::{Bytes4, Epoch};
 /// rejects blocks whose `proposer_index` equals a configured sentinel value.
 pub struct TestHost {
     fork_digest: ForkDigest,
+    /// Altair fork digest for context-bytes codec tests. When `None`, the phase-0
+    /// digest is used for all forks (safe for tests that don't exercise altair).
+    altair_fork_digest: Option<ForkDigest>,
     blocks: Arc<Mutex<HashMap<Root, <MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock>>>,
     /// When `Some(idx)`, `validate_beacon_block` rejects any block with
     /// `proposer_index == idx`.
@@ -46,14 +49,21 @@ pub struct TestHost {
 
 #[allow(dead_code)]
 impl TestHost {
-    /// Construct a new `TestHost` with the given fork digest.
+    /// Construct a new `TestHost` with the given phase-0 fork digest.
     pub fn new(fork_digest: ForkDigest) -> Self {
         Self {
             fork_digest,
+            altair_fork_digest: None,
             blocks: Arc::new(Mutex::new(HashMap::new())),
             reject_proposer_index: None,
             head_slot: Slot(2_000_000),
         }
+    }
+
+    /// Builder helper: configure an altair fork digest for context-bytes tests.
+    pub fn with_altair_fork_digest(mut self, altair_digest: ForkDigest) -> Self {
+        self.altair_fork_digest = Some(altair_digest);
+        self
     }
 
     /// Enable rejection of blocks with the given `proposer_index`.
@@ -120,6 +130,25 @@ impl ForkContext for TestHost {
 
     fn genesis_validators_root(&self) -> Root {
         Root::default()
+    }
+
+    fn fork_digest_for(&self, fork: Fork) -> ForkDigest {
+        match fork {
+            Fork::Phase0 => self.fork_digest,
+            Fork::Altair => self.altair_fork_digest.unwrap_or(self.fork_digest),
+        }
+    }
+
+    fn fork_from_context(&self, ctx: &[u8; 4]) -> Option<Fork> {
+        if *ctx == self.fork_digest.into_inner() {
+            return Some(Fork::Phase0);
+        }
+        if let Some(afd) = &self.altair_fork_digest {
+            if *ctx == afd.into_inner() {
+                return Some(Fork::Altair);
+            }
+        }
+        None
     }
 
     fn local_metadata(&self) -> MetaData {
@@ -213,6 +242,35 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
     }
 
     fn validate_attester_slashing(&self, _slashing: &AttesterSlashing<2048>) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    fn validate_sync_committee_message(
+        &self,
+        _subnet: SubnetId,
+        _msg: &pharos_types::altair::SyncCommitteeMessage,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    fn validate_sync_committee_contribution_and_proof(
+        &self,
+        _msg: &<MainnetEthSpec as pharos_types::EthSpec>::AltairSignedContributionAndProof,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    fn validate_light_client_finality_update(
+        &self,
+        _msg: &<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientFinalityUpdate,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    fn validate_light_client_optimistic_update(
+        &self,
+        _msg: &<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientOptimisticUpdate,
+    ) -> GossipVerdict {
         GossipVerdict::Accept
     }
 }

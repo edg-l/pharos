@@ -587,6 +587,45 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + Sync
         + 'static
         + crate::views::BeaconBlockBodyView;
+
+    /// Altair `SignedContributionAndProof` for this preset.
+    ///
+    /// Mainnet: `SYNC_SUBCOMMITTEE_SIZE = 128` (`SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT`).
+    /// Minimal: `SYNC_SUBCOMMITTEE_SIZE = 8`.
+    type AltairSignedContributionAndProof: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Altair `LightClientFinalityUpdate` for this preset.
+    type AltairLightClientFinalityUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Altair `LightClientOptimisticUpdate` for this preset.
+    type AltairLightClientOptimisticUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
 }
 
 // ── MainnetEthSpec ─────────────────────────────────────────────────────────────
@@ -888,6 +927,12 @@ impl EthSpec for MainnetEthSpec {
     >;
     type Phase0BeaconBlockBody = crate::phase0::MainnetBeaconBlockBody;
     type AltairBeaconBlockBody = crate::altair::MainnetBeaconBlockBody;
+    /// Mainnet: `SYNC_SUBCOMMITTEE_SIZE = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT = 512 / 4 = 128`.
+    type AltairSignedContributionAndProof = crate::altair::SignedContributionAndProof<128>;
+    /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`.
+    type AltairLightClientFinalityUpdate = crate::altair::LightClientFinalityUpdate<512>;
+    /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`.
+    type AltairLightClientOptimisticUpdate = crate::altair::LightClientOptimisticUpdate<512>;
 }
 
 // ── MinimalEthSpec ─────────────────────────────────────────────────────────────
@@ -1194,4 +1239,10 @@ impl EthSpec for MinimalEthSpec {
     >;
     type Phase0BeaconBlockBody = crate::phase0::MinimalBeaconBlockBody;
     type AltairBeaconBlockBody = crate::altair::MinimalBeaconBlockBody;
+    /// Minimal: `SYNC_SUBCOMMITTEE_SIZE = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT = 32 / 4 = 8`.
+    type AltairSignedContributionAndProof = crate::altair::SignedContributionAndProof<8>;
+    /// Minimal: `SYNC_COMMITTEE_SIZE = 32`.
+    type AltairLightClientFinalityUpdate = crate::altair::LightClientFinalityUpdate<32>;
+    /// Minimal: `SYNC_COMMITTEE_SIZE = 32`.
+    type AltairLightClientOptimisticUpdate = crate::altair::LightClientOptimisticUpdate<32>;
 }

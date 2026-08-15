@@ -172,6 +172,12 @@ mod tests {
         fn genesis_validators_root(&self) -> Root {
             Root::default()
         }
+        fn fork_digest_for(&self, _fork: crate::types::Fork) -> ForkDigest {
+            self.fork_digest
+        }
+        fn fork_from_context(&self, _ctx: &[u8; 4]) -> Option<crate::types::Fork> {
+            None
+        }
         fn local_metadata(&self) -> MetaData {
             MetaData {
                 seq_number: self.metadata_seq,
@@ -225,6 +231,31 @@ mod tests {
             GossipVerdict::Accept
         }
         fn validate_attester_slashing(&self, _s: &AttesterSlashing<2048>) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+        fn validate_sync_committee_message(
+            &self,
+            _subnet: crate::types::SubnetId,
+            _msg: &pharos_types::altair::SyncCommitteeMessage,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+        fn validate_sync_committee_contribution_and_proof(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::AltairSignedContributionAndProof,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+        fn validate_light_client_finality_update(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientFinalityUpdate,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+        fn validate_light_client_optimistic_update(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate,
+        ) -> GossipVerdict {
             GossipVerdict::Accept
         }
     }

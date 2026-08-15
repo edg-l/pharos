@@ -27,7 +27,7 @@ use parking_lot::RwLock;
 use tracing::warn;
 
 use pharos_network::host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict};
-use pharos_network::types::SubnetId;
+use pharos_network::types::{Fork, SubnetId};
 use pharos_ssz::Bitvector;
 use pharos_storage::{RocksStore, Store as StoreTrait};
 use pharos_types::EthSpec;
@@ -167,6 +167,37 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
         self.fork_context.genesis_validators_root
     }
 
+    /// Returns the fork digest for the given network `Fork`.
+    ///
+    /// Phase 0: `compute_fork_digest(genesis_fork_version, gvr)`.
+    /// Altair:  `compute_fork_digest(altair_fork_version,  gvr)`.
+    fn fork_digest_for(&self, fork: Fork) -> ForkDigest {
+        let version = match fork {
+            Fork::Phase0 => self.fork_context.fork_schedule.genesis_fork_version,
+            Fork::Altair => self.fork_context.fork_schedule.altair_fork_version,
+        };
+        compute_fork_digest(version, &self.fork_context.genesis_validators_root)
+    }
+
+    /// Reverse-maps a raw 4-byte context to a `Fork`.
+    ///
+    /// Computes the known fork digests on the fly (two calls to
+    /// `compute_fork_digest`; result is tiny and computed once per chunk).
+    /// Returns `None` for any unknown context bytes.
+    fn fork_from_context(&self, ctx: &[u8; 4]) -> Option<Fork> {
+        let gvr = &self.fork_context.genesis_validators_root;
+        let sched = &self.fork_context.fork_schedule;
+        let phase0_digest = compute_fork_digest(sched.genesis_fork_version, gvr);
+        if *ctx == phase0_digest.into_inner() {
+            return Some(Fork::Phase0);
+        }
+        let altair_digest = compute_fork_digest(sched.altair_fork_version, gvr);
+        if *ctx == altair_digest.into_inner() {
+            return Some(Fork::Altair);
+        }
+        None
+    }
+
     fn local_metadata(&self) -> MetaData {
         self.metadata.read().clone()
     }
@@ -260,6 +291,39 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
 
     /// TODO(M4): Validate attester slashing indices, signature.
     fn validate_attester_slashing(&self, _slashing: &AttesterSlashing<2048>) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    /// TODO(M4): Validate sync committee message slot, validator index, signature.
+    fn validate_sync_committee_message(
+        &self,
+        _subnet: SubnetId,
+        _msg: &pharos_types::altair::SyncCommitteeMessage,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    /// TODO(M4): Validate sync committee contribution: aggregator index, proof, signature.
+    fn validate_sync_committee_contribution_and_proof(
+        &self,
+        _msg: &<E as EthSpec>::AltairSignedContributionAndProof,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    /// TODO(M4): Validate light client finality update: better finalized header than latest.
+    fn validate_light_client_finality_update(
+        &self,
+        _msg: &<E as EthSpec>::AltairLightClientFinalityUpdate,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
+
+    /// TODO(M4): Validate light client optimistic update: attested header slot.
+    fn validate_light_client_optimistic_update(
+        &self,
+        _msg: &<E as EthSpec>::AltairLightClientOptimisticUpdate,
+    ) -> GossipVerdict {
         GossipVerdict::Accept
     }
 }

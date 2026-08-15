@@ -14,6 +14,7 @@
 
 use std::io;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -24,11 +25,13 @@ use pharos_types::phase0::{
 };
 
 use crate::codec::snappy_frame::encode_snappy_frame;
+use crate::host::ForkContext;
 use crate::rpc::protocol::RpcProtocol;
 use crate::rpc::size_bounds::{MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES, type_size_bounds};
 use crate::rpc::types::{MAX_REQUEST_BLOCKS, RpcRequest, RpcResponse};
 use crate::rpc::varint::{read_varint, write_varint};
 use crate::scoring::RpcMethod;
+use crate::types::Fork;
 
 // ── RpcCodec ──────────────────────────────────────────────────────────────────
 
@@ -36,9 +39,35 @@ use crate::scoring::RpcMethod;
 ///
 /// Generic over `E: EthSpec` because `RpcResponse<E>` carries
 /// `E::SignedBeaconBlock` values in `BlocksByRange` / `BlocksByRoot` variants.
-#[derive(Clone, Default)]
+///
+/// `fork_context` is used to encode/decode the 4-byte context prefix on
+/// response chunks for methods where `has_context_bytes()` returns `true`,
+/// per `specs/altair/p2p-interface.md:445-461`. When `None`, context-bytes
+/// methods fall back to treating every chunk as Phase-0 SSZ (safe for
+/// unit tests that don't exercise context-bytes paths).
+#[derive(Clone)]
 pub struct RpcCodec<E: EthSpec> {
+    fork_context: Option<Arc<dyn ForkContext>>,
     _phantom: PhantomData<E>,
+}
+
+impl<E: EthSpec> Default for RpcCodec<E> {
+    fn default() -> Self {
+        Self {
+            fork_context: None,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<E: EthSpec> RpcCodec<E> {
+    /// Construct a codec with a `ForkContext` for context-bytes decoding.
+    pub fn with_fork_context(ctx: Arc<dyn ForkContext>) -> Self {
+        Self {
+            fork_context: Some(ctx),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 // ── Codec impl ────────────────────────────────────────────────────────────────
@@ -104,6 +133,24 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                 return Ok(RpcResponse::Error { code, message: msg });
             }
 
+            // For methods with context bytes, read the 4-byte fork digest prefix
+            // before the SSZ-snappy payload per `specs/altair/p2p-interface.md:445-461`.
+            let chunk_fork: Option<Fork> = if method.has_context_bytes() {
+                let mut ctx = [0u8; 4];
+                io.read_exact(&mut ctx).await?;
+                let fc = self.fork_context.as_ref().ok_or_else(|| {
+                    io::Error::other("missing fork context: cannot decode context bytes")
+                })?;
+                match fc.fork_from_context(&ctx) {
+                    Some(f) => Some(f),
+                    None => {
+                        return Err(io::Error::other("unknown context bytes in response chunk"));
+                    }
+                }
+            } else {
+                None
+            };
+
             // Success chunk: decode per method.
             match method {
                 RpcMethod::Status => {
@@ -130,13 +177,35 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     if blocks.len() >= MAX_REQUEST_BLOCKS as usize {
                         return Err(io::Error::other("response exceeds MAX_REQUEST_BLOCKS"));
                     }
-                    let block = read_ssz_snappy_payload::<_, E::SignedBeaconBlock>(
-                        io,
-                        MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
-                    )
-                    .await?;
+                    // Dispatch SSZ decode based on the chunk's fork (context bytes).
+                    let block = match chunk_fork {
+                        Some(Fork::Altair) => {
+                            let inner = read_ssz_snappy_payload::<_, E::AltairSignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::altair_into_signed_block(inner)
+                        }
+                        // Phase0 or no context (legacy / test path).
+                        _ => {
+                            let inner = read_ssz_snappy_payload::<_, E::Phase0SignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::phase0_into_signed_block(inner)
+                        }
+                    };
                     blocks.push(block);
                     // Continue reading chunks.
+                }
+                // Light-client response handlers land in Phase 6 (Task 6.8).
+                RpcMethod::LightClientBootstrap
+                | RpcMethod::LightClientUpdatesByRange
+                | RpcMethod::LightClientFinalityUpdate
+                | RpcMethod::LightClientOptimisticUpdate => {
+                    return Err(io::Error::other("light-client req-resp not yet supported"));
                 }
             }
         }
@@ -210,9 +279,25 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                 write_ssz_snappy(io, &m.as_ssz_bytes()).await?;
             }
             RpcResponse::BlocksByRange(blocks) | RpcResponse::BlocksByRoot(blocks) => {
+                let fc = self.fork_context.as_deref().ok_or_else(|| {
+                    io::Error::other("missing fork context: cannot encode context bytes")
+                })?;
                 for block in &blocks {
+                    // Write 4 context bytes (fork digest) before the SSZ payload
+                    // per `specs/altair/p2p-interface.md:445-461`.
+                    // Dispatch to the inner SSZ bytes (no fork discriminant byte).
+                    let (fork, ssz) = if let Some(inner) = E::unwrap_altair_signed_block(block) {
+                        (Fork::Altair, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_phase0_signed_block(block) {
+                        (Fork::Phase0, inner.as_ssz_bytes())
+                    } else {
+                        return Err(io::Error::other(
+                            "cannot encode context bytes: block variant has no known fork",
+                        ));
+                    };
                     io.write_all(&[0]).await?;
-                    write_ssz_snappy(io, &block.as_ssz_bytes()).await?;
+                    io.write_all(&fc.fork_digest_for(fork).into_inner()).await?;
+                    write_ssz_snappy(io, &ssz).await?;
                 }
             }
         }
@@ -385,6 +470,14 @@ fn decode_request(method: &RpcMethod, bytes: &[u8]) -> io::Result<RpcRequest> {
             let r = BeaconBlocksByRootRequest::<MAX_REQUEST_BLOCKS>::from_ssz_bytes(bytes)
                 .map_err(|e| io::Error::other(format!("ssz decode BlocksByRoot: {e}")))?;
             Ok(RpcRequest::BlocksByRoot(r))
+        }
+        // Light-client request handlers land in Phase 6 (Task 6.8).
+        // Inbound requests are not dispatched yet; reject at the codec level.
+        RpcMethod::LightClientBootstrap
+        | RpcMethod::LightClientUpdatesByRange
+        | RpcMethod::LightClientFinalityUpdate
+        | RpcMethod::LightClientOptimisticUpdate => {
+            Err(io::Error::other("light-client req-resp not yet supported"))
         }
     }
 }

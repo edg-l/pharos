@@ -14,15 +14,21 @@
 use std::collections::HashMap;
 
 use libp2p::gossipsub::{IdentTopic, TopicHash};
+use pharos_types::altair::SYNC_COMMITTEE_SUBNET_COUNT;
 
 use crate::error::NetworkError;
 use crate::types::{ForkDigest, SubnetId};
 
 // ── GossipTopicKind ───────────────────────────────────────────────────────────
 
-/// The kind of gossip topic, distinguishing the six Phase-0 topics.
+/// The kind of gossip topic, distinguishing the Phase-0 and Altair topics.
+///
+/// Phase-0 topics per `specs/phase0/p2p-interface.md:507-514`.
+/// Altair topics per `specs/altair/p2p-interface.md:184-188` and
+/// `specs/altair/light-client/p2p-interface.md:47-48`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GossipTopicKind {
+    // ── Phase-0 topics ────────────────────────────────────────────────────────
     BeaconBlock,
     BeaconAggregateAndProof,
     /// Per-subnet attestation topic; the inner value is the subnet id (0-63).
@@ -30,6 +36,16 @@ pub enum GossipTopicKind {
     VoluntaryExit,
     ProposerSlashing,
     AttesterSlashing,
+    // ── Altair topics ─────────────────────────────────────────────────────────
+    /// `sync_committee_contribution_and_proof` per `specs/altair/p2p-interface.md:186`.
+    SyncCommitteeContributionAndProof,
+    /// `sync_committee_<i>` per `specs/altair/p2p-interface.md:185`.
+    /// Inner value is the sync-committee subnet id (0..SYNC_COMMITTEE_SUBNET_COUNT).
+    SyncCommittee(SubnetId),
+    /// `light_client_finality_update` per `specs/altair/light-client/p2p-interface.md:47`.
+    LightClientFinalityUpdate,
+    /// `light_client_optimistic_update` per `specs/altair/light-client/p2p-interface.md:48`.
+    LightClientOptimisticUpdate,
 }
 
 // ── GossipTopic ───────────────────────────────────────────────────────────────
@@ -154,6 +170,16 @@ fn topic_kind_name(kind: &GossipTopicKind) -> String {
         GossipTopicKind::VoluntaryExit => "voluntary_exit".to_string(),
         GossipTopicKind::ProposerSlashing => "proposer_slashing".to_string(),
         GossipTopicKind::AttesterSlashing => "attester_slashing".to_string(),
+        // Altair topics — `specs/altair/p2p-interface.md:184-188` and
+        // `specs/altair/light-client/p2p-interface.md:47-48`.
+        GossipTopicKind::SyncCommitteeContributionAndProof => {
+            "sync_committee_contribution_and_proof".to_string()
+        }
+        GossipTopicKind::SyncCommittee(subnet) => format!("sync_committee_{subnet}"),
+        GossipTopicKind::LightClientFinalityUpdate => "light_client_finality_update".to_string(),
+        GossipTopicKind::LightClientOptimisticUpdate => {
+            "light_client_optimistic_update".to_string()
+        }
     }
 }
 
@@ -167,11 +193,26 @@ fn parse_topic_kind(name: &str) -> Option<GossipTopicKind> {
         "voluntary_exit" => Some(GossipTopicKind::VoluntaryExit),
         "proposer_slashing" => Some(GossipTopicKind::ProposerSlashing),
         "attester_slashing" => Some(GossipTopicKind::AttesterSlashing),
+        "sync_committee_contribution_and_proof" => {
+            Some(GossipTopicKind::SyncCommitteeContributionAndProof)
+        }
+        "light_client_finality_update" => Some(GossipTopicKind::LightClientFinalityUpdate),
+        "light_client_optimistic_update" => Some(GossipTopicKind::LightClientOptimisticUpdate),
         _ => {
             // Handle `beacon_attestation_<decimal-subnet-id>`.
-            let subnet_str = name.strip_prefix("beacon_attestation_")?;
-            let subnet_id: SubnetId = subnet_str.parse().ok()?;
-            Some(GossipTopicKind::BeaconAttestation(subnet_id))
+            if let Some(subnet_str) = name.strip_prefix("beacon_attestation_") {
+                let subnet_id: SubnetId = subnet_str.parse().ok()?;
+                return Some(GossipTopicKind::BeaconAttestation(subnet_id));
+            }
+            // Handle `sync_committee_<decimal-subnet-id>`.
+            if let Some(subnet_str) = name.strip_prefix("sync_committee_") {
+                let subnet_id: SubnetId = subnet_str.parse().ok()?;
+                if subnet_id >= SYNC_COMMITTEE_SUBNET_COUNT {
+                    return None;
+                }
+                return Some(GossipTopicKind::SyncCommittee(subnet_id));
+            }
+            None
         }
     }
 }
@@ -207,6 +248,7 @@ mod tests {
     fn roundtrip_all_variants() {
         let fd = [0xde, 0xad, 0xbe, 0xef];
         let cases = vec![
+            // Phase-0 topics.
             topic(fd, GossipTopicKind::BeaconBlock),
             topic(fd, GossipTopicKind::BeaconAggregateAndProof),
             topic(fd, GossipTopicKind::BeaconAttestation(0)),
@@ -214,6 +256,12 @@ mod tests {
             topic(fd, GossipTopicKind::VoluntaryExit),
             topic(fd, GossipTopicKind::ProposerSlashing),
             topic(fd, GossipTopicKind::AttesterSlashing),
+            // Altair topics.
+            topic(fd, GossipTopicKind::SyncCommitteeContributionAndProof),
+            topic(fd, GossipTopicKind::SyncCommittee(0)),
+            topic(fd, GossipTopicKind::SyncCommittee(3)),
+            topic(fd, GossipTopicKind::LightClientFinalityUpdate),
+            topic(fd, GossipTopicKind::LightClientOptimisticUpdate),
         ];
         for t in &cases {
             let s = t.topic_str();
@@ -221,6 +269,67 @@ mod tests {
                 GossipTopic::parse(&s).unwrap_or_else(|e| panic!("parse failed for {:?}: {e}", s));
             assert_eq!(&parsed, t, "roundtrip failed for {s:?}");
         }
+    }
+
+    /// `topic_str` for altair `sync_committee_contribution_and_proof`.
+    #[test]
+    fn topic_str_sync_committee_contribution_and_proof() {
+        let t = topic(
+            [0x01, 0x02, 0x03, 0x04],
+            GossipTopicKind::SyncCommitteeContributionAndProof,
+        );
+        assert_eq!(
+            t.topic_str(),
+            "/eth2/01020304/sync_committee_contribution_and_proof/ssz_snappy"
+        );
+    }
+
+    /// `topic_str` for altair `sync_committee_<i>`.
+    #[test]
+    fn topic_str_sync_committee_subnet_2() {
+        let t = topic([0x01, 0x02, 0x03, 0x04], GossipTopicKind::SyncCommittee(2));
+        assert_eq!(t.topic_str(), "/eth2/01020304/sync_committee_2/ssz_snappy");
+    }
+
+    /// `topic_str` for altair `light_client_finality_update`.
+    #[test]
+    fn topic_str_light_client_finality_update() {
+        let t = topic(
+            [0x01, 0x02, 0x03, 0x04],
+            GossipTopicKind::LightClientFinalityUpdate,
+        );
+        assert_eq!(
+            t.topic_str(),
+            "/eth2/01020304/light_client_finality_update/ssz_snappy"
+        );
+    }
+
+    /// Out-of-range sync-committee subnet ids must fail to parse.
+    #[test]
+    fn parse_rejects_out_of_range_sync_committee_subnet() {
+        let oor = format!("/eth2/01020304/sync_committee_{SYNC_COMMITTEE_SUBNET_COUNT}/ssz_snappy");
+        assert!(
+            GossipTopic::parse(&oor).is_err(),
+            "expected error for subnet id == SYNC_COMMITTEE_SUBNET_COUNT, got Ok for {oor:?}"
+        );
+        let way_oor = "/eth2/01020304/sync_committee_99999/ssz_snappy";
+        assert!(
+            GossipTopic::parse(way_oor).is_err(),
+            "expected error for subnet id 99999"
+        );
+    }
+
+    /// `topic_str` for altair `light_client_optimistic_update`.
+    #[test]
+    fn topic_str_light_client_optimistic_update() {
+        let t = topic(
+            [0x01, 0x02, 0x03, 0x04],
+            GossipTopicKind::LightClientOptimisticUpdate,
+        );
+        assert_eq!(
+            t.topic_str(),
+            "/eth2/01020304/light_client_optimistic_update/ssz_snappy"
+        );
     }
 
     /// `topic_str` for a known topic produces the expected string.

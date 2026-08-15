@@ -569,6 +569,13 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                             RpcMethod::BlocksByRoot => {
                                 b.rpc_blocks_by_root.0.send_response(channel, response)
                             }
+                            // Light-client inbound handlers land in Phase 6 (Task 6.8).
+                            RpcMethod::LightClientBootstrap
+                            | RpcMethod::LightClientUpdatesByRange
+                            | RpcMethod::LightClientFinalityUpdate
+                            | RpcMethod::LightClientOptimisticUpdate => {
+                                unreachable!("light-client inbound requests are not yet wired")
+                            }
                         }
                     };
                     if send_err.is_err() {
@@ -1291,21 +1298,39 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
         let local_key = self.local_key.clone();
         let public_key = local_key.public();
 
-        // Use the spec-conforming gossipsub config (Phase 4).
-        let gossipsub = gossipsub_behaviour::<E>()?;
+        // Use the spec-conforming gossipsub config.
+        // Phase-0 fork digest is captured once; the message-id closure uses it
+        // to dispatch between phase-0 and altair message-id formulas per
+        // `specs/altair/p2p-interface.md:163-171`.
+        let phase0_fork_digest = self.host.fork_digest_for(crate::types::Fork::Phase0);
+        let gossipsub = gossipsub_behaviour::<E>(phase0_fork_digest)?;
 
         // Build one request_response::Behaviour per RPC method so that
         // multistream-select negotiates the exact per-method protocol string.
         // Using a single behaviour with all six protocols causes multistream-select
         // to always pick the first registered protocol (Status) for every request.
+        use crate::rpc::codec::RpcCodec;
         use crate::rpc::protocol::RpcProtocol;
         use crate::scoring::RpcMethod as M;
         use behaviour::{
             RpcBlocksByRangeBehaviour, RpcBlocksByRootBehaviour, RpcGoodbyeBehaviour,
             RpcMetaDataBehaviour, RpcPingBehaviour, RpcStatusBehaviour,
         };
+
+        // Fork-context codec: used for methods that carry context bytes
+        // (`specs/altair/p2p-interface.md:445-461`).
+        let fork_ctx_arc: Arc<dyn crate::host::ForkContext> = self.host.clone();
+        let ctx_codec = RpcCodec::<E>::with_fork_context(fork_ctx_arc);
+
         let mk_rr = |method: M| {
             request_response::Behaviour::new(
+                vec![(RpcProtocol(method), ProtocolSupport::Full)],
+                request_response::Config::default(),
+            )
+        };
+        let mk_rr_ctx = |method: M| {
+            request_response::Behaviour::with_codec(
+                ctx_codec.clone(),
                 vec![(RpcProtocol(method), ProtocolSupport::Full)],
                 request_response::Config::default(),
             )
@@ -1332,8 +1357,8 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
                 rpc_goodbye: RpcGoodbyeBehaviour(mk_rr(M::Goodbye)),
                 rpc_ping: RpcPingBehaviour(mk_rr(M::Ping)),
                 rpc_metadata: RpcMetaDataBehaviour(mk_rr(M::MetaData)),
-                rpc_blocks_by_range: RpcBlocksByRangeBehaviour(mk_rr(M::BlocksByRange)),
-                rpc_blocks_by_root: RpcBlocksByRootBehaviour(mk_rr(M::BlocksByRoot)),
+                rpc_blocks_by_range: RpcBlocksByRangeBehaviour(mk_rr_ctx(M::BlocksByRange)),
+                rpc_blocks_by_root: RpcBlocksByRootBehaviour(mk_rr_ctx(M::BlocksByRoot)),
                 identify,
                 ping,
             })
@@ -1458,6 +1483,12 @@ mod tests {
         fn genesis_validators_root(&self) -> Root {
             Root::default()
         }
+        fn fork_digest_for(&self, _fork: crate::types::Fork) -> ForkDigest {
+            ForkDigest::from_array([0u8; 4])
+        }
+        fn fork_from_context(&self, _ctx: &[u8; 4]) -> Option<crate::types::Fork> {
+            None
+        }
         fn local_metadata(&self) -> MetaData {
             MetaData::default()
         }
@@ -1512,6 +1543,31 @@ mod tests {
             unreachable!()
         }
         fn validate_attester_slashing(&self, _slashing: &AttesterSlashing<2048>) -> GossipVerdict {
+            unreachable!()
+        }
+        fn validate_sync_committee_message(
+            &self,
+            _subnet: SubnetId,
+            _msg: &pharos_types::altair::SyncCommitteeMessage,
+        ) -> GossipVerdict {
+            unreachable!()
+        }
+        fn validate_sync_committee_contribution_and_proof(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::AltairSignedContributionAndProof,
+        ) -> GossipVerdict {
+            unreachable!()
+        }
+        fn validate_light_client_finality_update(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientFinalityUpdate,
+        ) -> GossipVerdict {
+            unreachable!()
+        }
+        fn validate_light_client_optimistic_update(
+            &self,
+            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate,
+        ) -> GossipVerdict {
             unreachable!()
         }
     }
