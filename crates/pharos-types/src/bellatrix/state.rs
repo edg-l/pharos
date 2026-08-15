@@ -337,7 +337,7 @@ where
         > = decoder
             .decode_next::<ExecutionPayloadHeader<BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>>()?;
         decoder.finish()?;
-        Self {
+        Ok(Self {
             genesis_time,
             genesis_validators_root,
             slot,
@@ -363,8 +363,7 @@ where
             current_sync_committee,
             next_sync_committee,
             latest_execution_payload_header,
-        }
-        .into_tree_backend()
+        })
     }
 }
 

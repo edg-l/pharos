@@ -313,7 +313,7 @@ where
         let next_sync_committee: SyncCommittee<SYNC_COMMITTEE_SIZE> =
             decoder.decode_next::<SyncCommittee<SYNC_COMMITTEE_SIZE>>()?;
         decoder.finish()?;
-        Self {
+        Ok(Self {
             genesis_time,
             genesis_validators_root,
             slot,
@@ -338,8 +338,7 @@ where
             inactivity_scores,
             current_sync_committee,
             next_sync_committee,
-        }
-        .into_tree_backend()
+        })
     }
 }
 

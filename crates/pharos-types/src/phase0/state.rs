@@ -318,7 +318,7 @@ where
         let current_justified_checkpoint: Checkpoint = decoder.decode_next::<Checkpoint>()?;
         let finalized_checkpoint: Checkpoint = decoder.decode_next::<Checkpoint>()?;
         decoder.finish()?;
-        Self {
+        Ok(Self {
             genesis_time,
             genesis_validators_root,
             slot,
@@ -340,8 +340,7 @@ where
             previous_justified_checkpoint,
             current_justified_checkpoint,
             finalized_checkpoint,
-        }
-        .into_tree_backend()
+        })
     }
 }
 
