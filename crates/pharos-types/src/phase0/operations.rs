@@ -384,7 +384,11 @@ mod tests {
 
         // Empty request: zero bytes on the wire (NOT a 4-byte offset).
         let empty = Req::default();
-        assert_eq!(empty.as_ssz_bytes().len(), 0, "empty request must be 0 bytes");
+        assert_eq!(
+            empty.as_ssz_bytes().len(),
+            0,
+            "empty request must be 0 bytes"
+        );
 
         // Two roots: exactly 64 bytes, byte-identical to the two roots back-to-back.
         let r0 = Hash256::from([0x11u8; 32]);
