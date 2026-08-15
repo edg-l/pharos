@@ -7,6 +7,8 @@
 //!
 //! Plan reference: D-trait boundaries in `docs/m2-plan.md`.
 
+use std::sync::Arc;
+
 use pharos_types::EthSpec;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
@@ -141,4 +143,98 @@ where
     T: ForkContext + BlockProvider<E> + GossipValidator<E>,
     E: EthSpec,
 {
+}
+
+// ── Arc<T> blanket impls ──────────────────────────────────────────────────────
+//
+// These allow `Arc<HostImpl<E>>` (and any other `Arc<T>` where `T` implements
+// the sub-traits) to be used directly with `NetworkBuilder` and the `Host<E>`
+// blanket. Resolves `Q-host-arc-vs-arclike` (M3a plan): single `Arc<HostImpl>`
+// shared between the node binary and the network task.
+
+impl<T> ForkContext for Arc<T>
+where
+    T: ForkContext + ?Sized,
+{
+    fn current_fork_digest(&self) -> ForkDigest {
+        (**self).current_fork_digest()
+    }
+
+    fn enr_fork_id(&self) -> ENRForkID {
+        (**self).enr_fork_id()
+    }
+
+    fn genesis_validators_root(&self) -> Root {
+        (**self).genesis_validators_root()
+    }
+
+    fn local_metadata(&self) -> MetaData {
+        (**self).local_metadata()
+    }
+}
+
+impl<T, E> BlockProvider<E> for Arc<T>
+where
+    T: BlockProvider<E> + ?Sized,
+    E: EthSpec,
+{
+    fn block_by_root(&self, root: Root) -> Option<E::SignedBeaconBlock> {
+        (**self).block_by_root(root)
+    }
+
+    fn blocks_by_range(&self, start_slot: Slot, count: u64) -> Vec<E::SignedBeaconBlock> {
+        (**self).blocks_by_range(start_slot, count)
+    }
+
+    fn finalized_checkpoint(&self) -> Checkpoint {
+        (**self).finalized_checkpoint()
+    }
+
+    fn head(&self) -> (Root, Slot) {
+        (**self).head()
+    }
+}
+
+impl<T, E> GossipValidator<E> for Arc<T>
+where
+    T: GossipValidator<E> + ?Sized,
+    E: EthSpec,
+{
+    fn validate_beacon_block(&self, block: &E::SignedBeaconBlock) -> GossipVerdict {
+        (**self).validate_beacon_block(block)
+    }
+
+    fn validate_attestation(&self, subnet: SubnetId, att: &Attestation<2048>) -> GossipVerdict {
+        (**self).validate_attestation(subnet, att)
+    }
+
+    fn validate_aggregate_and_proof(&self, msg: &AggregateAndProof<2048>) -> GossipVerdict {
+        (**self).validate_aggregate_and_proof(msg)
+    }
+
+    fn validate_voluntary_exit(&self, exit: &SignedVoluntaryExit) -> GossipVerdict {
+        (**self).validate_voluntary_exit(exit)
+    }
+
+    fn validate_proposer_slashing(&self, slashing: &ProposerSlashing) -> GossipVerdict {
+        (**self).validate_proposer_slashing(slashing)
+    }
+
+    fn validate_attester_slashing(&self, slashing: &AttesterSlashing<2048>) -> GossipVerdict {
+        (**self).validate_attester_slashing(slashing)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pharos_types::EthSpec;
+
+    /// Compile-time witness that `Arc<T>` satisfies `Host<E>` when `T: Host<E>`.
+    ///
+    /// This function is never called; its existence proves the blanket impls
+    /// compose correctly, resolving `Q-host-arc-vs-arclike`.
+    fn _assert_arc_is_host<E: EthSpec, T: Host<E>>(_: Arc<T>) {}
 }

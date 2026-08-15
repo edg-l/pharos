@@ -11,6 +11,14 @@
 //! `GossipVerdict::Accept` for M3a. The trait *holder* is now the real
 //! `HostImpl`; M4 fills the validation bodies once STF wiring lands.
 //! See each method's `TODO(M4)` comment.
+//!
+//! # record_attnets_change
+//!
+//! `record_attnets_change` is the public hook for the M3b subnet-rotation
+//! driver. At startup (M3a) it is called once from `main.rs` to set the
+//! initial attestation subnet bitfield and bump `seq_number` from 0 to 1.
+//! The M3b epoch driver will call it every `EPOCHS_PER_SUBNET_SUBSCRIPTION`
+//! epochs when the persistent subnet assignment rotates.
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -127,9 +135,6 @@ impl<E: EthSpec> HostImpl<E> {
     /// Spec: `p2p-interface.md:391-393`.
     /// Only bumps `seq_number` on a genuine change (idempotent on same value).
     /// Increment is wrapping per spec.
-    // Called from the subnet management path (M3b) and tests. The binary does
-    // not call it at M3a startup; the rotation driver is M3b.
-    #[allow(dead_code)]
     pub fn record_attnets_change(&self, new_attnets: Bitvector<ATTESTATION_SUBNET_COUNT>) {
         let mut md = self.metadata.write();
         if md.attnets != new_attnets {

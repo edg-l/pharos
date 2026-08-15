@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use discv5::enr::NodeId;
 use libp2p::{Multiaddr, PeerId};
 use pharos_ssz::Encode;
 use pharos_types::EthSpec;
@@ -59,6 +60,11 @@ pub struct NetworkHandle<E: EthSpec> {
     event_rx: mpsc::Receiver<NetworkEvent>,
     /// The local `PeerId` of this node.
     local_peer_id: PeerId,
+    /// The discv5 `NodeId` derived from the local secp256k1 keypair.
+    ///
+    /// Used by `compute_subscribed_subnets` to compute initial attestation
+    /// subnet assignments at startup.
+    local_node_id: NodeId,
     /// Fire to trigger a clean shutdown of the `Network` event loop.
     ///
     /// Wrapped in `Option` so `shutdown()` can take it by value.
@@ -72,11 +78,13 @@ impl<E: EthSpec> NetworkHandle<E> {
         event_rx: mpsc::Receiver<NetworkEvent>,
         shutdown_tx: oneshot::Sender<()>,
         local_peer_id: PeerId,
+        local_node_id: NodeId,
     ) -> Self {
         Self {
             cmd_tx,
             event_rx,
             local_peer_id,
+            local_node_id,
             shutdown_tx: Some(shutdown_tx),
         }
     }
@@ -89,6 +97,15 @@ impl<E: EthSpec> NetworkHandle<E> {
     /// The local `PeerId` of this node.
     pub fn local_peer_id(&self) -> PeerId {
         self.local_peer_id
+    }
+
+    /// The discv5 `NodeId` of this node, derived from the local secp256k1 keypair.
+    ///
+    /// Used at startup to compute persistent attestation subnet assignments via
+    /// `compute_subscribed_subnets`. Stored at build time so the keypair does
+    /// not need to be retained after `NetworkBuilder::spawn`.
+    pub fn local_node_id(&self) -> NodeId {
+        self.local_node_id
     }
 
     /// Receive the next event from the network task.

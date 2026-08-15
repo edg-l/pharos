@@ -1,8 +1,5 @@
 //! Pharos beacon-node entry point.
 
-mod host_impl;
-pub mod startup;
-
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,15 +11,17 @@ use libp2p::Multiaddr;
 use libp2p::multiaddr::Protocol;
 use parking_lot::RwLock;
 use pharos_fork_choice::{get_forkchoice_store, on_tick};
+use pharos_network::discovery::subnets::compute_subscribed_subnets;
 use pharos_network::{NetworkBuilder, NoopScorer};
-use pharos_ssz::{Decode, TreeHash};
+use pharos_ssz::{Bitvector, Decode, TreeHash};
 use pharos_storage::{RocksStore, RocksStoreConfig};
+use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::phase0::{MainnetBeaconBlock, MainnetBeaconState};
 use pharos_types::{EthSpec, MainnetEthSpec};
 use tracing::info;
 
-use host_impl::HostImpl;
-use startup::rehydrate_fork_choice_store;
+use pharos_node::host_impl::HostImpl;
+use pharos_node::startup::rehydrate_fork_choice_store;
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -163,21 +162,46 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Step 4: Construct host + network ──────────────────────────────────
 
-    let host =
-        HostImpl::<MainnetEthSpec>::new(store, fork_choice, genesis_validators_root, fork_version);
+    // Wrap in Arc so we can retain a handle for record_attnets_change after
+    // passing a clone into the network builder. Arc<HostImpl<E>> satisfies
+    // Host<E> via the blanket impls in pharos_network::host.
+    let host = Arc::new(HostImpl::<MainnetEthSpec>::new(
+        store,
+        fork_choice,
+        genesis_validators_root,
+        fork_version,
+    ));
 
     let discv5_addr = SocketAddr::new(listen_ip, args.discv5_port);
 
-    let handle = NetworkBuilder::<MainnetEthSpec, HostImpl<MainnetEthSpec>, NoopScorer>::new(host)
-        .listen_ip(listen_ip)
-        .tcp_listen_port(tcp_port)
-        .discv5_addr(discv5_addr)
-        .bootnodes(bootnodes)
-        .spawn()
-        .await
-        .context("failed to start network")?;
+    let handle = NetworkBuilder::<MainnetEthSpec, Arc<HostImpl<MainnetEthSpec>>, NoopScorer>::new(
+        host.clone(),
+    )
+    .listen_ip(listen_ip)
+    .tcp_listen_port(tcp_port)
+    .discv5_addr(discv5_addr)
+    .bootnodes(bootnodes)
+    .spawn()
+    .await
+    .context("failed to start network")?;
 
     info!(peer_id = %handle.local_peer_id(), "network started");
+
+    // Compute initial attestation subnets from the node-id and record them.
+    // This bumps MetaData.seq_number from 0 to 1 exactly once at startup,
+    // fulfilling the p2p-interface.md:391-393 requirement.
+    // TODO(M3b): wire to subnet-rotation epoch driver once M3b lands.
+    let node_id = handle.local_node_id();
+    let subnets = compute_subscribed_subnets::<MainnetEthSpec>(node_id, 0u64);
+    let mut initial_attnets = Bitvector::<ATTESTATION_SUBNET_COUNT>::default();
+    for subnet in subnets {
+        initial_attnets.set(subnet as usize, true);
+    }
+    host.record_attnets_change(initial_attnets);
+    tracing::info!(
+        seq_number = 1,
+        "initial attnets recorded; metadata seq_number = 1"
+    );
 
     // Block until Ctrl-C.
     tokio::signal::ctrl_c()

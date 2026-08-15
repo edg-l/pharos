@@ -1399,7 +1399,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             _phantom: PhantomData,
         };
 
-        let handle = NetworkHandle::new(cmd_tx, event_rx, shutdown_tx, local_peer_id);
+        let handle = NetworkHandle::new(cmd_tx, event_rx, shutdown_tx, local_peer_id, node_id);
 
         Ok((network, handle))
     }

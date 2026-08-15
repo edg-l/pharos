@@ -18,6 +18,7 @@ pub mod scoring;
 pub mod topics;
 pub mod types;
 
+pub use discv5::enr::NodeId;
 pub use error::NetworkError;
 pub use handle::{NetworkCommandSender, NetworkHandle};
 pub use host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict, Host};
