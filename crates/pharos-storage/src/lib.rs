@@ -15,7 +15,7 @@ pub mod keys;
 pub mod store;
 pub mod transition;
 
-pub use db::RocksStore;
+pub use db::{RocksStore, RocksStoreConfig};
 pub use error::StorageError;
 pub use forkchoice::ForkChoiceSnapshot;
 pub use store::Store;

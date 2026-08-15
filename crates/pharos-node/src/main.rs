@@ -5,16 +5,24 @@ pub mod startup;
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
 use clap::Parser;
 use libp2p::Multiaddr;
 use libp2p::multiaddr::Protocol;
-use pharos_network::NetworkBuilder;
-use pharos_types::MainnetEthSpec;
+use parking_lot::RwLock;
+use pharos_fork_choice::{get_forkchoice_store, on_tick};
+use pharos_network::{NetworkBuilder, NoopScorer};
+use pharos_ssz::{Decode, TreeHash};
+use pharos_storage::{RocksStore, RocksStoreConfig};
+use pharos_types::phase0::{MainnetBeaconBlock, MainnetBeaconState};
+use pharos_types::{EthSpec, MainnetEthSpec};
 use tracing::info;
 
 use host_impl::HostImpl;
+use startup::rehydrate_fork_choice_store;
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -37,6 +45,15 @@ struct Args {
     /// Data directory for persistent state (chain DB, slashing DB, etc.).
     #[arg(long, default_value = "./data")]
     data_dir: PathBuf,
+
+    /// Path to a Phase-0 `BeaconState` SSZ file used as the genesis anchor.
+    ///
+    /// Required on cold start. On warm restart the stored fork-choice snapshot
+    /// is loaded instead, but the genesis state is still needed to extract the
+    /// genesis validators root and fork version. Use `--checkpoint-sync-url`
+    /// (M4) for production mainnet.
+    #[arg(long, value_name = "PATH")]
+    genesis_state_path: PathBuf,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -71,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!(version = env!("CARGO_PKG_VERSION"), "pharos starting");
     info!(listen_addr = %args.listen_addr, discv5_port = args.discv5_port, "configuration");
-    tracing::info!(data_dir = %args.data_dir.display(), "data directory (unused until M3)");
+    info!(data_dir = %args.data_dir.display(), "data directory");
 
     // Parse --listen-addr into IP + TCP port.
     let (listen_ip, tcp_port) = parse_listen_addr(&args.listen_addr)
@@ -87,11 +104,71 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect::<anyhow::Result<_>>()?;
 
-    // Build and spawn the network stack.
-    let host = HostImpl::new();
+    // ── Step 1+2: Open RocksDB ─────────────────────────────────────────────
+
+    let chain_db_path = args.data_dir.join("chain_db");
+    info!(path = %chain_db_path.display(), "opening chain database");
+
+    let store = Arc::new(
+        RocksStore::open::<MainnetEthSpec>(RocksStoreConfig {
+            path: chain_db_path,
+            create_if_missing: true,
+        })
+        .context("failed to open chain database")?,
+    );
+
+    // ── Step 3: Load genesis state + build fork-choice ────────────────────
+
+    let genesis_bytes = std::fs::read(&args.genesis_state_path)
+        .with_context(|| format!("reading genesis state from {:?}", args.genesis_state_path))?;
+    let genesis_state = MainnetBeaconState::from_ssz_bytes(&genesis_bytes)
+        .context("decoding genesis BeaconState SSZ")?;
+
+    // Compute genesis validators root and fork version from the state.
+    use pharos_types::views::BeaconStateView;
+    let genesis_validators_root = genesis_state.genesis_validators_root();
+    let genesis_fork_version = MainnetEthSpec::GENESIS_FORK_VERSION;
+    let fork_version = pharos_types::phase0::primitives::Version::from_array(genesis_fork_version);
+
+    // Build fork-choice store: warm restart or cold start.
+    let snapshot =
+        <RocksStore as pharos_storage::Store<MainnetEthSpec>>::get_forkchoice_snapshot(&store)
+            .context("reading fork-choice snapshot")?;
+
+    let fc_store = if let Some(ref snap) = snapshot {
+        info!("warm restart: rehydrating fork-choice store from snapshot");
+        rehydrate_fork_choice_store::<MainnetEthSpec>(&store, snap)
+            .context("rehydrating fork-choice store")?
+    } else {
+        info!("cold start: seeding fork-choice from genesis state");
+        // Anchor block: state_root = hash_tree_root(genesis_state), empty sig.
+        let state_root = genesis_state.tree_hash_root();
+        let anchor_block = MainnetBeaconBlock {
+            state_root,
+            ..MainnetBeaconBlock::default()
+        };
+        get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block)
+    };
+
+    let mut fc_store_mut = fc_store;
+
+    // Advance the fork-choice time cursor to wall-clock after warm restart.
+    let wall_clock_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system time before UNIX_EPOCH")?
+        .as_secs();
+    on_tick::<MainnetEthSpec>(&mut fc_store_mut, wall_clock_secs);
+
+    let fork_choice = Arc::new(RwLock::new(fc_store_mut));
+
+    // ── Step 4: Construct host + network ──────────────────────────────────
+
+    let host =
+        HostImpl::<MainnetEthSpec>::new(store, fork_choice, genesis_validators_root, fork_version);
+
     let discv5_addr = SocketAddr::new(listen_ip, args.discv5_port);
 
-    let handle = NetworkBuilder::<MainnetEthSpec, _, _>::new(host)
+    let handle = NetworkBuilder::<MainnetEthSpec, HostImpl<MainnetEthSpec>, NoopScorer>::new(host)
         .listen_ip(listen_ip)
         .tcp_listen_port(tcp_port)
         .discv5_addr(discv5_addr)

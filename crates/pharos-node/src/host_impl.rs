@@ -1,136 +1,160 @@
-//! Stub host implementations for `pharos-node`.
+//! Real `Host<E>` implementation for `pharos-node`.
 //!
-//! These stubs satisfy the `Host<E>` trait bounds required by `NetworkBuilder`
-//! without real storage or consensus logic.  Real implementations replace them
-//! in later milestones.
+//! This module replaces the M2 stubs (`BlockStoreStub`, `ForkContextStub`,
+//! `GossipValidatorStub`, non-generic `HostImpl`) with a single generic
+//! `HostImpl<E: EthSpec>` backed by a real `RocksStore` and the in-memory
+//! `pharos_fork_choice::Store<E>`.
+//!
+//! # GossipValidator note
+//!
+//! Every `GossipValidator<E>` method on `HostImpl<E>` returns
+//! `GossipVerdict::Accept` for M3a. The trait *holder* is now the real
+//! `HostImpl`; M4 fills the validation bodies once STF wiring lands.
+//! See each method's `TODO(M4)` comment.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use parking_lot::RwLock;
+use tracing::warn;
 
 use pharos_network::host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict};
 use pharos_network::types::SubnetId;
-use pharos_types::MainnetEthSpec;
-use pharos_types::phase0::primitives::ForkDigest;
+use pharos_ssz::Bitvector;
+use pharos_storage::{RocksStore, Store as StoreTrait};
+use pharos_types::EthSpec;
+use pharos_types::fork::{ForkSchedule, compute_fork_digest};
+use pharos_types::phase0::primitives::{ATTESTATION_SUBNET_COUNT, ForkDigest, Root, Version};
 use pharos_types::phase0::{
     AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, MetaData,
-    ProposerSlashing, Root, SignedVoluntaryExit, Slot,
+    ProposerSlashing, SignedVoluntaryExit, Slot,
 };
-use pharos_utils::{Bytes4, Epoch};
+use pharos_utils::Epoch;
 
-/// Mainnet phase0 fork digest for a zeroed `genesis_validators_root`.
-///
-/// Formula: `compute_fork_digest(current_version, gvr) = compute_fork_data_root(current_version, gvr)[..4]`
-/// where `compute_fork_data_root = hash_tree_root(ForkData { current_version, genesis_validators_root })`.
-///
-/// SSZ Merkleization of `ForkData`: each field's `hash_tree_root` is padded to 32 bytes, then
-/// the pair is hashed: `sha256([0u8; 64])[..4]`.
-///
-/// Spec: `specs/phase0/beacon-chain.md:935-948` (`compute_fork_data_root`),
-///       `specs/phase0/p2p-interface.md:269-285` (`compute_fork_digest`).
-///
-/// Verification: `python3 -c "import hashlib; print(hashlib.sha256(bytes(64)).hexdigest()[:8])"` → `f5a5fd42`.
-const PHASE0_ZERO_FORK_DIGEST: [u8; 4] = [0xf5, 0xa5, 0xfd, 0x42];
+// ── ForkContextInner ──────────────────────────────────────────────────────────
 
-// ── BlockStoreStub ────────────────────────────────────────────────────────────
-
-/// In-memory block store stub.
-///
-/// Holds `MainnetSignedBeaconBlock` values keyed by `Root`.
-/// TODO(M4): replace with real storage-backed implementation.
-pub struct BlockStoreStub {
-    pub inner:
-        Arc<Mutex<HashMap<Root, <MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock>>>,
+/// Private fork-context state stored inside `HostImpl`.
+struct ForkContextInner {
+    genesis_validators_root: Root,
+    current_fork_version: Version,
+    /// Precomputed at construction so `current_fork_digest` has no runtime cost.
+    current_fork_digest: ForkDigest,
+    // Accessed via HostImpl::fork_schedule(); the field itself is not read
+    // within this module but is part of the public API surface for Phase 3+.
+    #[allow(dead_code)]
+    fork_schedule: ForkSchedule,
 }
-
-impl BlockStoreStub {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-}
-
-impl Default for BlockStoreStub {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ── ForkContextStub ───────────────────────────────────────────────────────────
-
-/// Stub fork context for M2 node startup.
-///
-/// Uses a zeroed `genesis_validators_root` and the corresponding hardcoded
-/// mainnet phase0 fork digest.
-/// TODO(M3): replace with a real implementation derived from BeaconState.
-pub struct ForkContextStub {
-    /// Zeroed genesis validators root (placeholder until genesis state is loaded).
-    pub genesis_validators_root: Root,
-    /// Hardcoded mainnet phase0 fork digest for the zeroed genesis root.
-    pub current_fork_digest: ForkDigest,
-}
-
-impl ForkContextStub {
-    pub fn new() -> Self {
-        Self {
-            genesis_validators_root: Root::default(),
-            current_fork_digest: ForkDigest::from_array(PHASE0_ZERO_FORK_DIGEST),
-        }
-    }
-}
-
-impl Default for ForkContextStub {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ── GossipValidatorStub ───────────────────────────────────────────────────────
-
-/// Stub gossip validator that accepts all messages.
-///
-/// TODO(M3): replace with real state-aware validation logic.
-pub struct GossipValidatorStub;
 
 // ── HostImpl ──────────────────────────────────────────────────────────────────
 
-/// Combined node host implementation for M2.
+/// Combined node host implementation.
 ///
-/// Bundles `BlockStoreStub`, `ForkContextStub`, and `GossipValidatorStub`.
-pub struct HostImpl {
-    block_store: BlockStoreStub,
-    fork_context: ForkContextStub,
-    _gossip_validator: GossipValidatorStub,
+/// Implements `ForkContext + BlockProvider<E> + GossipValidator<E>` so it
+/// satisfies the `Host<E>` blanket bound required by `NetworkBuilder`.
+///
+/// Fields:
+/// - `store`: RocksDB-backed persistent block/state storage.
+/// - `fork_choice`: In-memory LMD-GHOST + FFG fork-choice state, shared with
+///   any future STF executor via `Arc<RwLock<...>>`.
+/// - `fork_context`: Precomputed fork-digest + schedule (read-only after
+///   construction).
+/// - `metadata`: Local `MetaData` cell; read-mostly (Ping/MetaData responses),
+///   written on subnet changes.
+pub struct HostImpl<E: EthSpec> {
+    store: Arc<RocksStore>,
+    fork_choice: Arc<RwLock<pharos_fork_choice::Store<E>>>,
+    fork_context: ForkContextInner,
+    metadata: RwLock<MetaData>,
+    _phantom: PhantomData<E>,
 }
 
-impl HostImpl {
-    pub fn new() -> Self {
+impl<E: EthSpec> HostImpl<E> {
+    /// Construct a new `HostImpl<E>`.
+    ///
+    /// `fork_choice` should already be hydrated (either from
+    /// `pharos_fork_choice::get_forkchoice_store` on cold start, or from
+    /// `rehydrate_fork_choice_store` on warm restart). This constructor does
+    /// not own rehydration; that is the binary startup path's responsibility
+    /// (Task 2.7).
+    pub fn new(
+        store: Arc<RocksStore>,
+        fork_choice: Arc<RwLock<pharos_fork_choice::Store<E>>>,
+        genesis_validators_root: Root,
+        current_fork_version: Version,
+    ) -> Self {
+        let current_fork_digest =
+            compute_fork_digest(current_fork_version, &genesis_validators_root);
+
+        // M3a: altair_fork_epoch = FAR_FUTURE_EPOCH; Phase 0 for all epochs.
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: current_fork_version,
+            altair_fork_version: current_fork_version, // placeholder; M3b sets real value
+            altair_fork_epoch: Epoch(u64::MAX),        // FAR_FUTURE_EPOCH
+            genesis_validators_root,
+        };
+
+        let fork_context = ForkContextInner {
+            genesis_validators_root,
+            current_fork_version,
+            current_fork_digest,
+            fork_schedule,
+        };
+
         Self {
-            block_store: BlockStoreStub::new(),
-            fork_context: ForkContextStub::new(),
-            _gossip_validator: GossipValidatorStub,
+            store,
+            fork_choice,
+            fork_context,
+            metadata: RwLock::new(MetaData {
+                seq_number: 0,
+                attnets: Bitvector::default(),
+            }),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// The fork schedule for this node.
+    ///
+    /// At M3a, `altair_fork_epoch = FAR_FUTURE_EPOCH`; `fork_at_epoch` returns
+    /// Phase 0 for all epochs. M3b's YAML loader overwrites `altair_fork_epoch`
+    /// with the real value without changing this struct shape.
+    #[allow(dead_code)]
+    pub fn fork_schedule(&self) -> &ForkSchedule {
+        &self.fork_context.fork_schedule
+    }
+
+    /// Update the local `attnets` field and bump `seq_number` if attnets changed.
+    ///
+    /// Spec: `p2p-interface.md:391-393`.
+    /// Only bumps `seq_number` on a genuine change (idempotent on same value).
+    /// Increment is wrapping per spec.
+    // Called from the subnet management path (M3b) and tests. The binary does
+    // not call it at M3a startup; the rotation driver is M3b.
+    #[allow(dead_code)]
+    pub fn record_attnets_change(&self, new_attnets: Bitvector<ATTESTATION_SUBNET_COUNT>) {
+        let mut md = self.metadata.write();
+        if md.attnets != new_attnets {
+            md.attnets = new_attnets;
+            md.seq_number = md.seq_number.wrapping_add(1);
         }
     }
 }
 
-impl Default for HostImpl {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// ── ForkContext ───────────────────────────────────────────────────────────────
 
-// ── Trait implementations ─────────────────────────────────────────────────────
-
-impl ForkContext for HostImpl {
+impl<E: EthSpec> ForkContext for HostImpl<E> {
     fn current_fork_digest(&self) -> ForkDigest {
         self.fork_context.current_fork_digest
     }
 
+    /// Returns the Phase-0-only ENR fork ID.
+    ///
+    /// `next_fork_version` and `next_fork_epoch` use `FAR_FUTURE_EPOCH`
+    /// (Phase 0 only). M3b extends to real Altair values.
     fn enr_fork_id(&self) -> ENRForkID {
         ENRForkID {
-            fork_digest: Bytes4::from_array(PHASE0_ZERO_FORK_DIGEST),
-            next_fork_version: Bytes4::from_array([0u8; 4]),
-            next_fork_epoch: Epoch(u64::MAX),
+            fork_digest: self.fork_context.current_fork_digest,
+            next_fork_version: self.fork_context.current_fork_version,
+            next_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
         }
     }
 
@@ -139,68 +163,186 @@ impl ForkContext for HostImpl {
     }
 
     fn local_metadata(&self) -> MetaData {
-        MetaData::default()
+        self.metadata.read().clone()
     }
 }
 
-impl BlockProvider<MainnetEthSpec> for HostImpl {
-    fn block_by_root(
-        &self,
-        root: Root,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock> {
-        self.block_store
-            .inner
-            .lock()
-            .expect("block store lock poisoned")
-            .get(&root)
-            .cloned()
-    }
+// ── BlockProvider ─────────────────────────────────────────────────────────────
 
-    fn blocks_by_range(
-        &self,
-        _start_slot: Slot,
-        _count: u64,
-    ) -> Vec<<MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock> {
-        Vec::new()
-    }
-
-    fn finalized_checkpoint(&self) -> Checkpoint {
-        Checkpoint {
-            root: Root::default(),
-            epoch: Epoch(0),
+impl<E: EthSpec> BlockProvider<E> for HostImpl<E> {
+    /// Look up a block by root.
+    ///
+    /// Returns `None` on storage error (logged at `warn`) or missing block.
+    fn block_by_root(&self, root: Root) -> Option<E::SignedBeaconBlock> {
+        match <RocksStore as StoreTrait<E>>::get_block(&self.store, &root) {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(%e, %root, "block_by_root: storage error");
+                None
+            }
         }
     }
 
+    /// Retrieve a range of blocks starting at `start_slot`.
+    ///
+    /// Returns an empty vec on storage error.
+    fn blocks_by_range(&self, start_slot: Slot, count: u64) -> Vec<E::SignedBeaconBlock> {
+        match <RocksStore as StoreTrait<E>>::get_blocks_by_range(&self.store, start_slot, count) {
+            Ok(blocks) => blocks,
+            Err(e) => {
+                warn!(%e, %start_slot, count, "blocks_by_range: storage error");
+                vec![]
+            }
+        }
+    }
+
+    fn finalized_checkpoint(&self) -> Checkpoint {
+        self.fork_choice.read().finalized_checkpoint.clone()
+    }
+
+    /// The current chain head `(block_root, slot)`.
+    ///
+    /// Calls `get_head` for the LMD-GHOST head root; looks up the slot from
+    /// `fork_choice.blocks`. Falls back to `(finalized_checkpoint.root,
+    /// finalized_block.slot())` when the head block root is not found in the
+    /// block map (e.g. during abnormal state) so this method does not panic.
     fn head(&self) -> (Root, Slot) {
-        (Root::default(), Slot(0))
+        use pharos_types::views::BeaconBlockView;
+        let fc = self.fork_choice.read();
+        let head_root = pharos_fork_choice::get_head(&*fc);
+        if let Some(block) = fc.blocks.get(&head_root) {
+            (head_root, block.slot())
+        } else {
+            warn!(%head_root, "head block not found in fork-choice store; falling back to finalized");
+            let fin = &fc.finalized_checkpoint;
+            let fin_slot = fc
+                .blocks
+                .get(&fin.root)
+                .map(|b| b.slot())
+                .unwrap_or(Slot(0));
+            (fin.root, fin_slot)
+        }
     }
 }
 
-impl GossipValidator<MainnetEthSpec> for HostImpl {
-    fn validate_beacon_block(
-        &self,
-        _block: &<MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock,
-    ) -> GossipVerdict {
+// ── GossipValidator ───────────────────────────────────────────────────────────
+
+impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
+    /// TODO(M4): Validate proposer signature, known parent, slot bounds.
+    fn validate_beacon_block(&self, _block: &E::SignedBeaconBlock) -> GossipVerdict {
         GossipVerdict::Accept
     }
 
+    /// TODO(M4): Validate attestation target epoch, aggregation bits, signature.
     fn validate_attestation(&self, _subnet: SubnetId, _att: &Attestation<2048>) -> GossipVerdict {
         GossipVerdict::Accept
     }
 
+    /// TODO(M4): Validate aggregate proof, selection proof, signature.
     fn validate_aggregate_and_proof(&self, _msg: &AggregateAndProof<2048>) -> GossipVerdict {
         GossipVerdict::Accept
     }
 
+    /// TODO(M4): Validate voluntary exit epoch, validator status, signature.
     fn validate_voluntary_exit(&self, _exit: &SignedVoluntaryExit) -> GossipVerdict {
         GossipVerdict::Accept
     }
 
+    /// TODO(M4): Validate proposer slashing headers, signature.
     fn validate_proposer_slashing(&self, _slashing: &ProposerSlashing) -> GossipVerdict {
         GossipVerdict::Accept
     }
 
+    /// TODO(M4): Validate attester slashing indices, signature.
     fn validate_attester_slashing(&self, _slashing: &AttesterSlashing<2048>) -> GossipVerdict {
         GossipVerdict::Accept
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pharos_ssz::Bitvector;
+    use pharos_storage::{RocksStore, RocksStoreConfig};
+    use pharos_types::MainnetEthSpec;
+
+    fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
+        use pharos_ssz::TreeHash;
+        use pharos_types::phase0::MainnetBeaconBlock;
+        let store = Arc::new(
+            RocksStore::open::<MainnetEthSpec>(RocksStoreConfig {
+                path: dir.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("open store"),
+        );
+        let genesis_state = <MainnetEthSpec as EthSpec>::BeaconState::default();
+        let state_root = genesis_state.tree_hash_root();
+        // Satisfy get_forkchoice_store's assertion: anchor_block.state_root == hash_tree_root(anchor_state).
+        let anchor_block = MainnetBeaconBlock {
+            state_root,
+            ..MainnetBeaconBlock::default()
+        };
+        let fc_store =
+            pharos_fork_choice::get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
+        let fork_choice = Arc::new(RwLock::new(fc_store));
+        let gvr = Root::default();
+        let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+        HostImpl::new(store, fork_choice, gvr, fv)
+    }
+
+    #[test]
+    fn record_attnets_change_idempotent_no_bump() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+
+        assert_eq!(host.local_metadata().seq_number, 0);
+
+        // Calling with the same (default, all-zero) attnets must not bump.
+        let same_attnets: Bitvector<ATTESTATION_SUBNET_COUNT> = Bitvector::default();
+        host.record_attnets_change(same_attnets.clone());
+        assert_eq!(
+            host.local_metadata().seq_number,
+            0,
+            "idempotent call must not increment seq_number"
+        );
+    }
+
+    #[test]
+    fn record_attnets_change_diff_bumps() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+
+        assert_eq!(host.local_metadata().seq_number, 0);
+
+        // Set bit 0 — this is a real change.
+        let mut new_attnets: Bitvector<ATTESTATION_SUBNET_COUNT> = Bitvector::default();
+        new_attnets.set(0, true);
+        host.record_attnets_change(new_attnets.clone());
+        assert_eq!(
+            host.local_metadata().seq_number,
+            1,
+            "different attnets must bump seq_number"
+        );
+
+        // Same value again — must not bump.
+        host.record_attnets_change(new_attnets);
+        assert_eq!(
+            host.local_metadata().seq_number,
+            1,
+            "second idempotent call must not bump"
+        );
+
+        // Different value — must bump again.
+        let mut newer_attnets: Bitvector<ATTESTATION_SUBNET_COUNT> = Bitvector::default();
+        newer_attnets.set(1, true);
+        host.record_attnets_change(newer_attnets);
+        assert_eq!(
+            host.local_metadata().seq_number,
+            2,
+            "second distinct change must bump to 2"
+        );
     }
 }
