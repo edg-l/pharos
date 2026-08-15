@@ -258,6 +258,10 @@ layer forks on top of them.
 
 ## Locked decisions
 
+Milestone-specific decisions (D1-Dn, Q1-Qn) live in
+[`docs/decisions.md`](./decisions.md); the bullets below are the
+project-wide invariants that pre-date M0.
+
 - **Sync STF, async I/O at the edges.** STF is CPU-bound; tokio adds
   overhead and obscures profiles.
 - **Cargo workspace** with shared `[workspace.dependencies]` and

@@ -193,10 +193,12 @@ fn compute_historical_batch_root<E: EthSpec>(state: &E::BeaconState) -> pharos_t
 
     match E::SLOTS_PER_HISTORICAL_ROOT {
         8192 => {
-            let block_roots: SszVector<Root, 8192> = SszVector::from_vec(block_roots_slice.to_vec())
-                .expect("block_roots length matches");
-            let state_roots: SszVector<Root, 8192> = SszVector::from_vec(state_roots_slice.to_vec())
-                .expect("state_roots length matches");
+            let block_roots: SszVector<Root, 8192> =
+                SszVector::from_vec(block_roots_slice.to_vec())
+                    .expect("block_roots length matches");
+            let state_roots: SszVector<Root, 8192> =
+                SszVector::from_vec(state_roots_slice.to_vec())
+                    .expect("state_roots length matches");
             HistoricalBatch::<8192> {
                 block_roots,
                 state_roots,

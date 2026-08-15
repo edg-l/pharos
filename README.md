@@ -6,10 +6,13 @@
 
 A from-scratch Rust Ethereum proof-of-stake consensus client.
 
-**Status: pre-alpha, M0 foundations complete.** Not usable as a node yet.
-Currently passes 100% of Phase 0 SSZ static + generic conformance tests
-across both `mainnet` and `minimal` presets. The chain logic (state
-transition, fork choice, networking) is on the M1+ roadmap.
+**Status: pre-alpha, M1 complete.** Not usable as a node yet. Currently
+passes 100% of every Phase 0 conformance category (SSZ static + generic,
+operations, epoch processing, sanity, finality, random, rewards, genesis,
+shuffling, BLS) across both `mainnet` and `minimal` presets, with zero
+failures. State transition (`pharos-stf`) and LMD-GHOST + FFG fork choice
+(`pharos-fork-choice`) are in. Networking, Engine API client, Beacon API,
+and validator client are on the M2+ roadmap.
 
 ## Philosophy
 
@@ -39,8 +42,8 @@ crates/
   pharos-types         # Phase 0 containers + EthSpec preset trait
   pharos-conformance   # spec-test runner + progress dashboard
   pharos-storage       # Store trait + rocksdb backend  (skeleton)
-  pharos-fork-choice   # LMD-GHOST + FFG Casper          (skeleton)
-  pharos-stf           # process_block / process_epoch   (skeleton)
+  pharos-fork-choice   # LMD-GHOST + FFG Casper
+  pharos-stf           # process_block / process_epoch
   pharos-engine        # Engine API client (CL -> EL)    (skeleton)
   pharos-network       # libp2p + discv5 + gossip        (skeleton)
   pharos-api           # Beacon API HTTP server          (skeleton)
@@ -57,8 +60,8 @@ boundary.
 - **M0 — Foundations.** SSZ + Merkleization, persistent collections, BLS
   wrappers, Phase 0 containers, EthSpec, conformance harness. **Done.**
 - **M1 — Phase 0 STF + fork choice.** `process_block`, `process_epoch`,
-  LMD-GHOST, justification, finalization. Run `consensus-specs` STF tests
-  until green.
+  LMD-GHOST, justification, finalization. All Phase 0 conformance
+  categories green. **Done.**
 - **M2 — Networking baseline.** `discv5`, `libp2p` gossipsub, req-resp.
 - **M3 — Altair.** Sync committees, light-client protocol.
 - **M4 — Bellatrix + Engine API.** First merged sync against a devnet.
