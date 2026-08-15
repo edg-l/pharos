@@ -328,7 +328,10 @@ pub fn apply_anchor<E: EthSpec>(
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// SSZ-decode the raw bytes as the per-fork `E::BeaconState` and return
-/// `(state, state_root)`.
+/// `(state, state_root)`. Flips the decoded state to `Backend::Tree` on the
+/// seven hot list/vector fields per `D-no-tree-backend-on-decode`, so the
+/// downstream `apply_anchor` write and any post-anchor STF reuses the
+/// per-node hash cache.
 fn decode_state<E: EthSpec>(
     fork: &str,
     bytes: &[u8],
@@ -337,21 +340,27 @@ fn decode_state<E: EthSpec>(
         "phase0" => {
             let inner = E::Phase0BeaconState::from_ssz_bytes(bytes)
                 .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
-            let state = E::phase0_into_state(inner);
+            let state = E::phase0_into_state(inner)
+                .into_tree_backend()
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
             let root = state.tree_hash_root();
             Ok((state, root))
         }
         "altair" => {
             let inner = E::AltairBeaconState::from_ssz_bytes(bytes)
                 .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
-            let state = E::altair_into_state(inner);
+            let state = E::altair_into_state(inner)
+                .into_tree_backend()
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
             let root = state.tree_hash_root();
             Ok((state, root))
         }
         "bellatrix" => {
             let inner = E::BellatrixBeaconState::from_ssz_bytes(bytes)
                 .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
-            let state = E::bellatrix_into_state(inner);
+            let state = E::bellatrix_into_state(inner)
+                .into_tree_backend()
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
             let root = state.tree_hash_root();
             Ok((state, root))
         }

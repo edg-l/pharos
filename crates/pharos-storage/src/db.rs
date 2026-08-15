@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use pharos_ssz::{Decode, Encode};
 use pharos_types::phase0::primitives::{Root, Slot};
-use pharos_types::{EthSpec, PayloadStatus};
+use pharos_types::{BeaconStateView, EthSpec, PayloadStatus};
 use rocksdb::{
     ColumnFamily, ColumnFamilyDescriptor, DB, DBCompressionType, Direction, IteratorMode, Options,
     WriteBatch,
@@ -226,7 +226,11 @@ impl<E: EthSpec> Store<E> for RocksStore {
         match self.db.get_cf(cf, root_key(state_root))? {
             None => Ok(None),
             Some(bytes) => {
-                let state = E::BeaconState::from_ssz_bytes(&bytes)?;
+                // Decode lands `Backend::Naive` per `D-no-tree-backend-on-decode`;
+                // flip the seven hot fields to `Backend::Tree` here so live-node
+                // consumers (fork-choice, STF, Beacon API) get per-node hash
+                // caching and CoW path-copy writes amortised across calls.
+                let state = E::BeaconState::from_ssz_bytes(&bytes)?.into_tree_backend()?;
                 Ok(Some(state))
             }
         }

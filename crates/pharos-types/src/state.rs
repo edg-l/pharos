@@ -186,6 +186,20 @@ impl<
             BeaconState::Bellatrix(s) => s.invalidate_root_cache(),
         }
     }
+
+    /// Flip the seven hot list/vector fields (`validators`, `historical_roots`,
+    /// `state_roots`, `block_roots`, `randao_mixes`, `previous/current_epoch_attestations`)
+    /// from `Backend::Naive` to `Backend::Tree`. Live-node entry points
+    /// (checkpoint-sync apply, genesis init, storage rehydrate) must call this
+    /// after SSZ-decoding a `BeaconState`; the decode path itself leaves states
+    /// `Naive` per `D-no-tree-backend-on-decode`.
+    pub fn into_tree_backend(self) -> Result<Self, SszError> {
+        match self {
+            BeaconState::Phase0(s) => Ok(BeaconState::Phase0(s.into_tree_backend()?)),
+            BeaconState::Altair(s) => Ok(BeaconState::Altair(s.into_tree_backend()?)),
+            BeaconState::Bellatrix(s) => Ok(BeaconState::Bellatrix(s.into_tree_backend()?)),
+        }
+    }
 }
 
 impl<
@@ -378,6 +392,10 @@ impl<
             BeaconState::Altair(s) => s.invalidate_root_cache(),
             BeaconState::Bellatrix(s) => s.invalidate_root_cache(),
         }
+    }
+    fn into_tree_backend(self) -> Result<Self, SszError> {
+        // Delegate to the inherent fork-enum method (defined above).
+        BeaconState::into_tree_backend(self)
     }
 }
 

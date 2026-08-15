@@ -452,6 +452,9 @@ impl<
     fn invalidate_root_cache(&mut self) {
         self.cached_root.invalidate();
     }
+    fn into_tree_backend(self) -> Result<Self, pharos_ssz::SszError> {
+        BeaconState::into_tree_backend(self)
+    }
 }
 
 #[cfg(test)]

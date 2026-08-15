@@ -32,7 +32,7 @@ use crate::phase0::{
     BLSSignature, BeaconBlockHeader, Checkpoint, Eth1Data, Fork, ProposerSlashing, Root,
     SignedVoluntaryExit, Slot, Validator, ValidatorIndex,
 };
-use pharos_ssz::SszSequence;
+use pharos_ssz::{SszError, SszSequence};
 use pharos_utils::{Bytes32, Gwei, Hash256};
 
 // ── ForkVariant ───────────────────────────────────────────────────────────────
@@ -142,6 +142,17 @@ pub trait BeaconStateView {
     /// after mutating any field; otherwise a subsequent `cached_tree_hash_root`
     /// call would return a stale value.
     fn invalidate_root_cache(&mut self);
+
+    /// Flip the seven hot list/vector fields (`validators`, `historical_roots`,
+    /// `state_roots`, `block_roots`, `randao_mixes`, `previous/current_epoch_attestations`)
+    /// from `Backend::Naive` to `Backend::Tree`. Live-node entry points
+    /// (`Store::get_state`, `apply_anchor`, backfill genesis anchor write,
+    /// genesis init) must call this after SSZ-decoding or constructing a fresh
+    /// `BeaconState`; the decode path itself leaves states `Naive` per
+    /// `D-no-tree-backend-on-decode`.
+    fn into_tree_backend(self) -> Result<Self, SszError>
+    where
+        Self: Sized;
 }
 
 // ── Blanket impls over the generic phase0 structs ─────────────────────────────
@@ -331,5 +342,8 @@ impl<
     }
     fn invalidate_root_cache(&mut self) {
         self.cached_root.invalidate();
+    }
+    fn into_tree_backend(self) -> Result<Self, SszError> {
+        phase0::BeaconState::into_tree_backend(self)
     }
 }

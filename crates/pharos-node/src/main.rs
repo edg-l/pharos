@@ -301,10 +301,15 @@ async fn main() -> anyhow::Result<()> {
         info!("cold start: seeding fork-choice from genesis state");
         let genesis_bytes = std::fs::read(genesis_path)
             .with_context(|| format!("reading genesis state from {genesis_path:?}"))?;
-        // The genesis state is a raw phase0 SSZ blob.
+        // The genesis state is a raw phase0 SSZ blob. Decode lands `Backend::Naive`
+        // per `D-no-tree-backend-on-decode`; flip the seven hot fields to
+        // `Backend::Tree` so the fork-choice store and subsequent STF benefit
+        // from per-node hash caching from the very first block.
         let genesis_state_inner = Phase0MainnetBeaconState::from_ssz_bytes(&genesis_bytes)
             .context("decoding genesis BeaconState SSZ")?;
-        let genesis_state = MainnetBeaconState::Phase0(genesis_state_inner);
+        let genesis_state = MainnetBeaconState::Phase0(genesis_state_inner)
+            .into_tree_backend()
+            .context("flipping genesis state to tree backend")?;
 
         let gvr = genesis_state.genesis_validators_root();
         // Anchor block: state_root = hash_tree_root(genesis_state), empty sig.
