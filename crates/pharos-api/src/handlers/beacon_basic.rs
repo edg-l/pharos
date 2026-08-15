@@ -74,4 +74,3 @@ pub async fn get_genesis<E: EthSpec>(
         Err(e) => e.into_response(),
     }
 }
-

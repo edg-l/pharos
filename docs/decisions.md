@@ -58,6 +58,7 @@ numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
   - D-api-chain-accessor D-api-dto-serde D-api-content-negotiation
   - D-api-fork-tag-envelope D-api-id-resolution D-api-sse-broadcast
   - D-api-axum-state D-api-validator-auth D-api-node-identity-cache
+  - D-m7-gate-harness D-api-debug-state-full-per-fork
 
 ## M1 — Phase 0 STF + fork choice
 
@@ -2611,14 +2612,15 @@ semantics naturally when `--config-dir` is absent (store defaults to `RuntimeCon
 
 ## M7-BeaconAPI
 
-**Status of this section**: PROPOSED (to be finalized at Phase 6 after the
-Kurtosis interop gate). Plan: `docs/m7-plan.md`. Spec:
+**Status of this section**: ACCEPTED (M7 closed 2026-06-01; Beacon API ships
+across 6 phases, cross-client read gate green on the live Bellatrix→Capella
+devnet). Plan: `docs/m7-plan.md`. Spec:
 `~/dev/beacon-APIs/beacon-node-oapi.yaml` + per-namespace YAML files under
 `~/dev/beacon-APIs/apis/`.
 
 ### D-api-chain-accessor — read-only `ChainStateApi` trait over existing shared state
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 A thin `ChainStateApi<E>` trait implemented by `NodeChainState<E>`, which
 holds `Arc<RocksStore>`, `Arc<RwLock<pharos_fork_choice::Store<E>>>`, and a
@@ -2631,7 +2633,7 @@ core, async at edges) exactly.
 
 ### D-api-dto-serde — in-house DTO structs with `quoted_int` / `hex_bytes` helpers
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 `pharos-types` carries zero serde derives; the API layer owns all JSON
 serialization via dedicated DTO structs in `pharos-api`. Two in-house helper
@@ -2644,7 +2646,7 @@ per fork-tag/version envelope, and keeps the rejected-dep boundary clean
 
 ### D-api-content-negotiation — single response extractor branching on `Accept`
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 A single `ApiResponse<T>` axum `IntoResponse` type inspects the `Accept`
 request header: `application/octet-stream` produces a raw SSZ body via
@@ -2658,7 +2660,7 @@ in the SSZ branch.
 
 ### D-api-fork-tag-envelope — `/eth/v2` responses wrap data in a version envelope
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 Endpoints under `/eth/v2` (and `/eth/v3`) whose payload is fork-dependent
 wrap the response DTO in `{ version, execution_optimistic, finalized, data }`
@@ -2672,7 +2674,7 @@ the spec mandates them, but no `version` field.
 
 ### D-api-id-resolution — `resolve_state_id` / `resolve_block_id` helper module
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 A `resolve.rs` module maps the six beacon-API id forms
 (`head`, `genesis`, `finalized`, `justified`, `<slot>`, `0x<root>`) to a
@@ -2686,7 +2688,7 @@ and debug handlers.
 
 ### D-api-sse-broadcast — `tokio::sync::broadcast` bus with `watch`-to-broadcast adapter
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 A single `tokio::sync::broadcast::Sender<ApiEvent>` is held in `ApiState`.
 A `run_api_event_adapter` task clones the existing
@@ -2703,7 +2705,7 @@ frames for them.
 
 ### D-api-axum-state — `Arc<ApiState<E>>` via `axum::extract::State`
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 `ApiState<E>` is the single axum application state, injected via
 `axum::extract::State(Arc<ApiState<E>>)`. It holds the `ChainStateApi`
@@ -2716,7 +2718,7 @@ drop the guard, then serialize.
 
 ### D-api-validator-auth — opt-in bearer token middleware on `/eth/v1/validator/*` only
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 A `tower`/axum middleware layer (`validator_auth_layer(token: Option<String>)`)
 is applied only to the `/eth/v1/validator/*` nested sub-router. When a token
@@ -2730,7 +2732,7 @@ requires a restart.
 
 ### D-api-node-identity-cache — `NodeIdentityCache` snapshot instead of `NetworkHandle`
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 `NetworkHandle` is not `Clone` (it owns a single `mpsc::Receiver<NetworkEvent>`
 already consumed by the node binary at startup) and cannot be embedded in the
@@ -2743,6 +2745,43 @@ cache holds `peer_id`, `enr`, `listen_addrs`, `discovery_addrs`, and
 `NetworkHandle::metadata_ref()` accessor exposes the live metadata `ArcSwap`
 clone so the `node/identity` handler can read the current metadata sequence
 number without a stale snapshot.
+
+### D-m7-gate-harness — M7 interop gate reuses the hand-rolled devnet, not Kurtosis
+
+**Status**: Accepted. **Date**: 2026-06-01.
+
+The M7 plan (Task 6.1) specified a Kurtosis `ethereum-package` enclave as the
+cross-client gate. We kept the existing hand-rolled host-process devnet
+(`scripts/devnet/`, runtime `~/.cache/pharos-devnet/run-tmux.sh`) instead. It
+already drives the exact lighthouse v8.1.3 + ethrex v13 Bellatrix→Capella
+transition chain the M5-follow and M6-Capella live acceptances used, with every
+cross-client gotcha already baked into the scripts. A Kurtosis custom-service
+definition would re-derive the same topology in a heavier runtime for no extra
+coverage on a solo devnet. The M7 additions are minimal: `run-pharos.sh` launches
+pharos with `--http --http-port 5053` (5052 is the lighthouse BN), and
+`run-vc-vs-pharos.sh` points an external lighthouse VC at pharos plus a curl
+read-probe of the VC-critical endpoints. The gate is duties-READ + a stable VC
+connection over ≥2 epochs, NOT attestation submission (production/POST publish is
+M8; the VC's publish errors against pharos are expected). Upstreaming a pharos
+service to `ethpandaops/ethereum-package` remains a later follow-up.
+
+### D-api-debug-state-full-per-fork — `debug/beacon/states` JSON serializes the complete per-fork state
+
+**Status**: Accepted. **Date**: 2026-06-01.
+
+`GET /eth/v2/debug/beacon/states/{id}` returns the FULL `BeaconState` in JSON,
+not a common-fields subset. Because `pharos-types` is serde-free
+(`D-api-dto-serde`), the complete serialization lives in
+`pharos_api::beacon_state_to_json_full`, which fork-dispatches on the
+enum-of-forks `BeaconState<E>` and emits every spec field per fork (phase0
+attestations; altair+ participation flags / inactivity scores / sync committees;
+bellatrix+ `latest_execution_payload_header`; capella+ withdrawal indices +
+`historical_summaries`). This required adding borrowing accessors to
+`BeaconStateView` for the per-fork fields rather than a `Vec`-cloning path. The
+SSZ branch (`Accept: application/octet-stream`) encodes the canonical type
+directly and is authoritative; the JSON branch is the schema-complete mirror a
+conforming client validates. A partial JSON body (the initial Phase-5 cut) was
+rejected in review as non-conformant.
 
 ## M-Storage
 
