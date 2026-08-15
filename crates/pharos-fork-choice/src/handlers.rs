@@ -71,6 +71,7 @@ pub fn compute_pulled_up_tip<E: EthSpec>(
 where
     E::BeaconState: BeaconStateWrite + Clone,
     E::AltairBeaconState: pharos_stf::AltairJaFDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixJaFDispatch<E>,
     E::BeaconBlock: BeaconBlockView,
     E::Phase0BeaconBlockBody:
         BeaconBlockBodyView<Attestation = pharos_types::phase0::Attestation<2048>>,
@@ -176,6 +177,7 @@ where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateWrite + Clone,
     E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use crate::get_head::get_head;
@@ -225,6 +227,10 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
         + pharos_stf::AltairProcessSlotsDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
     E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
@@ -236,6 +242,7 @@ where
         >,
     E::AltairBeaconBlock: BeaconBlockView + Clone,
     E::AltairSignedBeaconBlock: SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixSignedBeaconBlock: SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
 {
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
     use pharos_stf::state_transition;
@@ -243,11 +250,13 @@ where
     // Extract the inner `E::BeaconBlock` (fork-enum) without calling
     // `signed_block.message()`, which panics on the fork-enum
     // (it cannot return a reference to an owned intermediate value).
-    // Instead, match on the phase0 / altair inner variants and promote.
+    // Instead, match on the phase0 / altair / bellatrix inner variants and promote.
     let block: E::BeaconBlock = if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
         E::phase0_into_block(inner.message().clone())
     } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
         E::altair_into_block(inner.message().clone())
+    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed_block) {
+        E::bellatrix_into_block(inner.message().clone())
     } else {
         return Err(ForkChoiceError::InvalidBlock {
             reason: "unrecognised SignedBeaconBlock fork variant".to_owned(),
@@ -292,8 +301,16 @@ where
     }
 
     // Compute post-state via state transition.
+    // Fork choice always uses `NullExecutionEngine`; real EL validation happens
+    // in the beacon node's block-import pipeline, not in fork-choice.
     let block_root: Root = block.tree_hash_root();
-    let post_state = state_transition::<E>(pre_state, signed_block, true)?;
+    let post_state = state_transition::<E, pharos_stf::NullExecutionEngine>(
+        pre_state,
+        signed_block,
+        &pharos_stf::NullExecutionEngine,
+        true,
+        &pharos_types::config::RuntimeConfig::default(),
+    )?;
 
     // Insert block and state.
     store.blocks.insert(block_root, block.clone());
@@ -432,6 +449,7 @@ pub fn store_target_checkpoint_state<E: EthSpec>(
 where
     E::BeaconState: BeaconStateWrite + Clone,
     E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
@@ -498,6 +516,7 @@ where
     E::BeaconBlock: BeaconBlockView,
     E::BeaconState: BeaconStateWrite + Clone,
     E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use pharos_stf::phase0::accessors::get_attesting_indices;

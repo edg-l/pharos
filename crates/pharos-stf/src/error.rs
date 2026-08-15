@@ -60,6 +60,11 @@ pub enum StateTransitionError {
 
     #[error("sync committee pubkey not found in validator registry")]
     InvalidSyncCommittee,
+
+    /// `process_execution_payload` rejection per
+    /// `specs/bellatrix/beacon-chain.md:383-398`.
+    #[error("invalid execution payload: {0}")]
+    InvalidExecutionPayload(&'static str),
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]

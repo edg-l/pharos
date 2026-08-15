@@ -1335,7 +1335,12 @@ pub(crate) fn decrease_balance_altair<
 
 // ── Altair-local proposer index ───────────────────────────────────────────────
 
-pub(crate) fn get_proposer_index_altair<
+/// `get_beacon_proposer_index` for Altair state.
+///
+/// Promoted from `pub(crate)` to `pub` so Bellatrix `slash_validator_bellatrix`
+/// can derive the proposer index from a projected altair state without
+/// duplicating the computation.
+pub fn get_proposer_index_altair<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
     const ETH1_DATA_VOTES_LIMIT: u64,

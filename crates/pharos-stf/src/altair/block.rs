@@ -205,11 +205,15 @@ where
 
 /// `process_operations` (modified in Altair) per `specs/altair/beacon-chain.md:492-506`.
 ///
+/// Exposed as `pub` so Bellatrix can reuse steps 3–4 while interleaving
+/// `process_execution_payload` between `process_block_header` and
+/// `process_randao` (spec `bellatrix/beacon-chain.md:362-364`).
+///
 /// The `BeaconBlockBodyView` bound on the altair body constrains
 /// `MAX_VALIDATORS_PER_COMMITTEE = 2048` and `DEPOSIT_PROOF_LENGTH = 33` (the
 /// only values used by all mainnet and minimal presets), so the per-op
 /// processors that take `&Attestation<2048>` / `&Deposit<33>` accept the items.
-fn process_operations<
+pub fn process_operations<
     const MAX_PROPOSER_SLASHINGS: u64,
     const MAX_ATTESTER_SLASHINGS: u64,
     const MAX_ATTESTATIONS: u64,
@@ -504,7 +508,12 @@ where
     Ok(())
 }
 
-fn process_randao_altair<
+/// `process_randao` for Altair state.
+///
+/// Exposed as `pub` so Bellatrix can call it explicitly after
+/// `process_execution_payload` per the spec ordering note at
+/// `specs/bellatrix/beacon-chain.md:362-364`.
+pub fn process_randao_altair<
     const MAX_PROPOSER_SLASHINGS: u64,
     const MAX_ATTESTER_SLASHINGS: u64,
     const MAX_ATTESTATIONS: u64,
@@ -627,7 +636,12 @@ where
     Ok(())
 }
 
-fn process_eth1_data_altair<
+/// `process_eth1_data` for Altair state.
+///
+/// Exposed as `pub` so Bellatrix can call it explicitly as part of the
+/// interleaved block-processing sequence per
+/// `specs/bellatrix/beacon-chain.md:362-364`.
+pub fn process_eth1_data_altair<
     const MAX_PROPOSER_SLASHINGS: u64,
     const MAX_ATTESTER_SLASHINGS: u64,
     const MAX_ATTESTATIONS: u64,

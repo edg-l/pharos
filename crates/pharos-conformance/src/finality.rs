@@ -63,6 +63,8 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + TreeHash,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
+    E::BellatrixBeaconState:
+        pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -118,6 +120,8 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + TreeHash,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
+    E::BellatrixBeaconState:
+        pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -143,7 +147,13 @@ where
             Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
         };
         let state = current.take().unwrap();
-        match state_transition::<E>(state, &block, validate_result) {
+        match state_transition::<E, pharos_stf::NullExecutionEngine>(
+            state,
+            &block,
+            &pharos_stf::NullExecutionEngine,
+            validate_result,
+            &pharos_types::config::RuntimeConfig::default(),
+        ) {
             Ok(new_state) => current = Some(new_state),
             Err(e) => {
                 block_error = Some(format!("{e}"));
@@ -188,6 +198,8 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + TreeHash,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E> + Decode,
+    E::BellatrixBeaconState:
+        pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
     E::AltairSignedBeaconBlock: Decode,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
@@ -243,6 +255,8 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + TreeHash,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E> + Decode,
+    E::BellatrixBeaconState:
+        pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
     E::AltairSignedBeaconBlock: Decode,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
@@ -269,7 +283,13 @@ where
             Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
         };
         let state = current.take().unwrap();
-        match state_transition::<E>(state, &block, validate_result) {
+        match state_transition::<E, pharos_stf::NullExecutionEngine>(
+            state,
+            &block,
+            &pharos_stf::NullExecutionEngine,
+            validate_result,
+            &pharos_types::config::RuntimeConfig::default(),
+        ) {
             Ok(new_state) => current = Some(new_state),
             Err(e) => {
                 block_error = Some(format!("{e}"));

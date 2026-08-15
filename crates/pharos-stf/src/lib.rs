@@ -17,10 +17,13 @@
 //! re-exported here at the same time.
 
 pub mod altair;
+pub mod bellatrix;
 pub mod error;
 pub mod phase0;
 
 pub use altair::state_transition::{AltairDispatch, AltairJaFDispatch, AltairProcessSlotsDispatch};
+pub use bellatrix::execution_engine::{ExecutionEngine, NullExecutionEngine};
+pub use bellatrix::state_transition::{BellatrixDispatch, BellatrixProcessSlotsDispatch};
 pub use phase0::block::process_block;
 pub use phase0::epoch::justification_and_finalization::process_justification_and_finalization;
 pub use phase0::epoch::process_epoch;
@@ -36,6 +39,7 @@ pub use error::{
 use pharos_ssz::TreeHash;
 use pharos_types::{
     BeaconStateView, EthSpec,
+    config::RuntimeConfig,
     phase0::{Attestation, AttesterSlashing, Deposit},
     views::{BeaconBlockBodyView, BeaconBlockView, ForkVariant, SignedBeaconBlockView},
 };
@@ -53,6 +57,8 @@ use phase0::{
 ///   calls the phase0 STF (`process_slots`, `process_block`).
 /// - `Altair` → unwraps state and block to altair inner types, calls the altair
 ///   STF via `AltairDispatch`, wraps result back into the fork-enum.
+/// - `Bellatrix` → unwraps state and block to bellatrix inner types, calls the
+///   bellatrix STF via `BellatrixDispatch`, wraps result back into the fork-enum.
 ///
 /// Advances `state` to `signed_block.message.slot` via `process_slots`,
 /// optionally verifies the block signature and final state root, then
@@ -62,10 +68,15 @@ use phase0::{
 /// `block.state_root == hash_tree_root(state)` post-condition are both skipped
 /// (per Q3 resolution); `verify_signatures` is also set to `false` so every
 /// per-operation BLS check is skipped.
-pub fn state_transition<E: EthSpec>(
+///
+/// `execution_engine` is used only for the Bellatrix arm; phase0 and altair
+/// arms ignore it. Pass `&NullExecutionEngine` for non-EL contexts (spec tests).
+pub fn state_transition<E: EthSpec, EE: ExecutionEngine>(
     mut state: E::BeaconState,
     signed_block: &E::SignedBeaconBlock,
+    execution_engine: &EE,
     validate_result: bool,
+    runtime_cfg: &RuntimeConfig,
 ) -> Result<E::BeaconState, StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite + TreeHash,
@@ -78,6 +89,7 @@ where
             Deposit = Deposit<33>,
         >,
     E::AltairBeaconState: AltairDispatch<E>,
+    E::BellatrixBeaconState: BellatrixDispatch<E, EE> + TreeHash,
 {
     // Fork dispatch via `fork_variant()`. Cannot pattern-match on a concrete
     // enum variant through the opaque `E::BeaconState` associated type;
@@ -103,7 +115,20 @@ where
             return Ok(E::altair_into_state(updated));
         }
         ForkVariant::Bellatrix => {
-            return Err(StateTransitionError::UnsupportedFork);
+            // Unwrap fork-enum state and block to their inner bellatrix types.
+            let bellatrix_signed = E::unwrap_bellatrix_signed_block(signed_block)
+                .ok_or(StateTransitionError::UnsupportedFork)?;
+            let bellatrix_inner =
+                E::into_bellatrix_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+            // Apply the bellatrix state transition via the `BellatrixDispatch` blanket impl.
+            let updated = bellatrix_inner.apply_signed_block(
+                bellatrix_signed,
+                execution_engine,
+                validate_result,
+                runtime_cfg,
+            )?;
+            // Wrap the result back into the fork-enum.
+            return Ok(E::bellatrix_into_state(updated));
         }
     }
     Ok(state)
@@ -177,15 +202,17 @@ where
 
 /// Fork-aware `process_justification_and_finalization`.
 ///
-/// Dispatches to the phase0 or altair implementation depending on the fork
-/// variant of `state`.  Called from `pharos_fork_choice::compute_pulled_up_tip`
-/// which holds a fork-enum `BeaconState` that may be either variant.
+/// Dispatches to the phase0, altair, or bellatrix implementation depending on
+/// the fork variant of `state`. Called from
+/// `pharos_fork_choice::compute_pulled_up_tip` which holds a fork-enum
+/// `BeaconState` that may be any fork variant.
 pub fn process_justification_and_finalization_fork<E: EthSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where
     E::BeaconState: phase0::state_write::BeaconStateWrite,
     E::AltairBeaconState: AltairJaFDispatch<E>,
+    E::BellatrixBeaconState: BellatrixJaFDispatch<E>,
     E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
             Attestation = pharos_types::phase0::Attestation<2048>,
         >,
@@ -199,15 +226,21 @@ where
             *state = E::altair_into_state(inner);
             Ok(())
         }
-        ForkVariant::Bellatrix => Err(EpochProcessingError::UnsupportedFork),
+        ForkVariant::Bellatrix => {
+            let mut inner =
+                E::into_bellatrix_state(state.clone()).expect("fork_variant is Bellatrix");
+            inner.process_jaf_bellatrix()?;
+            *state = E::bellatrix_into_state(inner);
+            Ok(())
+        }
     }
 }
 
 /// Fork-aware `process_slots`.
 ///
-/// Dispatches to the phase0 or altair implementation depending on the fork
-/// variant of `state`.  Called from `pharos_fork_choice` helpers that advance
-/// an opaque fork-enum `BeaconState` by one or more slots.
+/// Dispatches to the phase0, altair, or bellatrix implementation depending on
+/// the fork variant of `state`. Called from `pharos_fork_choice` helpers that
+/// advance an opaque fork-enum `BeaconState` by one or more slots.
 pub fn process_slots_fork<E: EthSpec>(
     state: &mut E::BeaconState,
     target_slot: pharos_types::phase0::Slot,
@@ -215,6 +248,7 @@ pub fn process_slots_fork<E: EthSpec>(
 where
     E::BeaconState: phase0::state_write::BeaconStateWrite + TreeHash,
     E::AltairBeaconState: AltairProcessSlotsDispatch<E>,
+    E::BellatrixBeaconState: BellatrixProcessSlotsDispatch<E>,
     E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
             Attestation = pharos_types::phase0::Attestation<2048>,
         >,
@@ -228,6 +262,95 @@ where
             *state = E::altair_into_state(inner);
             Ok(())
         }
-        ForkVariant::Bellatrix => Err(StateTransitionError::UnsupportedFork),
+        ForkVariant::Bellatrix => {
+            let mut inner =
+                E::into_bellatrix_state(state.clone()).expect("fork_variant is Bellatrix");
+            inner.process_slots_bellatrix(target_slot)?;
+            *state = E::bellatrix_into_state(inner);
+            Ok(())
+        }
+    }
+}
+
+// ── BellatrixJaFDispatch trait ────────────────────────────────────────────────
+
+/// Dispatch trait for `process_justification_and_finalization` on bellatrix states.
+///
+/// Bellatrix J&F is identical to Altair J&F; this trait allows
+/// `process_justification_and_finalization_fork` to call it through the opaque
+/// `E::BellatrixBeaconState` associated type without knowing concrete const params.
+pub trait BellatrixJaFDispatch<E: EthSpec>: Sized {
+    /// Run `process_justification_and_finalization` on `self` (in place).
+    fn process_jaf_bellatrix(&mut self) -> Result<(), EpochProcessingError>;
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    E,
+> BellatrixJaFDispatch<E>
+    for pharos_types::bellatrix::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    E: EthSpec<
+            AltairBeaconState = pharos_types::altair::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+            BellatrixBeaconState = pharos_types::bellatrix::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+        >,
+{
+    fn process_jaf_bellatrix(&mut self) -> Result<(), EpochProcessingError> {
+        // Bellatrix J&F is identical to Altair J&F.
+        // Project to altair, run J&F, copy back.
+        let mut altair = bellatrix::helpers::bellatrix_state_to_altair(self);
+        crate::altair::epoch::process_justification_and_finalization::<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            E,
+        >(&mut altair)?;
+        bellatrix::helpers::update_bellatrix_from_altair(self, altair);
+        Ok(())
     }
 }

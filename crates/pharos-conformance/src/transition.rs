@@ -285,6 +285,8 @@ where
     E::Phase0SignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
+    E::BellatrixBeaconState:
+        pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
     E::BeaconState:
         pharos_stf::phase0::BeaconStateWrite + pharos_ssz::TreeHash + pharos_ssz::Encode,
     F: Fn(
@@ -344,7 +346,13 @@ where
                 Ok(v) => v,
                 Err(e) => return CaseResult::Fail(format!("{case_name}: block {i}: {e}")),
             };
-            match pharos_stf::state_transition::<E>(current, &block, false) {
+            match pharos_stf::state_transition::<E, pharos_stf::NullExecutionEngine>(
+                current,
+                &block,
+                &pharos_stf::NullExecutionEngine,
+                false,
+                &pharos_types::config::RuntimeConfig::default(),
+            ) {
                 Ok(s) => current = s,
                 Err(e) => {
                     return CaseResult::Fail(format!("{case_name}: block {i} (phase0): {e}"));
@@ -356,7 +364,13 @@ where
                 Ok(v) => v,
                 Err(e) => return CaseResult::Fail(format!("{case_name}: block {i}: {e}")),
             };
-            match pharos_stf::state_transition::<E>(current, &block, false) {
+            match pharos_stf::state_transition::<E, pharos_stf::NullExecutionEngine>(
+                current,
+                &block,
+                &pharos_stf::NullExecutionEngine,
+                false,
+                &pharos_types::config::RuntimeConfig::default(),
+            ) {
                 Ok(s) => current = s,
                 Err(e) => {
                     return CaseResult::Fail(format!("{case_name}: block {i} (altair): {e}"));

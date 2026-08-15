@@ -450,6 +450,9 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Unwrap a fork-enum `BeaconState` to the inner altair variant (by value).
     fn into_altair_state(s: Self::BeaconState) -> Option<Self::AltairBeaconState>;
 
+    /// Unwrap a fork-enum `BeaconState` to the inner bellatrix variant (by value).
+    fn into_bellatrix_state(s: Self::BeaconState) -> Option<Self::BellatrixBeaconState>;
+
     /// Wrap a concrete altair `BeaconState` into the fork-enum `BeaconState`.
     fn altair_into_state(s: Self::AltairBeaconState) -> Self::BeaconState;
 
@@ -1105,6 +1108,14 @@ impl EthSpec for MainnetEthSpec {
         }
     }
 
+    fn into_bellatrix_state(s: Self::BeaconState) -> Option<Self::BellatrixBeaconState> {
+        match s {
+            crate::state::MainnetBeaconState::Bellatrix(inner) => Some(inner),
+            crate::state::MainnetBeaconState::Phase0(_) => None,
+            crate::state::MainnetBeaconState::Altair(_) => None,
+        }
+    }
+
     fn altair_into_state(s: Self::AltairBeaconState) -> Self::BeaconState {
         crate::state::MainnetBeaconState::Altair(s)
     }
@@ -1517,6 +1528,14 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalBeaconState::Altair(inner) => Some(inner),
             crate::state::MinimalBeaconState::Phase0(_) => None,
             crate::state::MinimalBeaconState::Bellatrix(_) => None,
+        }
+    }
+
+    fn into_bellatrix_state(s: Self::BeaconState) -> Option<Self::BellatrixBeaconState> {
+        match s {
+            crate::state::MinimalBeaconState::Bellatrix(inner) => Some(inner),
+            crate::state::MinimalBeaconState::Phase0(_) => None,
+            crate::state::MinimalBeaconState::Altair(_) => None,
         }
     }
 
