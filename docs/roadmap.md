@@ -216,7 +216,32 @@ layer forks on top of them.
 ### M3 — Altair
 - Sync committees, light-client gossip + req-resp.
 - Spec tests `altair` green.
-- Network-event expansion (deferred from M2 integration testing):
+- **Spec wire-format changes**:
+  - Context-aware req-resp encoding: each response chunk is prefixed with
+    a fork-digest so the codec can decode per-fork types. M2 codec only
+    handles Phase-0 encoding; M3 bumps the codec to handle context bytes.
+  - `MetaDataV2` with the new `syncnets: BitVector<SYNC_COMMITTEE_SUBNET_COUNT>`
+    field; bump req-resp protocol from `/metadata/1/ssz_snappy` to
+    `/metadata/2/ssz_snappy` and dual-handle peers that negotiated v1.
+  - New gossip topics: `sync_committee_*`, `sync_committee_contribution_and_proof`,
+    `light_client_finality_update`, `light_client_optimistic_update`.
+  - New req-resp methods: `LightClientBootstrap`, `LightClientUpdatesByRange`,
+    `LightClientFinalityUpdate`, `LightClientOptimisticUpdate`.
+- **Storage substrate** (currently 8 LOC of `pharos-storage/src/lib.rs`):
+  - Real RocksDB-backed `Store` trait impl with hot/cold split design hooks
+    (full impl is M11; M3 ships the schema + writes).
+  - Column families: blocks, states (snapshots), block_root→slot index,
+    forkchoice, metadata. Migrate-friendly schema version key.
+  - `BlockProvider` real impl backing `pharos-network`'s `Host<E>` so
+    `BeaconBlocksByRange` / `BeaconBlocksByRoot` return persisted blocks.
+- **Host<E> + GossipValidator real impl** (replaces M2 stubs in
+  `pharos-node/src/host_impl.rs`):
+  - Decision per M2 R10: refactor `GossipValidator` to async (preferred) or
+    keep sync and wrap STF calls in `tokio::task::spawn_blocking` at the
+    call site. ADR before implementing.
+  - `ForkContextImpl` wires `current_fork_digest()` to actual epoch (fork
+    schedule from config / preset).
+- **Network-event expansion** (deferred from M2 integration testing):
   - `NetworkEvent::PeerSubscribed { peer, topic }` /
     `PeerUnsubscribed { peer, topic }` — surface
     `gossipsub::Event::Subscribed`/`Unsubscribed` for peer scoring
@@ -235,12 +260,66 @@ layer forks on top of them.
   (`specs/phase0/p2p-interface.md:1393`).
 - `MetaData.seq_number` monotonic increment on attnets / syncnets
   change (M2 R13, `p2p-interface.md:391-393`).
-- Cross-fork ENR migration + topic re-subscription at fork epochs.
+- Cross-fork ENR migration + topic re-subscription at fork epochs
+  (`eth2` ENR field re-publish with new sequence number).
+- **Subnet rotation** driver in `pharos-node`: subscribe to attestation
+  subnets per the spec's `compute_subscribed_subnets(node_id, epoch)`,
+  rotate at epoch boundaries. Validator-duties-driven subscription is M8.
+- **Light-client server side**: serve `LightClientBootstrap` etc. to
+  light-client peers. Consumer-side (running a light client ourselves)
+  stays deferred.
+- `EthSpec` YAML preset loader (replaces hardcoded mainnet/minimal
+  constants) — needed once custom networks become realistic.
 
 ### M4 — Bellatrix + Engine API
-- Engine API client (alloy) talking to a real EL (reth/geth/ethrex).
+- Engine API client talking to a real EL (reth/geth/ethrex). In-house,
+  no `alloy` (per locked decision).
 - First merged sync against a devnet.
 - Spec tests `bellatrix` green.
+- **`pharos-engine` real impl** (currently 7 LOC of `lib.rs`):
+  - Per-method endpoints: `engine_newPayloadV{1..N}`,
+    `engine_forkchoiceUpdatedV{1..N}`, `engine_getPayloadV{1..N}`,
+    `engine_exchangeCapabilities`. N grows with each fork (capella v2,
+    deneb v3, electra v4).
+  - Auxiliary `eth_*` endpoints the CL calls: `eth_chainId`,
+    `eth_getBlockByHash`, `eth_getBlockByNumber`,
+    `eth_syncing` (for EL health probes).
+  - JWT auth: HMAC-SHA256 token signing per the
+    `~/dev/execution-apis/src/engine/authentication.md` spec.
+    Secret loaded from `--jwt-secret <path>` (32 random bytes hex).
+  - EL health monitoring + simple failover for multi-EL setups
+    (full failover policy is M11).
+- **Engine API conformance**: add an `engine` category to
+  `pharos-conformance`, walking `~/dev/execution-apis/src/engine/*.yaml`
+  fixtures. Each YAML defines a method + expected I/O.
+- **Checkpoint sync** (moved here from M11): mainnet has 11M+ slots;
+  syncing from genesis is not viable. CLAUDE.md already commits to
+  "checkpoint sync first-class." Wire endpoint:
+  `--checkpoint-sync-url <beacon-api-url>` fetches finalized state +
+  block from a trusted source, jumps fork choice to it. Weak
+  subjectivity validation lives in M11.
+- **Forward backfill** (moved here from M11): after checkpoint-sync
+  jump, fill blocks slot-by-slot until head via `BeaconBlocksByRange`
+  requests. Backward historical-state backfill stays M11.
+- **fork-choice ↔ EL link**: every `on_block` that promotes the head
+  triggers `engine_forkchoiceUpdated` to the EL with
+  `(head_block_hash, safe_block_hash, finalized_block_hash)`. Reorgs
+  trigger fresh fcU.
+- **Invalid-payload tracking**: EL returns `{status: "INVALID"}` →
+  CL marks the block invalid in fork choice (new flag on
+  `ProtoArrayNode`) so it never re-becomes head.
+- **Backpressure on network event channel**: M2 uses
+  `try_send` which silently drops events under load. Bellatrix +
+  Engine API load (every slot drives fcU + payload validation) needs
+  bounded-but-non-dropping semantics. Bound the channel; switch to
+  `send().await` with timeout where slow consumer is acceptable;
+  document the choice per channel.
+- **Performance regression suite**: first end-to-end thing exists at
+  M4 (CL → EL → devnet). Add criterion benches for:
+  `process_block` (Phase 0 → Bellatrix), `hash_tree_root` on
+  `BeaconState`, gossip-validation latency, req-resp roundtrip.
+  Bench results checked into a `bench-history/` file or committed
+  Prometheus snapshots per release.
 
 ### M5 — Capella
 - Withdrawals, BLS-to-execution-change.
@@ -249,14 +328,55 @@ layer forks on top of them.
 ### M6 — Deneb
 - KZG commitments via `c-kzg`, blob sidecars, blob gossip topics.
 - Spec tests `deneb` green.
+- **KZG trusted setup loading**: load the EF mainnet trusted setup
+  (or per-network setup) at startup, validate against expected
+  commitment, cache in `pharos-engine` (used by both gossip
+  validation and Engine API blob calls).
+- New gossip topics: `blob_sidecar_{subnet_id}` (0..BLOB_SIDECAR_SUBNET_COUNT).
+- New req-resp methods: `BlobSidecarsByRange`,
+  `BlobSidecarsByRoot`. Codec extension required.
+- `engine_getBlobsV1` Engine API call for blob retrieval.
 
 ### M7 — Beacon API
 - `/eth/v1/beacon/*`, validator endpoints.
 - Enough surface for an external VC to drive Pharos.
+- **SSE event stream** at `/eth/v1/events` (server-sent events).
+  Internal event bus → HTTP SSE multiplexing for subscribed clients.
+  Topics: `head`, `chain_reorg`, `finalized_checkpoint`, `block`,
+  `attestation`, `voluntary_exit`, `bls_to_execution_change`,
+  `light_client_finality_update`, etc.
+- **SSZ-encoded response support**: clients that send
+  `Accept: application/octet-stream` get the SSZ payload directly
+  (faster than JSON round-trip). All response types must support both.
+- **API versioning**: endpoints split across `/eth/v1/` and `/eth/v2/`
+  (post-altair). E.g. `/eth/v2/beacon/blocks/{id}` returns the
+  fork-tagged block.
+- **Validator-namespace authentication**: opt-in token (read from
+  `--validator-api-token <path>`) for the
+  `/eth/v1/validator/*` endpoints. Default off; lighthouse-compatible.
 
 ### M8 — Validator client (separate binary)
 - Duties, signing, EIP-3076 slashing protection interchange.
 - Keystore loading (EIP-2335).
+- **In-house signer first** (BLS sign with key loaded from EIP-2335
+  keystore decrypted in-memory). Web3signer compat is M11.
+- **Slashing protection DB schema** (separate `rusqlite` file):
+  - Table `signed_block` `(pubkey BLOB, slot INTEGER, signing_root BLOB, PRIMARY KEY (pubkey, slot))`.
+  - Table `signed_attestation` `(pubkey BLOB, source_epoch INTEGER, target_epoch INTEGER, signing_root BLOB, PRIMARY KEY (pubkey, target_epoch))`.
+  - Pre-sign check is a single SQL row read; commit happens before the
+    signature leaves the binary.
+- **EIP-3076 interchange**: import + export on startup/shutdown,
+  validated against the `eth-clients/slashing-protection-interchange-tests` suite.
+- **Doppelganger detection**: on startup, listen for 2 epochs before
+  signing; warn if our pubkey appears in incoming attestations. Optional
+  (`--doppelganger-protection`). Default on.
+- **VC ↔ BN connection**:
+  - Multiple `--beacon-node <url>` flags for failover.
+  - Health probes via `/eth/v1/node/syncing` every slot; mark unhealthy.
+  - Subscribe to `/eth/v1/events` for `head` / `finalized_checkpoint`
+    so duties refresh on reorgs.
+  - Graceful degradation: if all BNs are unhealthy, skip duties
+    (never sign without a confirmed canonical state).
 
 ### M9 — Electra
 - EIP-6110, 7002, 7251, 7549, 7685, 7691.
@@ -267,11 +387,39 @@ layer forks on top of them.
 - Spec tests `fulu` green.
 
 ### M11 — Productionization
-- Checkpoint sync, weak subjectivity, backfill.
-- Pruning, hot/cold DB split.
-- Slasher.
-- Metrics + tracing.
-- Real peer scoring (replaces the M2 `NoopScorer` stub):
+- **Weak subjectivity** check on checkpoint state (checkpoint sync
+  itself moved to M4). Reject checkpoint older than
+  `MIN_VALIDATOR_WITHDRAWABILITY_DELAY + CHURN_LIMIT_QUOTIENT / 2`
+  epochs before head.
+- **Backward state backfill**: historical state reconstruction by
+  replaying epoch boundaries from a forward state. Stays here
+  (forward block backfill is M4).
+- **Pruning + hot/cold DB split**: hot column families keep recent N
+  epochs of states + blocks; cold archives the rest at coarser
+  granularity (block roots only, snapshots every `SLOTS_PER_HISTORICAL_ROOT`).
+- **Slasher** — two-phase scope:
+  - Phase A (minimal): scan gossip + req-resp attestations for
+    slashable surround / double votes among observed attestations.
+    Low storage, no chain replay.
+  - Phase B (full): replay block history looking for proposer
+    slashings + indexed attestations. Higher storage (~10 GB) but
+    catches everything.
+  - Phase A is mandatory for M11; Phase B is opt-in via
+    `--slasher` flag.
+- **Metrics layer** concrete interface:
+  - `metrics-exporter-prometheus` at `/metrics` HTTP endpoint.
+  - Defined metrics: gossip topic message rate (counter by topic),
+    req-resp method latency (histogram by method, buckets
+    [0.5, 1, 5, 25, 100, 500, 2500] ms), peer score distribution
+    (gauge by bucket), STF process_block / process_epoch duration
+    (histograms), fork-choice get_head duration, EL Engine API
+    call latency.
+  - Bench-history snapshots checked into `bench-history/` per release.
+- **Tracing** structured logging:
+  - JSON output for production (`--log-format json`).
+  - Span hierarchy: per-slot root span → per-block child → per-method.
+  - Sampling at INFO by default; DEBUG opt-in per crate.
+- **Real peer scoring** (replaces the M2 `NoopScorer` stub):
   - Consume `gossipsub::Event::SlowPeer` /
     `GossipsubNotSupported` as scoring signals.
   - Per-peer rate limits on req-resp methods
@@ -279,10 +427,74 @@ layer forks on top of them.
   - Exponential dial backoff for repeatedly-failing peers.
   - Subnet-coverage scoring (penalise peers that subscribe to
     subnets we expect, then never propagate).
+- **Connection limits**: `--max-peers 50 --target-peers 50` (lighthouse
+  defaults). discv5 query cadence scales with the deficit
+  `target_peers - connected_peers`.
+- **ENR persistence across restarts**: write
+  `<data-dir>/network/enr_seq` so the next start increments the same
+  ENR rather than starting fresh (peers can re-resolve us efficiently).
+- **Per-peer score persistence**: serialize the `PeerManager` score
+  table to `<data-dir>/network/peer_scores.bin` on shutdown; reload
+  on startup so bad-actor peers stay penalised across restarts.
+- **DNS bootnode support**: `--bootnode-dns enrtree://...` resolves
+  via the discv5 DNS discovery scheme. Mainnet bootnodes are
+  published this way.
+- **Web3signer / external signer** compat for `pharos-vc`
+  (`--signer-url <web3signer-url>`).
+- **Graceful shutdown**: SIGTERM → send `Goodbye(1)` to every
+  connected peer → drain pending publishes → fsync DB → exit.
+  M2 shutdown does none of this beyond the network task stop;
+  M3 adds the Goodbye(1); M11 adds the rest.
+- **Health endpoints**: `/eth/v1/node/health` (already in M7 spec
+  surface) + a separate `/health` probe endpoint on the metrics
+  port for orchestrators (200 if sync_state == Synced, 503 otherwise).
 
 ### Beyond
 - Gloas / Heze (ePBS) once stable.
 - Builder API (MEV-Boost) integration.
+
+## Cross-cutting (no single milestone)
+
+These land somewhere across M0-M11; pinning the milestone here so they
+don't get dropped.
+
+- **CI strategy** (M0 baseline, kept current through every milestone):
+  GitHub Actions workflow running `cargo fmt --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, and `cargo run -p pharos-conformance`
+  on every PR. Matrix: stable Rust + MSRV. Docker container with
+  `~/.cache/pharos-spec-tests/` pre-populated.
+- **Fuzz harness** (M3, after the SSZ + STF surface is stable enough):
+  `cargo fuzz` targets for (a) SSZ decode of every container type, (b)
+  `process_block` on synthesised states, (c) req-resp codec on
+  arbitrary bytes. Targets live under `fuzz/`; CI runs them
+  short-duration (30 s each) on every PR, long-duration (overnight)
+  on `master`.
+- **Differential fuzzing** (M5 or M6, when the chain has enough
+  surface): compare `process_block` output between Pharos and a
+  reference Python implementation (re-using the consensus-specs
+  Python). Diffs are bugs in one of the two; file upstream where
+  applicable.
+- **DB migration strategy** (M11, before first production-ish release):
+  RocksDB column family `meta` holds a `schema_version: u32` key.
+  Forward-only migration scripts live in
+  `crates/pharos-storage/src/migrations/`. On startup, walk versions
+  in order. No down-migrations.
+- **Spec-test version pinning** (per milestone, documented inline):
+  `scripts/fetch-spec-tests.sh` pins a specific tag (currently
+  v1.6.1). When upgrading, run conformance against the new tag,
+  resolve regressions before bumping the pin.
+- **Performance regression suite** (M4 onward): criterion benches
+  checked-in fixtures + `bench-history/` JSON snapshots per release.
+  No CI gate on perf (too noisy on shared runners); humans review the
+  delta per release.
+- **Cross-client interop testing** (before M4 ships, since M4 = first
+  merged sync): bring up Lighthouse + ethrex on localhost, have
+  Pharos connect, verify Status / Ping / MetaData / BlocksByRange
+  / BlocksByRoot roundtrips. Add as
+  `crates/pharos-network/tests/interop/lighthouse_pair.rs` (gated
+  behind a `--features lighthouse-interop` flag so it doesn't run
+  in default `cargo test`).
 
 ## Locked decisions
 
