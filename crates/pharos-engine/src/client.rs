@@ -243,3 +243,61 @@ fn parse_hex_u64(s: &str) -> Result<u64, EngineError> {
     u64::from_str_radix(hex, 16)
         .map_err(|_| EngineError::UnexpectedResponse(format!("expected hex u64, got `{s}`")))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::types::{PayloadStatusStatus, PayloadStatusV1};
+
+    /// Verify that `PayloadStatusStatus::Invalid` round-trips through JSON as
+    /// the SCREAMING_SNAKE_CASE string `"INVALID"` (per Engine API spec).
+    #[test]
+    fn payload_status_invalid_round_trip() {
+        let status = PayloadStatusV1 {
+            status: PayloadStatusStatus::Invalid,
+            latest_valid_hash: Some(
+                "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+            ),
+            validation_error: Some("New payload is invalid".to_string()),
+        };
+
+        let json = serde_json::to_string(&status).expect("serialize");
+        assert!(
+            json.contains("\"INVALID\""),
+            "status must serialize as INVALID, got: {json}"
+        );
+
+        let decoded: PayloadStatusV1 = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.status, PayloadStatusStatus::Invalid);
+        assert_eq!(
+            decoded.latest_valid_hash.as_deref(),
+            Some("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+        );
+        assert_eq!(
+            decoded.validation_error.as_deref(),
+            Some("New payload is invalid")
+        );
+    }
+
+    /// Verify all status variants serialize as SCREAMING_SNAKE_CASE.
+    #[test]
+    fn payload_status_all_variants_screaming_snake_case() {
+        use PayloadStatusStatus::*;
+        let cases = [
+            (Valid, "VALID"),
+            (Invalid, "INVALID"),
+            (Syncing, "SYNCING"),
+            (Accepted, "ACCEPTED"),
+            (InvalidBlockHash, "INVALID_BLOCK_HASH"),
+        ];
+        for (variant, expected) in cases {
+            let json = serde_json::to_string(&variant).expect("serialize");
+            assert_eq!(
+                json,
+                format!("\"{expected}\""),
+                "variant {expected} must serialize as SCREAMING_SNAKE_CASE"
+            );
+            let decoded: PayloadStatusStatus = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(decoded, variant);
+        }
+    }
+}

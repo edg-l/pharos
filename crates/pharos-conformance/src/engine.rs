@@ -315,13 +315,13 @@ fn run_single_example(method_name: &str, ex: &YamlExample) -> Result<(), String>
         let jwt = JwtSecret::from_bytes([0u8; 32]);
         let client = EngineClient::new(url, jwt).map_err(|e| e.to_string())?;
 
-        // Dispatch based on method name.
-        let call_result = dispatch_engine_call(&client, method_name, &ex.params_json).await;
+        // Dispatch based on method name; returns the parsed+re-serialised response.
+        let got_response = dispatch_engine_call(&client, method_name, &ex.params_json).await;
 
         // Abort mock server.
         handle.abort();
 
-        call_result?;
+        let got_response = got_response?;
 
         // Verify captured request had correct method name and matching params.
         let req = captured
@@ -345,8 +345,61 @@ fn run_single_example(method_name: &str, ex: &YamlExample) -> Result<(), String>
             ));
         }
 
+        // Assert the response parsed by EngineClient matches the YAML result value.
+        // For array responses (e.g. engine_exchangeCapabilities) compare as sorted
+        // sets because the wire order is unspecified.
+        if !json_values_equivalent(&got_response, &ex.result_json) {
+            return Err(format!(
+                "response shape mismatch:\n  want: {}\n   got: {}",
+                serde_json::to_string(&ex.result_json).unwrap_or_default(),
+                serde_json::to_string(&got_response).unwrap_or_default(),
+            ));
+        }
+
         Ok(())
     })
+}
+
+/// Compare two `serde_json::Value`s for logical equivalence.
+///
+/// - **String arrays**: compared order-insensitively (sorted) because some
+///   Engine API methods (e.g. `engine_exchangeCapabilities`) return an
+///   unordered list of method names.
+/// - **Non-string arrays** (e.g. `ExecutionPayload.transactions`): compared
+///   positionally, element-by-element, so wrong transaction order is not
+///   silently masked.
+/// - **Objects**: recurse into each key-value pair; key order does not matter.
+/// - **Scalars / null / bool**: use standard `==` equality.
+fn json_values_equivalent(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Array(av), Value::Array(bv)) => {
+            // Order-insensitive only for arrays of strings (method-name lists).
+            // Ordered arrays (e.g., ExecutionPayload.transactions) must compare positionally.
+            let all_strings = av.iter().all(|v| v.is_string()) && bv.iter().all(|v| v.is_string());
+            if all_strings {
+                let mut sa: Vec<&str> = av.iter().filter_map(|v| v.as_str()).collect();
+                let mut sb: Vec<&str> = bv.iter().filter_map(|v| v.as_str()).collect();
+                sa.sort();
+                sb.sort();
+                sa == sb
+            } else {
+                av.len() == bv.len()
+                    && av
+                        .iter()
+                        .zip(bv.iter())
+                        .all(|(x, y)| json_values_equivalent(x, y))
+            }
+        }
+        (Value::Object(ao), Value::Object(bo)) => {
+            ao.len() == bo.len()
+                && ao.iter().all(|(k, v)| {
+                    bo.get(k)
+                        .map(|bv| json_values_equivalent(v, bv))
+                        .unwrap_or(false)
+                })
+        }
+        _ => a == b,
+    }
 }
 
 // ── Engine call dispatcher ────────────────────────────────────────────────────
@@ -355,16 +408,16 @@ async fn dispatch_engine_call(
     client: &EngineClient,
     method: &str,
     _params: &Value,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     match method {
         "engine_newPayloadV1" => {
             // Build a minimal ExecutionPayloadV1 from params[0] if present, else use default.
             let payload = params_to_execution_payload_v1(_params.get(0));
-            client
+            let status = client
                 .new_payload(NewPayloadVersion::V1, payload)
                 .await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(status).map_err(|e| e.to_string())
         }
         "engine_forkchoiceUpdatedV1" => {
             let state = params_to_forkchoice_state(_params.get(0));
@@ -375,19 +428,19 @@ async fn dispatch_engine_call(
                     params_to_payload_attrs(v).ok()
                 }
             });
-            client
+            let fcu_response = client
                 .forkchoice_updated(ForkchoiceUpdatedVersion::V1, state, attrs)
                 .await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(fcu_response).map_err(|e| e.to_string())
         }
         "engine_getPayloadV1" => {
             let id = params_to_payload_id(_params.get(0));
-            client
+            let payload = client
                 .get_payload(GetPayloadVersion::V1, id)
                 .await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(payload).map_err(|e| e.to_string())
         }
         "engine_exchangeCapabilities" => {
             // Extract the capabilities list from params[0] (array of strings).
@@ -402,19 +455,22 @@ async fn dispatch_engine_call(
                 })
                 .unwrap_or_default();
             let methods_refs: Vec<&str> = methods_owned.iter().map(String::as_str).collect();
-            client
+            let capabilities = client
                 .exchange_capabilities(&methods_refs)
                 .await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            // Convert HashSet to a sorted Vec for deterministic serialisation.
+            let mut sorted: Vec<&String> = capabilities.iter().collect();
+            sorted.sort();
+            serde_json::to_value(sorted).map_err(|e| e.to_string())
         }
         "engine_exchangeTransitionConfigurationV1" => {
             let config = params_to_transition_config(_params.get(0));
-            client
+            let transition_config = client
                 .exchange_transition_configuration(config)
                 .await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(transition_config).map_err(|e| e.to_string())
         }
         _ => {
             // Unknown V1 method — this should not happen for in-scope methods.
