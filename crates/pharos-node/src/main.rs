@@ -563,22 +563,26 @@ async fn main() -> anyhow::Result<()> {
         let exec_engine = Arc::new(ExecutionEngineHandle::new(engine_handle.clone()));
 
         // Build production PoW-block provider for the merge-transition guard.
-        let pow_provider = Arc::new(EnginePowBlockProvider::new(engine_handle));
+        let pow_provider = Arc::new(EnginePowBlockProvider::new(engine_handle.clone()));
 
         // Take the network event receiver and spawn the block-ingestion loop.
         let event_rx = handle.take_event_receiver();
         {
             let fc = Arc::clone(&fork_choice);
             let h = Arc::clone(&host);
+            let exec_engine_clone = Arc::clone(&exec_engine);
+            let pow_clone = Arc::clone(&pow_provider);
+            let head_tx_clone = head_tx.clone();
+            let payload_tx_clone = payload_tx.clone();
             tokio::spawn(async move {
                 if let Err(e) = run_block_ingestion_loop::<MainnetEthSpec, ExecutionEngineHandle>(
                     event_rx,
                     h,
                     fc,
-                    exec_engine,
-                    pow_provider,
-                    head_tx,
-                    payload_tx,
+                    exec_engine_clone,
+                    pow_clone,
+                    head_tx_clone,
+                    payload_tx_clone,
                     true, // validate_result: enforce BLS signatures and state roots
                 )
                 .await
@@ -588,6 +592,43 @@ async fn main() -> anyhow::Result<()> {
             });
         }
         info!("block ingestion loop started");
+
+        // Spawn forward backfill loop.
+        {
+            use pharos_node::backfill::run_backfill_loop;
+            use pharos_node::network_backfill_provider::{
+                NetworkBackfillProvider, NetworkHandlePeerPicker,
+            };
+
+            let peer_picker = Arc::new(NetworkHandlePeerPicker::new(handle.command_sender()));
+            let provider = NetworkBackfillProvider::new(handle.command_sender(), peer_picker);
+            let shutdown_rx = pharos_node_shutdown_rx.clone();
+            let fc = Arc::clone(&fork_choice);
+            let h = Arc::clone(&host);
+            tokio::spawn(async move {
+                if let Err(e) = run_backfill_loop::<
+                    MainnetEthSpec,
+                    _,
+                    ExecutionEngineHandle,
+                    EnginePowBlockProvider,
+                >(
+                    provider,
+                    h,
+                    fc,
+                    exec_engine,
+                    pow_provider,
+                    head_tx,
+                    payload_tx,
+                    genesis_time_secs,
+                    shutdown_rx,
+                )
+                .await
+                {
+                    tracing::error!(error = %e, "backfill loop exited with error");
+                }
+            });
+        }
+        info!("backfill loop started");
     }
 
     // Block until Ctrl-C.

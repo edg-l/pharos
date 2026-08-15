@@ -215,6 +215,18 @@ impl<S: PeerScorer> PeerManager<S> {
             .map(|info| info.peer_id)
     }
 
+    /// Returns an iterator over `(PeerId, &Status)` pairs for peers that are
+    /// in `Connected` state and have a known `Status` (completed handshake).
+    ///
+    /// Used by `NetworkCommand::PickHighestHeadPeer` to select the peer with
+    /// the highest `head_slot` for backfill block requests.
+    pub fn connected_peers_with_status(&self) -> impl Iterator<Item = (PeerId, &Status)> + '_ {
+        self.peers
+            .values()
+            .filter(|info| info.state == PeerState::Connected)
+            .filter_map(|info| info.last_status.as_ref().map(|s| (info.peer_id, s)))
+    }
+
     /// Returns the current `PeerState` for `peer_id`, or `None` if unknown.
     pub fn peer_state(&self, peer_id: &PeerId) -> Option<PeerState> {
         self.peers.get(peer_id).map(|info| info.state)

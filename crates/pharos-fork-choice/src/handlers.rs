@@ -688,3 +688,186 @@ pub fn should_override_forkchoice_update<E: EthSpec>(_store: &Store<E>) -> bool 
 // Re-export the BeaconStateWrite trait so that callers of this module's
 // functions have access to it without an extra import.
 pub use pharos_stf::phase0::state_write::BeaconStateWrite;
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use pharos_ssz::TreeHash;
+    use pharos_stf::{
+        NullExecutionEngine,
+        phase0::{genesis::BeaconStateMut as _, state_write::BeaconStateWrite as _},
+        state_transition,
+    };
+    use pharos_types::{
+        EthSpec, MinimalEthSpec,
+        phase0::{Epoch, Gwei, Root, Slot, ValidatorIndex},
+        state::{
+            MinimalBeaconBlock as ForkMinBlock, MinimalBeaconState as ForkMinState,
+            MinimalSignedBeaconBlock as ForkMinSignedBlock,
+        },
+    };
+    use pharos_utils::BLSSignature;
+
+    use crate::pow_block::NoopPowBlockProvider;
+    use crate::store::get_forkchoice_store;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /// Build a minimal genesis (state + anchor block) suitable for fork-choice
+    /// idempotency testing.  Uses Phase0 blocks/states to avoid Bellatrix merge
+    /// transition complexity.
+    fn build_phase0_genesis() -> (ForkMinState, ForkMinBlock) {
+        use pharos_types::phase0::{Fork, MinimalBeaconState, Validator};
+        use pharos_utils::{BLSPubkey, Bytes4, Bytes32, Hash256};
+
+        let genesis_time = 1_000_000u64;
+        let eth1_data = pharos_types::phase0::Eth1Data::default();
+        let body_root = pharos_types::phase0::MinimalBeaconBlockBody::default().tree_hash_root();
+        let fork = Fork {
+            previous_version: Bytes4::from_array([0; 4]),
+            current_version: Bytes4::from_array([0; 4]),
+            epoch: Epoch(0),
+        };
+        let mut state = MinimalBeaconState::genesis_state(
+            genesis_time,
+            fork,
+            eth1_data,
+            body_root,
+            Hash256::default(),
+        );
+
+        // One validator; required for get_beacon_proposer_index.
+        let v = Validator {
+            pubkey: BLSPubkey::from_array([0u8; 48]),
+            withdrawal_credentials: Bytes32::default(),
+            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            slashed: false,
+            activation_eligibility_epoch: Epoch(0),
+            activation_epoch: Epoch(0),
+            exit_epoch: Epoch(u64::MAX),
+            withdrawable_epoch: Epoch(u64::MAX),
+        };
+        state.push_validator(v).unwrap();
+        state
+            .push_balance(Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE))
+            .unwrap();
+
+        let state_root = state.tree_hash_root();
+        let anchor_block_inner = pharos_types::phase0::MinimalBeaconBlock {
+            slot: Slot(0),
+            proposer_index: ValidatorIndex(0),
+            parent_root: Root::default(),
+            state_root,
+            body: pharos_types::phase0::MinimalBeaconBlockBody::default(),
+        };
+
+        (
+            ForkMinState::Phase0(state),
+            ForkMinBlock::Phase0(anchor_block_inner),
+        )
+    }
+
+    /// Build a signed Phase0 block at `slot` with `parent_root`, signed with
+    /// a zero BLS signature (validate_result = false bypasses verification).
+    fn make_signed_block(slot: u64, parent_root: Root) -> ForkMinSignedBlock {
+        use pharos_types::phase0::MinimalSignedBeaconBlock as P0Signed;
+
+        let block = pharos_types::phase0::MinimalBeaconBlock {
+            slot: Slot(slot),
+            proposer_index: ValidatorIndex(0),
+            parent_root,
+            state_root: Root::default(),
+            body: pharos_types::phase0::MinimalBeaconBlockBody::default(),
+        };
+        ForkMinSignedBlock::Phase0(P0Signed {
+            message: block,
+            signature: BLSSignature::from_array([0u8; 96]),
+        })
+    }
+
+    // ── Test ─────────────────────────────────────────────────────────────────
+
+    /// Verify that calling `on_block` with the same block twice is idempotent:
+    /// the second call returns `Ok(())` and `store.blocks` still contains exactly
+    /// one entry for `block_a.tree_hash_root()`.
+    ///
+    /// This pins the property that `HashMap::insert` (used at handlers.rs:351-352)
+    /// is a plain overwrite with no "already known" guard.  If a future refactor
+    /// adds a `BlockKnown` guard that returns `Err(...)` on re-insertion, this
+    /// test will fail and force re-review of the backfill loop design.
+    #[test]
+    fn on_block_is_idempotent_on_reapplication() {
+        use pharos_types::config::RuntimeConfig;
+
+        let (genesis_state, anchor_block) = build_phase0_genesis();
+        let anchor_root: Root = anchor_block.tree_hash_root();
+        let genesis_state_clone = genesis_state.clone();
+
+        let mut store = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
+        // Advance store.time well past genesis so on_block's "future slot" guard
+        // doesn't reject block at slot 1.
+        store.time = 10_000_000;
+
+        // Build and apply block A (slot 1) via STF to get the post-state.
+        let cfg = RuntimeConfig {
+            seconds_per_slot: 6, // MinimalEthSpec slot duration
+            ..RuntimeConfig::default()
+        };
+        let signed_a = make_signed_block(1, anchor_root);
+        let post_a = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+            genesis_state_clone,
+            &signed_a,
+            &NullExecutionEngine,
+            false,
+            &cfg,
+        )
+        .expect("STF for block A must succeed");
+
+        // First application: must succeed.
+        super::on_block::<MinimalEthSpec, NoopPowBlockProvider>(
+            &mut store,
+            &signed_a,
+            post_a.clone(),
+            10_000_000,
+            &NoopPowBlockProvider,
+        )
+        .expect("first on_block must return Ok(())");
+
+        let block_a_root: Root = match &signed_a {
+            ForkMinSignedBlock::Phase0(s) => s.message.tree_hash_root(),
+            _ => panic!("expected Phase0 block"),
+        };
+        assert!(
+            store.blocks.contains_key(&block_a_root),
+            "block A must be in store after first on_block"
+        );
+
+        // Second application with identical arguments: must also return Ok(()).
+        let result = super::on_block::<MinimalEthSpec, NoopPowBlockProvider>(
+            &mut store,
+            &signed_a,
+            post_a,
+            10_000_000,
+            &NoopPowBlockProvider,
+        );
+        assert!(
+            result.is_ok(),
+            "second on_block (re-application) must return Ok(()), got: {result:?}"
+        );
+
+        // Store must still contain exactly one entry for block_a_root.
+        assert!(
+            store.blocks.contains_key(&block_a_root),
+            "block A root must still be in store after re-application"
+        );
+
+        // Verify no spurious extra entries were created (anchor + block A = 2).
+        assert_eq!(
+            store.blocks.len(),
+            2,
+            "store must contain exactly anchor + block A after two on_block calls, got {}",
+            store.blocks.len()
+        );
+    }
+}

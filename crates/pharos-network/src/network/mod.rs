@@ -106,6 +106,13 @@ pub enum NetworkCommand<E: EthSpec> {
     },
     /// Request a clean shutdown of the network task.
     Shutdown,
+    /// Return the `PeerId` with the highest `head_slot` among connected peers
+    /// that have completed the Status handshake.  Returns `None` when no such
+    /// peers exist.  Used by the backfill driver to pick the best peer for a
+    /// `BeaconBlocksByRange` request.
+    PickHighestHeadPeer {
+        reply: oneshot::Sender<Option<PeerId>>,
+    },
 }
 
 /// Events emitted from the `Network` event loop to external consumers.
@@ -1286,6 +1293,17 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
             }
             // Shutdown is handled in the run() select loop before on_command is called.
             NetworkCommand::Shutdown => {}
+            NetworkCommand::PickHighestHeadPeer { reply } => {
+                // Iterate connected peers and return the one with the highest
+                // `head_slot` in their last `Status` message.  Peers that have
+                // not yet completed Status handshake (last_status = None) are
+                // skipped.
+                let best = self
+                    .peer_manager
+                    .connected_peers_with_status()
+                    .max_by_key(|(_, status)| status.head_slot);
+                let _ = reply.send(best.map(|(peer_id, _)| peer_id));
+            }
         }
     }
 }

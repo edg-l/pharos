@@ -39,6 +39,33 @@ impl<E: EthSpec> NetworkCommandSender<E> {
             .await
             .map_err(|_| NetworkError::ChannelClosed)
     }
+
+    /// Send an outbound RPC `req` to `peer`, waiting up to `timeout` for a
+    /// response.
+    ///
+    /// Identical body to `NetworkHandle::request`; provided here so
+    /// `NetworkBackfillProvider` can issue requests using only the clonable
+    /// `NetworkCommandSender` (not the non-`Clone` `NetworkHandle`).
+    pub async fn request(
+        &self,
+        peer: PeerId,
+        req: RpcRequest,
+        timeout: Duration,
+    ) -> Result<RpcResponse<E>, NetworkError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.0
+            .send(NetworkCommand::OutgoingRequest {
+                peer,
+                req,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        tokio::time::timeout(timeout, reply_rx)
+            .await
+            .map_err(|_| NetworkError::Timeout)?
+            .map_err(|_| NetworkError::ChannelClosed)?
+    }
 }
 
 // ── NetworkHandle ─────────────────────────────────────────────────────────────
@@ -284,6 +311,25 @@ impl<E: EthSpec> NetworkHandle<E> {
             .await
             .map_err(|_| NetworkError::ChannelClosed)?;
         reply_rx.await.map_err(|_| NetworkError::ChannelClosed)?
+    }
+
+    /// Return the `PeerId` with the highest `head_slot` among connected peers
+    /// that have completed the Status handshake.  Returns `None` when no peers
+    /// have a known `Status` yet.
+    ///
+    /// Issues a `NetworkCommand::PickHighestHeadPeer` and awaits the reply from
+    /// the network task.
+    pub async fn pick_highest_head_peer(&self) -> Option<PeerId> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(NetworkCommand::PickHighestHeadPeer { reply: reply_tx })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        reply_rx.await.unwrap_or(None)
     }
 
     /// Disconnect from `peer_id`.

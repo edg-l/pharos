@@ -283,7 +283,7 @@ where
 ///
 /// The fork-enum `SignedBeaconBlock` cannot return a trait-object reference
 /// from `message()`, so we unwrap to each concrete inner type.
-fn extract_parent_root<E: EthSpec>(signed_block: &E::SignedBeaconBlock) -> Root
+pub(crate) fn extract_parent_root<E: EthSpec>(signed_block: &E::SignedBeaconBlock) -> Root
 where
     E::Phase0SignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::AltairSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
@@ -307,7 +307,7 @@ where
 }
 
 /// Extract the block_root (hash_tree_root) from a fork-enum `SignedBeaconBlock<E>`.
-fn extract_block_root<E: EthSpec>(signed_block: &E::SignedBeaconBlock) -> Root
+pub(crate) fn extract_block_root<E: EthSpec>(signed_block: &E::SignedBeaconBlock) -> Root
 where
     E::BeaconBlock: pharos_ssz::TreeHash,
     E::Phase0SignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,

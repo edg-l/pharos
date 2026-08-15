@@ -2998,7 +2998,9 @@ name = "pharos-node"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
+ "blst",
  "clap",
  "hex",
  "jsonwebtoken",
