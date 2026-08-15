@@ -99,6 +99,45 @@ impl<E: EthSpec> NetworkHandle<E> {
         self.event_rx.recv().await
     }
 
+    /// Wait until the network task emits a `LocalEnr` event, then return the
+    /// node's signed ENR (which includes the real discv5 UDP port).
+    ///
+    /// Emitted once at startup by `Network::run` before the main select loop.
+    /// Integration tests that need to pass this node's ENR as a bootnode to
+    /// another test node should await this before calling `spawn_node`.
+    pub async fn wait_for_local_enr(&mut self) -> crate::discovery::enr::Enr {
+        loop {
+            match self.event_rx.recv().await {
+                Some(NetworkEvent::LocalEnr(enr)) => return enr,
+                Some(_) => continue,
+                None => panic!("network channel closed before LocalEnr was emitted"),
+            }
+        }
+    }
+
+    /// Wait until the network task emits a `NewListenAddr` event, then return
+    /// that multiaddr.
+    ///
+    /// Used by integration tests that bind on OS-assigned port 0 and need the
+    /// real bound address before dialling. Panics if the channel closes before
+    /// a `NewListenAddr` event is received (indicates the network task exited
+    /// abnormally).
+    ///
+    /// Justification for adding this helper: `NetworkBuilder::build` calls
+    /// `swarm.listen_on(addr)` which queues the bind request, but the real
+    /// port is assigned asynchronously by the OS and reported via
+    /// `SwarmEvent::NewListenAddr`. There is no synchronous API to query the
+    /// actual bound port after `listen_on`; polling events is the only option.
+    pub async fn wait_for_listen_addr(&mut self) -> libp2p::Multiaddr {
+        loop {
+            match self.event_rx.recv().await {
+                Some(NetworkEvent::NewListenAddr(addr)) => return addr,
+                Some(_) => continue,
+                None => panic!("network channel closed before NewListenAddr was emitted"),
+            }
+        }
+    }
+
     /// SSZ-encode `payload`, snappy-frame it in the network task, and publish
     /// to `topic`.
     ///

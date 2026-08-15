@@ -25,6 +25,10 @@ pub struct PeerManager<S: PeerScorer> {
     max_peers: usize,
     /// Desired steady-state connected peer count.
     target_peers: usize,
+    /// Disconnect reasons to attach to the next `ConnectionClosed` event for a
+    /// peer. Set before issuing the swarm-level disconnect so the reason is
+    /// available when libp2p delivers `ConnectionClosed` asynchronously.
+    pending_disconnect_reasons: HashMap<PeerId, DisconnectReason>,
 }
 
 impl<S: PeerScorer> PeerManager<S> {
@@ -36,6 +40,7 @@ impl<S: PeerScorer> PeerManager<S> {
             scorer,
             max_peers,
             target_peers,
+            pending_disconnect_reasons: HashMap::new(),
         }
     }
 
@@ -104,6 +109,25 @@ impl<S: PeerScorer> PeerManager<S> {
         } else {
             warn!(%peer_id, "on_disconnecting called for unknown peer");
         }
+    }
+
+    /// Record the `DisconnectReason` that will be attached to the next
+    /// `ConnectionClosed` event for this peer.
+    ///
+    /// Must be called BEFORE the swarm-level disconnect so the reason is
+    /// available when libp2p delivers `ConnectionClosed` asynchronously.
+    /// Last writer wins (idempotent — calling twice replaces the previous value).
+    pub fn note_disconnect_reason(&mut self, peer: PeerId, reason: DisconnectReason) {
+        self.pending_disconnect_reasons.insert(peer, reason);
+    }
+
+    /// Retrieve and remove the pending `DisconnectReason` for this peer.
+    ///
+    /// Returns `Some(reason)` if one was registered via `note_disconnect_reason`,
+    /// `None` otherwise. Called from `on_swarm_connection_closed` to attach the
+    /// correct reason to `NetworkEvent::PeerDisconnected`.
+    pub fn take_disconnect_reason(&mut self, peer: &PeerId) -> Option<DisconnectReason> {
+        self.pending_disconnect_reasons.remove(peer)
     }
 
     /// Handle an inbound `Status` request when the fork digest matches.

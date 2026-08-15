@@ -104,6 +104,18 @@ pub enum NetworkEvent {
         peer: PeerId,
         data: Vec<u8>,
     },
+    /// The swarm successfully bound a new listener address.
+    ///
+    /// Emitted once per `listen_on` call when the OS assigns the actual port.
+    /// Consumers waiting on the real bound address (e.g. integration tests
+    /// using OS-assigned port 0) should wait for this event before dialling.
+    NewListenAddr(libp2p::Multiaddr),
+    /// The local node's signed ENR.
+    ///
+    /// Emitted once at startup, immediately before the main event loop begins.
+    /// Integration tests that need the real discv5 ENR (e.g. to pass as a
+    /// bootnode to another test node) wait for this event.
+    LocalEnr(crate::discovery::enr::Enr),
     /// The network task has shut down.
     Shutdown,
 }
@@ -166,6 +178,12 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
     /// Returns when a `NetworkCommand::Shutdown` is received or when
     /// the shutdown signal fires.
     pub async fn run(mut self) -> Result<(), NetworkError> {
+        // Emit the local ENR once before the select loop so that consumers
+        // waiting on `NetworkEvent::LocalEnr` (e.g. integration tests that
+        // need the discv5 ENR with the real bound UDP port) can proceed.
+        let local_enr = self.discovery.local_enr();
+        self.emit_event(NetworkEvent::LocalEnr(local_enr));
+
         loop {
             tokio::select! {
                 event = self.swarm.select_next_some() => {
@@ -206,7 +224,24 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::Gossipsub(gs_event)) => {
                 self.on_gossip_event(gs_event).await;
             }
-            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RequestResponse(
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcStatus(rr_event)) => {
+                self.on_request_response_event(rr_event).await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcGoodbye(rr_event)) => {
+                self.on_request_response_event(rr_event).await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcPing(rr_event)) => {
+                self.on_request_response_event(rr_event).await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcMetaData(rr_event)) => {
+                self.on_request_response_event(rr_event).await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcBlocksByRange(
+                rr_event,
+            )) => {
+                self.on_request_response_event(rr_event).await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcBlocksByRoot(
                 rr_event,
             )) => {
                 self.on_request_response_event(rr_event).await;
@@ -218,6 +253,10 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             }
             libp2p::swarm::SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                 self.on_swarm_connection_closed(peer_id, cause.as_ref());
+            }
+            libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } => {
+                tracing::info!(%address, "new listen address");
+                self.emit_event(NetworkEvent::NewListenAddr(address));
             }
             _ => {
                 tracing::debug!("swarm event: {:?}", event);
@@ -308,12 +347,24 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             tracing::debug!(%message_id, "report_message_validation_result returned false (message not in cache)");
         }
 
-        // Emit accepted messages to the event channel.
+        // Emit accepted messages to the event channel with raw SSZ bytes.
+        // `message.data` contains snappy-framed bytes; we decode back to SSZ
+        // so consumers receive the wire-decoded payload, not the transport encoding.
         if matches!(&verdict, GossipVerdict::Accept) {
+            let ssz_bytes = match crate::codec::snappy_frame::decode_snappy_frame(
+                &message.data,
+                crate::codec::MAX_PAYLOAD_SIZE,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(?e, "failed to decompress gossip payload for event emission");
+                    message.data
+                }
+            };
             self.emit_event(NetworkEvent::GossipMessage {
                 topic,
                 peer: propagation_source,
-                data: message.data,
+                data: ssz_bytes,
             });
         }
 
@@ -341,6 +392,12 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                 } => {
                     // Determine the method for scoring before moving `request`.
                     let method = rpc_method_from_request(&request);
+                    // Capture inbound Goodbye reason before moving `request`.
+                    let inbound_goodbye_reason = if let RpcRequest::Goodbye(r) = &request {
+                        Some(*r)
+                    } else {
+                        None
+                    };
                     // Track whether this is an inbound Status before moving `request`.
                     let is_inbound_status = matches!(request, RpcRequest::Status(_));
 
@@ -364,20 +421,55 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                     // the Status reply.
                     if is_inbound_status && matches!(response, RpcResponse::Status(_)) {
                         self.emit_event(NetworkEvent::PeerConnected(peer));
+                        self.peer_manager.record_event(
+                            peer,
+                            ScoreEvent::RpcSuccess {
+                                method: RpcMethod::Status,
+                            },
+                        );
                     }
 
-                    if self
-                        .swarm
-                        .behaviour_mut()
-                        .request_response
-                        .send_response(channel, response)
-                        .is_err()
-                    {
+                    // Pre-register the Goodbye reason so ConnectionClosed carries it
+                    // when the peer tears down the connection after sending Goodbye.
+                    // Spec reference: specs/phase0/p2p-interface.md:1390-1395.
+                    if let Some(goodbye_reason) = inbound_goodbye_reason {
+                        self.peer_manager.note_disconnect_reason(
+                            peer,
+                            crate::types::DisconnectReason::Goodbye(goodbye_reason),
+                        );
+                    }
+
+                    // Route send_response to the per-method behaviour that owns this
+                    // channel. Calling send_response on the wrong behaviour is safe
+                    // today (the channel is just a oneshot sender), but routing
+                    // explicitly avoids the bug class if libp2p changes the semantics.
+                    let send_err = {
+                        let b = self.swarm.behaviour_mut();
+                        match method {
+                            RpcMethod::Status => b.rpc_status.0.send_response(channel, response),
+                            RpcMethod::Goodbye => b.rpc_goodbye.0.send_response(channel, response),
+                            RpcMethod::Ping => b.rpc_ping.0.send_response(channel, response),
+                            RpcMethod::MetaData => {
+                                b.rpc_metadata.0.send_response(channel, response)
+                            }
+                            RpcMethod::BlocksByRange => {
+                                b.rpc_blocks_by_range.0.send_response(channel, response)
+                            }
+                            RpcMethod::BlocksByRoot => {
+                                b.rpc_blocks_by_root.0.send_response(channel, response)
+                            }
+                        }
+                    };
+                    if send_err.is_err() {
                         tracing::warn!(%peer, "failed to send RPC response (channel closed)");
                     }
 
-                    self.peer_manager
-                        .record_event(peer, ScoreEvent::RpcSuccess { method });
+                    // Record RpcSuccess for non-Status methods. Inbound Status is
+                    // recorded above together with PeerConnected to ensure ordering.
+                    if method != RpcMethod::Status {
+                        self.peer_manager
+                            .record_event(peer, ScoreEvent::RpcSuccess { method });
+                    }
                 }
                 request_response::Message::Response {
                     request_id,
@@ -471,6 +563,23 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
         }
     }
 
+    /// Route an outbound RPC request to the per-method `request_response::Behaviour`.
+    ///
+    /// Each method has its own behaviour instance so that multistream-select
+    /// negotiates the EXACT per-method protocol string rather than always
+    /// choosing the first registered protocol.
+    fn send_rpc_request(&mut self, peer: &PeerId, req: RpcRequest) -> OutboundRequestId {
+        let b = self.swarm.behaviour_mut();
+        match &req {
+            RpcRequest::Status(_) => b.rpc_status.0.send_request(peer, req),
+            RpcRequest::Goodbye(_) => b.rpc_goodbye.0.send_request(peer, req),
+            RpcRequest::Ping(_) => b.rpc_ping.0.send_request(peer, req),
+            RpcRequest::MetaData => b.rpc_metadata.0.send_request(peer, req),
+            RpcRequest::BlocksByRange(_) => b.rpc_blocks_by_range.0.send_request(peer, req),
+            RpcRequest::BlocksByRoot(_) => b.rpc_blocks_by_root.0.send_request(peer, req),
+        }
+    }
+
     /// Send an outbound RPC request to `peer`, resolving the result via `reply`.
     ///
     /// Stashes the `reply` oneshot sender in `pending_rpc` keyed by the
@@ -483,11 +592,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
         reply: oneshot::Sender<Result<RpcResponse<E>, NetworkError>>,
     ) {
         let method = rpc_method_from_request(&req);
-        let request_id = self
-            .swarm
-            .behaviour_mut()
-            .request_response
-            .send_request(&peer, req);
+        let request_id = self.send_rpc_request(&peer, req);
         self.pending_rpc.insert(request_id, (method, reply));
     }
 
@@ -525,11 +630,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
         };
         let stored_seq = self.peer_manager.peer_metadata_seq(&peer_id).unwrap_or(0);
         if peer_seq > stored_seq {
-            let request_id = self
-                .swarm
-                .behaviour_mut()
-                .request_response
-                .send_request(&peer_id, RpcRequest::MetaData);
+            let request_id = self.send_rpc_request(&peer_id, RpcRequest::MetaData);
             // Track only via pending_metadata_fetches; no oneshot to resolve.
             self.pending_metadata_fetches.insert(request_id, peer_id);
         }
@@ -551,8 +652,33 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
     fn on_status_response(&mut self, peer_id: PeerId, response: &RpcResponse<E>) {
         let peer_status = match response {
             RpcResponse::Status(s) => s.clone(),
+            RpcResponse::Error { code, .. } => {
+                // Peer returned an error to our Status request, likely a fork-
+                // digest mismatch or a protocol error. Treat as a handshake
+                // failure: disconnect and send Goodbye(IrrelevantNetwork).
+                tracing::debug!(%peer_id, code, "Status request returned error; disconnecting");
+                self.peer_manager.record_event(
+                    peer_id,
+                    ScoreEvent::HandshakeFail {
+                        kind: HandshakeFailKind::ForkDigestMismatch,
+                    },
+                );
+                // Pre-register reason so ConnectionClosed carries Goodbye(2).
+                // Spec reference: specs/phase0/p2p-interface.md:1394 — 2 = Irrelevant network.
+                self.peer_manager.note_disconnect_reason(
+                    peer_id,
+                    crate::types::DisconnectReason::Goodbye(GOODBYE_IRRELEVANT_NETWORK),
+                );
+                self.peer_manager.on_disconnecting(peer_id);
+                self.send_rpc_request(
+                    &peer_id,
+                    crate::rpc::types::RpcRequest::Goodbye(GOODBYE_IRRELEVANT_NETWORK),
+                );
+                self.swarm.disconnect_peer_id(peer_id).ok();
+                return;
+            }
             _ => {
-                tracing::warn!(%peer_id, "expected Status response during handshake");
+                tracing::warn!(%peer_id, "unexpected response type during Status handshake");
                 return;
             }
         };
@@ -573,9 +699,16 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                     kind: HandshakeFailKind::ForkDigestMismatch,
                 },
             );
+            // Pre-register reason so ConnectionClosed carries Goodbye(2) rather
+            // than a generic clean-close. Spec reference:
+            // specs/phase0/p2p-interface.md:1394 — reason 2 = Irrelevant network.
+            self.peer_manager.note_disconnect_reason(
+                peer_id,
+                crate::types::DisconnectReason::Goodbye(GOODBYE_IRRELEVANT_NETWORK),
+            );
             self.peer_manager.on_disconnecting(peer_id);
             // Send Goodbye(IrrelevantNetwork) fire-and-forget; no response expected.
-            self.swarm.behaviour_mut().request_response.send_request(
+            self.send_rpc_request(
                 &peer_id,
                 crate::rpc::types::RpcRequest::Goodbye(GOODBYE_IRRELEVANT_NETWORK),
             );
@@ -583,6 +716,12 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
         } else {
             self.peer_manager.on_handshake_complete(peer_id);
             self.emit_event(NetworkEvent::PeerConnected(peer_id));
+            self.peer_manager.record_event(
+                peer_id,
+                ScoreEvent::RpcSuccess {
+                    method: RpcMethod::Status,
+                },
+            );
         }
     }
 
@@ -622,7 +761,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             // Send the Status request; track only via pending_status_checks.
             // The response handler uses that map to run fork-digest validation.
             // Do not insert into pending_rpc — there is no oneshot to resolve.
-            let request_id = self.swarm.behaviour_mut().request_response.send_request(
+            let request_id = self.send_rpc_request(
                 &peer_id,
                 crate::rpc::types::RpcRequest::Status(local_status),
             );
@@ -638,17 +777,28 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
 
     /// Handle a closed libp2p connection, informing the peer manager and
     /// emitting a `PeerDisconnected` event.
+    ///
+    /// If a disconnect reason was pre-registered via
+    /// `peer_manager.note_disconnect_reason` (e.g., Goodbye plumbing), that
+    /// reason takes precedence over the libp2p `ConnectionError`.
     pub fn on_swarm_connection_closed(
         &mut self,
         peer_id: PeerId,
         reason: Option<&ConnectionError>,
     ) {
         use crate::types::DisconnectReason;
-        let dr = match reason {
-            // No error means a clean (graceful) close initiated by either side.
-            None => DisconnectReason::Other("clean close".into()),
-            Some(e) => DisconnectReason::Other(e.to_string()),
-        };
+        // Pre-registered reason wins (set before issuing the disconnect so the
+        // Goodbye/fork-mismatch semantics are preserved even when libp2p delivers
+        // a generic clean-close error).
+        let dr = self
+            .peer_manager
+            .take_disconnect_reason(&peer_id)
+            .unwrap_or_else(|| match reason {
+                // No error means a clean (graceful) close initiated by either side.
+                None => DisconnectReason::Other("clean close".into()),
+                Some(e) => DisconnectReason::Other(e.to_string()),
+            });
+        // on_disconnected records ScoreEvent::PeerDisconnected with the resolved reason.
         self.peer_manager.on_disconnected(peer_id, dr.clone());
         self.emit_event(NetworkEvent::PeerDisconnected(peer_id, dr));
     }
@@ -663,11 +813,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
         let local_seq = self.host.local_metadata().seq_number;
         let connected: Vec<PeerId> = self.peer_manager.connected_peers().collect();
         for peer_id in connected {
-            let request_id = self
-                .swarm
-                .behaviour_mut()
-                .request_response
-                .send_request(&peer_id, RpcRequest::Ping(local_seq));
+            let request_id = self.send_rpc_request(&peer_id, RpcRequest::Ping(local_seq));
             // Track only via pending_ping_checks; no oneshot to resolve.
             self.pending_ping_checks.insert(request_id, peer_id);
         }
@@ -681,9 +827,15 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
     pub fn tick_score_prune(&mut self) {
         let to_prune = self.peer_manager.should_prune();
         for peer_id in to_prune {
+            // Pre-register reason before disconnect so ConnectionClosed carries
+            // Goodbye(3 = Fault/Error). Spec: specs/phase0/p2p-interface.md:1395.
+            self.peer_manager.note_disconnect_reason(
+                peer_id,
+                crate::types::DisconnectReason::Goodbye(GOODBYE_FAULT_ERROR),
+            );
             self.peer_manager.on_disconnecting(peer_id);
             // Goodbye is fire-and-forget; send directly without tracking.
-            self.swarm.behaviour_mut().request_response.send_request(
+            self.send_rpc_request(
                 &peer_id,
                 crate::rpc::types::RpcRequest::Goodbye(GOODBYE_FAULT_ERROR),
             );
@@ -772,6 +924,7 @@ fn rpc_method_from_request(req: &RpcRequest) -> RpcMethod {
 /// - `tcp_listen_port`: `9000`
 /// - `quic_listen_port`: `None` (QUIC transport is wired for dialling but
 ///   no listener is started)
+/// - `no_tcp`: `false` (TCP listener is started by default)
 /// - `discv5_addr`: `127.0.0.1:9001` (note: UDP; avoids collision with TCP 9000)
 /// - `local_key`: freshly generated secp256k1 keypair
 /// - `bootnodes`: empty
@@ -780,6 +933,9 @@ pub struct NetworkBuilder<E, H, S> {
     listen_ip: IpAddr,
     tcp_listen_port: u16,
     quic_listen_port: Option<u16>,
+    /// When `true`, the TCP listener is NOT started. Used for QUIC-only test
+    /// nodes (Task 8.2) where only the QUIC transport should be reachable.
+    no_tcp: bool,
     discv5_addr: SocketAddr,
     bootnodes: Vec<Enr>,
     local_key: Keypair,
@@ -798,6 +954,7 @@ impl<E: EthSpec, H: Host<E>> NetworkBuilder<E, H, crate::scoring::NoopScorer> {
             listen_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             tcp_listen_port: 9000,
             quic_listen_port: None,
+            no_tcp: false,
             discv5_addr: "127.0.0.1:9001".parse().unwrap(),
             bootnodes: Vec::new(),
             local_key: Keypair::generate_secp256k1(),
@@ -829,6 +986,16 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
         self
     }
 
+    /// Disable the TCP listener.
+    ///
+    /// When `true`, the TCP listener is NOT started. Used for QUIC-only test
+    /// nodes where only the QUIC transport should be reachable. Requires
+    /// `quic_listen_port` to be set.
+    pub fn no_tcp(mut self, v: bool) -> Self {
+        self.no_tcp = v;
+        self
+    }
+
     /// Set the discv5 UDP listen address (default: `127.0.0.1:9001`).
     ///
     /// Note: discv5 uses UDP, distinct from the libp2p TCP port.
@@ -856,6 +1023,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             listen_ip: self.listen_ip,
             tcp_listen_port: self.tcp_listen_port,
             quic_listen_port: self.quic_listen_port,
+            no_tcp: self.no_tcp,
             discv5_addr: self.discv5_addr,
             bootnodes: self.bootnodes,
             local_key: self.local_key,
@@ -919,19 +1087,22 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
         // Use the spec-conforming gossipsub config (Phase 4).
         let gossipsub = gossipsub_behaviour::<E>()?;
 
-        // Build request_response with all six protocol IDs, full support.
+        // Build one request_response::Behaviour per RPC method so that
+        // multistream-select negotiates the exact per-method protocol string.
+        // Using a single behaviour with all six protocols causes multistream-select
+        // to always pick the first registered protocol (Status) for every request.
         use crate::rpc::protocol::RpcProtocol;
         use crate::scoring::RpcMethod as M;
-        let protocols = vec![
-            (RpcProtocol(M::Status), ProtocolSupport::Full),
-            (RpcProtocol(M::Goodbye), ProtocolSupport::Full),
-            (RpcProtocol(M::Ping), ProtocolSupport::Full),
-            (RpcProtocol(M::MetaData), ProtocolSupport::Full),
-            (RpcProtocol(M::BlocksByRange), ProtocolSupport::Full),
-            (RpcProtocol(M::BlocksByRoot), ProtocolSupport::Full),
-        ];
-        let rr: request_response::Behaviour<crate::rpc::codec::RpcCodec<E>> =
-            request_response::Behaviour::new(protocols, request_response::Config::default());
+        use behaviour::{
+            RpcBlocksByRangeBehaviour, RpcBlocksByRootBehaviour, RpcGoodbyeBehaviour,
+            RpcMetaDataBehaviour, RpcPingBehaviour, RpcStatusBehaviour,
+        };
+        let mk_rr = |method: M| {
+            request_response::Behaviour::new(
+                vec![(RpcProtocol(method), ProtocolSupport::Full)],
+                request_response::Config::default(),
+            )
+        };
 
         let identify_cfg = identify::Config::new("/pharos/0.1.0".into(), public_key.clone());
         let identify = identify::Behaviour::new(identify_cfg);
@@ -949,7 +1120,12 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             .with_dns()?
             .with_behaviour(|_key| PharosBehaviour::<E> {
                 gossipsub,
-                request_response: rr,
+                rpc_status: RpcStatusBehaviour(mk_rr(M::Status)),
+                rpc_goodbye: RpcGoodbyeBehaviour(mk_rr(M::Goodbye)),
+                rpc_ping: RpcPingBehaviour(mk_rr(M::Ping)),
+                rpc_metadata: RpcMetaDataBehaviour(mk_rr(M::MetaData)),
+                rpc_blocks_by_range: RpcBlocksByRangeBehaviour(mk_rr(M::BlocksByRange)),
+                rpc_blocks_by_root: RpcBlocksByRootBehaviour(mk_rr(M::BlocksByRoot)),
                 identify,
                 ping,
             })
@@ -963,13 +1139,15 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             subscribe_phase0_topics(&mut swarm.behaviour_mut().gossipsub, fork_digest, &attnets)?;
 
         // ── Step 6: add listeners ─────────────────────────────────────────────
-        let tcp_addr: libp2p::Multiaddr =
-            format!("/ip4/{}/tcp/{}", self.listen_ip, self.tcp_listen_port)
-                .parse()
-                .map_err(|e: libp2p::multiaddr::Error| NetworkError::Libp2p(e.to_string()))?;
-        swarm
-            .listen_on(tcp_addr)
-            .map_err(|e| NetworkError::Libp2p(e.to_string()))?;
+        if !self.no_tcp {
+            let tcp_addr: libp2p::Multiaddr =
+                format!("/ip4/{}/tcp/{}", self.listen_ip, self.tcp_listen_port)
+                    .parse()
+                    .map_err(|e: libp2p::multiaddr::Error| NetworkError::Libp2p(e.to_string()))?;
+            swarm
+                .listen_on(tcp_addr)
+                .map_err(|e| NetworkError::Libp2p(e.to_string()))?;
+        }
 
         if let Some(quic_port) = self.quic_listen_port {
             let quic_addr: libp2p::Multiaddr =
