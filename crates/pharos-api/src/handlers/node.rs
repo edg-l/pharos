@@ -154,14 +154,19 @@ pub async fn get_syncing<E: EthSpec>(
 ) -> Result<Json<SyncingResponse>, ApiError> {
     let chain = Arc::clone(&state.chain);
     let result = tokio::task::spawn_blocking(move || {
-        let head_slot = u64::from(chain.current_slot());
+        // head_slot is the slot of the node's CURRENT HEAD BLOCK (not the wall
+        // clock); sync_distance = wall_slot - head_slot. A lighthouse VC reads
+        // all three and refuses to drive a BN whose head_slot / sync_distance
+        // disagree with is_syncing, so they must derive from the same source.
+        let current = u64::from(chain.current_slot());
+        let head_root = chain.head_root();
+        let head_slot = chain
+            .block_header_at(head_root)
+            .map(|h| u64::from(h.slot))
+            .unwrap_or(0);
+        let sync_distance = current.saturating_sub(head_slot);
         let is_syncing = chain.is_syncing();
         let is_optimistic = chain.is_optimistic();
-        // sync_distance is always 0 when synced; approximated as 0 when syncing
-        // (accurate computation requires the wall-clock slot minus head_slot,
-        // which is already captured in `is_syncing`; the full computation is
-        // wired in Phase 4 when head_slot tracking is complete).
-        let sync_distance = 0u64;
         SyncingData {
             head_slot,
             sync_distance,

@@ -437,9 +437,10 @@ async fn test_headers_head() {
     assert_eq!(status, StatusCode::OK);
     assert!(json["execution_optimistic"].is_boolean());
     assert!(json["finalized"].is_boolean());
-    let data = &json["data"];
-    assert!(data.is_array(), "data must be an array");
-    let item = &data[0];
+    // Per beacon-APIs `headers/{block_id}`, `data` is a SINGLE header object
+    // (not an array — the array shape is only for the `headers` LIST endpoint).
+    let item = &json["data"];
+    assert!(item.is_object(), "data must be a single header object");
     // root is 0x-hex
     let root = item["root"].as_str().unwrap();
     assert!(root.starts_with("0x"));

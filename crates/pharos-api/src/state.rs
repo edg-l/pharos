@@ -643,10 +643,22 @@ where
     }
 
     fn genesis(&self) -> (u64, Root, [u8; 4]) {
+        use pharos_types::BeaconStateView;
         let fc = self.fork_choice.read();
         let genesis_time = fc.genesis_time;
-        let genesis_validators_root = fc.runtime_cfg.genesis_validators_root.into();
         let genesis_fork_version = fc.runtime_cfg.genesis_fork_version;
+        // The genesis-validators-root is constant across every BeaconState; read
+        // it from the head state. `runtime_cfg.genesis_validators_root` is NOT
+        // populated on the checkpoint-sync anchor path (it stays zeroed), so a
+        // lighthouse VC reading `/eth/v1/beacon/genesis` would compute wrong
+        // fork digests / signing domains from it. Fall back to runtime_cfg only
+        // if no head state is loaded yet.
+        let head_root = pharos_fork_choice::get_head(&fc);
+        let genesis_validators_root = fc
+            .block_states
+            .get(&head_root)
+            .map(|s| s.genesis_validators_root())
+            .unwrap_or_else(|| fc.runtime_cfg.genesis_validators_root.into());
         (genesis_time, genesis_validators_root, genesis_fork_version)
     }
 

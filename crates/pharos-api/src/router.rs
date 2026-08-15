@@ -104,10 +104,11 @@ pub fn build_router_with_auth<E: EthSpec>(
             "/eth/v1/beacon/genesis",
             get(beacon_basic::get_genesis::<E>),
         )
-        .route(
-            "/eth/v1/beacon/headers/head",
-            get(beacon_basic::get_head_header::<E>),
-        )
+        // NOTE: `/eth/v1/beacon/headers/head` is served by the
+        // `/eth/v1/beacon/headers/{block_id}` route below (block_id = "head"),
+        // which returns a single header object per the beacon-API spec. A
+        // dedicated head-header route returned a `data` ARRAY and shadowed the
+        // {block_id} route for "head", so it was removed.
         // Config namespace (Phase 1)
         .route("/eth/v1/config/spec", get(config_handlers::get_spec::<E>))
         // States namespace (Phase 2)

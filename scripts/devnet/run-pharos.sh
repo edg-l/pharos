@@ -2,10 +2,10 @@
 # Boot pharos's own ethrex EL + the pharos beacon node, peered to the running
 # lighthouse BN (must already be up via run-devnet.sh). See README.md.
 #
-# Status: pharos checkpoint-syncs, dials the lighthouse bootnode, completes the
-# Status handshake on the bellatrix fork-digest, and gossip-meshes. Full block
-# FOLLOWING (head advancing) is NOT yet working — pending M5 backfill/sync work
-# (real genesis_time threading + dialed-peer registration). See repo handoff.
+# Status (M6+): pharos checkpoint-syncs, dials the lighthouse bootnode, follows
+# head over gossip past the Capella fork, and (M7) serves the Beacon API on
+# http://127.0.0.1:5053 (--http-port 5053; 5052 is the lighthouse BN). Point a
+# lighthouse VC at it with run-vc-vs-pharos.sh for the M7 cross-client read gate.
 set -Euo pipefail
 D="${DEVNET_DIR:-$HOME/.cache/pharos-devnet}"
 REPO="${PHAROS_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -31,8 +31,9 @@ setsid ethrex --network "$D/genesis.json" --datadir "$D/el2" --force \
   --p2p.disabled > "$D/ethrex-pharos.log" 2>&1 < /dev/null &
 echo "pharos-ethrex pid $!"; sleep 3
 
-echo "==== pharos beacon node (libp2p 9300, discv5 9301) ===="
+echo "==== pharos beacon node (libp2p 9300, discv5 9301, Beacon API 5053) ===="
 # Ports 9300/9301 avoid 9000/9001 (lighthouse) and 9100 (prometheus node_exporter).
+# --http-port 5053 avoids 5052 (lighthouse BN). The M7 gate VC reads off 5053.
 export RUST_LOG="${RUST_LOG:-info,pharos=info,pharos_node=info,pharos_network=info}"
 setsid env RUST_BACKTRACE=1 RUST_LOG="$RUST_LOG" "$PHAROS" \
   --config-dir "$D/specdir/configs/pharos-devnet" \
@@ -42,8 +43,10 @@ setsid env RUST_BACKTRACE=1 RUST_LOG="$RUST_LOG" "$PHAROS" \
   --bootnode "$LH_ENR" \
   --listen-addr /ip4/0.0.0.0/tcp/9300 \
   --discv5-port 9301 \
+  --http --http-address 127.0.0.1 --http-port 5053 \
   --data-dir "$D/pharos-data" \
   > "$D/pharos.log" 2>&1 < /dev/null &
 echo "pharos pid $!"
 echo "logs: $D/{ethrex-pharos,pharos}.log"
-echo "peered? curl -s http://127.0.0.1:5052/eth/v1/node/peer_count | jq .data  (or grep 'peers:' in bn.log)"
+echo "peered?  curl -s http://127.0.0.1:5052/eth/v1/node/peer_count | jq .data  (or grep 'peers:' in bn.log)"
+echo "API up?  curl -s http://127.0.0.1:5053/eth/v1/node/version | jq .data"

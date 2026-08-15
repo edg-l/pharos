@@ -1,20 +1,23 @@
-# Cross-client Bellatrix devnet (M4d harness)
+# Cross-client Bellatrix→Capella devnet (M4d/M5/M6/M7 harness)
 
 Hand-rolled, host-process (no Docker/Kurtosis) devnet for cross-client interop
-testing: a **lighthouse** BN+VC + **ethrex** EL produce a live **Bellatrix**
-chain (merge-at-genesis), and the **pharos** node peers in to follow it.
+testing: a **lighthouse** BN+VC + **ethrex** EL produce a live **Bellatrix→Capella
+transition** chain (`CAPELLA_FORK_EPOCH=1`), and the **pharos** node peers in,
+follows head past the fork, and (M7) serves the Beacon API for an external VC.
 
-This is the M4d interop harness from `docs/roadmap.md`. Kurtosis replaces it at
-M7 once the Beacon API ships.
+Originally the M4d interop harness. The M7 plan called for Kurtosis here; we kept
+this hand-rolled harness instead — it already drives the exact lighthouse+ethrex
+transition chain we need and adding a Kurtosis custom-service definition buys no
+extra coverage for a solo devnet (see `D-m7-gate-harness` in `docs/decisions.md`).
 
-## Current status (read before expecting miracles)
+## Current status
 
-- ✅ Reference chain (lighthouse + ethrex) produces Bellatrix blocks.
-- ✅ pharos checkpoint-syncs from lighthouse, dials its bootnode, completes the
-  **Status handshake on the bellatrix fork-digest**, and gossip-meshes.
-- ❌ pharos does **not** yet follow blocks to head — pending M5 sync/backfill work
-  (thread real `genesis_time` from the anchor; register dialed peers for
-  req-resp). See the repo handoff / `docs/decisions.md`.
+- ✅ Reference chain (lighthouse + ethrex) produces Bellatrix→Capella blocks.
+- ✅ pharos checkpoint-syncs from lighthouse, dials its bootnode, and **follows
+  head over gossip past the Capella fork** (M5-follow + M6-Capella).
+- ✅ (M7) pharos serves the Beacon API on `:5053`; an external lighthouse VC
+  bootstraps against it and reads duties (`run-vc-vs-pharos.sh`). Block/attestation
+  PRODUCTION + POST publish are M8 — the VC logs publish errors, which is expected.
 
 ## Prerequisites (host PATH)
 
@@ -38,12 +41,21 @@ scripts/devnet/gen-testnet.sh
 scripts/devnet/run-devnet.sh
 curl -s http://127.0.0.1:5052/eth/v2/beacon/blocks/head | jq -r .data.message.slot
 
-# 3. (optional) peer pharos in
+# 3. peer pharos in (serves Beacon API on :5053 via --http)
 scripts/devnet/run-pharos.sh
+# wait until pharos is following head:
+curl -s http://127.0.0.1:5053/eth/v1/node/syncing | jq .data
+
+# 4. (M7 gate) point a lighthouse VC at pharos + curl-probe the VC-critical reads
+scripts/devnet/run-vc-vs-pharos.sh          # probe + launch VC
+PROBE_ONLY=1 scripts/devnet/run-vc-vs-pharos.sh   # read-probe only, no VC
 
 # teardown
 scripts/devnet/stop-devnet.sh
 ```
+
+Everything-in-one-tmux alternative: `~/.cache/pharos-devnet/run-tmux.sh --fresh`
+brings up all components (one pane each) for a watch-it-live session.
 
 Re-running requires a **fresh genesis** each time: run `gen-testnet.sh` again
 before `run-devnet.sh` (the slashing-DB wipe in run-devnet.sh assumes this).
@@ -60,6 +72,7 @@ in the repo. Override with env: `DEVNET_DIR`, `CONSENSUS_SPECS`,
 | ethrex (lighthouse's) http / authrpc | 18545 / 18551 |
 | ethrex (pharos's) http / authrpc | 28545 / 28551 |
 | pharos libp2p / discv5 | 9300 / 9301 |
+| pharos Beacon API (M7) | 5053 |
 
 (pharos uses 9300/9301 to dodge 9000/9001 = lighthouse and 9100 = prometheus
 node_exporter.)
