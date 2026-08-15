@@ -522,7 +522,7 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
     // these rows are driven against `tests/{preset}/altair/fork_choice/`.
     // The shared Q1 footnote is registered once and attached to both rows.
     let fc_footnote = report.add_footnote(
-        "Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures.",
+        "Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures. Resolved by M3b (commit `784d75b`): altair containers landed so anchor states now decode and the rows show real pass counts. The skip-unknown-step-keys policy is retained for bellatrix+ step types. Decision recorded in `docs/decisions.md` (Q1).",
     );
 
     if filter.matches("phase0", "fork_choice", "mainnet") {

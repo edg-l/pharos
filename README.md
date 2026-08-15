@@ -6,19 +6,16 @@
 
 A from-scratch Rust Ethereum proof-of-stake consensus client.
 
-**Status: pre-alpha, M3a done; M3b (Altair) in flight.** Not usable as a
-node yet. Phase 0 conformance is at 100% (SSZ static + generic, operations,
-epoch processing, sanity, finality, random, rewards, genesis, shuffling,
-BLS) on both `mainnet` and `minimal` presets, zero failures. State
-transition, LMD-GHOST + FFG fork choice, the M2 networking baseline
-(`discv5`, `libp2p` gossipsub + req-resp, peer manager, Status/Goodbye
-handshake), and the M3a infrastructure (`pharos-storage` + RocksDB,
-real `Host<E>`, persistent restart) are in. Altair containers, STF
-(block operations, `upgrade_to_altair`, epoch processing, state-transition
-entry), and the enum-of-forks state shape have landed; Altair conformance,
-context-bytes codec, MetaDataV2, light-client server, and the YAML preset
-loader are the remaining M3b phases. Engine API client, Beacon API, and
-validator client are on the M4+ roadmap.
+**Status: pre-alpha, M3b done.** Not usable as a node yet. Phase 0 and
+Altair conformance are both at 100% (all `phase0` and `altair` categories,
+zero failures) on both `mainnet` and `minimal` presets. State transition,
+LMD-GHOST + FFG fork choice, the M2 networking baseline (`discv5`, `libp2p`
+gossipsub + req-resp, peer manager, Status/Goodbye handshake), the M3a
+infrastructure (`pharos-storage` + RocksDB, real `Host<E>`, persistent
+restart), and M3b (Altair STF, enum-of-forks state, sync committees,
+light-client server, MetaDataV2, context-bytes codec, cross-fork ENR
+migration, subnet rotation, YAML preset loader) are complete. Engine API
+client, Beacon API, and validator client are on the M4+ roadmap.
 
 ## Philosophy
 
@@ -78,9 +75,8 @@ boundary.
   `PeerIdentified`, `DialFailed`, `ExternalAddrConfirmed`),
   Goodbye-on-shutdown, monotonic `MetaData.seq_number`. **Done.**
 - **M3b — Altair.** Sync committees, light-client server, MetaDataV2,
-  context-aware req-resp codec, cross-fork ENR migration, YAML preset
-  loader. Phases 0–3 in (EthSpec consts, containers + fork enum,
-  STF block ops + `upgrade_to_altair`, STF epoch processing).
+  context-aware req-resp codec, cross-fork ENR migration, subnet rotation,
+  YAML preset loader. All `altair` conformance categories green. **Done.**
 - **M4 — Bellatrix + Engine API.** First merged sync against a devnet.
 - **M5–M10 — Capella, Deneb, Beacon API, validator client, Electra,
   Fulu (PeerDAS).**

@@ -158,7 +158,9 @@ async fn attestation_subnet_gossip() {
         .expect("b4 subscribe failed");
 
     // Delay for gossipsub subscription propagation and mesh formation.
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    // 2 s gives gossipsub enough time to converge even under workspace-wide
+    // CPU contention (1 s was occasionally insufficient).
+    tokio::time::sleep(Duration::from_millis(2000)).await;
 
     // A publishes a default Attestation on subnet 3.
     let payload = Attestation::<2048>::default();

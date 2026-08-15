@@ -11,6 +11,24 @@ runtime, deps philosophy). Entries are grouped by milestone; M1 uses
 numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
 `D-<topic>` / `Q-<topic>` keys.
 
+## Table of Contents
+
+- [M1 — Phase 0 STF + fork choice](#m1--phase-0-stf--fork-choice)
+  - D1 D2 D3 D4 D5 D6 D7 D8
+  - Q1 Q2 Q3 Q4
+- [M2 — Networking layer](#m2--networking-layer-pharos-network-phase-1)
+  - Q-quic-enr D-libp2p D-discv5 D-runtime-ownership D-trait-boundaries
+  - D-fork-digest-source D-channels D-test-runner D-peer-scoring
+  - D-network-event-surface M-networking-spec-source
+- [M3a — Infrastructure split of M3](#m3a--infrastructure-split-of-m3)
+  - D-rocksdb D-store-trait D-gossip-validator-sync D-block-encoding-on-disk
+  - D-storage-error-strategy D-peer-info-shape D-shutdown-protocol
+  - D-metadata-mutation D-fork-schedule
+- [M3b — Altair fork code](#m3b--altair-fork-code)
+  - D-altair-state-shape D-context-bytes-codec D-metadata-v2-dual-handle
+  - D-light-client-server-only D-ethspec-yaml-loader
+  - D-altair-transition-test-strategy D-sync-aggregate-bls D-fork-schedule-source
+
 ## M1 — Phase 0 STF + fork choice
 
 ### D1 — State mutation model: owned-mutate-return
@@ -203,6 +221,14 @@ this entry):
 Enforced in: `crates/pharos-conformance/src/fork_choice.rs`,
 `crates/pharos-conformance/src/lib.rs` (per-preset row wiring + Q1
 footnote registration).
+
+**M3b resolution** (commit `784d75b`): Altair containers and the enum-of-forks
+`BeaconState<E>` landed in M3b Phase 1 (`781a134`) and conformance wiring in
+M3b Phase 4 (`784d75b`). The `phase0/fork_choice/{mainnet,minimal}` rows now
+produce real non-zero pass counts; anchor states decode as `altair::BeaconState`
+and all fork-choice steps execute against the M1 store. The skip-unknown-step-keys
+policy is retained for bellatrix+ step types (e.g. `on_merge_block`, `pow_block`)
+which continue to appear in the same fixture directory.
 
 ### Q2 — BLS conformance row scope
 
@@ -820,3 +846,226 @@ the schedule. The M3b subnet-rotation driver and ENR updater hold an
 `Arc<HostImpl<E>>` and call this accessor to determine the current fork
 without re-reading the field under a lock (the schedule is immutable after
 construction).
+
+## M3b — Altair fork code
+
+### D-altair-state-shape — `BeaconState<E>` extended as enum-of-forks; Altair variant carries participation lists, inactivity scores, and sync committees
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+`BeaconState<E>` (`crates/pharos-types/src/state.rs`) is an enum with two
+variants: `Phase0(phase0::BeaconState<E>)` and `Altair(altair::BeaconState<E>)`.
+The Altair inner struct extends the Phase-0 fields with:
+
+- `previous_epoch_participation: SszList<ParticipationFlags, E::VALIDATOR_REGISTRY_LIMIT>`
+- `current_epoch_participation: SszList<ParticipationFlags, E::VALIDATOR_REGISTRY_LIMIT>`
+- `inactivity_scores: SszList<u64, E::VALIDATOR_REGISTRY_LIMIT>`
+- `current_sync_committee: SyncCommittee<E>`
+- `next_sync_committee: SyncCommittee<E>`
+
+per `specs/altair/beacon-chain.md` (new fields section). `previous_epoch_attestations`
+from Phase 0 is absent in Altair; `upgrade_to_altair` translates accumulated
+phase-0 attestations to the new participation-flag representation via
+`translate_participation`.
+
+All STF functions that previously took `E::BeaconState` now match on the outer
+enum via the `BeaconStateView<E>` trait and the new altair-specific accessors.
+`D6` (M1) deferred the enum until M3; this decision resolves that deferral.
+
+Enforced in: `crates/pharos-types/src/state.rs`,
+`crates/pharos-types/src/altair/state.rs`,
+`crates/pharos-stf/src/lib.rs` (outer dispatch),
+`crates/pharos-stf/src/altair/` (all Altair STF modules).
+
+### D-context-bytes-codec — 4-byte `ForkDigest` prefix on all v2 req-resp response chunks
+
+**Status**: Accepted. **Date**: 2026-05-23.
+
+Starting with Altair, every response chunk for `BeaconBlocksByRange/2`,
+`BeaconBlocksByRoot/2`, and all four light-client methods carries a 4-byte
+`<context-bytes>` field immediately after the result byte:
+
+```
+response_chunk ::= <result> | <context-bytes> | <encoding-dependent-header> | <encoded-payload>
+```
+
+`<context-bytes>` is the `ForkDigest` for the epoch of the payload (empty on
+error chunks). Per `specs/altair/p2p-interface.md:445-461`.
+
+In the codec (`crates/pharos-network/src/rpc/codec.rs`), `RpcMethod::has_context_bytes()`
+gates which methods write/read the 4-byte prefix. The fork digest is resolved at
+encode time via `ForkContext::fork_digest_for(epoch)` and at decode time via
+`ForkContext::fork_from_context([u8; 4])`. Both methods live on the `ForkContext`
+trait (`crates/pharos-network/src/host.rs`) and are implemented by `HostImpl<E>`.
+
+Why 4 bytes, not more: spec mandates exactly 4 bytes (one `ForkDigest`); no other
+context encoding is defined for Altair.
+
+Enforced in: `crates/pharos-network/src/rpc/codec.rs` (`has_context_bytes` dispatch),
+`crates/pharos-network/src/rpc/protocol.rs` (`RpcMethod::has_context_bytes`),
+`crates/pharos-network/src/host.rs` (`ForkContext::fork_digest_for`,
+`fork_from_context`),
+unit test `context_bytes_codec` in `crates/pharos-network/tests/rpc.rs`.
+
+### D-metadata-v2-dual-handle — Serve `MetaDataV2` by default; truncate to `MetaDataV1` on negotiated v1 protocol
+
+**Status**: Accepted. **Date**: 2026-05-23.
+
+The inbound `GetMetaData` request handler inspects which protocol ID
+multistream-select negotiated and acts accordingly:
+
+- `/eth2/beacon_chain/req/metadata/2/ssz_snappy` → respond with the full
+  `altair::MetaData` (seq_number + attnets + syncnets, 17 bytes SSZ).
+- `/eth2/beacon_chain/req/metadata/1/ssz_snappy` → truncate: respond with
+  `phase0::MetaData` (seq_number + attnets, 16 bytes SSZ), dropping `syncnets`.
+
+Both protocol IDs are registered on the inbound listener so multistream-select
+can negotiate either. The dispatcher uses `MetaDataResponse::V1(md)` /
+`MetaDataResponse::V2(md)` to select the encoding branch in the response codec.
+
+Why dual-handle: the spec says v1 is deprecated but not removed; a v1-only peer
+MUST still receive a well-formed v1 response. The truncation logic is trivial
+(copy seq_number + attnets); no data is lost on the serving side.
+
+Per `specs/altair/p2p-interface.md` "Transitioning from v1 to v2" and
+`D-metadata-v2-dual-handle` from the M3b plan.
+
+Enforced in: `crates/pharos-network/src/rpc/types.rs` (`MetaDataResponse`),
+`crates/pharos-network/src/rpc/handler.rs` (`handle_metadata`, protocol-ID dispatch),
+`crates/pharos-network/src/rpc/protocol.rs` (`RpcMethod::MetaDataV1` + `MetaData`),
+integration test `metadata_v1_v2_dual_handle` in `crates/pharos-network/tests/rpc.rs`.
+
+### D-light-client-server-only — M3b implements LC server-side req-resp and STF hooks; LC consumer is M11
+
+**Status**: Accepted. **Date**: 2026-05-23.
+
+M3b ships the full server (responder) side of the light-client protocol:
+the four req-resp methods (`LightClientBootstrap`, `LightClientUpdatesByRange`,
+`LightClientFinalityUpdate`, `LightClientOptimisticUpdate`) are wired into
+`pharos-network`; `LightClientProvider<E>` trait bridges them to the node; the
+STF hooks (`create_light_client_bootstrap`, `create_light_client_finality_update`,
+`create_light_client_optimistic_update`) execute after each finality advance and
+store the produced snapshots in `pharos-storage`.
+
+The consumer side (running a light client, verifying updates via
+`process_light_client_*`, maintaining a `LightClientStore`) is deferred to M11.
+The reason: the consumer path requires its own sync protocol, independent of the
+full-node sync, and is a substantial body of work that does not block M3b's
+correctness on the server path.
+
+Per `specs/altair/light-client/full-node.md` (production side),
+`specs/altair/light-client/light-client.md` (consumer side, deferred).
+
+Enforced in: `crates/pharos-network/src/host.rs` (`LightClientProvider<E>` trait),
+`crates/pharos-network/src/rpc/handler.rs` (four LC handlers),
+`crates/pharos-stf/src/altair/light_client.rs` (`create_*` functions),
+`crates/pharos-node/src/host_impl.rs` (`LightClientProviderImpl`).
+Deferred consumer path: `docs/roadmap.md` M11 section.
+
+### D-ethspec-yaml-loader — `RuntimeConfig` loaded from `configs/<network>.yaml` + `presets/<name>/*.yaml`; dimension fields guarded by `assert_matches_preset`
+
+**Status**: Accepted. **Date**: 2026-05-23.
+
+`RuntimeConfig` (`crates/pharos-types/src/config/mod.rs`) is a flat struct of
+non-dimension runtime-tunable fields: fork epochs, fork versions, genesis
+parameters, slot duration, churn limits, etc. It is loaded at node startup via
+`load_config_dir(path)` (`crates/pharos-types/src/config/loader.rs`), which reads:
+
+- `<path>/config.yaml` for fork-version and epoch fields (matches the layout
+  of `~/dev/consensus-specs/configs/mainnet.yaml` / `minimal.yaml` exactly).
+- `<path>/phase0.yaml` + `<path>/altair.yaml` under `<path>/presets/` for
+  preset-level constants.
+
+Fields that drive const-generic array sizing (`SYNC_COMMITTEE_SIZE`,
+`VALIDATOR_REGISTRY_LIMIT`, `MAX_COMMITTEES_PER_SLOT`,
+`MAX_VALIDATORS_PER_COMMITTEE`) cannot be overridden at runtime; they are
+compile-time `EthSpec` constants. `RuntimeConfig::assert_matches_preset::<E>()`
+panics at startup if any shared numeric field diverges from the compile-time
+constant, preventing silent divergence between YAML and binary.
+
+For custom networks with different dimension values, operators must recompile
+with a new `EthSpec` binding. This matches how Lighthouse and other CL clients
+handle custom presets.
+
+Enforced in: `crates/pharos-types/src/config/mod.rs`,
+`crates/pharos-types/src/config/loader.rs`,
+`crates/pharos-node/src/main.rs` (`--config-dir` flag, `assert_matches_preset` call).
+
+### D-altair-transition-test-strategy — Phase0→Altair `transition` fixtures handled by the Altair conformance dispatcher
+
+**Status**: Accepted. **Date**: 2026-05-23.
+
+`consensus-specs/tests/altair/transition/` contains fixtures that start with a
+phase-0 pre-state and drive the fork through `upgrade_to_altair`. These are
+dispatched by the Altair conformance module (`crates/pharos-conformance/src/transition.rs`),
+not the Phase-0 one, because:
+
+1. The fixtures require decoding the post-state as `altair::BeaconState`, which
+   is only available after M3b's type promotion.
+2. The fork boundary is Altair-specific; Phase-0 STF has no concept of it.
+3. The upstream spec-test layout already places these fixtures under `altair/`
+   not `phase0/`.
+
+The dispatcher loads a phase-0 pre-state, calls `state_transition` (which routes
+to `upgrade_to_altair` at the boundary slot), and asserts the post-state SSZ-equals
+the fixture's expected post-state. Phase-0 calling conventions (no blocks for pure
+slot-processing transitions) are preserved.
+
+Enforced in: `crates/pharos-conformance/src/transition.rs`,
+`crates/pharos-conformance/src/lib.rs` (row wiring).
+
+### D-sync-aggregate-bls — Single-block `fast_aggregate_verify` for M3b; batched verify deferred to M11
+
+**Status**: Accepted. **Date**: 2026-05-23.
+
+`process_sync_aggregate` (`crates/pharos-stf/src/altair/block.rs`) verifies the
+sync committee aggregate signature using a single call to
+`pharos_utils::bls::fast_aggregate_verify(pubkeys, msg, sig)` over the 512
+(mainnet) participant public keys, collected from `state.current_sync_committee`
+filtered by `sync_aggregate.sync_committee_bits`.
+
+Single-block verify is correct and complete. It is slower than batched verify
+across multiple blocks (the `SignatureSet` batching path in `pharos-utils::bls`
+is already in place for M1 attestation verification), but in M3b there is no
+block-validation pipeline running concurrently to batch across; the STF is called
+one block at a time. The performance concern is documented in R4 of the M3b plan.
+
+Batched verify (amortizing pairing cost across many sync aggregates at once) is
+deferred to M11, where the gossip-ingestion pipeline will provide the natural
+batching boundary. The `SignatureSet` API extension to support batched sync-committee
+verify will be a mechanical swap at `process_sync_aggregate` with no STF interface
+change.
+
+Per `specs/altair/beacon-chain.md` `process_sync_aggregate`, and R4 in the M3b plan.
+
+Enforced in: `crates/pharos-stf/src/altair/block.rs` (`process_sync_aggregate`).
+Deferred batched path: `docs/roadmap.md` M11 section.
+
+### D-fork-schedule-source — `ForkSchedule` owned by M3a's `HostImpl`; M3b's YAML loader sets `altair_fork_epoch` at startup
+
+**Status**: Accepted. **Date**: 2026-05-23.
+
+The canonical `ForkSchedule` struct (flat fields: `genesis_fork_version`,
+`altair_fork_version`, `altair_fork_epoch`, `genesis_validators_root`) and its
+accessor methods (`fork_at_epoch`, `fork_digest_at_epoch`, `current_enr_fork_id`)
+are defined in `crates/pharos-types/src/fork.rs` (owned by M3a Phase 0).
+`HostImpl<E>` (`crates/pharos-node/src/host_impl.rs`) holds a `ForkSchedule`
+field; `HostImpl::fork_schedule(&self) -> &ForkSchedule` exposes it to the
+subnet-rotation driver and the ENR migration loop.
+
+At M3a, `altair_fork_epoch` is initialised to `FAR_FUTURE_EPOCH`, so
+`fork_at_epoch` always returns Phase 0. M3b's `--config-dir` CLI flag
+(Phase 8) calls `load_config_dir` and overwrites `altair_fork_epoch` with the
+real value from `configs/<network>.yaml` before `HostImpl::new` is called.
+The struct shape is forward-compatible: Bellatrix will add
+`bellatrix_fork_epoch` as a new optional field in M4.
+
+This separation (types crate owns the shape, node binary sets the value, network
+crate reads via `ForkContext`) means neither `pharos-network` nor `pharos-stf`
+depend on the node binary; the dependency graph stays acyclic.
+
+Enforced in: `crates/pharos-types/src/fork.rs` (struct + accessors),
+`crates/pharos-node/src/host_impl.rs` (construction + `fork_schedule()` accessor),
+`crates/pharos-node/src/main.rs` (YAML load → `ForkSchedule` wiring),
+`crates/pharos-node/src/fork_migration.rs` (consumer),
+`crates/pharos-node/src/subnet_rotation.rs` (consumer).

@@ -348,37 +348,61 @@ Delivered via commits `a0d5c36` (NetworkEvent expansion) → `26e0282` (Host<E> 
   `altair_fork_epoch = FAR_FUTURE_EPOCH` at M3a; shape is forward-compatible
   for M3b's Altair entry. See ADR `D-fork-schedule`.
 
-### M3b — Altair fork code (PENDING)
+### M3b — Altair fork code (DONE)
 
-- Sync committees, light-client gossip + req-resp.
-- Spec tests `altair` green.
-- **Spec wire-format changes**:
-  - Context-aware req-resp encoding: each response chunk is prefixed with
-    a fork-digest so the codec can decode per-fork types. M2 codec only
-    handles Phase-0 encoding; M3b bumps the codec to handle context bytes.
-  - `MetaDataV2` with the new `syncnets: BitVector<SYNC_COMMITTEE_SUBNET_COUNT>`
-    field; bump req-resp protocol from `/metadata/1/ssz_snappy` to
-    `/metadata/2/ssz_snappy` and dual-handle peers that negotiated v1.
-  - New gossip topics: `sync_committee_*`, `sync_committee_contribution_and_proof`,
-    `light_client_finality_update`, `light_client_optimistic_update`.
-  - New req-resp methods: `LightClientBootstrap`, `LightClientUpdatesByRange`,
-    `LightClientFinalityUpdate`, `LightClientOptimisticUpdate`.
-- Cross-fork ENR migration + topic re-subscription at fork epochs
-  (`eth2` ENR field re-publish with new sequence number).
-- **Subnet rotation** driver in `pharos-node`: subscribe to attestation
-  subnets per the spec's `compute_subscribed_subnets(node_id, epoch)`,
-  rotate at epoch boundaries. Validator-duties-driven subscription is M8.
-- **Light-client server side**: serve `LightClientBootstrap` etc. to
-  light-client peers. Consumer-side (running a light client ourselves)
-  stays deferred.
-- `EthSpec` YAML preset loader (replaces hardcoded mainnet/minimal
-  constants) — needed once custom networks become realistic.
+Delivered via commits `d83e787` (EthSpec altair consts + RuntimeConfig skeleton)
+→ `781a134` (Altair containers + fork-enum promotion) → `29153cf` (Altair STF
+block ops + `upgrade_to_altair`) → `d3e398e` (Altair STF epoch processing +
+state-transition entry) → `784d75b` (Altair conformance + spec-tests v1.7.0-alpha.8)
+→ `e0fe1b5` (context-bytes codec + altair gossip topics + altair message-id)
+→ `13ad7b8` (MetaDataV2 + LC req-resp + LC storage/STF)
+→ `d25193b` (subnet rotation + cross-fork ENR migration)
+→ `ab4498d` (RuntimeConfig YAML loader + `--config-dir` CLI flag).
+
+- [x] **Altair STF.** `process_sync_aggregate`, `process_inactivity_updates`,
+  participation-flag rewards/penalties, `process_sync_committee_updates`,
+  `upgrade_to_altair` transition, `compute_sync_committee`. See ADR
+  `D-altair-state-shape`, `D-sync-aggregate-bls`.
+- [x] **Altair conformance.** All `altair` categories green on both presets:
+  `transition`, `ssz_static`, `operations`, `epoch_processing`, `sanity`,
+  `finality`, `random`, `rewards`, `light_client`. Q1 resolved: `phase0/fork_choice`
+  now shows real pass counts.
+- [x] **Context-bytes codec.** 4-byte `ForkDigest` prefix on
+  `BeaconBlocksByRange/2`, `BeaconBlocksByRoot/2`, and all four LC methods.
+  See ADR `D-context-bytes-codec`.
+- [x] **MetaDataV2 dual-handle.** `syncnets` field, v1/v2 dual-protocol
+  registration, v1-truncation on negotiated v1. See ADR `D-metadata-v2-dual-handle`.
+- [x] **Altair gossip topics.** `sync_committee_contribution_and_proof`,
+  `sync_committee_{i}` (4 subnets), `light_client_finality_update`,
+  `light_client_optimistic_update`. Altair `message-id` formula.
+- [x] **Light-client server.** Four new req-resp methods (`LightClientBootstrap`,
+  `LightClientUpdatesByRange`, `LightClientFinalityUpdate`,
+  `LightClientOptimisticUpdate`), `LightClientProvider<E>` host trait,
+  `create_light_client_*` STF hooks, snapshot storage in `pharos-storage`.
+  Consumer side deferred to M11. See ADR `D-light-client-server-only`.
+- [x] **Cross-fork ENR migration.** `DiscoveryHandle::update_enr_eth2`,
+  `run_fork_migration_loop` in `pharos-node`. See ADR `D-fork-schedule-source`.
+- [x] **Subnet rotation.** `run_subnet_rotation_loop` in `pharos-node`,
+  `NetworkCommand::UpdateMetaData`, node-id-derived attestation subnets via
+  `compute_subscribed_subnets`.
+- [x] **YAML preset loader.** `RuntimeConfig`, `load_config_dir`, `--config-dir`
+  CLI flag, `assert_matches_preset`. See ADR `D-ethspec-yaml-loader`.
 
 ### M4 — Bellatrix + Engine API
 - Engine API client talking to a real EL (reth/geth/ethrex). In-house,
   no `alloy` (per locked decision).
 - First merged sync against a devnet.
 - Spec tests `bellatrix` green.
+- **Gossip validation bodies** (deferred from M3b spec audit Task 9.7):
+  `GossipValidator` methods for LC topics (`validate_light_client_finality_update`,
+  `validate_light_client_optimistic_update`) currently return `Accept`; real
+  validation (timing window, locally computed update comparison) requires the
+  block-ingestion event loop. Wire in M4 when gossip validation bodies are filled.
+- **LC gossip broadcasting** (deferred from M3b spec audit Task 9.7):
+  full nodes SHOULD broadcast `LightClientFinalityUpdate` /
+  `LightClientOptimisticUpdate` after each new head block with a valid sync
+  aggregate. M3b stores the snapshots; M4 wires the publish call from the
+  block-ingestion path.
 - **`pharos-engine` real impl** (currently 7 LOC of `lib.rs`):
   - Per-method endpoints: `engine_newPayloadV{1..N}`,
     `engine_forkchoiceUpdatedV{1..N}`, `engine_getPayloadV{1..N}`,
@@ -461,6 +485,12 @@ Delivered via commits `a0d5c36` (NetworkEvent expansion) → `26e0282` (Host<E> 
 ### M8 — Validator client (separate binary)
 - Duties, signing, EIP-3076 slashing protection interchange.
 - Keystore loading (EIP-2335).
+- **ENR `syncnets` key** (deferred from M3b spec audit Task 9.7): populate
+  the `syncnets` `Bitvector[SYNC_COMMITTEE_SUBNET_COUNT]` ENR field when the
+  validator client assigns sync committee duties. Key is omitted at M3b because
+  without validator duties the bitfield is always `0b0000`; wiring it here aligns
+  with when sync committee subnet subscriptions become meaningful.
+  Per `specs/altair/p2p-interface.md:540-549`.
 - **In-house signer first** (BLS sign with key loaded from EIP-2335
   keystore decrypted in-memory). Web3signer compat is M11.
 - **Slashing protection DB schema** (separate `rusqlite` file):
