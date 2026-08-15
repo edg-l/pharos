@@ -389,25 +389,20 @@ state-transition entry) → `784d75b` (Altair conformance + spec-tests v1.7.0-al
   CLI flag, `assert_matches_preset`. See ADR `D-ethspec-yaml-loader`.
 
 ### M4 — Bellatrix + Engine API
-- Engine API client talking to a real EL (reth/geth/ethrex). In-house,
-  no `alloy` (per locked decision).
-- First merged sync against a devnet.
-- Spec tests `bellatrix` green.
-- **Gossip validation bodies** (deferred from M3b spec audit Task 9.7):
-  `GossipValidator` methods for LC topics (`validate_light_client_finality_update`,
-  `validate_light_client_optimistic_update`) currently return `Accept`; real
-  validation (timing window, locally computed update comparison) requires the
-  block-ingestion event loop. Wire in M4 when gossip validation bodies are filled.
-- **LC gossip broadcasting** (deferred from M3b spec audit Task 9.7):
-  full nodes SHOULD broadcast `LightClientFinalityUpdate` /
-  `LightClientOptimisticUpdate` after each new head block with a valid sync
-  aggregate. M3b stores the snapshots; M4 wires the publish call from the
-  block-ingestion path.
+
+M4 is split into four slices. Every item from the original M4 scope is
+allocated to exactly one slice; nothing is deferred out of M4. M4a/M4b/M4c
+ship code with in-process integration tests against mocks; M4d is the
+single cross-client acceptance gate that validates the full M4 surface
+against real ethrex + Lighthouse processes in a hand-rolled devnet.
+
+#### M4a — Engine API + Bellatrix STF + in-process integration test
 - **`pharos-engine` real impl** (currently 7 LOC of `lib.rs`):
-  - Per-method endpoints: `engine_newPayloadV{1..N}`,
-    `engine_forkchoiceUpdatedV{1..N}`, `engine_getPayloadV{1..N}`,
-    `engine_exchangeCapabilities`. N grows with each fork (capella v2,
-    deneb v3, electra v4).
+  - Per-method endpoints at Bellatrix level: `engine_newPayloadV1`,
+    `engine_forkchoiceUpdatedV1`, `engine_getPayloadV1`,
+    `engine_exchangeCapabilities`. (Capella V2/V3, Deneb V3/V4, Electra V4
+    land in M5/M6/M9 respectively.) Method-version dispatch designed to
+    extend cleanly.
   - Auxiliary `eth_*` endpoints the CL calls: `eth_chainId`,
     `eth_getBlockByHash`, `eth_getBlockByNumber`,
     `eth_syncing` (for EL health probes).
@@ -416,9 +411,35 @@ state-transition entry) → `784d75b` (Altair conformance + spec-tests v1.7.0-al
     Secret loaded from `--jwt-secret <path>` (32 random bytes hex).
   - EL health monitoring + simple failover for multi-EL setups
     (full failover policy is M11).
-- **Engine API conformance**: add an `engine` category to
-  `pharos-conformance`, walking `~/dev/execution-apis/src/engine/*.yaml`
-  fixtures. Each YAML defines a method + expected I/O.
+- **Bellatrix STF**: `process_execution_payload`, `BeaconBlockBodyBellatrix`,
+  `ExecutionPayload`, `upgrade_to_bellatrix`. Spec tests `bellatrix` green
+  (`transition`, `ssz_static`, `operations`, `epoch_processing`, `sanity`,
+  `finality`, `random`, `rewards`, `fork_choice`).
+- **fork-choice ↔ EL link**: every `on_block` that promotes the head
+  triggers `engine_forkchoiceUpdated` to the EL with
+  `(head_block_hash, safe_block_hash, finalized_block_hash)`. Reorgs
+  trigger fresh fcU.
+- **Invalid-payload tracking**: EL returns `{status: "INVALID"}` →
+  CL marks the block invalid in fork choice (new flag on
+  `ProtoArrayNode`) so it never re-becomes head.
+- **Backpressure on network event channel**: M2 uses `try_send` which
+  silently drops events under load. Bellatrix + Engine API load (every
+  slot drives fcU + payload validation) needs bounded-but-non-dropping
+  semantics. Bound the channel; switch to `send().await` with timeout
+  where slow consumer is acceptable; document the choice per channel.
+- **Engine API conformance scaffold**: add an `engine` category to
+  `pharos-conformance`, walking `~/dev/execution-apis/src/engine/*.yaml`.
+  M4a wires the runner + bellatrix YAML subset; later forks extend.
+- **In-process pipeline integration test**: fixture-driven test in
+  `crates/pharos-node/tests/engine_pipeline.rs` drives ~16 bellatrix
+  fixture blocks through `block_ingestion_loop` → STF → fork-choice →
+  engine driver → axum Engine API mock; asserts head advances per block,
+  `engine_newPayloadV1` is called per block, fcU is called per head
+  change, INVALID path tested via one INVALID-responding fixture. This
+  replaces the M4a-internal "first merged sync" gate; real-process
+  acceptance lives in M4d.
+
+#### M4b — Checkpoint sync + forward backfill (code + mock integration)
 - **Checkpoint sync** (moved here from M11): mainnet has 11M+ slots;
   syncing from genesis is not viable. CLAUDE.md already commits to
   "checkpoint sync first-class." Wire endpoint:
@@ -428,25 +449,59 @@ state-transition entry) → `784d75b` (Altair conformance + spec-tests v1.7.0-al
 - **Forward backfill** (moved here from M11): after checkpoint-sync
   jump, fill blocks slot-by-slot until head via `BeaconBlocksByRange`
   requests. Backward historical-state backfill stays M11.
-- **fork-choice ↔ EL link**: every `on_block` that promotes the head
-  triggers `engine_forkchoiceUpdated` to the EL with
-  `(head_block_hash, safe_block_hash, finalized_block_hash)`. Reorgs
-  trigger fresh fcU.
-- **Invalid-payload tracking**: EL returns `{status: "INVALID"}` →
-  CL marks the block invalid in fork choice (new flag on
-  `ProtoArrayNode`) so it never re-becomes head.
-- **Backpressure on network event channel**: M2 uses
-  `try_send` which silently drops events under load. Bellatrix +
-  Engine API load (every slot drives fcU + payload validation) needs
-  bounded-but-non-dropping semantics. Bound the channel; switch to
-  `send().await` with timeout where slow consumer is acceptable;
-  document the choice per channel.
-- **Performance regression suite**: first end-to-end thing exists at
-  M4 (CL → EL → devnet). Add criterion benches for:
+- **Engine API conformance extension**: complete the remaining bellatrix
+  YAML fixtures left out of the M4a scaffold.
+- **Mock integration test**: extend `tests/engine_pipeline.rs` (or add a
+  sibling test) with a mock CL Beacon API serving a known finalized
+  state; pharos jumps fork choice to it; backfills against the axum
+  Engine API mock. No real ethrex required.
+
+#### M4c — LC gossip carry-ins + perf bench baseline
+- **LC gossip validation bodies** (deferred from M3b spec audit Task 9.7):
+  `GossipValidator` methods for LC topics (`validate_light_client_finality_update`,
+  `validate_light_client_optimistic_update`) currently return `Accept`; real
+  validation (timing window, locally computed update comparison) requires the
+  block-ingestion event loop wired in M4a.
+- **LC gossip broadcasting** (deferred from M3b spec audit Task 9.7):
+  full nodes SHOULD broadcast `LightClientFinalityUpdate` /
+  `LightClientOptimisticUpdate` after each new head block with a valid sync
+  aggregate. M3b stores the snapshots; M4c wires the publish call from the
+  block-ingestion path landed in M4a.
+- **Performance regression suite**: Add criterion benches for:
   `process_block` (Phase 0 → Bellatrix), `hash_tree_root` on
   `BeaconState`, gossip-validation latency, req-resp roundtrip.
   Bench results checked into a `bench-history/` file or committed
-  Prometheus snapshots per release.
+  Prometheus snapshots per release. Benches run against fixtures, no
+  live devnet needed.
+
+#### M4d — Hand-rolled Lighthouse+ethrex devnet acceptance gate
+This is the M4 closure slice. M4a/b/c ship code-only; M4d is the first
+time pharos's M2/M3b networking + M4a/b STF + Engine API code is
+exercised against real peer processes.
+- **Harness**: hand-rolled bash scripts under `scripts/devnet/` based on
+  the pattern in `~/dev/lighthouse/scripts/local_testnet/`. No Docker, no
+  Kurtosis (Kurtosis is the eventual answer once Beacon API ships at M7).
+- **Topology**: Lighthouse BN + Lighthouse VC (64 deterministic interop
+  validators, immediate Bellatrix) drives block production; one ethrex
+  EL paired with Lighthouse BN; one ethrex EL paired with pharos (or
+  shared, depending on what works); pharos peers with Lighthouse via
+  libp2p/discv5 and follows the chain.
+- **Testnet-dir**: generated once via `lcli new-testnet` (immediate
+  Bellatrix, TTD=0, 64 validators). Committed under
+  `tests/fixtures/devnet-lh/`. Pharos's `RuntimeConfig` loader extended
+  (or shimmed) to accept Lighthouse's `config.yaml` layout.
+- **Acceptance criteria**: ≥ 32 slots of merged sync observed on
+  pharos's log (`head_slot`, `head_root` advancing past slot 32 with
+  non-zero `execution_payload.block_hash`); ethrex accepts
+  `engine_newPayloadV1` calls with `VALID` status; no panics, no
+  channel drops, no deadlocks across a 10-minute run.
+- **Cross-client coverage** (subsumes the M3b "cross-client interop
+  testing (before M4 ships)" roadmap requirement): Status handshake,
+  Ping/MetaData exchange, BeaconBlocksByRange roundtrip,
+  BeaconBlocksByRoot roundtrip, gossipsub block subscription.
+- **Expected cost**: 4-10 implementer-days; budget aligned with
+  realistic first-cross-client interop estimates. Bugs surfaced here
+  are fixed in M4d, not deferred to M5.
 
 ### M5 — Capella
 - Withdrawals, BLS-to-execution-change.
@@ -481,6 +536,13 @@ state-transition entry) → `784d75b` (Altair conformance + spec-tests v1.7.0-al
 - **Validator-namespace authentication**: opt-in token (read from
   `--validator-api-token <path>`) for the
   `/eth/v1/validator/*` endpoints. Default off; lighthouse-compatible.
+- **Kurtosis `ethereum-package` integration**: once the Beacon API
+  Tier 1 health probes ship (`/eth/v1/node/{identity,syncing,version}`,
+  `/eth/v1/beacon/{genesis,headers/head}`, `/eth/v1/config/spec`),
+  upstream pharos to `ethpandaops/ethereum-package` (or run as a
+  custom Kurtosis service definition) so pharos becomes drivable in
+  Kurtosis enclaves. Kurtosis replaces M4d's hand-rolled bash devnet
+  as the recurring cross-client harness for M7 onward.
 
 ### M8 — Validator client (separate binary)
 - Duties, signing, EIP-3076 slashing protection interchange.
@@ -621,13 +683,12 @@ don't get dropped.
   checked-in fixtures + `bench-history/` JSON snapshots per release.
   No CI gate on perf (too noisy on shared runners); humans review the
   delta per release.
-- **Cross-client interop testing** (before M4 ships, since M4 = first
-  merged sync): bring up Lighthouse + ethrex on localhost, have
-  Pharos connect, verify Status / Ping / MetaData / BlocksByRange
-  / BlocksByRoot roundtrips. Add as
-  `crates/pharos-network/tests/interop/lighthouse_pair.rs` (gated
-  behind a `--features lighthouse-interop` flag so it doesn't run
-  in default `cargo test`).
+- **Cross-client interop testing** — folded into **M4d** as the M4
+  closure slice (hand-rolled Lighthouse+ethrex+pharos devnet). The
+  M3b carry-in for a gated
+  `crates/pharos-network/tests/interop/lighthouse_pair.rs` integration
+  test is deferred to **M7** once Beacon API ships and Kurtosis becomes
+  the recurring cross-client harness.
 
 ## Locked decisions
 
