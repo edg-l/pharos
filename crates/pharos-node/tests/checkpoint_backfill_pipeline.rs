@@ -47,7 +47,8 @@ use pharos_node::startup::rehydrate_fork_choice_store;
 
 mod common;
 use common::checkpoint_helpers::{
-    TERMINAL_BLOCK_HASH_BYTES, build_anchor_bellatrix, build_backfill_chain,
+    BACKFILL_GENESIS_TIME_SECS, FC_STORE_TIME_ADVANCE_SECS, TERMINAL_BLOCK_HASH_BYTES,
+    build_anchor_bellatrix, build_backfill_chain,
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -403,8 +404,8 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     // `ANCHOR_SLOT + N_BACKFILL_BLOCKS`.  `genesis_time = wall_now -
     // ANCHOR_SLOT * seconds_per_slot`, so we need
     // `time >= genesis_time + (ANCHOR_SLOT + N_BACKFILL_BLOCKS) * seconds_per_slot`.
-    // Setting `time = wall_now + 1_000_000` (~11 days ahead) satisfies this.
-    fc_store.time = wall_now + 1_000_000;
+    // Adding `FC_STORE_TIME_ADVANCE_SECS` (~11 days) to wall-clock satisfies this.
+    fc_store.time = wall_now + FC_STORE_TIME_ADVANCE_SECS;
 
     // Set terminal_block_hash override so the merge-transition guard passes.
     fc_store.set_terminal_config(
@@ -465,7 +466,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     // so that wall_slot >> ANCHOR_SLOT + N_BACKFILL_BLOCKS. The backfill loop
     // will process all 8 blocks and then block on the empty-provider retry delay
     // until we send the shutdown signal.
-    let backfill_genesis_time_secs: u64 = 1_000_000;
+    let backfill_genesis_time_secs: u64 = BACKFILL_GENESIS_TIME_SECS;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -530,14 +531,6 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         "head_slot must equal Slot(72) after processing all backfill blocks"
     );
 
-    // (b) Engine mock recorded >= 8 engine_newPayloadV1 calls.
-    assert!(
-        engine_mock.new_payload_count() >= N_BACKFILL_BLOCKS,
-        "expected >= {} engine_newPayloadV1 calls, got {}",
-        N_BACKFILL_BLOCKS,
-        engine_mock.new_payload_count()
-    );
-
     // Send shutdown signal so the backfill loop exits (it is blocked on the
     // empty-provider retry delay after processing all 8 blocks).
     let _ = shutdown_tx.send(true);
@@ -550,6 +543,16 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     assert!(
         backfill_result.is_ok(),
         "backfill loop must exit Ok(()), got: {backfill_result:?}"
+    );
+
+    // (b) Engine mock recorded >= 8 engine_newPayloadV1 calls.
+    // Asserted after backfill_handle joins so all in-flight HTTP requests from
+    // the engine driver have landed at the mock before we read the counter.
+    assert!(
+        engine_mock.new_payload_count() >= N_BACKFILL_BLOCKS,
+        "expected >= {} engine_newPayloadV1 calls, got {}",
+        N_BACKFILL_BLOCKS,
+        engine_mock.new_payload_count()
     );
 
     // (d) No panics — reaching this point without panic proves (d).

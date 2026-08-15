@@ -40,6 +40,21 @@ pub type MinForkSignedBlock =
 /// merge-transition guard passes without consulting an EL.
 pub const TERMINAL_BLOCK_HASH_BYTES: [u8; 32] = [0x01u8; 32];
 
+/// A far-past genesis time (unix seconds) used in backfill integration tests so
+/// that the computed `wall_slot` is much larger than any test chain length.
+///
+/// `1_000_000` seconds from the Unix epoch is 1970-01-12, which is far enough in
+/// the past that `wall_slot >> N_BACKFILL_BLOCKS` for any sane test fixture.
+pub const BACKFILL_GENESIS_TIME_SECS: u64 = 1_000_000;
+
+/// Seconds to add to the current wall-clock when advancing `fc_store.time` ahead
+/// of the current slot in integration tests that need the fork-choice time cursor
+/// to already be ahead of the test chain tip.
+///
+/// ~11.5 days in seconds, large enough that `current_slot` comfortably exceeds
+/// `ANCHOR_SLOT + N_BACKFILL_BLOCKS` for any realistic test fixture.
+pub const FC_STORE_TIME_ADVANCE_SECS: u64 = 1_000_000;
+
 // ── BLS test keypair helpers ──────────────────────────────────────────────────
 
 /// Deterministic secret key derived from a fixed 32-byte seed.

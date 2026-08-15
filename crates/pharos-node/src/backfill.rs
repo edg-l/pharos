@@ -367,6 +367,13 @@ mod tests {
         ForkSignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>;
     type MinForkState = ForkMinState;
 
+    // ── Test constants ────────────────────────────────────────────────────────
+
+    /// A far-past genesis time (unix seconds) so that the computed `wall_slot`
+    /// is much larger than any test chain length, ensuring the backfill loop
+    /// requests blocks from the provider rather than exiting immediately.
+    const BACKFILL_GENESIS_TIME_SECS: u64 = 1_000_000;
+
     // ── BLS test keypair helpers ──────────────────────────────────────────────
 
     /// Deterministic secret key derived from a fixed 32-byte seed.
@@ -810,7 +817,7 @@ mod tests {
         // will request blocks).  After processing all 8 blocks the second
         // provider call returns empty, which causes BACKFILL_RETRY_DELAY.
         // Send shutdown before the delay expires.
-        let genesis_time_secs = 1_000_000u64; // far in the past → big wall_slot
+        let genesis_time_secs = BACKFILL_GENESIS_TIME_SECS;
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let provider = FixtureBlockProvider::new(signed_blocks);
@@ -936,7 +943,7 @@ mod tests {
             .expect("pre-apply on_block for block A");
         }
 
-        let genesis_time_secs = 1_000_000u64;
+        let genesis_time_secs = BACKFILL_GENESIS_TIME_SECS;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let provider = FixtureBlockProvider::new(signed_blocks);
 

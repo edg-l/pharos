@@ -43,7 +43,6 @@ use pharos_types::bellatrix::{
 use pharos_types::phase0::primitives::{Root, Slot, ValidatorIndex, Version};
 use pharos_types::state::{
     BeaconBlock as ForkBeaconBlock, MinimalBeaconState as ForkMinimalBeaconState,
-    SignedBeaconBlock as ForkSignedBeaconBlock,
 };
 use pharos_types::views::BeaconBlockView as _;
 use pharos_types::{EthSpec, MinimalEthSpec, PayloadStatus};
@@ -60,7 +59,7 @@ use pharos_node::pow_block::EnginePowBlockProvider;
 
 mod common;
 use common::checkpoint_helpers::{
-    TERMINAL_BLOCK_HASH_BYTES as CP_TERMINAL_HASH, build_anchor_bellatrix,
+    MinForkSignedBlock, TERMINAL_BLOCK_HASH_BYTES as CP_TERMINAL_HASH, build_anchor_bellatrix,
 };
 
 // ── Fixture constants ─────────────────────────────────────────────────────────
@@ -214,10 +213,6 @@ fn build_genesis() -> (
 
     (genesis_state, anchor_block)
 }
-
-/// Type alias for the fork-enum `SignedBeaconBlock` over minimal-preset params.
-type MinForkSignedBlock =
-    ForkSignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>;
 
 /// Build a chain of `N_BLOCKS` signed Bellatrix blocks from the genesis state.
 ///
