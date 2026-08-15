@@ -27,10 +27,13 @@ libp2p.workspace = true
 parking_lot.workspace = true
 hex.workspace = true
 
+[dependencies.tower]
+version = "0.5"
+features = ["util"]
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 discv5.workspace = true
 arc-swap.workspace = true
-tower = { version = "0.5", features = ["util"] }
 serde_json.workspace = true

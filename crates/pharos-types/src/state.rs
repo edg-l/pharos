@@ -405,6 +405,38 @@ impl<
             BeaconState::Capella(s) => s.eth1_data(),
         }
     }
+    fn eth1_data_votes(&self) -> Vec<Eth1Data> {
+        match self {
+            BeaconState::Phase0(s) => s.eth1_data_votes(),
+            BeaconState::Altair(s) => s.eth1_data_votes(),
+            BeaconState::Bellatrix(s) => s.eth1_data_votes(),
+            BeaconState::Capella(s) => s.eth1_data_votes(),
+        }
+    }
+    fn eth1_deposit_index_u64(&self) -> u64 {
+        match self {
+            BeaconState::Phase0(s) => s.eth1_deposit_index_u64(),
+            BeaconState::Altair(s) => s.eth1_deposit_index_u64(),
+            BeaconState::Bellatrix(s) => s.eth1_deposit_index_u64(),
+            BeaconState::Capella(s) => s.eth1_deposit_index_u64(),
+        }
+    }
+    fn historical_roots(&self) -> Vec<Root> {
+        match self {
+            BeaconState::Phase0(s) => s.historical_roots(),
+            BeaconState::Altair(s) => s.historical_roots(),
+            BeaconState::Bellatrix(s) => s.historical_roots(),
+            BeaconState::Capella(s) => s.historical_roots(),
+        }
+    }
+    fn justification_bits_bytes(&self) -> Vec<u8> {
+        match self {
+            BeaconState::Phase0(s) => s.justification_bits_bytes(),
+            BeaconState::Altair(s) => s.justification_bits_bytes(),
+            BeaconState::Bellatrix(s) => s.justification_bits_bytes(),
+            BeaconState::Capella(s) => s.justification_bits_bytes(),
+        }
+    }
     fn previous_justified_checkpoint(&self) -> &Checkpoint {
         match self {
             BeaconState::Phase0(s) => s.previous_justified_checkpoint(),
@@ -447,6 +479,81 @@ impl<
             BeaconState::Altair(s) => s.sync_committee_pubkeys(),
             BeaconState::Bellatrix(s) => s.sync_committee_pubkeys(),
             BeaconState::Capella(s) => s.sync_committee_pubkeys(),
+        }
+    }
+    fn previous_epoch_participation_u8s(&self) -> Vec<u8> {
+        match self {
+            BeaconState::Phase0(_) => vec![],
+            BeaconState::Altair(s) => s.previous_epoch_participation_u8s(),
+            BeaconState::Bellatrix(s) => s.previous_epoch_participation_u8s(),
+            BeaconState::Capella(s) => s.previous_epoch_participation_u8s(),
+        }
+    }
+    fn current_epoch_participation_u8s(&self) -> Vec<u8> {
+        match self {
+            BeaconState::Phase0(_) => vec![],
+            BeaconState::Altair(s) => s.current_epoch_participation_u8s(),
+            BeaconState::Bellatrix(s) => s.current_epoch_participation_u8s(),
+            BeaconState::Capella(s) => s.current_epoch_participation_u8s(),
+        }
+    }
+    fn inactivity_scores_u64s(&self) -> Vec<u64> {
+        match self {
+            BeaconState::Phase0(_) => vec![],
+            BeaconState::Altair(s) => s.inactivity_scores_u64s(),
+            BeaconState::Bellatrix(s) => s.inactivity_scores_u64s(),
+            BeaconState::Capella(s) => s.inactivity_scores_u64s(),
+        }
+    }
+    fn sync_committee_aggregate_pubkeys(&self) -> Option<([u8; 48], [u8; 48])> {
+        match self {
+            BeaconState::Phase0(_) => None,
+            BeaconState::Altair(s) => s.sync_committee_aggregate_pubkeys(),
+            BeaconState::Bellatrix(s) => s.sync_committee_aggregate_pubkeys(),
+            BeaconState::Capella(s) => s.sync_committee_aggregate_pubkeys(),
+        }
+    }
+    fn previous_epoch_attestations_raw(&self) -> Option<Vec<crate::views::PendingAttestationRaw>> {
+        match self {
+            BeaconState::Phase0(s) => s.previous_epoch_attestations_raw(),
+            BeaconState::Altair(_) | BeaconState::Bellatrix(_) | BeaconState::Capella(_) => None,
+        }
+    }
+    fn current_epoch_attestations_raw(&self) -> Option<Vec<crate::views::PendingAttestationRaw>> {
+        match self {
+            BeaconState::Phase0(s) => s.current_epoch_attestations_raw(),
+            BeaconState::Altair(_) | BeaconState::Bellatrix(_) | BeaconState::Capella(_) => None,
+        }
+    }
+    fn execution_payload_header_raw(&self) -> Option<crate::views::ExecutionPayloadHeaderRaw> {
+        match self {
+            BeaconState::Phase0(_) | BeaconState::Altair(_) => None,
+            BeaconState::Bellatrix(s) => s.execution_payload_header_raw(),
+            BeaconState::Capella(s) => s.execution_payload_header_raw(),
+        }
+    }
+    fn execution_payload_withdrawals_root(&self) -> Option<[u8; 32]> {
+        match self {
+            BeaconState::Capella(s) => s.execution_payload_withdrawals_root(),
+            _ => None,
+        }
+    }
+    fn next_withdrawal_index_u64(&self) -> Option<u64> {
+        match self {
+            BeaconState::Capella(s) => s.next_withdrawal_index_u64(),
+            _ => None,
+        }
+    }
+    fn next_withdrawal_validator_index_raw(&self) -> Option<u64> {
+        match self {
+            BeaconState::Capella(s) => s.next_withdrawal_validator_index_raw(),
+            _ => None,
+        }
+    }
+    fn historical_summaries_raw(&self) -> Option<Vec<([u8; 32], [u8; 32])>> {
+        match self {
+            BeaconState::Capella(s) => s.historical_summaries_raw(),
+            _ => None,
         }
     }
 }
@@ -919,6 +1026,15 @@ impl<
             BeaconBlockBody::Altair(b) => b.voluntary_exits(),
             BeaconBlockBody::Bellatrix(b) => b.voluntary_exits(),
             BeaconBlockBody::Capella(b) => b.voluntary_exits(),
+        }
+    }
+
+    fn execution_block_hash(&self) -> Option<[u8; 32]> {
+        match self {
+            BeaconBlockBody::Phase0(b) => b.execution_block_hash(),
+            BeaconBlockBody::Altair(b) => b.execution_block_hash(),
+            BeaconBlockBody::Bellatrix(b) => b.execution_block_hash(),
+            BeaconBlockBody::Capella(b) => b.execution_block_hash(),
         }
     }
 }

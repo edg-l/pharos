@@ -163,6 +163,15 @@ struct Args {
     /// Only consulted when `--http` is set.
     #[arg(long, default_value_t = 5052, value_name = "PORT")]
     http_port: u16,
+
+    /// Path to a file containing the Bearer token for `/eth/v1/validator/*` API auth.
+    ///
+    /// When provided, every request to the validator-duties namespace must carry
+    /// `Authorization: Bearer <token>`.  The file is read at startup; its trimmed
+    /// contents are used as the token (lighthouse-compatible format).
+    /// When absent, no auth is required on the validator endpoints.
+    #[arg(long, value_name = "PATH")]
+    validator_api_token: Option<PathBuf>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -752,10 +761,26 @@ async fn main() -> anyhow::Result<()> {
             info!("SSE event adapter task started");
         }
 
+        // Load the optional validator-API token (trimmed file contents, lighthouse-compatible).
+        let validator_token: Option<String> = if let Some(ref token_path) = args.validator_api_token
+        {
+            let raw = std::fs::read_to_string(token_path)
+                .with_context(|| format!("reading validator API token from {token_path:?}"))?;
+            let token = raw.trim().to_string();
+            if token.is_empty() {
+                anyhow::bail!("--validator-api-token file is empty: {token_path:?}");
+            }
+            info!(path = %token_path.display(), "validator API token loaded; /eth/v1/validator/* is auth-gated");
+            Some(token)
+        } else {
+            None
+        };
+
         let api_state = pharos_api::ApiState::new_with_bus(Arc::new(chain_state), event_bus);
         let http_addr = SocketAddr::new(args.http_address, args.http_port);
         tokio::spawn(async move {
-            pharos_api::serve::<MainnetEthSpec>(http_addr, api_state).await;
+            pharos_api::serve_with_auth::<MainnetEthSpec>(http_addr, api_state, validator_token)
+                .await;
         });
         info!(%http_addr, "Beacon API HTTP server spawned");
     }

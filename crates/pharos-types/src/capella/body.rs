@@ -149,6 +149,10 @@ impl<
     fn voluntary_exits(&self) -> &[SignedVoluntaryExit] {
         self.voluntary_exits.as_slice()
     }
+
+    fn execution_block_hash(&self) -> Option<[u8; 32]> {
+        Some(self.execution_payload.block_hash.into())
+    }
 }
 
 // ── Preset-specific type aliases ──────────────────────────────────────────────

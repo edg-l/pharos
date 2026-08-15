@@ -440,6 +440,19 @@ impl<
     fn eth1_data(&self) -> &Eth1Data {
         &self.eth1_data
     }
+    fn eth1_data_votes(&self) -> Vec<Eth1Data> {
+        self.eth1_data_votes.iter().cloned().collect()
+    }
+    fn eth1_deposit_index_u64(&self) -> u64 {
+        self.eth1_deposit_index
+    }
+    fn historical_roots(&self) -> Vec<crate::phase0::Root> {
+        self.historical_roots.iter().cloned().collect()
+    }
+    fn justification_bits_bytes(&self) -> Vec<u8> {
+        use pharos_ssz::Encode as _;
+        self.justification_bits.as_ssz_bytes()
+    }
     fn previous_justified_checkpoint(&self) -> &Checkpoint {
         &self.previous_justified_checkpoint
     }
@@ -467,6 +480,21 @@ impl<
                 .iter()
                 .map(|pk| pk.into_inner())
                 .collect(),
+        ))
+    }
+    fn previous_epoch_participation_u8s(&self) -> Vec<u8> {
+        self.previous_epoch_participation.iter().copied().collect()
+    }
+    fn current_epoch_participation_u8s(&self) -> Vec<u8> {
+        self.current_epoch_participation.iter().copied().collect()
+    }
+    fn inactivity_scores_u64s(&self) -> Vec<u64> {
+        self.inactivity_scores.iter().copied().collect()
+    }
+    fn sync_committee_aggregate_pubkeys(&self) -> Option<([u8; 48], [u8; 48])> {
+        Some((
+            self.current_sync_committee.aggregate_pubkey.into_inner(),
+            self.next_sync_committee.aggregate_pubkey.into_inner(),
         ))
     }
 }

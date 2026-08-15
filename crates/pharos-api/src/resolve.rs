@@ -307,6 +307,25 @@ mod tests {
         ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, ApiError> {
             Err(ApiError::NotFound("regen not available in mock".into()))
         }
+
+        fn fork_choice_dump(&self) -> Result<serde_json::Value, ApiError> {
+            Ok(serde_json::json!({
+                "justified_checkpoint": {"epoch": "0", "root": "0x0000000000000000000000000000000000000000000000000000000000000000"},
+                "finalized_checkpoint": {"epoch": "0", "root": "0x0000000000000000000000000000000000000000000000000000000000000000"},
+                "fork_choice_nodes": [],
+            }))
+        }
+
+        fn fork_choice_heads(&self) -> Result<serde_json::Value, ApiError> {
+            Ok(serde_json::json!({ "data": [] }))
+        }
+
+        fn state_to_json(
+            &self,
+            state: <MainnetEthSpec as EthSpec>::BeaconState,
+        ) -> Result<serde_json::Value, ApiError> {
+            crate::state::beacon_state_to_json_full::<MainnetEthSpec>(state)
+        }
     }
 
     #[test]

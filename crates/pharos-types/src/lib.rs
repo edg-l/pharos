@@ -69,6 +69,7 @@ pub use eth_spec::{EthSpec, MainnetEthSpec, MinimalEthSpec};
 pub use payload_status::PayloadStatus;
 pub use state::{BeaconBlock, BeaconBlockBody, BeaconState, SignedBeaconBlock};
 pub use views::{
-    BeaconBlockBodyView, BeaconBlockView, BeaconStateView, LightClientFinalityUpdateView,
-    LightClientOptimisticUpdateView, SignedBeaconBlockView, SyncCommitteePubkeys,
+    BeaconBlockBodyView, BeaconBlockView, BeaconStateView, ExecutionPayloadHeaderRaw,
+    LightClientFinalityUpdateView, LightClientOptimisticUpdateView, PendingAttestationRaw,
+    SignedBeaconBlockView, SyncCommitteePubkeys,
 };

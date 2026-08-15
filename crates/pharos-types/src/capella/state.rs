@@ -488,6 +488,19 @@ impl<
     fn eth1_data(&self) -> &Eth1Data {
         &self.eth1_data
     }
+    fn eth1_data_votes(&self) -> Vec<Eth1Data> {
+        self.eth1_data_votes.iter().cloned().collect()
+    }
+    fn eth1_deposit_index_u64(&self) -> u64 {
+        self.eth1_deposit_index
+    }
+    fn historical_roots(&self) -> Vec<crate::phase0::Root> {
+        self.historical_roots.iter().cloned().collect()
+    }
+    fn justification_bits_bytes(&self) -> Vec<u8> {
+        use pharos_ssz::Encode as _;
+        self.justification_bits.as_ssz_bytes()
+    }
     fn previous_justified_checkpoint(&self) -> &Checkpoint {
         &self.previous_justified_checkpoint
     }
@@ -516,6 +529,66 @@ impl<
                 .map(|pk| pk.into_inner())
                 .collect(),
         ))
+    }
+    fn previous_epoch_participation_u8s(&self) -> Vec<u8> {
+        self.previous_epoch_participation.iter().copied().collect()
+    }
+    fn current_epoch_participation_u8s(&self) -> Vec<u8> {
+        self.current_epoch_participation.iter().copied().collect()
+    }
+    fn inactivity_scores_u64s(&self) -> Vec<u64> {
+        self.inactivity_scores.iter().copied().collect()
+    }
+    fn sync_committee_aggregate_pubkeys(&self) -> Option<([u8; 48], [u8; 48])> {
+        Some((
+            self.current_sync_committee.aggregate_pubkey.into_inner(),
+            self.next_sync_committee.aggregate_pubkey.into_inner(),
+        ))
+    }
+    fn execution_payload_header_raw(&self) -> Option<crate::views::ExecutionPayloadHeaderRaw> {
+        let h = &self.latest_execution_payload_header;
+        Some(crate::views::ExecutionPayloadHeaderRaw {
+            parent_hash: h.parent_hash.into_inner(),
+            fee_recipient: h.fee_recipient.into_inner(),
+            state_root: h.state_root.into_inner(),
+            receipts_root: h.receipts_root.into_inner(),
+            logs_bloom: h.logs_bloom.iter().copied().collect(),
+            prev_randao: h.prev_randao.into_inner(),
+            block_number: h.block_number,
+            gas_limit: h.gas_limit,
+            gas_used: h.gas_used,
+            timestamp: h.timestamp,
+            extra_data: h.extra_data.iter().copied().collect(),
+            base_fee_per_gas_le: h.base_fee_per_gas.to_le_bytes(),
+            block_hash: h.block_hash.into_inner(),
+            transactions_root: h.transactions_root.into_inner(),
+        })
+    }
+    fn execution_payload_withdrawals_root(&self) -> Option<[u8; 32]> {
+        Some(
+            self.latest_execution_payload_header
+                .withdrawals_root
+                .into_inner(),
+        )
+    }
+    fn next_withdrawal_index_u64(&self) -> Option<u64> {
+        Some(self.next_withdrawal_index)
+    }
+    fn next_withdrawal_validator_index_raw(&self) -> Option<u64> {
+        Some(self.next_withdrawal_validator_index.0)
+    }
+    fn historical_summaries_raw(&self) -> Option<Vec<([u8; 32], [u8; 32])>> {
+        Some(
+            self.historical_summaries
+                .iter()
+                .map(|s| {
+                    (
+                        s.block_summary_root.into_inner(),
+                        s.state_summary_root.into_inner(),
+                    )
+                })
+                .collect(),
+        )
     }
 }
 

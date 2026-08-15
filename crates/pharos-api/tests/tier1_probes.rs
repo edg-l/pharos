@@ -172,6 +172,25 @@ impl ChainStateApi<MainnetEthSpec> for MockChain {
             "regen not available in mock".into(),
         ))
     }
+
+    fn fork_choice_dump(&self) -> Result<serde_json::Value, pharos_api::ApiError> {
+        Ok(serde_json::json!({
+            "justified_checkpoint": {"epoch": "0", "root": "0x0000000000000000000000000000000000000000000000000000000000000000"},
+            "finalized_checkpoint": {"epoch": "0", "root": "0x0000000000000000000000000000000000000000000000000000000000000000"},
+            "fork_choice_nodes": [],
+        }))
+    }
+
+    fn fork_choice_heads(&self) -> Result<serde_json::Value, pharos_api::ApiError> {
+        Ok(serde_json::json!({ "data": [] }))
+    }
+
+    fn state_to_json(
+        &self,
+        state: <MainnetEthSpec as pharos_types::EthSpec>::BeaconState,
+    ) -> Result<serde_json::Value, pharos_api::ApiError> {
+        pharos_api::beacon_state_to_json_full::<MainnetEthSpec>(state)
+    }
 }
 
 /// A minimal mock that delegates everything to `MockChain` but overrides
@@ -272,6 +291,21 @@ impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
         target: RegenTarget,
     ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, pharos_api::ApiError> {
         self.inner.regenerate_state(target)
+    }
+
+    fn fork_choice_dump(&self) -> Result<serde_json::Value, pharos_api::ApiError> {
+        self.inner.fork_choice_dump()
+    }
+
+    fn fork_choice_heads(&self) -> Result<serde_json::Value, pharos_api::ApiError> {
+        self.inner.fork_choice_heads()
+    }
+
+    fn state_to_json(
+        &self,
+        state: <MainnetEthSpec as pharos_types::EthSpec>::BeaconState,
+    ) -> Result<serde_json::Value, pharos_api::ApiError> {
+        self.inner.state_to_json(state)
     }
 }
 

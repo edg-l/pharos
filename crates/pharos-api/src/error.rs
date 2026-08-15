@@ -15,6 +15,14 @@ pub enum ApiError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    /// 401 — missing or malformed Authorization header.
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
+    /// 403 — Authorization header present but token is invalid.
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     /// 404 — block/state/validator not found.
     #[error("Not found: {0}")]
     NotFound(String),
@@ -43,6 +51,8 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, msg) = match &self {
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.as_str()),
+            ApiError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m.as_str()),
+            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m.as_str()),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m.as_str()),
             ApiError::NotAcceptable(m) => (StatusCode::NOT_ACCEPTABLE, m.as_str()),
             ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m.as_str()),

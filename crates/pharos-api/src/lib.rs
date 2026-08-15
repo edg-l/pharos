@@ -3,6 +3,7 @@
 //! Implements the OpenAPI surface defined in `beacon-APIs/`. Built on
 //! `axum`. Endpoints under `/eth/v1`, `/eth/v2`, ... including SSE streams.
 
+pub mod auth;
 pub mod dto;
 pub mod error;
 pub mod events;
@@ -17,6 +18,9 @@ pub mod state;
 
 pub use error::ApiError;
 pub use events::{ApiEvent, EventBus, KnownTopic};
-pub use router::build_router;
-pub use server::serve;
-pub use state::{ApiState, ChainStateApi, NodeChainState, NodeIdentityCache, RegenFn, RegenTarget};
+pub use router::{build_router, build_router_with_auth};
+pub use server::{serve, serve_with_auth};
+pub use state::{
+    ApiState, ChainStateApi, NodeChainState, NodeIdentityCache, RegenFn, RegenTarget,
+    beacon_state_to_json_full,
+};

@@ -20,11 +20,366 @@ use pharos_types::{
     phase0::{BeaconBlockHeader, Checkpoint, Root, Slot},
     views::SignedBeaconBlockView as _,
 };
-use pharos_utils::BLSSignature;
+use pharos_utils::{BLSSignature, Uint256};
+use serde_json::Value as JsonValue;
 
 use crate::dto::block::{BlockApiSerializer, SignedBlockForApi};
 use crate::error::ApiError;
 use crate::events::EventBus;
+
+// ── Serialization helpers ─────────────────────────────────────────────────────
+
+fn hex(b: &[u8]) -> String {
+    format!("0x{}", ::hex::encode(b))
+}
+
+fn q(v: u64) -> String {
+    v.to_string()
+}
+
+/// Serialize a `BeaconState` to a complete `serde_json::Value` with all
+/// spec-required per-fork fields.
+///
+/// Dispatches on the fork variant to include:
+/// - All forks: `genesis_time`, `genesis_validators_root`, `slot`, `fork`,
+///   `latest_block_header`, `block_roots`, `state_roots`, `historical_roots`,
+///   `eth1_data`, `eth1_data_votes`, `eth1_deposit_index`, `validators`,
+///   `balances`, `randao_mixes`, `slashings`, `justification_bits`,
+///   `previous_justified_checkpoint`, `current_justified_checkpoint`,
+///   `finalized_checkpoint`.
+/// - Phase0: `previous_epoch_attestations`, `current_epoch_attestations`.
+/// - Altair+: `previous_epoch_participation`, `current_epoch_participation`,
+///   `inactivity_scores`, `current_sync_committee`, `next_sync_committee`.
+/// - Bellatrix+: `latest_execution_payload_header`.
+/// - Capella+: `next_withdrawal_index`, `next_withdrawal_validator_index`,
+///   `historical_summaries`.
+///
+/// The caller must clone the state out from under any read-lock before calling
+/// this function, as serialization of large lists can be expensive.
+pub fn beacon_state_to_json_full<E: EthSpec>(state: E::BeaconState) -> Result<JsonValue, ApiError> {
+    use pharos_types::BeaconStateView;
+    use pharos_types::views::ForkVariant;
+
+    // Build common fields using BeaconStateView accessors.
+    let fork = state.fork();
+    let lbh = state.latest_block_header();
+    let prev_just = state.previous_justified_checkpoint();
+    let curr_just = state.current_justified_checkpoint();
+    let fin_cp = state.finalized_checkpoint();
+    let eth1 = state.eth1_data();
+
+    let validators_json: Vec<JsonValue> = state
+        .validators_iter()
+        .map(|v| {
+            serde_json::json!({
+                "pubkey": hex(v.pubkey.as_slice()),
+                "withdrawal_credentials": hex(v.withdrawal_credentials.as_slice()),
+                "effective_balance": q(v.effective_balance.0),
+                "slashed": v.slashed,
+                "activation_eligibility_epoch": q(v.activation_eligibility_epoch.0),
+                "activation_epoch": q(v.activation_epoch.0),
+                "exit_epoch": q(v.exit_epoch.0),
+                "withdrawable_epoch": q(v.withdrawable_epoch.0),
+            })
+        })
+        .collect();
+
+    let balances_json: Vec<JsonValue> = state
+        .balances()
+        .iter()
+        .map(|g| JsonValue::String(q(g.0)))
+        .collect();
+    let block_roots_json: Vec<JsonValue> = state
+        .block_roots()
+        .iter()
+        .map(|r| JsonValue::String(hex(r.as_slice())))
+        .collect();
+    let state_roots_json: Vec<JsonValue> = state
+        .state_roots()
+        .iter()
+        .map(|r| JsonValue::String(hex(r.as_slice())))
+        .collect();
+    let randao_mixes_json: Vec<JsonValue> = state
+        .randao_mixes()
+        .iter()
+        .map(|h| JsonValue::String(hex(h.as_slice())))
+        .collect();
+    let slashings_json: Vec<JsonValue> = state
+        .slashings()
+        .iter()
+        .map(|g| JsonValue::String(q(g.0)))
+        .collect();
+    let eth1_votes_json: Vec<JsonValue> = state
+        .eth1_data_votes()
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "deposit_root": hex(e.deposit_root.as_slice()),
+                "deposit_count": q(e.deposit_count),
+                "block_hash": hex(e.block_hash.as_slice()),
+            })
+        })
+        .collect();
+    let historical_roots_json: Vec<JsonValue> = state
+        .historical_roots()
+        .iter()
+        .map(|r| JsonValue::String(hex(r.as_slice())))
+        .collect();
+    let justification_bits_hex = hex(&state.justification_bits_bytes());
+
+    let mut m = serde_json::Map::new();
+    m.insert(
+        "genesis_time".into(),
+        JsonValue::String(q(state.genesis_time())),
+    );
+    m.insert(
+        "genesis_validators_root".into(),
+        JsonValue::String(hex(state.genesis_validators_root().as_slice())),
+    );
+    m.insert("slot".into(), JsonValue::String(q(state.slot().0)));
+    m.insert(
+        "fork".into(),
+        serde_json::json!({
+            "previous_version": hex(fork.previous_version.as_slice()),
+            "current_version": hex(fork.current_version.as_slice()),
+            "epoch": q(fork.epoch.0),
+        }),
+    );
+    m.insert(
+        "latest_block_header".into(),
+        serde_json::json!({
+            "slot": q(lbh.slot.0),
+            "proposer_index": q(lbh.proposer_index.0),
+            "parent_root": hex(lbh.parent_root.as_slice()),
+            "state_root": hex(lbh.state_root.as_slice()),
+            "body_root": hex(lbh.body_root.as_slice()),
+        }),
+    );
+    m.insert("block_roots".into(), JsonValue::Array(block_roots_json));
+    m.insert("state_roots".into(), JsonValue::Array(state_roots_json));
+    m.insert(
+        "historical_roots".into(),
+        JsonValue::Array(historical_roots_json),
+    );
+    m.insert(
+        "eth1_data".into(),
+        serde_json::json!({
+            "deposit_root": hex(eth1.deposit_root.as_slice()),
+            "deposit_count": q(eth1.deposit_count),
+            "block_hash": hex(eth1.block_hash.as_slice()),
+        }),
+    );
+    m.insert("eth1_data_votes".into(), JsonValue::Array(eth1_votes_json));
+    m.insert(
+        "eth1_deposit_index".into(),
+        JsonValue::String(q(state.eth1_deposit_index_u64())),
+    );
+    m.insert("validators".into(), JsonValue::Array(validators_json));
+    m.insert("balances".into(), JsonValue::Array(balances_json));
+    m.insert("randao_mixes".into(), JsonValue::Array(randao_mixes_json));
+    m.insert("slashings".into(), JsonValue::Array(slashings_json));
+    m.insert(
+        "justification_bits".into(),
+        JsonValue::String(justification_bits_hex),
+    );
+    m.insert(
+        "previous_justified_checkpoint".into(),
+        serde_json::json!({
+            "epoch": q(prev_just.epoch.0),
+            "root": hex(prev_just.root.as_slice()),
+        }),
+    );
+    m.insert(
+        "current_justified_checkpoint".into(),
+        serde_json::json!({
+            "epoch": q(curr_just.epoch.0),
+            "root": hex(curr_just.root.as_slice()),
+        }),
+    );
+    m.insert(
+        "finalized_checkpoint".into(),
+        serde_json::json!({
+            "epoch": q(fin_cp.epoch.0),
+            "root": hex(fin_cp.root.as_slice()),
+        }),
+    );
+
+    // Fork-specific fields via BeaconStateView accessors.
+    let fork_variant = state.fork_variant();
+    match fork_variant {
+        ForkVariant::Phase0 => {
+            // Phase0: pending attestations lists.
+            let prev_atts = state.previous_epoch_attestations_raw().unwrap_or_default();
+            let curr_atts = state.current_epoch_attestations_raw().unwrap_or_default();
+            m.insert(
+                "previous_epoch_attestations".into(),
+                JsonValue::Array(prev_atts.into_iter().map(pending_att_raw_to_json).collect()),
+            );
+            m.insert(
+                "current_epoch_attestations".into(),
+                JsonValue::Array(curr_atts.into_iter().map(pending_att_raw_to_json).collect()),
+            );
+        }
+        ForkVariant::Altair | ForkVariant::Bellatrix | ForkVariant::Capella => {
+            // Altair+: participation flags and inactivity scores.
+            let prev_participation: Vec<JsonValue> = state
+                .previous_epoch_participation_u8s()
+                .into_iter()
+                .map(|f| JsonValue::String(q(f as u64)))
+                .collect();
+            let curr_participation: Vec<JsonValue> = state
+                .current_epoch_participation_u8s()
+                .into_iter()
+                .map(|f| JsonValue::String(q(f as u64)))
+                .collect();
+            let inactivity: Vec<JsonValue> = state
+                .inactivity_scores_u64s()
+                .into_iter()
+                .map(|s| JsonValue::String(q(s)))
+                .collect();
+            m.insert(
+                "previous_epoch_participation".into(),
+                JsonValue::Array(prev_participation),
+            );
+            m.insert(
+                "current_epoch_participation".into(),
+                JsonValue::Array(curr_participation),
+            );
+            m.insert("inactivity_scores".into(), JsonValue::Array(inactivity));
+
+            // Altair+: sync committees (pubkeys from existing accessor + aggregate from new one).
+            if let (Some((curr_pks, next_pks)), Some((curr_agg, next_agg))) = (
+                state.sync_committee_pubkeys(),
+                state.sync_committee_aggregate_pubkeys(),
+            ) {
+                let curr_pk_json: Vec<JsonValue> = curr_pks
+                    .iter()
+                    .map(|pk| JsonValue::String(hex(pk.as_slice())))
+                    .collect();
+                let next_pk_json: Vec<JsonValue> = next_pks
+                    .iter()
+                    .map(|pk| JsonValue::String(hex(pk.as_slice())))
+                    .collect();
+                m.insert(
+                    "current_sync_committee".into(),
+                    serde_json::json!({
+                        "pubkeys": curr_pk_json,
+                        "aggregate_pubkey": hex(curr_agg.as_slice()),
+                    }),
+                );
+                m.insert(
+                    "next_sync_committee".into(),
+                    serde_json::json!({
+                        "pubkeys": next_pk_json,
+                        "aggregate_pubkey": hex(next_agg.as_slice()),
+                    }),
+                );
+            }
+
+            // Bellatrix+: execution payload header.
+            if let Some(eph) = state.execution_payload_header_raw() {
+                // Build base EPH object (bellatrix fields).
+                let withdrawals_root = state.execution_payload_withdrawals_root();
+                let mut eph_map = serde_json::Map::new();
+                eph_map.insert(
+                    "parent_hash".into(),
+                    JsonValue::String(hex(&eph.parent_hash)),
+                );
+                eph_map.insert(
+                    "fee_recipient".into(),
+                    JsonValue::String(hex(&eph.fee_recipient)),
+                );
+                eph_map.insert("state_root".into(), JsonValue::String(hex(&eph.state_root)));
+                eph_map.insert(
+                    "receipts_root".into(),
+                    JsonValue::String(hex(&eph.receipts_root)),
+                );
+                eph_map.insert("logs_bloom".into(), JsonValue::String(hex(&eph.logs_bloom)));
+                eph_map.insert(
+                    "prev_randao".into(),
+                    JsonValue::String(hex(&eph.prev_randao)),
+                );
+                eph_map.insert(
+                    "block_number".into(),
+                    JsonValue::String(q(eph.block_number)),
+                );
+                eph_map.insert("gas_limit".into(), JsonValue::String(q(eph.gas_limit)));
+                eph_map.insert("gas_used".into(), JsonValue::String(q(eph.gas_used)));
+                eph_map.insert("timestamp".into(), JsonValue::String(q(eph.timestamp)));
+                eph_map.insert("extra_data".into(), JsonValue::String(hex(&eph.extra_data)));
+                // base_fee_per_gas: Uint256 as decimal string via to_le_bytes → Uint256 → Display.
+                let bfpg = Uint256::from_le_bytes(eph.base_fee_per_gas_le);
+                eph_map.insert(
+                    "base_fee_per_gas".into(),
+                    JsonValue::String(bfpg.to_string()),
+                );
+                eph_map.insert("block_hash".into(), JsonValue::String(hex(&eph.block_hash)));
+                eph_map.insert(
+                    "transactions_root".into(),
+                    JsonValue::String(hex(&eph.transactions_root)),
+                );
+                if let Some(wr) = withdrawals_root {
+                    eph_map.insert("withdrawals_root".into(), JsonValue::String(hex(&wr)));
+                }
+                m.insert(
+                    "latest_execution_payload_header".into(),
+                    JsonValue::Object(eph_map),
+                );
+            }
+
+            // Capella+: withdrawal index, validator index, historical summaries.
+            if let Some(nwi) = state.next_withdrawal_index_u64() {
+                m.insert("next_withdrawal_index".into(), JsonValue::String(q(nwi)));
+            }
+            if let Some(nwv) = state.next_withdrawal_validator_index_raw() {
+                m.insert(
+                    "next_withdrawal_validator_index".into(),
+                    JsonValue::String(q(nwv)),
+                );
+            }
+            if let Some(summaries) = state.historical_summaries_raw() {
+                let summaries_json: Vec<JsonValue> = summaries
+                    .into_iter()
+                    .map(|(bsr, ssr)| {
+                        serde_json::json!({
+                            "block_summary_root": hex(&bsr),
+                            "state_summary_root": hex(&ssr),
+                        })
+                    })
+                    .collect();
+                m.insert(
+                    "historical_summaries".into(),
+                    JsonValue::Array(summaries_json),
+                );
+            }
+        }
+    }
+
+    Ok(JsonValue::Object(m))
+}
+
+// ── Internal JSON helpers ──────────────────────────────────────────────────────
+
+fn pending_att_raw_to_json(pa: pharos_types::PendingAttestationRaw) -> JsonValue {
+    serde_json::json!({
+        "aggregation_bits": hex(&pa.aggregation_bits_ssz),
+        "data": {
+            "slot": q(pa.data_slot),
+            "index": q(pa.data_index),
+            "beacon_block_root": hex(&pa.data_beacon_block_root),
+            "source": {
+                "epoch": q(pa.data_source_epoch),
+                "root": hex(&pa.data_source_root),
+            },
+            "target": {
+                "epoch": q(pa.data_target_epoch),
+                "root": hex(&pa.data_target_root),
+            },
+        },
+        "inclusion_delay": q(pa.inclusion_delay),
+        "proposer_index": q(pa.proposer_index),
+    })
+}
 
 // ── RegenTarget ────────────────────────────────────────────────────────────────
 
@@ -150,6 +505,40 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
     ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)>;
 
     // ── Replay-on-read (Phase 2) ───────────────────────────────────────────────
+
+    // ── Debug namespace (Phase 5) ──────────────────────────────────────────────
+
+    /// Return a fork-choice dump for `GET /eth/v1/debug/fork_choice`.
+    ///
+    /// Returns the justified/finalized checkpoints and a list of all in-memory
+    /// fork-choice blocks as a pre-serialised `serde_json::Value`.
+    ///
+    /// Mock implementations may return a minimal `{"justified_checkpoint":...,
+    /// "finalized_checkpoint":..., "fork_choice_nodes":[]}` object.
+    fn fork_choice_dump(&self) -> Result<JsonValue, ApiError>;
+
+    /// Serialize a `BeaconState` to a `serde_json::Value` for
+    /// `GET /eth/v2/debug/beacon/states/{state_id}`.
+    ///
+    /// Implementations must produce a COMPLETE fork-tagged state object
+    /// covering all spec-required per-fork fields (see `beacon_state_to_json_full`).
+    ///
+    /// `NodeChainState` calls `beacon_state_to_json_full` after cloning the state
+    /// out from under the fork-choice read-lock to avoid holding the lock during
+    /// large-list serialization.
+    ///
+    /// Mock implementations in tests should call `beacon_state_to_json_full`
+    /// or return a simplified object that satisfies the test's assertions.
+    fn state_to_json(&self, state: E::BeaconState) -> Result<JsonValue, ApiError>;
+
+    /// Return the fork-choice leaf nodes for `GET /eth/v2/debug/beacon/heads`.
+    ///
+    /// A leaf node is a block whose root is not the parent of any other block in
+    /// the in-memory store (i.e. it has no children).  Returns a
+    /// pre-serialised `serde_json::Value` with a `data` array.
+    ///
+    /// Mock implementations may return `{"data":[]}`.
+    fn fork_choice_heads(&self) -> Result<JsonValue, ApiError>;
 
     /// Regenerate (or fetch) a historical state via the `StateRegenService`.
     ///
@@ -496,6 +885,13 @@ where
         }
     }
 
+    fn state_to_json(&self, state: E::BeaconState) -> Result<JsonValue, ApiError> {
+        // The state is already cloned by the caller (debug handler clones it out
+        // before calling state_to_json, so the fork-choice read-lock is not held
+        // during serialization of large lists).
+        beacon_state_to_json_full::<E>(state)
+    }
+
     fn block_by_root_for_api(&self, root: Root) -> Result<Option<SignedBlockForApi>, ApiError> {
         // Fetch from the hot CF first; fall through to the cold CF for finalized
         // blocks migrated by the Phase-3 freezer.  A genuine DB read error is
@@ -533,6 +929,106 @@ where
         }
         // All four forks are exhaustive — reaching here indicates a new unknown fork.
         unreachable!("unknown fork variant in SignedBeaconBlock — update block_by_root_for_api")
+    }
+
+    fn fork_choice_dump(&self) -> Result<JsonValue, ApiError> {
+        use pharos_fork_choice::get_head::get_weight;
+        use pharos_types::{PayloadStatus, views::BeaconBlockView};
+
+        let fc = self.fork_choice.read();
+
+        let justified = serde_json::json!({
+            "epoch": fc.justified_checkpoint.epoch.0.to_string(),
+            "root": format!("0x{}", hex::encode(fc.justified_checkpoint.root.as_slice())),
+        });
+        let finalized = serde_json::json!({
+            "epoch": fc.finalized_checkpoint.epoch.0.to_string(),
+            "root": format!("0x{}", hex::encode(fc.finalized_checkpoint.root.as_slice())),
+        });
+
+        let nodes: Vec<serde_json::Value> = fc
+            .blocks
+            .iter()
+            .map(|(root, block)| {
+                let validity = match fc.payload_statuses.get(root) {
+                    Some(PayloadStatus::Invalid) => "invalid",
+                    Some(PayloadStatus::NotValidated) => "optimistic",
+                    _ => "valid",
+                };
+                // Use the unrealized justification for this block's justified/finalized
+                // epochs when available, falling back to the store checkpoints.
+                let (just_epoch, fin_epoch) = fc
+                    .unrealized_justifications
+                    .get(root)
+                    .map(|cp| (cp.epoch.0, fc.unrealized_finalized_checkpoint.epoch.0))
+                    .unwrap_or((
+                        fc.justified_checkpoint.epoch.0,
+                        fc.finalized_checkpoint.epoch.0,
+                    ));
+
+                // Fix 4: real LMD-GHOST vote weight.
+                let weight = get_weight::<E>(&fc, *root).to_string();
+
+                // Fix 5: real execution block hash for Bellatrix+ blocks;
+                // Phase0/Altair stay zero.
+                use pharos_types::views::BeaconBlockBodyView as _;
+                let exec_block_hash_hex = block
+                    .body()
+                    .execution_block_hash()
+                    .map(|h| format!("0x{}", hex::encode(h)))
+                    .unwrap_or_else(|| format!("0x{}", "0".repeat(64)));
+
+                serde_json::json!({
+                    "slot": block.slot().0.to_string(),
+                    "block_root": format!("0x{}", hex::encode(root.as_slice())),
+                    "parent_root": format!("0x{}", hex::encode(block.parent_root().as_slice())),
+                    "justified_epoch": just_epoch.to_string(),
+                    "finalized_epoch": fin_epoch.to_string(),
+                    "weight": weight,
+                    "validity": validity,
+                    "execution_block_hash": exec_block_hash_hex,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "justified_checkpoint": justified,
+            "finalized_checkpoint": finalized,
+            "fork_choice_nodes": nodes,
+        }))
+    }
+
+    fn fork_choice_heads(&self) -> Result<JsonValue, ApiError> {
+        use pharos_types::{PayloadStatus, views::BeaconBlockView};
+
+        let fc = self.fork_choice.read();
+
+        // Collect all parent roots of known blocks.
+        let parent_roots: std::collections::HashSet<Root> =
+            fc.blocks.values().map(|b| b.parent_root()).collect();
+
+        // Leaf nodes = blocks whose own root is NOT a parent of any other block.
+        let is_optimistic_head = |root: &Root| {
+            matches!(
+                fc.payload_statuses.get(root),
+                Some(PayloadStatus::NotValidated)
+            )
+        };
+
+        let heads: Vec<serde_json::Value> = fc
+            .blocks
+            .iter()
+            .filter(|(root, _)| !parent_roots.contains(*root))
+            .map(|(root, block)| {
+                serde_json::json!({
+                    "root": format!("0x{}", hex::encode(root.as_slice())),
+                    "slot": block.slot().0.to_string(),
+                    "execution_optimistic": is_optimistic_head(root),
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({ "data": heads }))
     }
 }
 

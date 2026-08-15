@@ -1,21 +1,24 @@
-//! Beacon API router: wires all Phase-1, Phase-2, Phase-3, and Phase-4 routes.
+//! Beacon API router: wires all Phase-1 through Phase-5 routes.
 
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use pharos_types::EthSpec;
 
+use crate::auth::validator_auth_layer;
 use crate::handlers::beacon_basic;
 use crate::handlers::blocks as blocks_handlers;
 use crate::handlers::config as config_handlers;
 use crate::handlers::config_extra;
+use crate::handlers::debug as debug_handlers;
 use crate::handlers::events as events_handlers;
 use crate::handlers::node;
 use crate::handlers::states;
+use crate::handlers::validator_duties;
 use crate::state::ApiState;
 
-/// Build the Beacon API router (Phase 1 + Phase 2 + Phase 3 + Phase 4).
+/// Build the Beacon API router (Phase 1 through Phase 5).
 ///
 /// Routes wired:
 /// **Phase 1 — Tier-1 probes**
@@ -49,7 +52,47 @@ use crate::state::ApiState;
 ///
 /// **Phase 4 — SSE event stream**
 /// - `GET /eth/v1/events`
+///
+/// **Phase 5 — Validator-read endpoints + debug namespace**
+/// - `GET  /eth/v1/validator/duties/proposer/{epoch}`   (auth-gated)
+/// - `POST /eth/v1/validator/duties/attester/{epoch}`   (auth-gated)
+/// - `POST /eth/v1/validator/duties/sync/{epoch}`       (auth-gated)
+/// - `GET  /eth/v1/debug/fork_choice`
+/// - `GET  /eth/v2/debug/beacon/heads`
+/// - `GET  /eth/v2/debug/beacon/states/{state_id}`
+///
+/// The validator sub-router has `validator_auth_layer` applied; `None` means
+/// no auth (default).  The debug routes are unauthenticated.
 pub fn build_router<E: EthSpec>(state: Arc<ApiState<E>>) -> Router {
+    build_router_with_auth::<E>(state, None)
+}
+
+/// Build the router with an optional validator-API bearer token.
+///
+/// When `validator_token` is `Some(t)`, requests to `/eth/v1/validator/*`
+/// must carry `Authorization: Bearer <t>`; missing/wrong token → 401/403.
+/// When `None`, the validator routes are unauthenticated (default).
+pub fn build_router_with_auth<E: EthSpec>(
+    state: Arc<ApiState<E>>,
+    validator_token: Option<String>,
+) -> Router {
+    // ── Validator sub-router (auth-gated) ─────────────────────────────────
+    let validator_router = Router::new()
+        .route(
+            "/eth/v1/validator/duties/proposer/{epoch}",
+            get(validator_duties::get_proposer_duties::<E>),
+        )
+        .route(
+            "/eth/v1/validator/duties/attester/{epoch}",
+            post(validator_duties::post_attester_duties::<E>),
+        )
+        .route(
+            "/eth/v1/validator/duties/sync/{epoch}",
+            post(validator_duties::post_sync_duties::<E>),
+        )
+        .layer(validator_auth_layer(validator_token))
+        .with_state(Arc::clone(&state));
+
     Router::new()
         // Node namespace (Phase 1)
         .route("/eth/v1/node/identity", get(node::get_identity::<E>))
@@ -136,5 +179,20 @@ pub fn build_router<E: EthSpec>(state: Arc<ApiState<E>>) -> Router {
         )
         // SSE event stream (Phase 4)
         .route("/eth/v1/events", get(events_handlers::get_events::<E>))
-        .with_state(state)
+        // Debug namespace (Phase 5)
+        .route(
+            "/eth/v1/debug/fork_choice",
+            get(debug_handlers::get_fork_choice::<E>),
+        )
+        .route(
+            "/eth/v2/debug/beacon/heads",
+            get(debug_handlers::get_beacon_heads::<E>),
+        )
+        .route(
+            "/eth/v2/debug/beacon/states/{state_id}",
+            get(debug_handlers::get_debug_state::<E>),
+        )
+        .with_state(Arc::clone(&state))
+        // Merge validator sub-router (has its own auth layer + state)
+        .merge(validator_router)
 }

@@ -79,6 +79,14 @@ pub trait BeaconBlockBodyView {
     fn attestations(&self) -> &[Self::Attestation];
     fn deposits(&self) -> &[Self::Deposit];
     fn voluntary_exits(&self) -> &[SignedVoluntaryExit];
+
+    /// Return the execution payload `block_hash` for Bellatrix+ bodies.
+    ///
+    /// Phase0 and Altair bodies return `None` (no execution payload).
+    /// Default impl returns `None`; overridden in bellatrix/capella body impls.
+    fn execution_block_hash(&self) -> Option<[u8; 32]> {
+        None
+    }
 }
 
 // ── BeaconBlockView ───────────────────────────────────────────────────────────
@@ -133,6 +141,48 @@ pub trait LightClientOptimisticUpdateView {
     fn optimistic_signature_slot(&self) -> u64;
 }
 
+// ── PendingAttestationRaw ─────────────────────────────────────────────────────
+
+/// Raw field data from a `PendingAttestation`, avoiding const-generic type params.
+pub struct PendingAttestationRaw {
+    /// SSZ-encoded `aggregation_bits` Bitlist bytes (includes sentinel bit).
+    pub aggregation_bits_ssz: Vec<u8>,
+    pub data_slot: u64,
+    pub data_index: u64,
+    pub data_beacon_block_root: [u8; 32],
+    pub data_source_epoch: u64,
+    pub data_source_root: [u8; 32],
+    pub data_target_epoch: u64,
+    pub data_target_root: [u8; 32],
+    pub inclusion_delay: u64,
+    pub proposer_index: u64,
+}
+
+// ── ExecutionPayloadHeaderRaw ─────────────────────────────────────────────────
+
+/// Raw field data from a `ExecutionPayloadHeader`, usable without a type parameter.
+///
+/// Used by `BeaconStateView::execution_payload_header_raw` so the debug-state
+/// JSON serializer in `pharos-api` can produce the header object without
+/// naming the const-generic header type.
+pub struct ExecutionPayloadHeaderRaw {
+    pub parent_hash: [u8; 32],
+    pub fee_recipient: [u8; 20],
+    pub state_root: [u8; 32],
+    pub receipts_root: [u8; 32],
+    pub logs_bloom: Vec<u8>,
+    pub prev_randao: [u8; 32],
+    pub block_number: u64,
+    pub gas_limit: u64,
+    pub gas_used: u64,
+    pub timestamp: u64,
+    pub extra_data: Vec<u8>,
+    /// Little-endian 32-byte representation of `base_fee_per_gas` (Uint256).
+    pub base_fee_per_gas_le: [u8; 32],
+    pub block_hash: [u8; 32],
+    pub transactions_root: [u8; 32],
+}
+
 // ── BeaconStateView ───────────────────────────────────────────────────────────
 
 /// Read-only accessors for `BeaconState` fields.
@@ -170,6 +220,12 @@ pub trait BeaconStateView {
     fn randao_mix_at(&self, idx: usize) -> Option<Hash256>;
     fn slashings(&self) -> &[Gwei];
     fn eth1_data(&self) -> &Eth1Data;
+    /// `eth1_data_votes` as a materialized vec; needed by the debug-state JSON serializer.
+    fn eth1_data_votes(&self) -> Vec<Eth1Data>;
+    fn eth1_deposit_index_u64(&self) -> u64;
+    fn historical_roots(&self) -> Vec<Root>;
+    /// SSZ-encoded `justification_bits` bitvector bytes (for 0x-prefixed hex output).
+    fn justification_bits_bytes(&self) -> Vec<u8>;
     fn previous_justified_checkpoint(&self) -> &Checkpoint;
     fn current_justified_checkpoint(&self) -> &Checkpoint;
     fn finalized_checkpoint(&self) -> &Checkpoint;
@@ -186,6 +242,74 @@ pub trait BeaconStateView {
     /// data without requiring the API layer to match on concrete enum variants.
     /// Default impl returns `None`; overridden on Altair/Bellatrix/Capella states.
     fn sync_committee_pubkeys(&self) -> Option<SyncCommitteePubkeys> {
+        None
+    }
+
+    // ── Per-fork data accessors for the debug-state JSON serializer ───────────
+    //
+    // Default implementations return empty/None (Phase0 baseline).
+    // Altair/Bellatrix/Capella states override as appropriate.
+
+    /// Altair+ `previous_epoch_participation` as a vec of u8 flag bytes.
+    /// Phase0 returns an empty vec.
+    fn previous_epoch_participation_u8s(&self) -> Vec<u8> {
+        vec![]
+    }
+
+    /// Altair+ `current_epoch_participation` as a vec of u8 flag bytes.
+    /// Phase0 returns an empty vec.
+    fn current_epoch_participation_u8s(&self) -> Vec<u8> {
+        vec![]
+    }
+
+    /// Altair+ `inactivity_scores` as a vec of u64 values.
+    /// Phase0 returns an empty vec.
+    fn inactivity_scores_u64s(&self) -> Vec<u64> {
+        vec![]
+    }
+
+    /// Altair+ aggregate pubkeys for current and next sync committee
+    /// as raw 48-byte arrays, or `None` for Phase0.
+    fn sync_committee_aggregate_pubkeys(&self) -> Option<([u8; 48], [u8; 48])> {
+        None
+    }
+
+    /// Phase0 `previous_epoch_attestations` as raw structs.
+    ///
+    /// Returns `Some` only for Phase0 states; Altair+ returns `None`.
+    fn previous_epoch_attestations_raw(&self) -> Option<Vec<PendingAttestationRaw>> {
+        None
+    }
+
+    /// Phase0 `current_epoch_attestations` as raw structs.
+    fn current_epoch_attestations_raw(&self) -> Option<Vec<PendingAttestationRaw>> {
+        None
+    }
+
+    /// Bellatrix+ execution payload header fields as raw Rust primitives.
+    ///
+    /// Returns `None` for Phase0/Altair states.
+    fn execution_payload_header_raw(&self) -> Option<ExecutionPayloadHeaderRaw> {
+        None
+    }
+
+    /// Capella+ `next_withdrawal_index`, or `None` for earlier forks.
+    fn next_withdrawal_index_u64(&self) -> Option<u64> {
+        None
+    }
+
+    /// Capella+ `next_withdrawal_validator_index` as a u64, or `None`.
+    fn next_withdrawal_validator_index_raw(&self) -> Option<u64> {
+        None
+    }
+
+    /// Capella+ `withdrawals_root` on the execution payload header, or `None`.
+    fn execution_payload_withdrawals_root(&self) -> Option<[u8; 32]> {
+        None
+    }
+
+    /// Capella+ `historical_summaries` as pairs of (block_summary_root, state_summary_root).
+    fn historical_summaries_raw(&self) -> Option<Vec<([u8; 32], [u8; 32])>> {
         None
     }
 
@@ -377,6 +501,19 @@ impl<
     fn eth1_data(&self) -> &Eth1Data {
         &self.eth1_data
     }
+    fn eth1_data_votes(&self) -> Vec<Eth1Data> {
+        self.eth1_data_votes.iter().cloned().collect()
+    }
+    fn eth1_deposit_index_u64(&self) -> u64 {
+        self.eth1_deposit_index
+    }
+    fn historical_roots(&self) -> Vec<Root> {
+        self.historical_roots.iter().cloned().collect()
+    }
+    fn justification_bits_bytes(&self) -> Vec<u8> {
+        use pharos_ssz::Encode as _;
+        self.justification_bits.as_ssz_bytes()
+    }
     fn previous_justified_checkpoint(&self) -> &Checkpoint {
         &self.previous_justified_checkpoint
     }
@@ -391,6 +528,48 @@ impl<
     }
     fn into_tree_backend(self) -> Result<Self, SszError> {
         phase0::BeaconState::into_tree_backend(self)
+    }
+
+    fn previous_epoch_attestations_raw(&self) -> Option<Vec<PendingAttestationRaw>> {
+        use pharos_ssz::Encode as _;
+        Some(
+            self.previous_epoch_attestations
+                .iter()
+                .map(|pa| PendingAttestationRaw {
+                    aggregation_bits_ssz: pa.aggregation_bits.as_ssz_bytes(),
+                    data_slot: pa.data.slot.0,
+                    data_index: pa.data.index.0,
+                    data_beacon_block_root: pa.data.beacon_block_root.into_inner(),
+                    data_source_epoch: pa.data.source.epoch.0,
+                    data_source_root: pa.data.source.root.into_inner(),
+                    data_target_epoch: pa.data.target.epoch.0,
+                    data_target_root: pa.data.target.root.into_inner(),
+                    inclusion_delay: pa.inclusion_delay.0,
+                    proposer_index: pa.proposer_index.0,
+                })
+                .collect(),
+        )
+    }
+
+    fn current_epoch_attestations_raw(&self) -> Option<Vec<PendingAttestationRaw>> {
+        use pharos_ssz::Encode as _;
+        Some(
+            self.current_epoch_attestations
+                .iter()
+                .map(|pa| PendingAttestationRaw {
+                    aggregation_bits_ssz: pa.aggregation_bits.as_ssz_bytes(),
+                    data_slot: pa.data.slot.0,
+                    data_index: pa.data.index.0,
+                    data_beacon_block_root: pa.data.beacon_block_root.into_inner(),
+                    data_source_epoch: pa.data.source.epoch.0,
+                    data_source_root: pa.data.source.root.into_inner(),
+                    data_target_epoch: pa.data.target.epoch.0,
+                    data_target_root: pa.data.target.root.into_inner(),
+                    inclusion_delay: pa.inclusion_delay.0,
+                    proposer_index: pa.proposer_index.0,
+                })
+                .collect(),
+        )
     }
 }
 
