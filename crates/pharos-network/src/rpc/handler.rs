@@ -41,11 +41,16 @@ where
                         kind: HandshakeFailKind::ForkDigestMismatch,
                     },
                 );
+                // Peer is on an incompatible fork; transition to Disconnecting
+                // so the dialer's Goodbye tears us down cleanly.
+                peer_manager.on_disconnecting(peer);
                 return RpcResponse::Error {
                     code: 1,
                     message: make_error_message("fork digest mismatch"),
                 };
             }
+            // Fork digest matches: advance inbound peer through the handshake.
+            peer_manager.on_inbound_status(peer, incoming);
             RpcResponse::Status(local)
         }
 
@@ -130,7 +135,7 @@ mod tests {
     use crate::host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict};
     use crate::peer::manager::PeerManager;
     use crate::scoring::NoopScorer;
-    use crate::types::SubnetId;
+    use crate::types::{ConnectionDirection, PeerState, SubnetId};
     use pharos_types::MainnetEthSpec;
     use pharos_types::phase0::primitives::ForkDigest;
     use pharos_types::phase0::{
@@ -263,13 +268,18 @@ mod tests {
         }
     }
 
-    /// A `Status` request with matching fork digest returns `RpcResponse::Status`.
+    /// A `Status` request with matching fork digest returns `RpcResponse::Status`
+    /// and transitions the inbound peer from `Connecting` to `Connected`.
     #[tokio::test]
     async fn status_matching_fork_digest() {
         let fd = Bytes4::from_array([0x01, 0x02, 0x03, 0x04]);
         let host = MockHost::new(fd, 0);
         let mut pm = make_peer_manager();
         let peer = PeerId::random();
+
+        // Register peer as inbound (simulates a remote dial-in).
+        pm.on_connected(peer, ConnectionDirection::Inbound, Vec::new());
+        assert_eq!(pm.peer_state(&peer), Some(PeerState::Connecting));
 
         let incoming = Status {
             fork_digest: fd,
@@ -278,14 +288,22 @@ mod tests {
         let resp = handle_request::<MainnetEthSpec, _, _>(
             &host,
             peer,
-            RpcRequest::Status(incoming),
+            RpcRequest::Status(incoming.clone()),
             &mut pm,
         )
         .await;
         assert!(matches!(resp, RpcResponse::Status(_)));
+
+        // Inbound peer must now be Connected.
+        assert_eq!(
+            pm.peer_state(&peer),
+            Some(PeerState::Connected),
+            "inbound peer must reach Connected after matching Status"
+        );
     }
 
-    /// A `Status` request with mismatching fork digest returns an error.
+    /// A `Status` request with mismatching fork digest returns an error and
+    /// transitions the peer to `Disconnecting`.
     #[tokio::test]
     async fn status_mismatched_fork_digest() {
         let local_fd = Bytes4::from_array([0xAA, 0xBB, 0xCC, 0xDD]);
@@ -293,6 +311,8 @@ mod tests {
         let host = MockHost::new(local_fd, 0);
         let mut pm = make_peer_manager();
         let peer = PeerId::random();
+
+        pm.on_connected(peer, ConnectionDirection::Inbound, Vec::new());
 
         let incoming = Status {
             fork_digest: remote_fd,
@@ -309,5 +329,10 @@ mod tests {
             RpcResponse::Error { code, .. } => assert_eq!(code, 1),
             other => panic!("expected RpcResponse::Error, got: {other:?}"),
         }
+        assert_eq!(
+            pm.peer_state(&peer),
+            Some(PeerState::Disconnecting),
+            "fork-digest mismatch must transition peer to Disconnecting"
+        );
     }
 }

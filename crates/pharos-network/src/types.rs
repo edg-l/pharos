@@ -37,6 +37,27 @@ pub enum ConnectionDirection {
     Inbound,
 }
 
+// ── PeerState ─────────────────────────────────────────────────────────────────
+
+/// Handshake and connection lifecycle state for a peer.
+///
+/// Transitions follow `p2p-interface.md:1352`: the dialing side MUST send
+/// `Status` immediately on connection, so outbound connections move through
+/// `Connecting → Handshaking → Connected`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerState {
+    /// TCP connection established; no messages exchanged yet.
+    Connecting,
+    /// `Status` request sent (outbound) or received (inbound); awaiting reply.
+    Handshaking,
+    /// `Status` exchange complete; peer is ready for use.
+    Connected,
+    /// Local node is closing the connection gracefully (sent `Goodbye`).
+    Disconnecting,
+    /// Peer is banned; all new connections will be rejected.
+    Banned,
+}
+
 // ── PeerInfo ──────────────────────────────────────────────────────────────────
 
 /// Aggregated state for a connected peer.
@@ -56,7 +77,23 @@ pub struct PeerInfo {
     pub last_status: Option<Status>,
     /// Whether the local or remote side initiated the connection.
     pub direction: ConnectionDirection,
+    /// Handshake and connection lifecycle state.
+    pub state: PeerState,
+    /// The peer's last known `MetaData` (populated after GetMetaData exchange).
+    pub metadata: Option<pharos_types::phase0::MetaData>,
 }
+
+// ── Goodbye reason codes ──────────────────────────────────────────────────────
+
+/// Goodbye reason code: peer is on an irrelevant network (different fork).
+///
+/// Per `p2p-interface.md` Goodbye reason codes table: value 2 = IrrelevantNetwork.
+pub const GOODBYE_IRRELEVANT_NETWORK: u64 = 2;
+
+/// Goodbye reason code: fault/error in the peer's behaviour.
+///
+/// Per `p2p-interface.md` Goodbye reason codes table: value 3 = Fault/Error.
+pub const GOODBYE_FAULT_ERROR: u64 = 3;
 
 // ── DisconnectReason ──────────────────────────────────────────────────────────
 

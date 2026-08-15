@@ -9,7 +9,7 @@ use tracing::warn;
 use pharos_types::phase0::Status;
 
 use crate::scoring::{PeerScorer, ScoreEvent};
-use crate::types::{ConnectionDirection, DisconnectReason, PeerInfo};
+use crate::types::{ConnectionDirection, DisconnectReason, PeerInfo, PeerState};
 
 // ── PeerManager ───────────────────────────────────────────────────────────────
 
@@ -59,6 +59,8 @@ impl<S: PeerScorer> PeerManager<S> {
             connected_since: Some(Instant::now()),
             last_status: None,
             direction: dir,
+            state: PeerState::Connecting,
+            metadata: None,
         };
         self.peers.insert(peer_id, info);
         self.scorer.record(peer_id, ScoreEvent::PeerConnected);
@@ -74,6 +76,48 @@ impl<S: PeerScorer> PeerManager<S> {
             .record(peer_id, ScoreEvent::PeerDisconnected { reason });
     }
 
+    /// Transition `peer_id` from `Connecting` → `Handshaking`.
+    ///
+    /// Called immediately before sending (outbound) or after receiving
+    /// (inbound) the initial `Status` request.
+    pub fn on_handshaking(&mut self, peer_id: PeerId) {
+        if let Some(info) = self.peers.get_mut(&peer_id) {
+            info.state = PeerState::Handshaking;
+        } else {
+            warn!(%peer_id, "on_handshaking called for unknown peer");
+        }
+    }
+
+    /// Transition `peer_id` to `Connected` after a successful handshake.
+    pub fn on_handshake_complete(&mut self, peer_id: PeerId) {
+        if let Some(info) = self.peers.get_mut(&peer_id) {
+            info.state = PeerState::Connected;
+        } else {
+            warn!(%peer_id, "on_handshake_complete called for unknown peer");
+        }
+    }
+
+    /// Transition `peer_id` to `Disconnecting` (e.g., mismatched fork digest).
+    pub fn on_disconnecting(&mut self, peer_id: PeerId) {
+        if let Some(info) = self.peers.get_mut(&peer_id) {
+            info.state = PeerState::Disconnecting;
+        } else {
+            warn!(%peer_id, "on_disconnecting called for unknown peer");
+        }
+    }
+
+    /// Handle an inbound `Status` request when the fork digest matches.
+    ///
+    /// Atomically advances state: `Connecting → Handshaking → Connected`
+    /// and records the peer's status. Called by `handle_request` in
+    /// `rpc/handler.rs` for inbound Status exchanges per
+    /// `p2p-interface.md:1352` (both sides MUST send Status).
+    pub fn on_inbound_status(&mut self, peer_id: PeerId, status: Status) {
+        self.on_handshaking(peer_id);
+        self.on_status(peer_id, status);
+        self.on_handshake_complete(peer_id);
+    }
+
     /// Update the cached `Status` for `peer_id`.
     ///
     /// Logs a warning and returns early if the peer is not in the connected
@@ -85,6 +129,37 @@ impl<S: PeerScorer> PeerManager<S> {
                 warn!(%peer_id, "on_status called for unknown peer");
             }
         }
+    }
+
+    /// Update the cached `MetaData` for `peer_id`.
+    pub fn on_metadata(&mut self, peer_id: PeerId, metadata: pharos_types::phase0::MetaData) {
+        match self.peers.get_mut(&peer_id) {
+            Some(info) => info.metadata = Some(metadata),
+            None => {
+                warn!(%peer_id, "on_metadata called for unknown peer");
+            }
+        }
+    }
+
+    /// Returns the stored `MetaData` seq_number for `peer_id`, or `None`.
+    pub fn peer_metadata_seq(&self, peer_id: &PeerId) -> Option<u64> {
+        self.peers
+            .get(peer_id)
+            .and_then(|info| info.metadata.as_ref())
+            .map(|m| m.seq_number)
+    }
+
+    /// Returns an iterator over `PeerId`s that are in `Connected` state.
+    pub fn connected_peers(&self) -> impl Iterator<Item = PeerId> + '_ {
+        self.peers
+            .values()
+            .filter(|info| info.state == PeerState::Connected)
+            .map(|info| info.peer_id)
+    }
+
+    /// Returns the current `PeerState` for `peer_id`, or `None` if unknown.
+    pub fn peer_state(&self, peer_id: &PeerId) -> Option<PeerState> {
+        self.peers.get(peer_id).map(|info| info.state)
     }
 
     // ── Scoring ───────────────────────────────────────────────────────────────
@@ -195,6 +270,92 @@ mod tests {
         assert!(
             prune.is_empty(),
             "NoopScorer never produces prune candidates; wiring test only"
+        );
+    }
+
+    /// Verify the happy-path handshake: Connecting → Handshaking → Connected.
+    ///
+    /// This mirrors what `Network::on_swarm_connection_established` does for
+    /// outbound connections: the peer starts in `Connecting`, moves to
+    /// `Handshaking` when the Status request is sent, then to `Connected`
+    /// after a successful fork-digest match.
+    #[test]
+    fn handshake_connecting_to_connected() {
+        let mut mgr = make_manager();
+        let peer = PeerId::random();
+
+        mgr.on_connected(peer, ConnectionDirection::Outbound, Vec::new());
+        assert_eq!(
+            mgr.peers[&peer].state,
+            PeerState::Connecting,
+            "fresh connection must start in Connecting"
+        );
+
+        mgr.on_handshaking(peer);
+        assert_eq!(
+            mgr.peers[&peer].state,
+            PeerState::Handshaking,
+            "after sending Status must be Handshaking"
+        );
+
+        mgr.on_handshake_complete(peer);
+        assert_eq!(
+            mgr.peers[&peer].state,
+            PeerState::Connected,
+            "after successful Status exchange must be Connected"
+        );
+    }
+
+    /// Verify the inbound handshake path: `Connecting → Handshaking → Connected`
+    /// via the atomic `on_inbound_status` helper.
+    ///
+    /// This covers `p2p-interface.md:1352`: when a peer dials us and sends a
+    /// `Status` request with a matching fork digest, we must advance from
+    /// `Connecting` to `Connected` and record the peer's status.
+    #[test]
+    fn inbound_handshake_connecting_to_connected() {
+        let mut mgr = make_manager();
+        let peer = PeerId::random();
+
+        mgr.on_connected(peer, ConnectionDirection::Inbound, Vec::new());
+        assert_eq!(mgr.peers[&peer].state, PeerState::Connecting);
+
+        let status = Status::default();
+        mgr.on_inbound_status(peer, status.clone());
+
+        assert_eq!(
+            mgr.peers[&peer].state,
+            PeerState::Connected,
+            "on_inbound_status must advance inbound peer to Connected"
+        );
+        assert_eq!(
+            mgr.peers[&peer].last_status.as_ref(),
+            Some(&status),
+            "on_inbound_status must record the peer's status"
+        );
+    }
+
+    /// Verify the fork-digest-mismatch path: Connecting → Handshaking → Disconnecting.
+    ///
+    /// When the peer replies with a different fork digest, the peer manager
+    /// transitions to `Disconnecting` and the network layer sends Goodbye(2).
+    #[test]
+    fn handshake_disconnecting_on_fork_digest_mismatch() {
+        let mut mgr = make_manager();
+        let peer = PeerId::random();
+
+        mgr.on_connected(peer, ConnectionDirection::Outbound, Vec::new());
+        assert_eq!(mgr.peers[&peer].state, PeerState::Connecting);
+
+        mgr.on_handshaking(peer);
+        assert_eq!(mgr.peers[&peer].state, PeerState::Handshaking);
+
+        // Fork digest mismatch detected — move to Disconnecting.
+        mgr.on_disconnecting(peer);
+        assert_eq!(
+            mgr.peers[&peer].state,
+            PeerState::Disconnecting,
+            "fork-digest mismatch must transition peer to Disconnecting"
         );
     }
 }

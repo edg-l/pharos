@@ -16,15 +16,18 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use futures::StreamExt as _;
+use libp2p::core::ConnectedPoint;
 use libp2p::gossipsub::{self, IdentTopic, MessageAcceptance, TopicHash};
 use libp2p::identify;
 use libp2p::identity::Keypair;
 use libp2p::noise;
 use libp2p::ping;
 use libp2p::request_response::{self, OutboundRequestId, ProtocolSupport};
+use libp2p::swarm::ConnectionError;
 use libp2p::{PeerId, Swarm, SwarmBuilder};
 use pharos_ssz::Bitvector;
 use pharos_types::EthSpec;
+use pharos_types::phase0::Status as BeaconStatus;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Interval, interval};
@@ -43,8 +46,9 @@ use crate::host::{GossipVerdict, Host};
 use crate::peer::manager::PeerManager;
 use crate::rpc::handler::handle_request;
 use crate::rpc::types::{RpcRequest, RpcResponse};
-use crate::scoring::{PeerScorer, RpcErrorKind, RpcMethod, ScoreEvent};
+use crate::scoring::{HandshakeFailKind, PeerScorer, RpcErrorKind, RpcMethod, ScoreEvent};
 use crate::topics::GossipTopic;
+use crate::types::{ConnectionDirection, GOODBYE_FAULT_ERROR, GOODBYE_IRRELEVANT_NETWORK};
 
 use behaviour::{PharosBehaviour, PharosBehaviourEvent};
 
@@ -95,6 +99,27 @@ pub struct Network<E: EthSpec, H: Host<E>, S: PeerScorer> {
             oneshot::Sender<Result<RpcResponse<E>, NetworkError>>,
         ),
     >,
+    /// Outbound Status requests sent as part of the connection handshake.
+    ///
+    /// Maps `OutboundRequestId` → `PeerId`.  When the Status response arrives
+    /// in `on_request_response_event`, if the request id is in this map we
+    /// perform the fork-digest check and complete (or abort) the handshake.
+    pending_status_checks: HashMap<OutboundRequestId, PeerId>,
+    /// Outbound Ping requests sent for keepalive purposes.
+    ///
+    /// Maps `OutboundRequestId` → `PeerId`.  On response, if the peer's
+    /// seq_number is newer than our stored value, a follow-up `GetMetaData`
+    /// is sent.
+    pending_ping_checks: HashMap<OutboundRequestId, PeerId>,
+    /// Outbound GetMetaData requests sent after a Ping seq-number mismatch.
+    ///
+    /// Maps `OutboundRequestId` → `PeerId`.  On response, updates the peer
+    /// manager's stored metadata for that peer.
+    pending_metadata_fetches: HashMap<OutboundRequestId, PeerId>,
+    /// Fires every 15 seconds to drive `Ping` keepalives.
+    ping_tick: Interval,
+    /// Fires every 30 seconds to drive score-based peer pruning.
+    score_prune_tick: Interval,
     _phantom: PhantomData<E>,
 }
 
@@ -121,6 +146,12 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                     // is wired in Phase 7.
                     let _peers = self.discovery.find_peers().await;
                 }
+                _ = self.ping_tick.tick() => {
+                    self.tick_ping();
+                }
+                _ = self.score_prune_tick.tick() => {
+                    self.tick_score_prune();
+                }
                 _ = &mut self.shutdown_signal => {
                     break;
                 }
@@ -138,6 +169,14 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                 rr_event,
             )) => {
                 self.on_request_response_event(rr_event).await;
+            }
+            libp2p::swarm::SwarmEvent::ConnectionEstablished {
+                peer_id, endpoint, ..
+            } => {
+                self.on_swarm_connection_established(peer_id, endpoint);
+            }
+            libp2p::swarm::SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
+                self.on_swarm_connection_closed(peer_id, cause.as_ref());
             }
             _ => {
                 tracing::debug!("swarm event: {:?}", event);
@@ -280,7 +319,20 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                     request_id,
                     response,
                 } => {
-                    if let Some((_method, tx)) = self.pending_rpc.remove(&request_id) {
+                    // Each request_id belongs to exactly one tracking map.
+                    if let Some(hs_peer) = self.pending_status_checks.remove(&request_id) {
+                        // Handshake Status response.
+                        self.on_status_response(hs_peer, &response);
+                    } else if let Some(ping_peer) = self.pending_ping_checks.remove(&request_id) {
+                        // Ping keepalive seq-number check.
+                        self.on_ping_response(ping_peer, &response);
+                    } else if let Some(meta_peer) =
+                        self.pending_metadata_fetches.remove(&request_id)
+                    {
+                        // GetMetaData follow-up after Ping seq-number advance.
+                        self.on_metadata_response(meta_peer, &response);
+                    } else if let Some((_method, tx)) = self.pending_rpc.remove(&request_id) {
+                        // User-initiated outbound RPC (Phase 7 surface).
                         let _ = tx.send(Ok(response));
                     } else {
                         tracing::warn!(?request_id, "received response for unknown request");
@@ -294,7 +346,34 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                 ..
             } => {
                 tracing::warn!(%peer, ?error, "outbound RPC failure");
-                if let Some((method, tx)) = self.pending_rpc.remove(&request_id) {
+                // Clean all tracking maps; each request_id lives in at most one.
+                if self.pending_status_checks.remove(&request_id).is_some() {
+                    // Handshake Status timed out or failed — abort and disconnect.
+                    self.peer_manager.record_event(
+                        peer,
+                        ScoreEvent::HandshakeFail {
+                            kind: HandshakeFailKind::Timeout,
+                        },
+                    );
+                    self.peer_manager.on_disconnecting(peer);
+                    self.swarm.disconnect_peer_id(peer).ok();
+                } else if self.pending_ping_checks.remove(&request_id).is_some() {
+                    self.peer_manager.record_event(
+                        peer,
+                        ScoreEvent::RpcError {
+                            method: RpcMethod::Ping,
+                            kind: RpcErrorKind::ServerError,
+                        },
+                    );
+                } else if self.pending_metadata_fetches.remove(&request_id).is_some() {
+                    self.peer_manager.record_event(
+                        peer,
+                        ScoreEvent::RpcError {
+                            method: RpcMethod::MetaData,
+                            kind: RpcErrorKind::ServerError,
+                        },
+                    );
+                } else if let Some((method, tx)) = self.pending_rpc.remove(&request_id) {
                     let _ = tx.send(Err(NetworkError::Libp2p(error.to_string())));
                     self.peer_manager.record_event(
                         peer,
@@ -368,6 +447,175 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             .gossipsub
             .publish(ident, framed)
             .map_err(|e| NetworkError::Libp2p(format!("gossipsub publish error: {e}")))
+    }
+
+    /// Handle a `Ping` response.
+    ///
+    /// Per `p2p-interface.md:1543-1575`: if the peer's seq_number is strictly
+    /// greater than our stored value, issue a `GetMetaData` to fetch the
+    /// updated metadata.
+    fn on_ping_response(&mut self, peer_id: PeerId, response: &RpcResponse<E>) {
+        let peer_seq = match response {
+            RpcResponse::Ping(seq) => *seq,
+            _ => return,
+        };
+        let stored_seq = self.peer_manager.peer_metadata_seq(&peer_id).unwrap_or(0);
+        if peer_seq > stored_seq {
+            let request_id = self
+                .swarm
+                .behaviour_mut()
+                .request_response
+                .send_request(&peer_id, RpcRequest::MetaData);
+            // Track only via pending_metadata_fetches; no oneshot to resolve.
+            self.pending_metadata_fetches.insert(request_id, peer_id);
+        }
+    }
+
+    /// Handle a `GetMetaData` response, updating the stored metadata.
+    fn on_metadata_response(&mut self, peer_id: PeerId, response: &RpcResponse<E>) {
+        if let RpcResponse::MetaData(meta) = response {
+            self.peer_manager.on_metadata(peer_id, meta.clone());
+        }
+    }
+
+    /// Complete or abort the handshake after receiving a `Status` response.
+    ///
+    /// If the peer's fork digest matches ours, transitions the peer to
+    /// `Connected` and records the status.  If it differs, records a
+    /// `HandshakeFail` score event, transitions to `Disconnecting`, sends
+    /// `Goodbye(2 = IrrelevantNetwork)`, and disconnects.
+    fn on_status_response(&mut self, peer_id: PeerId, response: &RpcResponse<E>) {
+        let peer_status = match response {
+            RpcResponse::Status(s) => s.clone(),
+            _ => {
+                tracing::warn!(%peer_id, "expected Status response during handshake");
+                return;
+            }
+        };
+
+        self.peer_manager.on_status(peer_id, peer_status.clone());
+
+        let our_fork = self.host.current_fork_digest();
+        if peer_status.fork_digest != our_fork {
+            tracing::debug!(
+                %peer_id,
+                peer_fork = ?peer_status.fork_digest,
+                our_fork = ?our_fork,
+                "fork digest mismatch; disconnecting"
+            );
+            self.peer_manager.record_event(
+                peer_id,
+                ScoreEvent::HandshakeFail {
+                    kind: HandshakeFailKind::ForkDigestMismatch,
+                },
+            );
+            self.peer_manager.on_disconnecting(peer_id);
+            // Send Goodbye(IrrelevantNetwork) fire-and-forget; no response expected.
+            self.swarm.behaviour_mut().request_response.send_request(
+                &peer_id,
+                crate::rpc::types::RpcRequest::Goodbye(GOODBYE_IRRELEVANT_NETWORK),
+            );
+            self.swarm.disconnect_peer_id(peer_id).ok();
+        } else {
+            self.peer_manager.on_handshake_complete(peer_id);
+        }
+    }
+
+    /// Handle a newly established libp2p connection.
+    ///
+    /// - Registers the peer in the peer manager (state → `Connecting`).
+    /// - For outbound connections (we dialled): transitions to `Handshaking`
+    ///   and sends a `Status` request. The response is handled in
+    ///   `on_request_response_event` via `pending_status_checks`.
+    ///   Per `p2p-interface.md:1352`.
+    pub fn on_swarm_connection_established(&mut self, peer_id: PeerId, endpoint: ConnectedPoint) {
+        let dir = if endpoint.is_dialer() {
+            ConnectionDirection::Outbound
+        } else {
+            ConnectionDirection::Inbound
+        };
+
+        let addrs = vec![endpoint.get_remote_address().clone()];
+        self.peer_manager.on_connected(peer_id, dir, addrs);
+
+        if endpoint.is_dialer() {
+            self.peer_manager.on_handshaking(peer_id);
+
+            let (finalized_root, finalized_epoch) = {
+                let cp = self.host.finalized_checkpoint();
+                (cp.root, cp.epoch)
+            };
+            let (head_root, head_slot) = self.host.head();
+            let local_status = BeaconStatus {
+                fork_digest: self.host.current_fork_digest(),
+                finalized_root,
+                finalized_epoch,
+                head_root,
+                head_slot,
+            };
+
+            // Send the Status request; track only via pending_status_checks.
+            // The response handler uses that map to run fork-digest validation.
+            // Do not insert into pending_rpc — there is no oneshot to resolve.
+            let request_id = self.swarm.behaviour_mut().request_response.send_request(
+                &peer_id,
+                crate::rpc::types::RpcRequest::Status(local_status),
+            );
+            self.pending_status_checks.insert(request_id, peer_id);
+        }
+    }
+
+    /// Handle a closed libp2p connection, informing the peer manager.
+    pub fn on_swarm_connection_closed(
+        &mut self,
+        peer_id: PeerId,
+        reason: Option<&ConnectionError>,
+    ) {
+        use crate::types::DisconnectReason;
+        let dr = match reason {
+            // No error means a clean (graceful) close initiated by either side.
+            None => DisconnectReason::Other("clean close".into()),
+            Some(e) => DisconnectReason::Other(e.to_string()),
+        };
+        self.peer_manager.on_disconnected(peer_id, dr);
+    }
+
+    /// Send a `Ping` keepalive to every `Connected` peer.
+    ///
+    /// Per `p2p-interface.md:1543-1575`: the local node sends
+    /// `Ping(seq_number)` every 15 s. If the peer replies with a
+    /// seq_number newer than the stored one, a follow-up `GetMetaData`
+    /// is issued.
+    pub fn tick_ping(&mut self) {
+        let local_seq = self.host.local_metadata().seq_number;
+        let connected: Vec<PeerId> = self.peer_manager.connected_peers().collect();
+        for peer_id in connected {
+            let request_id = self
+                .swarm
+                .behaviour_mut()
+                .request_response
+                .send_request(&peer_id, RpcRequest::Ping(local_seq));
+            // Track only via pending_ping_checks; no oneshot to resolve.
+            self.pending_ping_checks.insert(request_id, peer_id);
+        }
+    }
+
+    /// Prune peers that the scorer considers lowest-quality.
+    ///
+    /// Calls `peer_manager.should_prune()` and for each returned `PeerId`
+    /// sends `Goodbye(3)` (Fault/error) then disconnects from the swarm.
+    /// With `NoopScorer` this is always a no-op.
+    pub fn tick_score_prune(&mut self) {
+        let to_prune = self.peer_manager.should_prune();
+        for peer_id in to_prune {
+            self.peer_manager.on_disconnecting(peer_id);
+            // Goodbye is fire-and-forget; send directly without tracking.
+            self.swarm.behaviour_mut().request_response.send_request(
+                &peer_id,
+                crate::rpc::types::RpcRequest::Goodbye(GOODBYE_FAULT_ERROR),
+            );
+            self.swarm.disconnect_peer_id(peer_id).ok();
+        }
     }
 
     #[allow(dead_code)]
@@ -621,6 +869,8 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
 
         // Discovery poll interval: 30 seconds.
         let discovery_tick = interval(std::time::Duration::from_secs(30));
+        let ping_tick = interval(std::time::Duration::from_secs(15));
+        let score_prune_tick = interval(std::time::Duration::from_secs(30));
 
         let network = Network {
             swarm,
@@ -633,6 +883,11 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             discovery_tick,
             shutdown_signal,
             pending_rpc: HashMap::new(),
+            pending_status_checks: HashMap::new(),
+            pending_ping_checks: HashMap::new(),
+            pending_metadata_fetches: HashMap::new(),
+            ping_tick,
+            score_prune_tick,
             _phantom: PhantomData,
         };
 
