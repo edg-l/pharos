@@ -55,8 +55,8 @@ futures = "0.3"
 
 # HTTP
 axum = "0.8"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-tls"] }
-jsonwebtoken = "10"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots"] }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 
 # Storage
 rocksdb = "0.24"
