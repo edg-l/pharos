@@ -2716,6 +2716,7 @@ name = "pharos-stf"
 version = "0.1.0"
 dependencies = [
  "pharos-ssz",
+ "pharos-storage",
  "pharos-types",
  "pharos-utils",
  "rayon",

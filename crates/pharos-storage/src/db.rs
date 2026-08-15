@@ -16,8 +16,9 @@ use rocksdb::{
 use tracing::warn;
 
 use crate::cf::{
-    CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_FORKCHOICE, CF_METADATA, CF_SLOT_TO_BLOCK_ROOT, CF_STATES,
-    all_cfs,
+    CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_FORKCHOICE, CF_LC_BOOTSTRAP, CF_LC_FINALITY_UPDATE,
+    CF_LC_OPTIMISTIC_UPDATE, CF_LC_UPDATE, CF_METADATA, CF_SLOT_TO_BLOCK_ROOT, CF_STATES,
+    LC_LATEST_KEY, all_cfs,
 };
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
@@ -254,6 +255,121 @@ impl<E: EthSpec> Store<E> for RocksStore {
 
         self.db.write(wb)?;
         Ok(())
+    }
+
+    // ── Light-client snapshot put/get ─────────────────────────────────────────
+
+    fn put_light_client_bootstrap(
+        &self,
+        block_root: Root,
+        bootstrap: &E::AltairLightClientBootstrap,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_BOOTSTRAP)?;
+        self.db
+            .put_cf(cf, root_key(&block_root), bootstrap.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_bootstrap(
+        &self,
+        block_root: &Root,
+    ) -> Result<Option<E::AltairLightClientBootstrap>, StorageError> {
+        let cf = self.cf_handle(CF_LC_BOOTSTRAP)?;
+        match self.db.get_cf(cf, root_key(block_root))? {
+            None => Ok(None),
+            Some(bytes) => {
+                let bootstrap = E::AltairLightClientBootstrap::from_ssz_bytes(&bytes)?;
+                Ok(Some(bootstrap))
+            }
+        }
+    }
+
+    fn put_light_client_update(
+        &self,
+        period: u64,
+        update: &E::AltairLightClientUpdate,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_UPDATE)?;
+        self.db
+            .put_cf(cf, period.to_le_bytes(), update.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_update(
+        &self,
+        period: u64,
+    ) -> Result<Option<E::AltairLightClientUpdate>, StorageError> {
+        let cf = self.cf_handle(CF_LC_UPDATE)?;
+        match self.db.get_cf(cf, period.to_le_bytes())? {
+            None => Ok(None),
+            Some(bytes) => {
+                let update = E::AltairLightClientUpdate::from_ssz_bytes(&bytes)?;
+                Ok(Some(update))
+            }
+        }
+    }
+
+    fn get_light_client_updates_by_range(
+        &self,
+        start_period: u64,
+        count: u64,
+    ) -> Result<Vec<E::AltairLightClientUpdate>, StorageError> {
+        let cf = self.cf_handle(CF_LC_UPDATE)?;
+        let mut updates = Vec::new();
+        for period in start_period..start_period.saturating_add(count) {
+            match self.db.get_cf(cf, period.to_le_bytes())? {
+                None => {}
+                Some(bytes) => {
+                    let update = E::AltairLightClientUpdate::from_ssz_bytes(&bytes)?;
+                    updates.push(update);
+                }
+            }
+        }
+        Ok(updates)
+    }
+
+    fn put_light_client_finality_update(
+        &self,
+        update: &E::AltairLightClientFinalityUpdate,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_FINALITY_UPDATE)?;
+        self.db.put_cf(cf, LC_LATEST_KEY, update.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_finality_update(
+        &self,
+    ) -> Result<Option<E::AltairLightClientFinalityUpdate>, StorageError> {
+        let cf = self.cf_handle(CF_LC_FINALITY_UPDATE)?;
+        match self.db.get_cf(cf, LC_LATEST_KEY)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let update = E::AltairLightClientFinalityUpdate::from_ssz_bytes(&bytes)?;
+                Ok(Some(update))
+            }
+        }
+    }
+
+    fn put_light_client_optimistic_update(
+        &self,
+        update: &E::AltairLightClientOptimisticUpdate,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_OPTIMISTIC_UPDATE)?;
+        self.db.put_cf(cf, LC_LATEST_KEY, update.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_optimistic_update(
+        &self,
+    ) -> Result<Option<E::AltairLightClientOptimisticUpdate>, StorageError> {
+        let cf = self.cf_handle(CF_LC_OPTIMISTIC_UPDATE)?;
+        match self.db.get_cf(cf, LC_LATEST_KEY)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let update = E::AltairLightClientOptimisticUpdate::from_ssz_bytes(&bytes)?;
+                Ok(Some(update))
+            }
+        }
     }
 }
 

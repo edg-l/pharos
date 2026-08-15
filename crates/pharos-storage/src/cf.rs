@@ -40,12 +40,41 @@ pub const CF_FORKCHOICE: &str = "forkchoice";
 /// Per `D-rocksdb`: key = string bytes | value = raw bytes.
 pub const CF_METADATA: &str = "metadata";
 
-/// Returns all seven column-family names in declaration order.
+/// Stores SSZ-encoded `LightClientBootstrap` objects, keyed by block root (32 bytes).
+///
+/// Per `D-light-client-server-only` (Task 6.9): one bootstrap entry per finalized
+/// epoch-boundary block. Key = `Root` (32 B), value = SSZ `LightClientBootstrap`.
+pub const CF_LC_BOOTSTRAP: &str = "light-client-bootstrap";
+
+/// Stores SSZ-encoded `LightClientUpdate` objects, keyed by sync-committee period (u64 LE, 8 bytes).
+///
+/// Per `D-light-client-server-only` (Task 6.9): one best update per sync-committee period.
+/// Key = `u64` LE (period), value = SSZ `LightClientUpdate`.
+pub const CF_LC_UPDATE: &str = "light-client-update";
+
+/// Single-row CF storing the latest SSZ-encoded `LightClientFinalityUpdate`.
+///
+/// Per `D-light-client-server-only` (Task 6.9): overwrites on every finality advance.
+/// Key = `b"latest"` (static), value = SSZ `LightClientFinalityUpdate`.
+pub const CF_LC_FINALITY_UPDATE: &str = "latest-finality-update";
+
+/// Single-row CF storing the latest SSZ-encoded `LightClientOptimisticUpdate`.
+///
+/// Per `D-light-client-server-only` (Task 6.9): overwrites on every optimistic head update.
+/// Key = `b"latest"` (static), value = SSZ `LightClientOptimisticUpdate`.
+pub const CF_LC_OPTIMISTIC_UPDATE: &str = "latest-optimistic-update";
+
+/// Stable key for the single-row light-client update CFs.
+///
+/// Used by `CF_LC_FINALITY_UPDATE` and `CF_LC_OPTIMISTIC_UPDATE`.
+pub const LC_LATEST_KEY: &[u8] = b"latest";
+
+/// Returns all eleven column-family names in declaration order.
 ///
 /// Used when opening the database with `DB::open_cf_descriptors` so every CF
 /// is registered. The ordering does not affect correctness; RocksDB looks up
 /// CFs by name.
-pub fn all_cfs() -> [&'static str; 7] {
+pub fn all_cfs() -> [&'static str; 11] {
     [
         CF_DEFAULT,
         CF_BLOCKS,
@@ -54,5 +83,9 @@ pub fn all_cfs() -> [&'static str; 7] {
         CF_STATES,
         CF_FORKCHOICE,
         CF_METADATA,
+        CF_LC_BOOTSTRAP,
+        CF_LC_UPDATE,
+        CF_LC_FINALITY_UPDATE,
+        CF_LC_OPTIMISTIC_UPDATE,
     ]
 }

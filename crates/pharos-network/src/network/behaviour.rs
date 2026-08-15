@@ -150,8 +150,18 @@ rpc_behaviour_wrapper!(RpcStatusBehaviour, RpcStatusEvent);
 rpc_behaviour_wrapper!(RpcGoodbyeBehaviour, RpcGoodbyeEvent);
 rpc_behaviour_wrapper!(RpcPingBehaviour, RpcPingEvent);
 rpc_behaviour_wrapper!(RpcMetaDataBehaviour, RpcMetaDataEvent);
+// MetaData v1 (phase-0) — serves `/eth2/beacon_chain/req/metadata/1/ssz_snappy`.
+// Listed on the inbound side alongside `RpcMetaDataBehaviour` (v2) so
+// multistream-select can negotiate the v1 protocol with older peers.
+// Per `D-metadata-v2-dual-handle`.
+rpc_behaviour_wrapper!(RpcMetaDataV1Behaviour, RpcMetaDataV1Event);
 rpc_behaviour_wrapper!(RpcBlocksByRangeBehaviour, RpcBlocksByRangeEvent);
 rpc_behaviour_wrapper!(RpcBlocksByRootBehaviour, RpcBlocksByRootEvent);
+// Light-client req-resp behaviours per `specs/altair/light-client/p2p-interface.md`.
+rpc_behaviour_wrapper!(RpcLcBootstrapBehaviour, RpcLcBootstrapEvent);
+rpc_behaviour_wrapper!(RpcLcUpdatesByRangeBehaviour, RpcLcUpdatesByRangeEvent);
+rpc_behaviour_wrapper!(RpcLcFinalityUpdateBehaviour, RpcLcFinalityUpdateEvent);
+rpc_behaviour_wrapper!(RpcLcOptimisticUpdateBehaviour, RpcLcOptimisticUpdateEvent);
 
 // ── PharosBehaviourEvent ──────────────────────────────────────────────────────
 
@@ -166,8 +176,13 @@ where
     RpcGoodbye(request_response::Event<RpcRequest, RpcResponse<E>>),
     RpcPing(request_response::Event<RpcRequest, RpcResponse<E>>),
     RpcMetaData(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcMetaDataV1(request_response::Event<RpcRequest, RpcResponse<E>>),
     RpcBlocksByRange(request_response::Event<RpcRequest, RpcResponse<E>>),
     RpcBlocksByRoot(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcLcBootstrap(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcLcUpdatesByRange(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcLcFinalityUpdate(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcLcOptimisticUpdate(request_response::Event<RpcRequest, RpcResponse<E>>),
     /// Boxed to keep the enum size reasonable (`identify::Event` is large).
     Identify(Box<identify::Event>),
     Ping(ping::Event),
@@ -218,6 +233,15 @@ where
     }
 }
 
+impl<E: EthSpec> From<RpcMetaDataV1Event<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcMetaDataV1Event<E>) -> Self {
+        PharosBehaviourEvent::RpcMetaDataV1(e.0)
+    }
+}
+
 impl<E: EthSpec> From<RpcBlocksByRangeEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
@@ -233,6 +257,42 @@ where
 {
     fn from(e: RpcBlocksByRootEvent<E>) -> Self {
         PharosBehaviourEvent::RpcBlocksByRoot(e.0)
+    }
+}
+
+impl<E: EthSpec> From<RpcLcBootstrapEvent<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcLcBootstrapEvent<E>) -> Self {
+        PharosBehaviourEvent::RpcLcBootstrap(e.0)
+    }
+}
+
+impl<E: EthSpec> From<RpcLcUpdatesByRangeEvent<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcLcUpdatesByRangeEvent<E>) -> Self {
+        PharosBehaviourEvent::RpcLcUpdatesByRange(e.0)
+    }
+}
+
+impl<E: EthSpec> From<RpcLcFinalityUpdateEvent<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcLcFinalityUpdateEvent<E>) -> Self {
+        PharosBehaviourEvent::RpcLcFinalityUpdate(e.0)
+    }
+}
+
+impl<E: EthSpec> From<RpcLcOptimisticUpdateEvent<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcLcOptimisticUpdateEvent<E>) -> Self {
+        PharosBehaviourEvent::RpcLcOptimisticUpdate(e.0)
     }
 }
 
@@ -277,9 +337,20 @@ where
     pub rpc_status: RpcStatusBehaviour<E>,
     pub rpc_goodbye: RpcGoodbyeBehaviour<E>,
     pub rpc_ping: RpcPingBehaviour<E>,
+    /// MetaData v2 (altair) — `/eth2/beacon_chain/req/metadata/2/ssz_snappy`.
     pub rpc_metadata: RpcMetaDataBehaviour<E>,
+    /// MetaData v1 (phase-0 fallback) — `/eth2/beacon_chain/req/metadata/1/ssz_snappy`.
+    ///
+    /// Listed on the inbound side per `D-metadata-v2-dual-handle` so older peers
+    /// that only know the v1 protocol can still exchange metadata.
+    pub rpc_metadata_v1: RpcMetaDataV1Behaviour<E>,
     pub rpc_blocks_by_range: RpcBlocksByRangeBehaviour<E>,
     pub rpc_blocks_by_root: RpcBlocksByRootBehaviour<E>,
+    /// Light-client req-resp behaviours per `specs/altair/light-client/p2p-interface.md`.
+    pub rpc_lc_bootstrap: RpcLcBootstrapBehaviour<E>,
+    pub rpc_lc_updates_by_range: RpcLcUpdatesByRangeBehaviour<E>,
+    pub rpc_lc_finality_update: RpcLcFinalityUpdateBehaviour<E>,
+    pub rpc_lc_optimistic_update: RpcLcOptimisticUpdateBehaviour<E>,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
 }

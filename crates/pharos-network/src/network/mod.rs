@@ -43,7 +43,7 @@ use crate::error::NetworkError;
 use crate::gossip::config::gossipsub_behaviour;
 use crate::gossip::{dispatch_gossip_message, subscribe_phase0_topics};
 use crate::handle::NetworkHandle;
-use crate::host::{GossipVerdict, Host};
+use crate::host::{GossipVerdict, Host, LightClientProvider};
 use crate::peer::manager::PeerManager;
 use crate::rpc::handler::handle_request;
 use crate::rpc::types::{RpcRequest, RpcResponse};
@@ -173,7 +173,7 @@ pub enum NetworkEvent {
 /// Constructed via `NetworkBuilder::build`.  Call `run()` to drive the
 /// event loop.  Shut down by sending `NetworkCommand::Shutdown` via the
 /// `NetworkHandle` or by dropping the handle's `shutdown_tx`.
-pub struct Network<E: EthSpec, H: Host<E>, S: PeerScorer> {
+pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> {
     swarm: Swarm<PharosBehaviour<E>>,
     discovery: DiscoveryService,
     peer_manager: PeerManager<S>,
@@ -218,7 +218,7 @@ pub struct Network<E: EthSpec, H: Host<E>, S: PeerScorer> {
     _phantom: PhantomData<E>,
 }
 
-impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
+impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, H, S> {
     /// Drive the network event loop.
     ///
     /// Returns when a `NetworkCommand::Shutdown` is received or when
@@ -286,12 +286,35 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcMetaData(rr_event)) => {
                 self.on_request_response_event(rr_event).await;
             }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcMetaDataV1(rr_event)) => {
+                self.on_request_response_event(rr_event).await;
+            }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcBlocksByRange(
                 rr_event,
             )) => {
                 self.on_request_response_event(rr_event).await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcBlocksByRoot(
+                rr_event,
+            )) => {
+                self.on_request_response_event(rr_event).await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcLcBootstrap(
+                rr_event,
+            )) => {
+                self.on_request_response_event(rr_event).await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcLcUpdatesByRange(
+                rr_event,
+            )) => {
+                self.on_request_response_event(rr_event).await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcLcFinalityUpdate(
+                rr_event,
+            )) => {
+                self.on_request_response_event(rr_event).await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcLcOptimisticUpdate(
                 rr_event,
             )) => {
                 self.on_request_response_event(rr_event).await;
@@ -512,6 +535,9 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                     // Track whether this is an inbound Status before moving `request`.
                     let is_inbound_status = matches!(request, RpcRequest::Status(_));
 
+                    // Derive the negotiated protocol ID from the request variant so the
+                    // handler can select MetaData v1 vs v2 per `D-metadata-v2-dual-handle`.
+                    let negotiated_protocol_id = method.protocol_id();
                     let host = Arc::clone(&self.host);
                     // Handle synchronously to avoid lifetime complexity with &mut self.
                     let response = handle_request::<E, H, S>(
@@ -519,6 +545,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                         peer,
                         request,
                         &mut self.peer_manager,
+                        negotiated_protocol_id,
                     )
                     .await;
 
@@ -563,19 +590,28 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                             RpcMethod::MetaData => {
                                 b.rpc_metadata.0.send_response(channel, response)
                             }
+                            RpcMethod::MetaDataV1 => {
+                                b.rpc_metadata_v1.0.send_response(channel, response)
+                            }
                             RpcMethod::BlocksByRange => {
                                 b.rpc_blocks_by_range.0.send_response(channel, response)
                             }
                             RpcMethod::BlocksByRoot => {
                                 b.rpc_blocks_by_root.0.send_response(channel, response)
                             }
-                            // Light-client inbound handlers land in Phase 6 (Task 6.8).
-                            RpcMethod::LightClientBootstrap
-                            | RpcMethod::LightClientUpdatesByRange
-                            | RpcMethod::LightClientFinalityUpdate
-                            | RpcMethod::LightClientOptimisticUpdate => {
-                                unreachable!("light-client inbound requests are not yet wired")
+                            RpcMethod::LightClientBootstrap => {
+                                b.rpc_lc_bootstrap.0.send_response(channel, response)
                             }
+                            RpcMethod::LightClientUpdatesByRange => {
+                                b.rpc_lc_updates_by_range.0.send_response(channel, response)
+                            }
+                            RpcMethod::LightClientFinalityUpdate => {
+                                b.rpc_lc_finality_update.0.send_response(channel, response)
+                            }
+                            RpcMethod::LightClientOptimisticUpdate => b
+                                .rpc_lc_optimistic_update
+                                .0
+                                .send_response(channel, response),
                         }
                     };
                     if send_err.is_err() {
@@ -693,8 +729,21 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             RpcRequest::Goodbye(_) => b.rpc_goodbye.0.send_request(peer, req),
             RpcRequest::Ping(_) => b.rpc_ping.0.send_request(peer, req),
             RpcRequest::MetaData => b.rpc_metadata.0.send_request(peer, req),
+            // MetaDataV1 uses the v1 protocol behaviour.
+            RpcRequest::MetaDataV1 => b.rpc_metadata_v1.0.send_request(peer, req),
             RpcRequest::BlocksByRange(_) => b.rpc_blocks_by_range.0.send_request(peer, req),
             RpcRequest::BlocksByRoot(_) => b.rpc_blocks_by_root.0.send_request(peer, req),
+            // Light-client requests use the per-method LC behaviours.
+            RpcRequest::LightClientBootstrap(_) => b.rpc_lc_bootstrap.0.send_request(peer, req),
+            RpcRequest::LightClientUpdatesByRange(_) => {
+                b.rpc_lc_updates_by_range.0.send_request(peer, req)
+            }
+            RpcRequest::LightClientFinalityUpdate => {
+                b.rpc_lc_finality_update.0.send_request(peer, req)
+            }
+            RpcRequest::LightClientOptimisticUpdate => {
+                b.rpc_lc_optimistic_update.0.send_request(peer, req)
+            }
         }
     }
 
@@ -758,9 +807,21 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
     }
 
     /// Handle a `GetMetaData` response, updating the stored metadata.
+    ///
+    /// Extracts the phase-0 view from either `MetaDataResponse` variant for the
+    /// seq_number-based keepalive check. The peer manager stores only the phase-0
+    /// fields (`seq_number`, `attnets`) which are common to both v1 and v2.
     fn on_metadata_response(&mut self, peer_id: PeerId, response: &RpcResponse<E>) {
-        if let RpcResponse::MetaData(meta) = response {
-            self.peer_manager.on_metadata(peer_id, meta.clone());
+        use crate::rpc::types::MetaDataResponse;
+        if let RpcResponse::MetaData(meta_resp) = response {
+            let phase0_meta = match meta_resp {
+                MetaDataResponse::V1(m) => m.clone(),
+                MetaDataResponse::V2(m) => pharos_types::phase0::MetaData {
+                    seq_number: m.seq_number,
+                    attnets: m.attnets.clone(),
+                },
+            };
+            self.peer_manager.on_metadata(peer_id, phase0_meta);
         }
     }
 
@@ -1120,8 +1181,13 @@ fn rpc_method_from_request(req: &RpcRequest) -> RpcMethod {
         RpcRequest::Goodbye(_) => RpcMethod::Goodbye,
         RpcRequest::Ping(_) => RpcMethod::Ping,
         RpcRequest::MetaData => RpcMethod::MetaData,
+        RpcRequest::MetaDataV1 => RpcMethod::MetaDataV1,
         RpcRequest::BlocksByRange(_) => RpcMethod::BlocksByRange,
         RpcRequest::BlocksByRoot(_) => RpcMethod::BlocksByRoot,
+        RpcRequest::LightClientBootstrap(_) => RpcMethod::LightClientBootstrap,
+        RpcRequest::LightClientUpdatesByRange(_) => RpcMethod::LightClientUpdatesByRange,
+        RpcRequest::LightClientFinalityUpdate => RpcMethod::LightClientFinalityUpdate,
+        RpcRequest::LightClientOptimisticUpdate => RpcMethod::LightClientOptimisticUpdate,
     }
 }
 
@@ -1157,7 +1223,9 @@ pub struct NetworkBuilder<E, H, S> {
     _phantom: PhantomData<E>,
 }
 
-impl<E: EthSpec, H: Host<E>> NetworkBuilder<E, H, crate::scoring::NoopScorer> {
+impl<E: EthSpec, H: Host<E> + LightClientProvider<E>>
+    NetworkBuilder<E, H, crate::scoring::NoopScorer>
+{
     /// Create a new builder wrapping `host` with default settings.
     ///
     /// Returns a builder with `NoopScorer`; call `.scorer(s)` to
@@ -1178,7 +1246,7 @@ impl<E: EthSpec, H: Host<E>> NetworkBuilder<E, H, crate::scoring::NoopScorer> {
     }
 }
 
-impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
+impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
     /// Override the TCP listen port (default: 9000).
     pub fn tcp_listen_port(mut self, port: u16) -> Self {
         self.tcp_listen_port = port;
@@ -1231,7 +1299,10 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
     }
 
     /// Substitute a peer scorer, changing the `S` type parameter.
-    pub fn scorer<T: PeerScorer>(self, scorer: T) -> NetworkBuilder<E, H, T> {
+    pub fn scorer<T: PeerScorer>(self, scorer: T) -> NetworkBuilder<E, H, T>
+    where
+        H: Host<E> + LightClientProvider<E>,
+    {
         NetworkBuilder {
             host: self.host,
             listen_ip: self.listen_ip,
@@ -1314,7 +1385,9 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
         use crate::scoring::RpcMethod as M;
         use behaviour::{
             RpcBlocksByRangeBehaviour, RpcBlocksByRootBehaviour, RpcGoodbyeBehaviour,
-            RpcMetaDataBehaviour, RpcPingBehaviour, RpcStatusBehaviour,
+            RpcLcBootstrapBehaviour, RpcLcFinalityUpdateBehaviour, RpcLcOptimisticUpdateBehaviour,
+            RpcLcUpdatesByRangeBehaviour, RpcMetaDataBehaviour, RpcMetaDataV1Behaviour,
+            RpcPingBehaviour, RpcStatusBehaviour,
         };
 
         // Fork-context codec: used for methods that carry context bytes
@@ -1357,8 +1430,20 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
                 rpc_goodbye: RpcGoodbyeBehaviour(mk_rr(M::Goodbye)),
                 rpc_ping: RpcPingBehaviour(mk_rr(M::Ping)),
                 rpc_metadata: RpcMetaDataBehaviour(mk_rr(M::MetaData)),
+                rpc_metadata_v1: RpcMetaDataV1Behaviour(mk_rr(M::MetaDataV1)),
                 rpc_blocks_by_range: RpcBlocksByRangeBehaviour(mk_rr_ctx(M::BlocksByRange)),
                 rpc_blocks_by_root: RpcBlocksByRootBehaviour(mk_rr_ctx(M::BlocksByRoot)),
+                // Light-client behaviours use context-bytes codec (fork digest prefix per chunk).
+                rpc_lc_bootstrap: RpcLcBootstrapBehaviour(mk_rr_ctx(M::LightClientBootstrap)),
+                rpc_lc_updates_by_range: RpcLcUpdatesByRangeBehaviour(mk_rr_ctx(
+                    M::LightClientUpdatesByRange,
+                )),
+                rpc_lc_finality_update: RpcLcFinalityUpdateBehaviour(mk_rr_ctx(
+                    M::LightClientFinalityUpdate,
+                )),
+                rpc_lc_optimistic_update: RpcLcOptimisticUpdateBehaviour(mk_rr_ctx(
+                    M::LightClientOptimisticUpdate,
+                )),
                 identify,
                 ping,
             })
@@ -1457,13 +1542,16 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict};
+    use crate::host::{
+        BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
+    };
     use crate::types::SubnetId;
     use pharos_types::MainnetEthSpec;
+    use pharos_types::altair::MetaData as AltairMetaData;
     use pharos_types::phase0::primitives::ForkDigest;
     use pharos_types::phase0::{
-        AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, MetaData,
-        ProposerSlashing, Root, SignedVoluntaryExit, Slot,
+        AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
+        Root, SignedVoluntaryExit, Slot,
     };
     use pharos_utils::{Bytes4, Epoch};
 
@@ -1489,8 +1577,34 @@ mod tests {
         fn fork_from_context(&self, _ctx: &[u8; 4]) -> Option<crate::types::Fork> {
             None
         }
-        fn local_metadata(&self) -> MetaData {
-            MetaData::default()
+        fn local_metadata(&self) -> AltairMetaData {
+            AltairMetaData::default()
+        }
+    }
+
+    impl LightClientProvider<MainnetEthSpec> for MockHost {
+        fn light_client_bootstrap(
+            &self,
+            _block_root: Root,
+        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientBootstrap> {
+            None
+        }
+        fn light_client_updates_by_range(
+            &self,
+            _start_period: u64,
+            _count: u64,
+        ) -> Vec<<MainnetEthSpec as EthSpec>::AltairLightClientUpdate> {
+            Vec::new()
+        }
+        fn light_client_finality_update(
+            &self,
+        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientFinalityUpdate> {
+            None
+        }
+        fn light_client_optimistic_update(
+            &self,
+        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate> {
+            None
         }
     }
 

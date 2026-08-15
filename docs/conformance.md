@@ -43,7 +43,7 @@ Source: consensus-specs release `v1.7.0-alpha.8`.
 | altair    | rewards                | mainnet | 34   | 0    | 0    | 34    |
 | altair    | rewards                | minimal | 34   | 0    | 0    | 34    |
 | altair    | light_client           | mainnet | 3    | 0    | 0    | 3     |
-| altair    | light_client           | minimal | 3    | 0    | 8    | 11    |
+| altair    | light_client           | minimal | 7    | 0    | 4    | 11    |
 | altair    | genesis                | mainnet | 0    | 0    | 0    | 0     |
 | altair    | genesis                | minimal | 0    | 0    | 0    | 0     |
 | bellatrix | ssz_static             | -       | -    | -    | -    | -     |

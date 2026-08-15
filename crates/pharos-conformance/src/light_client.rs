@@ -35,6 +35,7 @@ use pharos_stf::altair::light_client::{
 use pharos_types::{
     EthSpec, MainnetEthSpec, MinimalEthSpec,
     altair::light_client::LightClientStore,
+    fork::compute_fork_digest,
     phase0::primitives::{Root, Slot},
 };
 use pharos_utils::Bytes32;
@@ -326,17 +327,55 @@ where
     };
 
     // Check fork digests — skip cross-fork upgrade tests (capella/deneb/electra).
-    let bootstrap_fork_digest = meta_val
+    //
+    // `bootstrap_fork_digest` is a 4-byte hex digest (e.g. "0x15cfa0a7").
+    // `store_fork_digest` (when present) is also a hex digest.
+    // `store_fork_version` (when present) is a 4-byte fork-version hex (e.g. "0x01000001").
+    //
+    // When `store_fork_version` is present (not `store_fork_digest`), compute the
+    // expected store digest from `genesis_validators_root` + `store_fork_version`
+    // and compare against `bootstrap_fork_digest` to detect cross-fork tests.
+    let bootstrap_fork_digest_str = meta_val
         .get("bootstrap_fork_digest")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let store_fork_digest = meta_val
-        .get("store_fork_digest")
-        .or_else(|| meta_val.get("store_fork_version"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
 
-    if bootstrap_fork_digest != store_fork_digest {
+    let is_cross_fork = if let Some(store_digest_str) =
+        meta_val.get("store_fork_digest").and_then(|v| v.as_str())
+    {
+        // Direct digest comparison.
+        store_digest_str != bootstrap_fork_digest_str
+    } else if let Some(store_version_str) =
+        meta_val.get("store_fork_version").and_then(|v| v.as_str())
+    {
+        // Compute store_fork_digest from version + GVR and compare.
+        let version_hex = store_version_str
+            .strip_prefix("0x")
+            .unwrap_or(store_version_str);
+        match hex::decode(version_hex) {
+            Ok(version_bytes) if version_bytes.len() == 4 => {
+                let version: [u8; 4] = version_bytes.try_into().unwrap();
+                let computed_digest = compute_fork_digest(version.into(), &genesis_validators_root);
+                let computed_hex = format!(
+                    "0x{:02x}{:02x}{:02x}{:02x}",
+                    computed_digest.into_inner()[0],
+                    computed_digest.into_inner()[1],
+                    computed_digest.into_inner()[2],
+                    computed_digest.into_inner()[3],
+                );
+                computed_hex != bootstrap_fork_digest_str
+            }
+            _ => {
+                // Cannot parse version: treat as cross-fork (skip).
+                true
+            }
+        }
+    } else {
+        // No store fork info: not a cross-fork test.
+        false
+    };
+
+    if is_cross_fork {
         // Cross-fork test requires Capella/Deneb/Electra types; skip for altair runner.
         return CaseResult::Skip;
     }
@@ -428,7 +467,7 @@ where
                 .get("update_fork_digest")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if update_fork_digest != store_fork_digest {
+            if !update_fork_digest.is_empty() && update_fork_digest != bootstrap_fork_digest_str {
                 // Cross-fork update; skip this step.
                 continue;
             }

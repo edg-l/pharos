@@ -15,6 +15,7 @@ pub mod block;
 pub mod body;
 pub mod constants;
 pub mod light_client;
+pub mod metadata;
 pub mod operations;
 pub mod state;
 
@@ -30,6 +31,7 @@ pub use light_client::{
     LightClientFinalityUpdate, LightClientHeader, LightClientOptimisticUpdate, LightClientStore,
     LightClientUpdate, NEXT_SYNC_COMMITTEE_GINDEX,
 };
+pub use metadata::MetaData;
 pub use operations::{
     ContributionAndProof, SignedContributionAndProof, SyncAggregate, SyncAggregatorSelectionData,
     SyncCommittee, SyncCommitteeContribution, SyncCommitteeMessage,

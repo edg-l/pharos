@@ -43,6 +43,7 @@ impl RpcMethod {
             RpcMethod::Goodbye => "/eth2/beacon_chain/req/goodbye/1/ssz_snappy",
             RpcMethod::Ping => "/eth2/beacon_chain/req/ping/1/ssz_snappy",
             RpcMethod::MetaData => "/eth2/beacon_chain/req/metadata/2/ssz_snappy",
+            RpcMethod::MetaDataV1 => "/eth2/beacon_chain/req/metadata/1/ssz_snappy",
             RpcMethod::BlocksByRange => {
                 "/eth2/beacon_chain/req/beacon_blocks_by_range/2/ssz_snappy"
             }
@@ -106,6 +107,10 @@ mod tests {
             "/eth2/beacon_chain/req/metadata/2/ssz_snappy"
         );
         assert_eq!(
+            RpcMethod::MetaDataV1.protocol_id(),
+            "/eth2/beacon_chain/req/metadata/1/ssz_snappy"
+        );
+        assert_eq!(
             RpcMethod::BlocksByRange.protocol_id(),
             "/eth2/beacon_chain/req/beacon_blocks_by_range/2/ssz_snappy"
         );
@@ -153,6 +158,7 @@ mod tests {
             RpcMethod::Goodbye,
             RpcMethod::Ping,
             RpcMethod::MetaData,
+            RpcMethod::MetaDataV1,
         ] {
             assert!(
                 !method.has_context_bytes(),

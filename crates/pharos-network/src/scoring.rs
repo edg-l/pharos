@@ -49,6 +49,8 @@ pub enum RpcMethod {
     Goodbye,
     Ping,
     MetaData,
+    /// `metadata/1/ssz_snappy` — phase-0 MetaData (v1 fallback per D-metadata-v2-dual-handle).
+    MetaDataV1,
     BlocksByRange,
     BlocksByRoot,
     /// `light_client_bootstrap/1/ssz_snappy` — `specs/altair/light-client/p2p-interface.md`.

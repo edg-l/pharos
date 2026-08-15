@@ -26,16 +26,19 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use tracing::warn;
 
-use pharos_network::host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict};
+use pharos_network::host::{
+    BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
+};
 use pharos_network::types::{Fork, SubnetId};
 use pharos_ssz::Bitvector;
 use pharos_storage::{RocksStore, Store as StoreTrait};
 use pharos_types::EthSpec;
+use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::fork::{ForkSchedule, compute_fork_digest};
 use pharos_types::phase0::primitives::{ATTESTATION_SUBNET_COUNT, ForkDigest, Root, Version};
 use pharos_types::phase0::{
-    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, MetaData,
-    ProposerSlashing, SignedVoluntaryExit, Slot,
+    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
+    SignedVoluntaryExit, Slot,
 };
 use pharos_utils::Epoch;
 
@@ -72,7 +75,7 @@ pub struct HostImpl<E: EthSpec> {
     store: Arc<RocksStore>,
     fork_choice: Arc<RwLock<pharos_fork_choice::Store<E>>>,
     fork_context: ForkContextInner,
-    metadata: RwLock<MetaData>,
+    metadata: RwLock<AltairMetaData>,
     _phantom: PhantomData<E>,
 }
 
@@ -112,9 +115,10 @@ impl<E: EthSpec> HostImpl<E> {
             store,
             fork_choice,
             fork_context,
-            metadata: RwLock::new(MetaData {
+            metadata: RwLock::new(AltairMetaData {
                 seq_number: 0,
                 attnets: Bitvector::default(),
+                syncnets: Bitvector::default(),
             }),
             _phantom: PhantomData,
         }
@@ -198,7 +202,7 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
         None
     }
 
-    fn local_metadata(&self) -> MetaData {
+    fn local_metadata(&self) -> AltairMetaData {
         self.metadata.read().clone()
     }
 }
@@ -325,6 +329,78 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
         _msg: &<E as EthSpec>::AltairLightClientOptimisticUpdate,
     ) -> GossipVerdict {
         GossipVerdict::Accept
+    }
+}
+
+// ── LightClientProvider ───────────────────────────────────────────────────────
+
+/// Light-client provider for `HostImpl<E>`.
+///
+/// Per `D-light-client-server-only`: serves the four LC req-resp methods.
+/// Reads LC snapshots from the dedicated storage column families defined in
+/// Task 6.9. Snapshots are written by the STF hook in `pharos-stf`
+/// (`create_light_client_*`) on each finality advance or optimistic head update.
+impl<E: EthSpec> LightClientProvider<E> for HostImpl<E> {
+    /// Look up a pre-computed `LightClientBootstrap` for the given block root.
+    ///
+    /// Reads from the `light-client-bootstrap` column family (Task 6.9(b)).
+    /// Returns `None` on storage error (logged at `warn`) or missing entry.
+    fn light_client_bootstrap(&self, block_root: Root) -> Option<E::AltairLightClientBootstrap> {
+        match <RocksStore as StoreTrait<E>>::get_light_client_bootstrap(&self.store, &block_root) {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(%e, %block_root, "light_client_bootstrap: storage error");
+                None
+            }
+        }
+    }
+
+    /// Retrieve a range of stored `LightClientUpdate` objects.
+    ///
+    /// Reads from the `light-client-update` column family (Task 6.9(b)).
+    /// Returns an empty vec on storage error.
+    fn light_client_updates_by_range(
+        &self,
+        start_period: u64,
+        count: u64,
+    ) -> Vec<E::AltairLightClientUpdate> {
+        match <RocksStore as StoreTrait<E>>::get_light_client_updates_by_range(
+            &self.store,
+            start_period,
+            count,
+        ) {
+            Ok(updates) => updates,
+            Err(e) => {
+                warn!(%e, start_period, count, "light_client_updates_by_range: storage error");
+                vec![]
+            }
+        }
+    }
+
+    /// Return the latest stored `LightClientFinalityUpdate`, if any.
+    ///
+    /// Reads from the `latest-finality-update` column family (Task 6.9(b)).
+    fn light_client_finality_update(&self) -> Option<E::AltairLightClientFinalityUpdate> {
+        match <RocksStore as StoreTrait<E>>::get_light_client_finality_update(&self.store) {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(%e, "light_client_finality_update: storage error");
+                None
+            }
+        }
+    }
+
+    /// Return the latest stored `LightClientOptimisticUpdate`, if any.
+    ///
+    /// Reads from the `latest-optimistic-update` column family (Task 6.9(b)).
+    fn light_client_optimistic_update(&self) -> Option<E::AltairLightClientOptimisticUpdate> {
+        match <RocksStore as StoreTrait<E>>::get_light_client_optimistic_update(&self.store) {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(%e, "light_client_optimistic_update: storage error");
+                None
+            }
+        }
     }
 }
 

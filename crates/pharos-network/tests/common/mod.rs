@@ -12,17 +12,23 @@ use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
 pub use pharos_network::NetworkEvent;
 use pharos_network::discovery::enr::Enr;
-use pharos_network::host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict};
+use pharos_network::host::{
+    BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
+};
 use pharos_network::scoring::{PeerScorer, ScoreEvent};
 use pharos_network::types::{Fork, SubnetId};
 use pharos_network::{NetworkBuilder, NetworkHandle};
 use pharos_types::MainnetEthSpec;
+use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
-    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, MetaData,
-    ProposerSlashing, Root, SignedVoluntaryExit, Slot,
+    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
+    Root, SignedVoluntaryExit, Slot,
 };
 use pharos_utils::{Bytes4, Epoch};
+
+type LcBootstrap = <MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientBootstrap;
+type LcUpdate = <MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientUpdate;
 
 // ── TestHost ──────────────────────────────────────────────────────────────────
 
@@ -45,6 +51,10 @@ pub struct TestHost {
     /// For mainnet: min_epochs = 33024, SLOTS_PER_EPOCH = 32, so offset = 1,056,768.
     /// Tests using slots [10..15] require head_slot >= 1,056,778. Default: 2,000,000.
     head_slot: Slot,
+    /// Optional preloaded `LightClientBootstrap` objects keyed by block root.
+    lc_bootstraps: Arc<Mutex<HashMap<Root, LcBootstrap>>>,
+    /// Optional preloaded `LightClientUpdate` list for `UpdatesByRange` responses.
+    lc_updates: Arc<Mutex<Vec<LcUpdate>>>,
 }
 
 #[allow(dead_code)]
@@ -57,6 +67,8 @@ impl TestHost {
             blocks: Arc::new(Mutex::new(HashMap::new())),
             reject_proposer_index: None,
             head_slot: Slot(2_000_000),
+            lc_bootstraps: Arc::new(Mutex::new(HashMap::new())),
+            lc_updates: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -113,6 +125,24 @@ impl TestHost {
             .expect("TestHost blocks lock poisoned")
             .insert(root, block);
     }
+
+    /// Builder helper: preload a `LightClientBootstrap` keyed by block root.
+    pub fn with_lc_bootstrap(self, root: Root, bootstrap: LcBootstrap) -> Self {
+        self.lc_bootstraps
+            .lock()
+            .expect("TestHost lc_bootstraps lock poisoned")
+            .insert(root, bootstrap);
+        self
+    }
+
+    /// Builder helper: preload `LightClientUpdate` objects for `UpdatesByRange`.
+    pub fn with_lc_updates(self, updates: Vec<LcUpdate>) -> Self {
+        *self
+            .lc_updates
+            .lock()
+            .expect("TestHost lc_updates lock poisoned") = updates;
+        self
+    }
 }
 
 impl ForkContext for TestHost {
@@ -151,8 +181,45 @@ impl ForkContext for TestHost {
         None
     }
 
-    fn local_metadata(&self) -> MetaData {
-        MetaData::default()
+    fn local_metadata(&self) -> AltairMetaData {
+        AltairMetaData::default()
+    }
+}
+
+impl LightClientProvider<MainnetEthSpec> for TestHost {
+    fn light_client_bootstrap(
+        &self,
+        block_root: Root,
+    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientBootstrap> {
+        self.lc_bootstraps
+            .lock()
+            .expect("TestHost lc_bootstraps lock poisoned")
+            .get(&block_root)
+            .cloned()
+    }
+
+    fn light_client_updates_by_range(
+        &self,
+        _start_period: u64,
+        count: u64,
+    ) -> Vec<<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientUpdate> {
+        let updates = self
+            .lc_updates
+            .lock()
+            .expect("TestHost lc_updates lock poisoned");
+        updates.iter().take(count as usize).cloned().collect()
+    }
+
+    fn light_client_finality_update(
+        &self,
+    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientFinalityUpdate> {
+        None
+    }
+
+    fn light_client_optimistic_update(
+        &self,
+    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientOptimisticUpdate> {
+        None
     }
 }
 

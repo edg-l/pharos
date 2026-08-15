@@ -76,4 +76,73 @@ pub trait Store<E: EthSpec>: Send + Sync + 'static {
     /// slot-index updates. Per `D-rocksdb` atomic-writes requirement:
     /// "never split a logical state update across two un-batched writes."
     fn write_block_transition(&self, batch: BlockTransition<E>) -> Result<(), StorageError>;
+
+    // ── Light-client snapshot store ───────────────────────────────────────────
+    //
+    // Four typed put/get pairs for the four light-client column families defined
+    // in `cf.rs`. Per `D-light-client-server-only` (Task 6.9).
+
+    /// Store an SSZ-encoded `LightClientBootstrap`, keyed by `block_root`.
+    ///
+    /// Per `Q-light-client-storage-keying` (LOCKED): bootstrap is keyed by block
+    /// root (not sync-committee period) because the request carries a block root.
+    fn put_light_client_bootstrap(
+        &self,
+        block_root: Root,
+        bootstrap: &E::AltairLightClientBootstrap,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the `LightClientBootstrap` for `block_root`, if stored.
+    fn get_light_client_bootstrap(
+        &self,
+        block_root: &Root,
+    ) -> Result<Option<E::AltairLightClientBootstrap>, StorageError>;
+
+    /// Store an SSZ-encoded `LightClientUpdate` for `period` (sync-committee period).
+    ///
+    /// Overwrites any existing update for the same period (keeps the best one;
+    /// caller is responsible for `is_better_update` comparison before calling).
+    fn put_light_client_update(
+        &self,
+        period: u64,
+        update: &E::AltairLightClientUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the `LightClientUpdate` for `period`, if stored.
+    fn get_light_client_update(
+        &self,
+        period: u64,
+    ) -> Result<Option<E::AltairLightClientUpdate>, StorageError>;
+
+    /// Retrieve all stored `LightClientUpdate` objects whose period falls in
+    /// `[start_period, start_period + count)`, ordered by ascending period.
+    ///
+    /// Per `specs/altair/light-client/p2p-interface.md:29-35` response ordering.
+    fn get_light_client_updates_by_range(
+        &self,
+        start_period: u64,
+        count: u64,
+    ) -> Result<Vec<E::AltairLightClientUpdate>, StorageError>;
+
+    /// Overwrite the single-row latest `LightClientFinalityUpdate`.
+    fn put_light_client_finality_update(
+        &self,
+        update: &E::AltairLightClientFinalityUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the latest stored `LightClientFinalityUpdate`, if any.
+    fn get_light_client_finality_update(
+        &self,
+    ) -> Result<Option<E::AltairLightClientFinalityUpdate>, StorageError>;
+
+    /// Overwrite the single-row latest `LightClientOptimisticUpdate`.
+    fn put_light_client_optimistic_update(
+        &self,
+        update: &E::AltairLightClientOptimisticUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the latest stored `LightClientOptimisticUpdate`, if any.
+    fn get_light_client_optimistic_update(
+        &self,
+    ) -> Result<Option<E::AltairLightClientOptimisticUpdate>, StorageError>;
 }

@@ -603,6 +603,34 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + Sync
         + 'static;
 
+    /// Altair `LightClientBootstrap` for this preset.
+    ///
+    /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`. Minimal: `SYNC_COMMITTEE_SIZE = 32`.
+    type AltairLightClientBootstrap: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Altair `LightClientUpdate` for this preset.
+    ///
+    /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`. Minimal: `SYNC_COMMITTEE_SIZE = 32`.
+    type AltairLightClientUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
     /// Altair `LightClientFinalityUpdate` for this preset.
     type AltairLightClientFinalityUpdate: pharos_ssz::Encode
         + pharos_ssz::Decode
@@ -930,6 +958,10 @@ impl EthSpec for MainnetEthSpec {
     /// Mainnet: `SYNC_SUBCOMMITTEE_SIZE = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT = 512 / 4 = 128`.
     type AltairSignedContributionAndProof = crate::altair::SignedContributionAndProof<128>;
     /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`.
+    type AltairLightClientBootstrap = crate::altair::LightClientBootstrap<512>;
+    /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`.
+    type AltairLightClientUpdate = crate::altair::LightClientUpdate<512>;
+    /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`.
     type AltairLightClientFinalityUpdate = crate::altair::LightClientFinalityUpdate<512>;
     /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`.
     type AltairLightClientOptimisticUpdate = crate::altair::LightClientOptimisticUpdate<512>;
@@ -1241,6 +1273,10 @@ impl EthSpec for MinimalEthSpec {
     type AltairBeaconBlockBody = crate::altair::MinimalBeaconBlockBody;
     /// Minimal: `SYNC_SUBCOMMITTEE_SIZE = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT = 32 / 4 = 8`.
     type AltairSignedContributionAndProof = crate::altair::SignedContributionAndProof<8>;
+    /// Minimal: `SYNC_COMMITTEE_SIZE = 32`.
+    type AltairLightClientBootstrap = crate::altair::LightClientBootstrap<32>;
+    /// Minimal: `SYNC_COMMITTEE_SIZE = 32`.
+    type AltairLightClientUpdate = crate::altair::LightClientUpdate<32>;
     /// Minimal: `SYNC_COMMITTEE_SIZE = 32`.
     type AltairLightClientFinalityUpdate = crate::altair::LightClientFinalityUpdate<32>;
     /// Minimal: `SYNC_COMMITTEE_SIZE = 32`.

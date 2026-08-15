@@ -6,16 +6,22 @@
 //! (Task 6.9).  The store functions are in this module because they are needed
 //! by the Phase 4 conformance runner.
 
-use pharos_ssz::TreeHash;
+use pharos_ssz::{SszVector, TreeHash, build_single_proof_from_leaves};
 use pharos_types::{
     EthSpec,
-    altair::light_client::{
-        CURRENT_SYNC_COMMITTEE_GINDEX, FINALIZED_ROOT_GINDEX, LightClientBootstrap,
-        LightClientHeader, LightClientStore, LightClientUpdate, NEXT_SYNC_COMMITTEE_GINDEX,
+    altair::{
+        BeaconState, SignedBeaconBlock,
+        light_client::{
+            CURRENT_SYNC_COMMITTEE_BRANCH_DEPTH, CURRENT_SYNC_COMMITTEE_GINDEX,
+            FINALITY_BRANCH_DEPTH, FINALIZED_ROOT_GINDEX, LightClientBootstrap,
+            LightClientFinalityUpdate, LightClientHeader, LightClientOptimisticUpdate,
+            LightClientStore, LightClientUpdate, NEXT_SYNC_COMMITTEE_BRANCH_DEPTH,
+            NEXT_SYNC_COMMITTEE_GINDEX,
+        },
     },
     phase0::primitives::{Root, Slot},
 };
-use pharos_utils::{BLSPubkey, Bytes32};
+use pharos_utils::{BLSPubkey, Bytes32, Hash256};
 
 use crate::altair::helpers::DOMAIN_SYNC_COMMITTEE;
 use crate::phase0::accessors::{compute_domain, compute_epoch_at_slot, compute_signing_root};
@@ -534,6 +540,658 @@ where
     }
 
     Ok(())
+}
+
+// ── block_to_light_client_header ─────────────────────────────────────────────
+
+/// `block_to_light_client_header(block)` per
+/// `specs/altair/light-client/full-node.md`.
+///
+/// Constructs a `LightClientHeader` from the block's fields.
+pub fn block_to_light_client_header<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+>(
+    block: &SignedBeaconBlock<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+) -> LightClientHeader
+where
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: TreeHash,
+{
+    use pharos_types::phase0::operations::BeaconBlockHeader;
+    let msg = &block.message;
+    LightClientHeader {
+        beacon: BeaconBlockHeader {
+            slot: msg.slot,
+            proposer_index: msg.proposer_index,
+            parent_root: msg.parent_root,
+            state_root: msg.state_root,
+            body_root: msg.body.tree_hash_root(),
+        },
+    }
+}
+
+// ── BeaconState Merkle proof helpers ─────────────────────────────────────────
+
+/// Compute the 24 per-field `tree_hash_root()` values for an altair `BeaconState`.
+///
+/// The altair `BeaconState` has 24 fields (field indices 0..23). The SSZ
+/// Merkle tree pads these to 32 leaves (next power-of-two ≥ 24). Leaf at
+/// position `k` (0-based in the padded array) is at generalized index 32+k.
+///
+/// Per `specs/altair/beacon-chain.md:159-188` field ordering.
+fn beacon_state_field_hashes<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+>(
+    state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+) -> [Hash256; 24] {
+    [
+        state.genesis_time.tree_hash_root(),                  // 0
+        state.genesis_validators_root.tree_hash_root(),       // 1
+        state.slot.tree_hash_root(),                          // 2
+        state.fork.tree_hash_root(),                          // 3
+        state.latest_block_header.tree_hash_root(),           // 4
+        state.block_roots.tree_hash_root(),                   // 5
+        state.state_roots.tree_hash_root(),                   // 6
+        state.historical_roots.tree_hash_root(),              // 7
+        state.eth1_data.tree_hash_root(),                     // 8
+        state.eth1_data_votes.tree_hash_root(),               // 9
+        state.eth1_deposit_index.tree_hash_root(),            // 10
+        state.validators.tree_hash_root(),                    // 11
+        state.balances.tree_hash_root(),                      // 12
+        state.randao_mixes.tree_hash_root(),                  // 13
+        state.slashings.tree_hash_root(),                     // 14
+        state.previous_epoch_participation.tree_hash_root(),  // 15
+        state.current_epoch_participation.tree_hash_root(),   // 16
+        state.justification_bits.tree_hash_root(),            // 17
+        state.previous_justified_checkpoint.tree_hash_root(), // 18
+        state.current_justified_checkpoint.tree_hash_root(),  // 19
+        state.finalized_checkpoint.tree_hash_root(),          // 20
+        state.inactivity_scores.tree_hash_root(),             // 21
+        state.current_sync_committee.tree_hash_root(),        // 22
+        state.next_sync_committee.tree_hash_root(),           // 23
+    ]
+}
+
+/// Build a Merkle proof for `field_gindex` within an altair `BeaconState`.
+///
+/// The state has 24 fields padded to 32 in the SSZ tree. Only accepts
+/// gindices in the range `[32, 55]` (direct state fields) and gindex 105
+/// (`finalized_checkpoint.root`, a one-level-deep nested field).
+///
+/// Returns the branch as a `Vec<Bytes32>` whose length equals
+/// `floor(log2(field_gindex))`.
+fn compute_state_proof<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+>(
+    state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    field_gindex: u64,
+) -> Vec<Bytes32> {
+    let field_hashes = beacon_state_field_hashes(state);
+
+    if (32..=55).contains(&field_gindex) {
+        // Direct top-level field proof: gindex = 32 + field_index.
+        let proof = build_single_proof_from_leaves(&field_hashes, field_gindex);
+        proof.branch.into_iter().collect()
+    } else if field_gindex == FINALIZED_ROOT_GINDEX {
+        // gindex 105 = finalized_checkpoint.root.
+        // Two-level proof:
+        //   Level 1: prove finalized_checkpoint (field 20, gindex 52) within state.
+        //   Level 2: prove root (field 1, gindex 3) within finalized_checkpoint.
+        //
+        // Per `floorlog2(105) = 6`:
+        //   Branch has 6 elements: 1 from the checkpoint subtree + 5 from the state tree.
+
+        // Level 2: proof of `root` (gindex 3) within Checkpoint.
+        // Checkpoint has 2 fields: epoch (idx 0, gindex 2) and root (idx 1, gindex 3).
+        let checkpoint_leaves = [
+            state.finalized_checkpoint.epoch.tree_hash_root(),
+            state.finalized_checkpoint.root.tree_hash_root(),
+        ];
+        let checkpoint_proof = build_single_proof_from_leaves(&checkpoint_leaves, 3);
+        // checkpoint_proof.branch has length 1 (depth of gindex 3 = 1).
+
+        // Level 1: proof of finalized_checkpoint (field 20, gindex 52) within state.
+        let state_proof = build_single_proof_from_leaves(&field_hashes, 52);
+        // state_proof.branch has length 5 (depth of gindex 52 = 5).
+
+        // Combined branch: checkpoint branch first, then state branch.
+        let mut branch: Vec<Bytes32> = Vec::with_capacity(6);
+        for h in checkpoint_proof.branch {
+            branch.push(h);
+        }
+        for h in state_proof.branch {
+            branch.push(h);
+        }
+        branch
+    } else {
+        // Unsupported gindex; return empty branch.
+        Vec::new()
+    }
+}
+
+// ── update_light_client_snapshots ────────────────────────────────────────────
+
+/// STF hook: build and persist light-client snapshots after each altair block.
+///
+/// Per `D-light-client-server-only` (Task 6.9) and Q-light-client-create-frequency:
+/// - `LightClientBootstrap` is stored for each block.
+/// - `LightClientOptimisticUpdate` is stored on each head update (every block).
+/// - `LightClientFinalityUpdate` is stored on finality advance (every ~32 slots).
+/// - `LightClientUpdate` (per period) is stored when the update is non-trivial.
+///
+/// This function is called by the node immediately after `state_transition`
+/// completes. It propagates the store via its parameter (no global state).
+///
+/// `attested_state` and `attested_block` are the post-state and block of
+/// `block.message.parent_root`. Pass `None` for `attested_state`/`attested_block`
+/// when the parent state is unavailable (e.g. first block after checkpoint sync);
+/// in that case, only the bootstrap and optimistic update are stored.
+///
+/// `finalized_block` is the block at `attested_state.finalized_checkpoint.root`,
+/// pass `None` when unavailable.
+pub fn update_light_client_snapshots<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    E,
+    S,
+>(
+    post_state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    block: &SignedBeaconBlock<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    attested_state: Option<
+        &BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+        >,
+    >,
+    attested_block: Option<
+        &SignedBeaconBlock<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+        >,
+    >,
+    finalized_block: Option<
+        &SignedBeaconBlock<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+        >,
+    >,
+    store: &S,
+) where
+    E: EthSpec<
+            AltairLightClientBootstrap = LightClientBootstrap<SYNC_COMMITTEE_SIZE>,
+            AltairLightClientUpdate = LightClientUpdate<SYNC_COMMITTEE_SIZE>,
+            AltairLightClientFinalityUpdate = LightClientFinalityUpdate<SYNC_COMMITTEE_SIZE>,
+            AltairLightClientOptimisticUpdate = LightClientOptimisticUpdate<SYNC_COMMITTEE_SIZE>,
+        >,
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: TreeHash,
+    Bytes32: Default + Clone,
+    S: pharos_storage::Store<E>,
+{
+    use pharos_ssz::TreeHash as _;
+    use pharos_storage::Store as StoreT;
+
+    // Compute block root for bootstrap keying.
+    let block_root = block.message.tree_hash_root();
+
+    // 1. Store LightClientBootstrap for this block.
+    if let Some(bootstrap) = create_light_client_bootstrap(post_state, block) {
+        let _ = StoreT::put_light_client_bootstrap(store, block_root, &bootstrap);
+    }
+
+    // 2. Build update from (block, attested_state, attested_block).
+    let maybe_update = attested_state
+        .zip(attested_block)
+        .and_then(|(att_s, att_b)| {
+            create_light_client_update::<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                E,
+            >(post_state, block, att_s, att_b, finalized_block)
+        });
+
+    if let Some(update) = maybe_update {
+        // 3. Store LightClientUpdate per sync-committee period (keeps best update).
+        let period = compute_sync_committee_period_at_slot::<E>(update.attested_header.beacon.slot);
+        let should_store = match StoreT::get_light_client_update(store, period) {
+            Ok(Some(existing)) => is_better_update::<E, SYNC_COMMITTEE_SIZE>(&update, &existing),
+            _ => true,
+        };
+        if should_store {
+            let _ = StoreT::put_light_client_update(store, period, &update);
+        }
+
+        // 4. Store LightClientFinalityUpdate when finality_branch is non-zero.
+        if is_finality_update(&update) {
+            let finality_update = create_light_client_finality_update(&update);
+            let _ = StoreT::put_light_client_finality_update(store, &finality_update);
+        }
+
+        // 5. Store LightClientOptimisticUpdate (every block = every head update).
+        let optimistic_update = create_light_client_optimistic_update(&update);
+        let _ = StoreT::put_light_client_optimistic_update(store, &optimistic_update);
+    }
+}
+
+// ── create_light_client_bootstrap ────────────────────────────────────────────
+
+/// `create_light_client_bootstrap(state, block)` per
+/// `specs/altair/light-client/full-node.md`.
+///
+/// Constructs a `LightClientBootstrap` from the post-state and corresponding
+/// signed beacon block. The state must be a post-Altair block's immediate
+/// post-state.
+///
+/// Returns `None` if the block root / state root preconditions fail.
+pub fn create_light_client_bootstrap<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+>(
+    state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    block: &SignedBeaconBlock<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+) -> Option<LightClientBootstrap<SYNC_COMMITTEE_SIZE>>
+where
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: TreeHash,
+    Bytes32: Default + Clone,
+{
+    // Precondition: state.slot == state.latest_block_header.slot.
+    if state.slot != state.latest_block_header.slot {
+        return None;
+    }
+
+    // Reconstruct the block root: patch latest_block_header with current state_root.
+    let mut header = state.latest_block_header.clone();
+    header.state_root = state.tree_hash_root();
+    let block_root = header.tree_hash_root();
+
+    // Verify this matches block.message's hash.
+    if block_root != block.message.tree_hash_root() {
+        return None;
+    }
+
+    // Build the current_sync_committee_branch (gindex 54, depth 5).
+    let branch_hashes = compute_state_proof(state, CURRENT_SYNC_COMMITTEE_GINDEX);
+    debug_assert_eq!(
+        branch_hashes.len(),
+        CURRENT_SYNC_COMMITTEE_BRANCH_DEPTH as usize
+    );
+    let mut branch_vec: Vec<Bytes32> = branch_hashes;
+    while branch_vec.len() < CURRENT_SYNC_COMMITTEE_BRANCH_DEPTH as usize {
+        branch_vec.push(Bytes32::default());
+    }
+    let current_sync_committee_branch = SszVector::from_vec(branch_vec).unwrap_or_default();
+
+    Some(LightClientBootstrap {
+        header: block_to_light_client_header(block),
+        current_sync_committee: state.current_sync_committee.clone(),
+        current_sync_committee_branch,
+    })
+}
+
+// ── create_light_client_update ────────────────────────────────────────────────
+
+/// `create_light_client_update(state, block, attested_state, attested_block,
+///  finalized_block)` per `specs/altair/light-client/full-node.md`.
+///
+/// Constructs a `LightClientUpdate` for a given block and its parent
+/// (attested) block. `finalized_block` is `None` when unavailable (e.g.
+/// after checkpoint sync).
+pub fn create_light_client_update<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    E: EthSpec,
+>(
+    _state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    block: &SignedBeaconBlock<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    attested_state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    attested_block: &SignedBeaconBlock<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    finalized_block: Option<
+        &SignedBeaconBlock<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+        >,
+    >,
+) -> Option<LightClientUpdate<SYNC_COMMITTEE_SIZE>>
+where
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: TreeHash,
+    Bytes32: Default + Clone,
+{
+    // Verify sync_aggregate has enough participants.
+    let n_participants = count_participants(&block.message.body.sync_aggregate.sync_committee_bits);
+    if n_participants < MIN_SYNC_COMMITTEE_PARTICIPANTS {
+        return None;
+    }
+
+    // Derive update_signature_period from block.slot.
+    let update_signature_period = compute_sync_committee_period_at_slot::<E>(block.message.slot);
+
+    // Precondition: attested_state.slot == attested_state.latest_block_header.slot.
+    if attested_state.slot != attested_state.latest_block_header.slot {
+        return None;
+    }
+    let mut attested_header = attested_state.latest_block_header.clone();
+    attested_header.state_root = attested_state.tree_hash_root();
+    let attested_block_root = attested_header.tree_hash_root();
+    if attested_block_root != attested_block.message.tree_hash_root() {
+        return None;
+    }
+    if attested_block_root != block.message.parent_root {
+        return None;
+    }
+
+    let update_attested_period =
+        compute_sync_committee_period_at_slot::<E>(attested_block.message.slot);
+
+    // Compute next_sync_committee branch when attested and signature periods match.
+    let (next_sync_committee, next_sync_committee_branch) =
+        if update_attested_period == update_signature_period {
+            let nsc_branch_hashes =
+                compute_state_proof(attested_state, NEXT_SYNC_COMMITTEE_GINDEX);
+            let mut nsc_vec: Vec<Bytes32> = nsc_branch_hashes;
+            while nsc_vec.len() < NEXT_SYNC_COMMITTEE_BRANCH_DEPTH as usize {
+                nsc_vec.push(Bytes32::default());
+            }
+            (
+                attested_state.next_sync_committee.clone(),
+                SszVector::from_vec(nsc_vec).unwrap_or_default(),
+            )
+        } else {
+            Default::default()
+        };
+
+    // Compute finality header and branch when finalized_block is available.
+    let (finalized_header, finality_branch) = if let Some(fin_block) = finalized_block {
+        let header = if fin_block.message.slot.0 != 0 {
+            block_to_light_client_header(fin_block)
+        } else {
+            LightClientHeader::default()
+        };
+        let fin_branch_hashes = compute_state_proof(attested_state, FINALIZED_ROOT_GINDEX);
+        let mut fin_vec: Vec<Bytes32> = fin_branch_hashes;
+        while fin_vec.len() < FINALITY_BRANCH_DEPTH as usize {
+            fin_vec.push(Bytes32::default());
+        }
+        (header, SszVector::from_vec(fin_vec).unwrap_or_default())
+    } else {
+        Default::default()
+    };
+
+    Some(LightClientUpdate {
+        attested_header: block_to_light_client_header(attested_block),
+        next_sync_committee,
+        next_sync_committee_branch,
+        finalized_header,
+        finality_branch,
+        sync_aggregate: block.message.body.sync_aggregate.clone(),
+        signature_slot: block.message.slot,
+    })
+}
+
+// ── create_light_client_finality_update ───────────────────────────────────────
+
+/// `create_light_client_finality_update(update)` per
+/// `specs/altair/light-client/full-node.md`.
+///
+/// Derives a `LightClientFinalityUpdate` from a `LightClientUpdate`.
+pub fn create_light_client_finality_update<const SYNC_COMMITTEE_SIZE: u64>(
+    update: &LightClientUpdate<SYNC_COMMITTEE_SIZE>,
+) -> LightClientFinalityUpdate<SYNC_COMMITTEE_SIZE>
+where
+    Bytes32: Default + Clone,
+{
+    LightClientFinalityUpdate {
+        attested_header: update.attested_header.clone(),
+        finalized_header: update.finalized_header.clone(),
+        finality_branch: update.finality_branch.clone(),
+        sync_aggregate: update.sync_aggregate.clone(),
+        signature_slot: update.signature_slot,
+    }
+}
+
+// ── create_light_client_optimistic_update ─────────────────────────────────────
+
+/// `create_light_client_optimistic_update(update)` per
+/// `specs/altair/light-client/full-node.md`.
+///
+/// Derives a `LightClientOptimisticUpdate` from a `LightClientUpdate`.
+pub fn create_light_client_optimistic_update<const SYNC_COMMITTEE_SIZE: u64>(
+    update: &LightClientUpdate<SYNC_COMMITTEE_SIZE>,
+) -> LightClientOptimisticUpdate<SYNC_COMMITTEE_SIZE> {
+    LightClientOptimisticUpdate {
+        attested_header: update.attested_header.clone(),
+        sync_aggregate: update.sync_aggregate.clone(),
+        signature_slot: update.signature_slot,
+    }
 }
 
 // ── Error type ────────────────────────────────────────────────────────────────

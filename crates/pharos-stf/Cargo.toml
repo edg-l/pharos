@@ -11,6 +11,7 @@ description = "Beacon-chain state transition function for Pharos."
 pharos-types.workspace = true
 pharos-ssz.workspace = true
 pharos-utils.workspace = true
+pharos-storage.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 

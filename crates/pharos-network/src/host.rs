@@ -10,11 +10,12 @@
 use std::sync::Arc;
 
 use pharos_types::EthSpec;
+use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
-    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, MetaData,
-    ProposerSlashing, Root, SignedVoluntaryExit, Slot,
+    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
+    Root, SignedVoluntaryExit, Slot,
 };
 
 use crate::types::{Fork, SubnetId};
@@ -62,14 +63,15 @@ pub trait ForkContext: Send + Sync + 'static {
     /// fork digest. The codec emits a decode error on `None`.
     fn fork_from_context(&self, ctx: &[u8; 4]) -> Option<Fork>;
 
-    /// The local node's current `MetaData`.
+    /// The local node's current `MetaData` (Altair v2).
     ///
     /// Used by `Ping` and `MetaData` req-resp handlers to return the node's
-    /// sequence number and attestation subnet bitfield. The default
-    /// implementation returns a zeroed `MetaData`; production nodes should
-    /// override this.
-    fn local_metadata(&self) -> MetaData {
-        MetaData::default()
+    /// sequence number, attestation subnet bitfield, and sync-committee subnet
+    /// bitfield. The v1 truncation (dropping `syncnets`) is done by the
+    /// handler when the negotiated protocol ID is `/metadata/1/ssz_snappy`.
+    /// Per `D-metadata-v2-dual-handle`.
+    fn local_metadata(&self) -> AltairMetaData {
+        AltairMetaData::default()
     }
 }
 
@@ -176,6 +178,79 @@ pub trait GossipValidator<E: EthSpec>: Send + Sync + 'static {
     ) -> GossipVerdict;
 }
 
+// ── LightClientProvider ───────────────────────────────────────────────────────
+
+/// Provides light-client data to the req-resp handler.
+///
+/// Implemented by `HostImpl<E>` in `pharos-node` via `pharos-storage`.  The
+/// network crate does not touch storage directly; it delegates through this
+/// trait boundary.
+///
+/// Per `D-light-client-server-only`: only the server (responder) side is
+/// implemented; the consumer side is M5/M7 work.
+pub trait LightClientProvider<E: EthSpec>: Send + Sync + 'static {
+    /// Look up a `LightClientBootstrap` by trusted block root.
+    ///
+    /// Returns `None` if no snapshot is stored for `block_root`.
+    /// Per `specs/altair/light-client/p2p-interface.md:56-68`.
+    fn light_client_bootstrap(
+        &self,
+        block_root: pharos_types::phase0::primitives::Root,
+    ) -> Option<E::AltairLightClientBootstrap>;
+
+    /// Return `LightClientUpdate` objects for sync-committee periods
+    /// `[start_period, start_period + count)`.
+    ///
+    /// Per `specs/altair/light-client/p2p-interface.md:70-86`.
+    /// `count` has already been clamped to `MAX_REQUEST_LIGHT_CLIENT_UPDATES`
+    /// by the caller.
+    fn light_client_updates_by_range(
+        &self,
+        start_period: u64,
+        count: u64,
+    ) -> Vec<E::AltairLightClientUpdate>;
+
+    /// Return the latest `LightClientFinalityUpdate`, if any.
+    ///
+    /// Per `specs/altair/light-client/p2p-interface.md:88-101`.
+    fn light_client_finality_update(&self) -> Option<E::AltairLightClientFinalityUpdate>;
+
+    /// Return the latest `LightClientOptimisticUpdate`, if any.
+    ///
+    /// Per `specs/altair/light-client/p2p-interface.md:103-116`.
+    fn light_client_optimistic_update(&self) -> Option<E::AltairLightClientOptimisticUpdate>;
+}
+
+// Arc<T> blanket impl for LightClientProvider.
+impl<T, E> LightClientProvider<E> for std::sync::Arc<T>
+where
+    T: LightClientProvider<E> + ?Sized,
+    E: EthSpec,
+{
+    fn light_client_bootstrap(
+        &self,
+        block_root: pharos_types::phase0::primitives::Root,
+    ) -> Option<E::AltairLightClientBootstrap> {
+        (**self).light_client_bootstrap(block_root)
+    }
+
+    fn light_client_updates_by_range(
+        &self,
+        start_period: u64,
+        count: u64,
+    ) -> Vec<E::AltairLightClientUpdate> {
+        (**self).light_client_updates_by_range(start_period, count)
+    }
+
+    fn light_client_finality_update(&self) -> Option<E::AltairLightClientFinalityUpdate> {
+        (**self).light_client_finality_update()
+    }
+
+    fn light_client_optimistic_update(&self) -> Option<E::AltairLightClientOptimisticUpdate> {
+        (**self).light_client_optimistic_update()
+    }
+}
+
 // ── Host ──────────────────────────────────────────────────────────────────────
 
 /// Combined host trait: a single bound for `ForkContext + BlockProvider<E> + GossipValidator<E>`.
@@ -224,7 +299,7 @@ where
         (**self).fork_from_context(ctx)
     }
 
-    fn local_metadata(&self) -> MetaData {
+    fn local_metadata(&self) -> AltairMetaData {
         (**self).local_metadata()
     }
 }

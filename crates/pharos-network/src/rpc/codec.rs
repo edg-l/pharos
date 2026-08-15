@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use pharos_ssz::{Decode, Encode};
 use pharos_types::EthSpec;
+use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::{
     BeaconBlocksByRangeRequest, BeaconBlocksByRootRequest, ErrorMessage, MetaData, Status,
 };
@@ -28,7 +29,10 @@ use crate::codec::snappy_frame::encode_snappy_frame;
 use crate::host::ForkContext;
 use crate::rpc::protocol::RpcProtocol;
 use crate::rpc::size_bounds::{MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES, type_size_bounds};
-use crate::rpc::types::{MAX_REQUEST_BLOCKS, RpcRequest, RpcResponse};
+use crate::rpc::types::{
+    LightClientBootstrapRequest, LightClientUpdatesByRangeRequest, MAX_REQUEST_BLOCKS,
+    MetaDataResponse, RpcRequest, RpcResponse,
+};
 use crate::rpc::varint::{read_varint, write_varint};
 use crate::scoring::RpcMethod;
 use crate::types::Fork;
@@ -88,9 +92,19 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
     {
         let method = &protocol.0;
 
-        // MetaData has no request body.
+        // MetaData (v1 and v2) has no request body.
         if matches!(method, RpcMethod::MetaData) {
             return Ok(RpcRequest::MetaData);
+        }
+        if matches!(method, RpcMethod::MetaDataV1) {
+            return Ok(RpcRequest::MetaDataV1);
+        }
+        // Light-client methods with no request body.
+        if matches!(method, RpcMethod::LightClientFinalityUpdate) {
+            return Ok(RpcRequest::LightClientFinalityUpdate);
+        }
+        if matches!(method, RpcMethod::LightClientOptimisticUpdate) {
+            return Ok(RpcRequest::LightClientOptimisticUpdate);
         }
 
         let ssz_len = read_varint(io).await.map_err(io_err)? as usize;
@@ -114,8 +128,9 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
     {
         let method = &protocol.0;
 
-        // For list methods we accumulate multiple success chunks.
+        // Accumulators for streaming list methods.
         let mut blocks: Vec<E::SignedBeaconBlock> = Vec::new();
+        let mut lc_updates: Vec<E::AltairLightClientUpdate> = Vec::new();
         let mut first_response: Option<RpcResponse<E>> = None;
 
         loop {
@@ -151,6 +166,23 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                 None
             };
 
+            // For light-client methods, context bytes MUST indicate Altair.
+            // Catch misbehaving peers that send wrong-fork context bytes for
+            // altair-only methods per `specs/altair/light-client/p2p-interface.md`.
+            match method {
+                RpcMethod::LightClientBootstrap
+                | RpcMethod::LightClientUpdatesByRange
+                | RpcMethod::LightClientFinalityUpdate
+                | RpcMethod::LightClientOptimisticUpdate
+                    if chunk_fork != Some(Fork::Altair) =>
+                {
+                    return Err(io::Error::other(
+                        "light-client chunk has non-altair context bytes",
+                    ));
+                }
+                _ => {}
+            }
+
             // Success chunk: decode per method.
             match method {
                 RpcMethod::Status => {
@@ -168,9 +200,19 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     first_response = Some(RpcResponse::Ping(v));
                     break;
                 }
+                // MetaData v2 (altair): decode altair MetaData (seq + attnets + syncnets).
+                // Altair MetaData SSZ: 8 (seq_number) + 8 (attnets Bitvector[64]) + 1 (syncnets Bitvector[4], SSZ-encodes to 1 byte) = 17 bytes.
+                // Use a generous 64-byte max to accommodate future additions.
                 RpcMethod::MetaData => {
+                    let m = read_ssz_snappy_payload::<_, AltairMetaData>(io, 64).await?;
+                    first_response = Some(RpcResponse::MetaData(MetaDataResponse::V2(m)));
+                    break;
+                }
+                // MetaData v1 (phase-0): decode phase-0 MetaData (seq_number + attnets only).
+                // Phase-0 MetaData SSZ: 8 (seq_number) + 8 (attnets/64 bits) = 16 bytes.
+                RpcMethod::MetaDataV1 => {
                     let m = read_ssz_snappy_payload::<_, MetaData>(io, 16).await?;
-                    first_response = Some(RpcResponse::MetaData(m));
+                    first_response = Some(RpcResponse::MetaData(MetaDataResponse::V1(m)));
                     break;
                 }
                 RpcMethod::BlocksByRange | RpcMethod::BlocksByRoot => {
@@ -200,12 +242,53 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     blocks.push(block);
                     // Continue reading chunks.
                 }
-                // Light-client response handlers land in Phase 6 (Task 6.8).
-                RpcMethod::LightClientBootstrap
-                | RpcMethod::LightClientUpdatesByRange
-                | RpcMethod::LightClientFinalityUpdate
-                | RpcMethod::LightClientOptimisticUpdate => {
-                    return Err(io::Error::other("light-client req-resp not yet supported"));
+                // Light-client response decoders per `specs/altair/light-client/p2p-interface.md`.
+                // All four carry context bytes (already read above); context is always Altair for now.
+                RpcMethod::LightClientBootstrap => {
+                    let bootstrap = read_ssz_snappy_payload::<_, E::AltairLightClientBootstrap>(
+                        io,
+                        crate::rpc::size_bounds::MAX_LIGHT_CLIENT_OBJECT_SSZ_BYTES,
+                    )
+                    .await?;
+                    first_response = Some(RpcResponse::LightClientBootstrap(bootstrap));
+                    break;
+                }
+                RpcMethod::LightClientUpdatesByRange => {
+                    // Streaming: each success chunk is one LightClientUpdate.
+                    // Clamp to MAX_REQUEST_LIGHT_CLIENT_UPDATES per spec.
+                    if lc_updates.len()
+                        >= crate::rpc::types::MAX_REQUEST_LIGHT_CLIENT_UPDATES as usize
+                    {
+                        return Err(io::Error::other(
+                            "response exceeds MAX_REQUEST_LIGHT_CLIENT_UPDATES",
+                        ));
+                    }
+                    let update = read_ssz_snappy_payload::<_, E::AltairLightClientUpdate>(
+                        io,
+                        crate::rpc::size_bounds::MAX_LIGHT_CLIENT_OBJECT_SSZ_BYTES,
+                    )
+                    .await?;
+                    lc_updates.push(update);
+                    // Continue reading chunks.
+                }
+                RpcMethod::LightClientFinalityUpdate => {
+                    let update = read_ssz_snappy_payload::<_, E::AltairLightClientFinalityUpdate>(
+                        io,
+                        crate::rpc::size_bounds::MAX_LIGHT_CLIENT_OBJECT_SSZ_BYTES,
+                    )
+                    .await?;
+                    first_response = Some(RpcResponse::LightClientFinalityUpdate(update));
+                    break;
+                }
+                RpcMethod::LightClientOptimisticUpdate => {
+                    let update =
+                        read_ssz_snappy_payload::<_, E::AltairLightClientOptimisticUpdate>(
+                            io,
+                            crate::rpc::size_bounds::MAX_LIGHT_CLIENT_OBJECT_SSZ_BYTES,
+                        )
+                        .await?;
+                    first_response = Some(RpcResponse::LightClientOptimisticUpdate(update));
+                    break;
                 }
             }
         }
@@ -218,6 +301,9 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
         match method {
             RpcMethod::BlocksByRange => Ok(RpcResponse::BlocksByRange(blocks)),
             RpcMethod::BlocksByRoot => Ok(RpcResponse::BlocksByRoot(blocks)),
+            RpcMethod::LightClientUpdatesByRange => {
+                Ok(RpcResponse::LightClientUpdatesByRange(lc_updates))
+            }
             _ => {
                 // Single-response method with zero chunks.
                 Err(io::Error::other(
@@ -238,8 +324,14 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
     {
         let method = &protocol.0;
 
-        if matches!(method, RpcMethod::MetaData) {
-            // MetaData request has no body.
+        // Methods with no request body.
+        if matches!(
+            method,
+            RpcMethod::MetaData
+                | RpcMethod::MetaDataV1
+                | RpcMethod::LightClientFinalityUpdate
+                | RpcMethod::LightClientOptimisticUpdate
+        ) {
             return Ok(());
         }
 
@@ -276,7 +368,53 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
             }
             RpcResponse::MetaData(m) => {
                 io.write_all(&[0]).await?;
-                write_ssz_snappy(io, &m.as_ssz_bytes()).await?;
+                // Dispatch SSZ encoding based on the MetaData variant.
+                match m {
+                    MetaDataResponse::V1(v1) => {
+                        write_ssz_snappy(io, &v1.as_ssz_bytes()).await?;
+                    }
+                    MetaDataResponse::V2(v2) => {
+                        write_ssz_snappy(io, &v2.as_ssz_bytes()).await?;
+                    }
+                }
+            }
+            RpcResponse::LightClientBootstrap(bootstrap) => {
+                let fc = self.fork_context.as_deref().ok_or_else(|| {
+                    io::Error::other("missing fork context: cannot encode context bytes")
+                })?;
+                io.write_all(&[0]).await?;
+                io.write_all(&fc.fork_digest_for(Fork::Altair).into_inner())
+                    .await?;
+                write_ssz_snappy(io, &bootstrap.as_ssz_bytes()).await?;
+            }
+            RpcResponse::LightClientUpdatesByRange(updates) => {
+                let fc = self.fork_context.as_deref().ok_or_else(|| {
+                    io::Error::other("missing fork context: cannot encode context bytes")
+                })?;
+                for update in &updates {
+                    io.write_all(&[0]).await?;
+                    io.write_all(&fc.fork_digest_for(Fork::Altair).into_inner())
+                        .await?;
+                    write_ssz_snappy(io, &update.as_ssz_bytes()).await?;
+                }
+            }
+            RpcResponse::LightClientFinalityUpdate(update) => {
+                let fc = self.fork_context.as_deref().ok_or_else(|| {
+                    io::Error::other("missing fork context: cannot encode context bytes")
+                })?;
+                io.write_all(&[0]).await?;
+                io.write_all(&fc.fork_digest_for(Fork::Altair).into_inner())
+                    .await?;
+                write_ssz_snappy(io, &update.as_ssz_bytes()).await?;
+            }
+            RpcResponse::LightClientOptimisticUpdate(update) => {
+                let fc = self.fork_context.as_deref().ok_or_else(|| {
+                    io::Error::other("missing fork context: cannot encode context bytes")
+                })?;
+                io.write_all(&[0]).await?;
+                io.write_all(&fc.fork_digest_for(Fork::Altair).into_inner())
+                    .await?;
+                write_ssz_snappy(io, &update.as_ssz_bytes()).await?;
             }
             RpcResponse::BlocksByRange(blocks) | RpcResponse::BlocksByRoot(blocks) => {
                 let fc = self.fork_context.as_deref().ok_or_else(|| {
@@ -436,9 +574,23 @@ fn encode_request_ssz(req: RpcRequest) -> io::Result<Vec<u8>> {
         RpcRequest::Status(s) => s.as_ssz_bytes(),
         RpcRequest::Goodbye(v) => v.as_ssz_bytes(),
         RpcRequest::Ping(v) => v.as_ssz_bytes(),
-        RpcRequest::MetaData => Vec::new(),
+        RpcRequest::MetaData | RpcRequest::MetaDataV1 => Vec::new(),
         RpcRequest::BlocksByRange(r) => r.as_ssz_bytes(),
         RpcRequest::BlocksByRoot(r) => r.as_ssz_bytes(),
+        // LightClientBootstrap carries a Root (32 bytes) as the request body.
+        RpcRequest::LightClientBootstrap(req) => req.0.as_ssz_bytes(),
+        // LightClientUpdatesByRange carries start_period and count (both u64 = 16 bytes).
+        RpcRequest::LightClientUpdatesByRange(req) => {
+            let mut bytes = Vec::with_capacity(16);
+            bytes.extend_from_slice(&req.start_period.as_ssz_bytes());
+            bytes.extend_from_slice(&req.count.as_ssz_bytes());
+            bytes
+        }
+        // These two have no body; the write_request fast-path handles them before
+        // calling encode_request_ssz, so this arm is unreachable.
+        RpcRequest::LightClientFinalityUpdate | RpcRequest::LightClientOptimisticUpdate => {
+            Vec::new()
+        }
     })
 }
 
@@ -461,6 +613,7 @@ fn decode_request(method: &RpcMethod, bytes: &[u8]) -> io::Result<RpcRequest> {
             Ok(RpcRequest::Ping(v))
         }
         RpcMethod::MetaData => Ok(RpcRequest::MetaData),
+        RpcMethod::MetaDataV1 => Ok(RpcRequest::MetaDataV1),
         RpcMethod::BlocksByRange => {
             let r = BeaconBlocksByRangeRequest::from_ssz_bytes(bytes)
                 .map_err(|e| io::Error::other(format!("ssz decode BlocksByRange: {e}")))?;
@@ -471,14 +624,36 @@ fn decode_request(method: &RpcMethod, bytes: &[u8]) -> io::Result<RpcRequest> {
                 .map_err(|e| io::Error::other(format!("ssz decode BlocksByRoot: {e}")))?;
             Ok(RpcRequest::BlocksByRoot(r))
         }
-        // Light-client request handlers land in Phase 6 (Task 6.8).
-        // Inbound requests are not dispatched yet; reject at the codec level.
-        RpcMethod::LightClientBootstrap
-        | RpcMethod::LightClientUpdatesByRange
-        | RpcMethod::LightClientFinalityUpdate
-        | RpcMethod::LightClientOptimisticUpdate => {
-            Err(io::Error::other("light-client req-resp not yet supported"))
+        // Light-client request decoders per `specs/altair/light-client/p2p-interface.md`.
+        RpcMethod::LightClientBootstrap => {
+            use pharos_types::phase0::primitives::Root;
+            let root = Root::from_ssz_bytes(bytes)
+                .map_err(|e| io::Error::other(format!("ssz decode Root: {e}")))?;
+            Ok(RpcRequest::LightClientBootstrap(
+                LightClientBootstrapRequest(root),
+            ))
         }
+        RpcMethod::LightClientUpdatesByRange => {
+            if bytes.len() != 16 {
+                return Err(io::Error::other(
+                    "LightClientUpdatesByRange request must be 16 bytes (start_period + count)",
+                ));
+            }
+            let start_period = u64::from_ssz_bytes(&bytes[..8])
+                .map_err(|e| io::Error::other(format!("ssz decode start_period: {e}")))?;
+            let count = u64::from_ssz_bytes(&bytes[8..])
+                .map_err(|e| io::Error::other(format!("ssz decode count: {e}")))?;
+            Ok(RpcRequest::LightClientUpdatesByRange(
+                LightClientUpdatesByRangeRequest {
+                    start_period,
+                    count,
+                },
+            ))
+        }
+        // These two have no body; the read_request fast-path handles them before
+        // calling decode_request, so this arm is unreachable.
+        RpcMethod::LightClientFinalityUpdate => Ok(RpcRequest::LightClientFinalityUpdate),
+        RpcMethod::LightClientOptimisticUpdate => Ok(RpcRequest::LightClientOptimisticUpdate),
     }
 }
 

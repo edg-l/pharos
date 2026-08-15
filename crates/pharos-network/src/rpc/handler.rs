@@ -7,16 +7,22 @@
 use libp2p::PeerId;
 use pharos_ssz::SszList;
 use pharos_types::EthSpec;
-use pharos_types::phase0::{ErrorMessage, Status};
+use pharos_types::phase0::{ErrorMessage, MetaData as Phase0MetaData, Status};
 
-use crate::host::Host;
+use crate::host::{Host, LightClientProvider};
 use crate::peer::manager::PeerManager;
 use crate::rpc::min_epochs::compute_min_epochs_for_block_requests;
-use crate::rpc::types::{MAX_REQUEST_BLOCKS, RpcRequest, RpcResponse};
+use crate::rpc::types::{
+    MAX_REQUEST_BLOCKS, MAX_REQUEST_LIGHT_CLIENT_UPDATES, MetaDataResponse, RpcRequest, RpcResponse,
+};
 use crate::scoring::{HandshakeFailKind, PeerScorer, ScoreEvent};
 use crate::types::DisconnectReason;
 
 /// Handle an inbound `RpcRequest` and produce an `RpcResponse`.
+///
+/// `negotiated_protocol_id` is the protocol string that multistream-select
+/// negotiated for this stream; used to select MetaData v1 vs v2 per
+/// `D-metadata-v2-dual-handle`.
 ///
 /// Scoring events are forwarded to `peer_manager.record_event`. The `Host`
 /// provides chain state needed to build responses.
@@ -25,10 +31,11 @@ pub async fn handle_request<E, H, S>(
     peer: PeerId,
     req: RpcRequest,
     peer_manager: &mut PeerManager<S>,
+    negotiated_protocol_id: &str,
 ) -> RpcResponse<E>
 where
     E: EthSpec,
-    H: Host<E>,
+    H: Host<E> + LightClientProvider<E>,
     S: PeerScorer,
 {
     match req {
@@ -70,7 +77,12 @@ where
             RpcResponse::Ping(seq)
         }
 
-        RpcRequest::MetaData => RpcResponse::MetaData(host.local_metadata()),
+        // MetaData v2 (altair): serve full altair::MetaData with syncnets.
+        // Per `D-metadata-v2-dual-handle`: select V1 or V2 based on the
+        // protocol that multistream-select negotiated for this stream.
+        RpcRequest::MetaData | RpcRequest::MetaDataV1 => {
+            handle_metadata(host, negotiated_protocol_id)
+        }
 
         RpcRequest::BlocksByRange(req) => {
             let count = req.count.min(MAX_REQUEST_BLOCKS);
@@ -97,6 +109,81 @@ where
                 .collect();
             RpcResponse::BlocksByRoot(blocks)
         }
+
+        // Light-client req-resp methods per
+        // `specs/altair/light-client/p2p-interface.md`.
+        RpcRequest::LightClientBootstrap(req) => {
+            match host.light_client_bootstrap(req.0) {
+                Some(bootstrap) => RpcResponse::LightClientBootstrap(bootstrap),
+                None => RpcResponse::Error {
+                    code: 3, // ResourceUnavailable
+                    message: make_error_message("bootstrap not available for block root"),
+                },
+            }
+        }
+
+        RpcRequest::LightClientUpdatesByRange(req) => {
+            // Reject requests that exceed the spec maximum per R5 (Light-client request flooding)
+            // and `specs/altair/light-client/p2p-interface.md:35`.
+            // Spec requires rejection (code 1 InvalidRequest), not silent clamping.
+            if req.count > MAX_REQUEST_LIGHT_CLIENT_UPDATES {
+                return RpcResponse::Error {
+                    code: 1, // InvalidRequest
+                    message: make_error_message("count exceeds MAX_REQUEST_LIGHT_CLIENT_UPDATES"),
+                };
+            }
+            let updates = host.light_client_updates_by_range(req.start_period, req.count);
+            RpcResponse::LightClientUpdatesByRange(updates)
+        }
+
+        RpcRequest::LightClientFinalityUpdate => {
+            match host.light_client_finality_update() {
+                Some(update) => RpcResponse::LightClientFinalityUpdate(update),
+                None => RpcResponse::Error {
+                    code: 3, // ResourceUnavailable
+                    message: make_error_message("finality update not available"),
+                },
+            }
+        }
+
+        RpcRequest::LightClientOptimisticUpdate => {
+            match host.light_client_optimistic_update() {
+                Some(update) => RpcResponse::LightClientOptimisticUpdate(update),
+                None => RpcResponse::Error {
+                    code: 3, // ResourceUnavailable
+                    message: make_error_message("optimistic update not available"),
+                },
+            }
+        }
+    }
+}
+
+// ── MetaData dual-handle ──────────────────────────────────────────────────────
+
+/// Build a `MetaData` response selecting v1 or v2 by the negotiated protocol.
+///
+/// Per `D-metadata-v2-dual-handle`:
+/// - `/metadata/1/ssz_snappy`: serve `MetaDataResponse::V1` (phase-0; drop `syncnets`).
+/// - `/metadata/2/ssz_snappy` or unknown: serve `MetaDataResponse::V2` (altair; full).
+///
+/// The v1 view is derived from the v2 local metadata by copying `seq_number`
+/// and `attnets` and discarding `syncnets`.
+fn handle_metadata<E, H>(host: &H, negotiated_protocol_id: &str) -> RpcResponse<E>
+where
+    E: EthSpec,
+    H: crate::host::ForkContext,
+{
+    let md = host.local_metadata();
+    if negotiated_protocol_id == crate::scoring::RpcMethod::MetaDataV1.protocol_id() {
+        // v1 peer: serve phase-0 MetaData (seq_number + attnets, no syncnets).
+        let v1 = Phase0MetaData {
+            seq_number: md.seq_number,
+            attnets: md.attnets,
+        };
+        RpcResponse::MetaData(MetaDataResponse::V1(v1))
+    } else {
+        // v2 (or any other negotiation): serve full altair MetaData.
+        RpcResponse::MetaData(MetaDataResponse::V2(md))
     }
 }
 
@@ -132,15 +219,19 @@ pub fn make_error_message(s: &str) -> ErrorMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict};
+    use crate::host::{
+        BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
+    };
     use crate::peer::manager::PeerManager;
     use crate::scoring::NoopScorer;
+    use crate::scoring::RpcMethod;
     use crate::types::{ConnectionDirection, PeerState, SubnetId};
     use pharos_types::MainnetEthSpec;
-    use pharos_types::phase0::primitives::ForkDigest;
+    use pharos_types::altair::MetaData as AltairMetaData;
+    use pharos_types::phase0::primitives::{ForkDigest, Root};
     use pharos_types::phase0::{
-        AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, MetaData,
-        ProposerSlashing, Root, SignedVoluntaryExit, Slot,
+        AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
+        SignedVoluntaryExit, Slot,
     };
     use pharos_utils::{Bytes4, Epoch};
 
@@ -178,10 +269,10 @@ mod tests {
         fn fork_from_context(&self, _ctx: &[u8; 4]) -> Option<crate::types::Fork> {
             None
         }
-        fn local_metadata(&self) -> MetaData {
-            MetaData {
+        fn local_metadata(&self) -> AltairMetaData {
+            AltairMetaData {
                 seq_number: self.metadata_seq,
-                ..MetaData::default()
+                ..AltairMetaData::default()
             }
         }
     }
@@ -260,8 +351,39 @@ mod tests {
         }
     }
 
+    impl LightClientProvider<MainnetEthSpec> for MockHost {
+        fn light_client_bootstrap(
+            &self,
+            _block_root: Root,
+        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientBootstrap> {
+            None
+        }
+        fn light_client_updates_by_range(
+            &self,
+            _start_period: u64,
+            _count: u64,
+        ) -> Vec<<MainnetEthSpec as EthSpec>::AltairLightClientUpdate> {
+            Vec::new()
+        }
+        fn light_client_finality_update(
+            &self,
+        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientFinalityUpdate> {
+            None
+        }
+        fn light_client_optimistic_update(
+            &self,
+        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate> {
+            None
+        }
+    }
+
     fn make_peer_manager() -> PeerManager<NoopScorer> {
         PeerManager::new(NoopScorer, 10, 5)
+    }
+
+    // Convenience: build a MetaData v2 protocol ID string for test calls.
+    fn v2_protocol() -> &'static str {
+        RpcMethod::MetaData.protocol_id()
     }
 
     /// A `Ping(42)` request returns `Ping(seq)` where `seq` is the mock host's
@@ -272,9 +394,14 @@ mod tests {
         let mut pm = make_peer_manager();
         let peer = PeerId::random();
 
-        let resp =
-            handle_request::<MainnetEthSpec, _, _>(&host, peer, RpcRequest::Ping(42), &mut pm)
-                .await;
+        let resp = handle_request::<MainnetEthSpec, _, _>(
+            &host,
+            peer,
+            RpcRequest::Ping(42),
+            &mut pm,
+            v2_protocol(),
+        )
+        .await;
 
         match resp {
             RpcResponse::Ping(seq) => assert_eq!(seq, 7, "Ping should return host's seq_number"),
@@ -282,20 +409,48 @@ mod tests {
         }
     }
 
-    /// A `MetaData` request returns the host's metadata.
+    /// A `MetaData` (v2) request returns the host's altair metadata.
     #[tokio::test]
-    async fn metadata_returns_host_metadata() {
+    async fn metadata_v2_returns_host_metadata() {
         let host = MockHost::new(Bytes4::from_array([0u8; 4]), 3);
         let mut pm = make_peer_manager();
         let peer = PeerId::random();
 
-        let resp =
-            handle_request::<MainnetEthSpec, _, _>(&host, peer, RpcRequest::MetaData, &mut pm)
-                .await;
+        let resp = handle_request::<MainnetEthSpec, _, _>(
+            &host,
+            peer,
+            RpcRequest::MetaData,
+            &mut pm,
+            v2_protocol(),
+        )
+        .await;
 
         match resp {
-            RpcResponse::MetaData(m) => assert_eq!(m.seq_number, 3),
-            other => panic!("expected RpcResponse::MetaData, got: {other:?}"),
+            RpcResponse::MetaData(MetaDataResponse::V2(m)) => assert_eq!(m.seq_number, 3),
+            other => panic!("expected RpcResponse::MetaData(V2), got: {other:?}"),
+        }
+    }
+
+    /// A `MetaData` (v1) request returns truncated phase-0 metadata.
+    #[tokio::test]
+    async fn metadata_v1_returns_v1_truncated() {
+        let host = MockHost::new(Bytes4::from_array([0u8; 4]), 5);
+        let mut pm = make_peer_manager();
+        let peer = PeerId::random();
+
+        let v1_protocol = RpcMethod::MetaDataV1.protocol_id();
+        let resp = handle_request::<MainnetEthSpec, _, _>(
+            &host,
+            peer,
+            RpcRequest::MetaDataV1,
+            &mut pm,
+            v1_protocol,
+        )
+        .await;
+
+        match resp {
+            RpcResponse::MetaData(MetaDataResponse::V1(m)) => assert_eq!(m.seq_number, 5),
+            other => panic!("expected RpcResponse::MetaData(V1), got: {other:?}"),
         }
     }
 
@@ -321,6 +476,7 @@ mod tests {
             peer,
             RpcRequest::Status(incoming.clone()),
             &mut pm,
+            v2_protocol(),
         )
         .await;
         assert!(matches!(resp, RpcResponse::Status(_)));
@@ -354,6 +510,7 @@ mod tests {
             peer,
             RpcRequest::Status(incoming),
             &mut pm,
+            v2_protocol(),
         )
         .await;
         match resp {

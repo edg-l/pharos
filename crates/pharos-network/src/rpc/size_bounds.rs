@@ -24,8 +24,10 @@ pub fn type_size_bounds(method: &RpcMethod) -> (usize, usize) {
         RpcMethod::Status => (84, 84),
         RpcMethod::Goodbye => (8, 8),
         RpcMethod::Ping => (8, 8),
-        // seq_number(8) + attnets Bitvector[64](8) = 16
-        RpcMethod::MetaData => (16, 16),
+        // v2 altair MetaData: seq_number(8) + attnets Bitvector[64](8) + syncnets Bitvector[4](1) = 17 bytes minimum.
+        // syncnets is Bitvector<4>; SSZ encodes it as 1 byte (ceil(4/8) = 1 byte), not 4/8 of a byte.
+        RpcMethod::MetaData => (17, 64), // lower bound 17 (altair MetaData minimum); ceiling 64 for future additions
+        RpcMethod::MetaDataV1 => (16, 16),
         // start_slot(8) + count(8) + step(8) = 24
         RpcMethod::BlocksByRange => (24, 24),
         // SszList<Root, MAX_REQUEST_BLOCKS>: 0 to MAX_REQUEST_BLOCKS * 32 bytes
@@ -39,6 +41,13 @@ pub fn type_size_bounds(method: &RpcMethod) -> (usize, usize) {
         RpcMethod::LightClientFinalityUpdate | RpcMethod::LightClientOptimisticUpdate => (0, 0),
     }
 }
+
+/// Conservative upper bound on a light-client object SSZ encoding.
+///
+/// A `LightClientBootstrap` or `LightClientUpdate` carries sync-committee data
+/// (BLS pubkeys × 512 = 48 × 512 = 24 KiB) plus headers and branches.
+/// 64 KiB provides a generous ceiling for mainnet objects.
+pub const MAX_LIGHT_CLIENT_OBJECT_SSZ_BYTES: usize = 64 * 1024;
 
 /// Conservative upper bound on a Phase-0 `SignedBeaconBlock` SSZ encoding.
 ///
@@ -61,9 +70,26 @@ mod tests {
         assert_eq!(type_size_bounds(&RpcMethod::Status), (84, 84));
         assert_eq!(type_size_bounds(&RpcMethod::Goodbye), (8, 8));
         assert_eq!(type_size_bounds(&RpcMethod::Ping), (8, 8));
-        assert_eq!(type_size_bounds(&RpcMethod::MetaData), (16, 16));
+        // MetaData v2 (altair): seq(8) + attnets(8) + syncnets(1) = 17; ceiling 64.
+        assert_eq!(type_size_bounds(&RpcMethod::MetaData), (17, 64));
+        // MetaData v1 (phase-0): seq(8) + attnets(8) = 16 (fixed).
+        assert_eq!(type_size_bounds(&RpcMethod::MetaDataV1), (16, 16));
         assert_eq!(type_size_bounds(&RpcMethod::BlocksByRange), (24, 24));
         assert_eq!(type_size_bounds(&RpcMethod::BlocksByRoot), (0, 1024 * 32));
+        // Light-client request bodies.
+        assert_eq!(type_size_bounds(&RpcMethod::LightClientBootstrap), (32, 32));
+        assert_eq!(
+            type_size_bounds(&RpcMethod::LightClientUpdatesByRange),
+            (16, 16)
+        );
+        assert_eq!(
+            type_size_bounds(&RpcMethod::LightClientFinalityUpdate),
+            (0, 0)
+        );
+        assert_eq!(
+            type_size_bounds(&RpcMethod::LightClientOptimisticUpdate),
+            (0, 0)
+        );
     }
 
     /// Confirm Status SSZ encoding is exactly 84 bytes.
