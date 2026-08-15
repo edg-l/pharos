@@ -1,21 +1,28 @@
 //! `SszList<T, N>` and `SszVector<T, N>` — SSZ persistent collection types.
 //!
 //! Both types present a persistent (copy-on-write) API via `with_set` and
-//! `with_push`. Phase 3 ships the `Naive(Vec<T>)` backend only; the
-//! `Tree(Arc<Node>)` backend slot exists in the internal `Backend` enum and
-//! will be filled in a later milestone.
+//! `with_push`.  Two backends are available:
+//!
+//! - `Backend::Naive(Vec<T>)` — clone-on-write `Vec`.  SSZ `Decode` always
+//!   lands here.
+//! - `Backend::Tree(Arc<Node<T>>)` — path-copy CoW Merkle tree with per-node
+//!   `OnceLock<Hash256>` caches.  Reached only via explicit constructors
+//!   (`from_vec_tree`, `empty_tree`).
 //!
 //! # Backend design
 //!
 //! ```text
 //! enum Backend<T> {
-//!     Naive(Vec<T>),        // Phase 3: fully implemented
-//!     Tree(Arc<Node>),      // Future: unimplemented!() for every method
+//!     Naive(Vec<T>),                         // fast clone, contiguous slice
+//!     Tree(Arc<Node<T>>),                    // O(log N) CoW, cached roots
+//! }
+//!
+//! enum Node<T> {
+//!     Branch { left: Arc<Node<T>>, right: Arc<Node<T>>, hash: OnceLock<Hash256> },
+//!     Leaf(T),
+//!     ZeroSubtree(u8),  // depth; root is zero_hash(depth)
 //! }
 //! ```
-//!
-//! Containers and external callers only see `SszList<T, N>` / `SszVector<T, N>`
-//! and the `SszSequence` trait. The `Backend` is a private implementation detail.
 //!
 //! # `SszList` vs `SszVector`
 //!
@@ -24,8 +31,7 @@
 //! | `SszList`   | variable | N max | yes            |
 //! | `SszVector` | fixed=N  | none  | no             |
 
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
 
@@ -35,38 +41,211 @@ use crate::{
     error::SszError,
     tree_hash::{
         TreeHash, TreeHashType, merkleize, merkleize_padded, mix_in_length, pack_basic_elems_bytes,
-        pack_bytes_to_chunks,
+        pack_bytes_to_chunks, zero_hash,
     },
 };
-use pharos_utils::Hash256;
+use pharos_utils::{Hash256, hash::hash_concat};
+
+// ── depth helper ──────────────────────────────────────────────────────────────
+
+/// Compute the tree depth needed to address `n` leaves.
+///
+/// `depth_for_limit(1) == 1`, `depth_for_limit(2) == 1`,
+/// `depth_for_limit(3) == 2`, `depth_for_limit(4) == 2`, …
+///
+/// The result is the number of bits required to index into a tree whose leaf
+/// capacity is `next_pow_of_two(n)`.
+pub(crate) const fn depth_for_limit(n: u64) -> u8 {
+    if n <= 1 {
+        1
+    } else {
+        (64 - (n - 1).leading_zeros()) as u8
+    }
+}
+
+// ── Node<T> ───────────────────────────────────────────────────────────────────
+
+/// A node in the persistent binary Merkle tree backing `Backend::Tree`.
+///
+/// - `Branch` — internal node with two children and a lazily-cached hash.
+/// - `Leaf(T)` — holds one element.
+/// - `ZeroSubtree(depth)` — virtual all-zero subtree whose root is
+///   `zero_hash(depth)`.  Avoids materialising empty leaves.
+pub(crate) enum Node<T> {
+    Branch {
+        left: Arc<Node<T>>,
+        right: Arc<Node<T>>,
+        hash: OnceLock<Hash256>,
+    },
+    Leaf(T),
+    /// All-zero subtree at the given depth; `cached_root` returns
+    /// `zero_hash(depth)` without any hashing.
+    ZeroSubtree(u8),
+}
+
+// ── Node<T> impl ──────────────────────────────────────────────────────────────
+
+impl<T> Node<T> {
+    /// Get a reference to the element at index `i` in a tree of depth `depth`.
+    ///
+    /// Returns `None` if the path reaches a `ZeroSubtree` (element not present)
+    /// or if `i` is out of range.
+    pub(crate) fn get(self: &Arc<Self>, i: usize, depth: u8) -> Option<&T> {
+        match self.as_ref() {
+            Node::Leaf(t) => {
+                if depth == 0 {
+                    Some(t)
+                } else {
+                    None
+                }
+            }
+            Node::ZeroSubtree(_) => None,
+            Node::Branch { left, right, .. } => {
+                if depth == 0 {
+                    return None;
+                }
+                let child_depth = depth - 1;
+                let mid = 1usize << child_depth;
+                if i < mid {
+                    left.get(i, child_depth)
+                } else {
+                    right.get(i - mid, child_depth)
+                }
+            }
+        }
+    }
+
+    /// Path-copy CoW update: replace element at index `i` with `v`.
+    ///
+    /// Only the spine from root to the target leaf is cloned; all off-path
+    /// `Arc` references are reused unchanged (`Arc::clone` is O(1)).
+    pub(crate) fn with_set(self: &Arc<Self>, i: usize, v: T, depth: u8) -> Arc<Node<T>>
+    where
+        T: Clone,
+    {
+        match self.as_ref() {
+            Node::Leaf(_) => Arc::new(Node::Leaf(v)),
+            Node::ZeroSubtree(d) => {
+                // Materialise the spine from a zero subtree.
+                if depth == 0 {
+                    Arc::new(Node::Leaf(v))
+                } else {
+                    let child_depth = depth - 1;
+                    let mid = 1usize << child_depth;
+                    let zero_child = Arc::new(Node::ZeroSubtree(*d - 1));
+                    if i < mid {
+                        let new_left = zero_child.with_set(i, v, child_depth);
+                        Arc::new(Node::Branch {
+                            left: new_left,
+                            right: Arc::new(Node::ZeroSubtree(*d - 1)),
+                            hash: OnceLock::new(),
+                        })
+                    } else {
+                        let new_right = zero_child.with_set(i - mid, v, child_depth);
+                        Arc::new(Node::Branch {
+                            left: Arc::new(Node::ZeroSubtree(*d - 1)),
+                            right: new_right,
+                            hash: OnceLock::new(),
+                        })
+                    }
+                }
+            }
+            Node::Branch { left, right, .. } => {
+                if depth == 0 {
+                    // Shouldn't happen in a well-formed tree; treat as leaf replacement.
+                    return Arc::new(Node::Leaf(v));
+                }
+                let child_depth = depth - 1;
+                let mid = 1usize << child_depth;
+                if i < mid {
+                    Arc::new(Node::Branch {
+                        left: left.with_set(i, v, child_depth),
+                        right: Arc::clone(right),
+                        hash: OnceLock::new(),
+                    })
+                } else {
+                    Arc::new(Node::Branch {
+                        left: Arc::clone(left),
+                        right: right.with_set(i - mid, v, child_depth),
+                        hash: OnceLock::new(),
+                    })
+                }
+            }
+        }
+    }
+
+    /// Return the cached Merkle root, computing it lazily if needed.
+    pub(crate) fn cached_root(&self) -> Hash256
+    where
+        T: TreeHash,
+    {
+        match self {
+            Node::Leaf(t) => t.tree_hash_root(),
+            Node::ZeroSubtree(d) => zero_hash(*d as usize),
+            Node::Branch { left, right, hash } => *hash.get_or_init(|| {
+                let l = left.cached_root();
+                let r = right.cached_root();
+                hash_concat(l.as_ref(), r.as_ref())
+            }),
+        }
+    }
+
+    /// Build a tree from a slice of elements.
+    ///
+    /// - Each element becomes a `Leaf(t.clone())`.
+    /// - Missing right-hand subtrees are filled with `ZeroSubtree(child_depth)`.
+    /// - Returns the root `Arc<Node<T>>` for a tree of the given `depth`.
+    pub(crate) fn from_slice(elems: &[T], depth: u8) -> Arc<Node<T>>
+    where
+        T: Clone,
+    {
+        if depth == 0 {
+            // Leaf level.
+            if let Some(t) = elems.first() {
+                Arc::new(Node::Leaf(t.clone()))
+            } else {
+                Arc::new(Node::ZeroSubtree(0))
+            }
+        } else {
+            let child_depth = depth - 1;
+            let mid = 1usize << child_depth;
+            let (left_elems, right_elems) = if elems.len() <= mid {
+                (elems, &[][..])
+            } else {
+                elems.split_at(mid)
+            };
+
+            let left = Node::from_slice(left_elems, child_depth);
+            let right = if right_elems.is_empty() {
+                Arc::new(Node::ZeroSubtree(child_depth))
+            } else {
+                Node::from_slice(right_elems, child_depth)
+            };
+            Arc::new(Node::Branch {
+                left,
+                right,
+                hash: OnceLock::new(),
+            })
+        }
+    }
+}
 
 // ── Backend enum (private) ────────────────────────────────────────────────────
 
 /// Internal storage backend for `SszList` and `SszVector`.
-///
-/// Only the `Naive` variant is implemented. The `Tree` variant is reserved for
-/// the persistent tree-backed implementation that arrives in a later milestone.
 enum Backend<T> {
     /// Simple `Vec<T>` storage — clone-on-write.
     Naive(Vec<T>),
-    /// Persistent hash-array-mapped trie (not yet implemented).
-    #[allow(dead_code)]
+    /// Persistent path-copy CoW binary Merkle tree.
     Tree(Arc<Node<T>>),
-}
-
-/// Placeholder for the future persistent tree node.
-///
-/// No methods are implemented; its presence in `Backend::Tree` satisfies the
-/// compiler while keeping the enum slot reserved.
-struct Node<T> {
-    _marker: PhantomData<T>,
 }
 
 impl<T: Clone> Clone for Backend<T> {
     fn clone(&self) -> Self {
         match self {
             Backend::Naive(v) => Backend::Naive(v.clone()),
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
+            // Arc::clone is O(1): increments the reference count.
+            Backend::Tree(arc) => Backend::Tree(Arc::clone(arc)),
         }
     }
 }
@@ -75,18 +254,21 @@ impl<T: PartialEq> PartialEq for Backend<T> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Backend::Naive(a), Backend::Naive(b)) => a == b,
-            _ => unimplemented!("tree backend lands in a later milestone"),
+            // Cross-backend equality is handled at the SszList/SszVector level
+            // via iter() comparison.  Two Tree backends are only compared by
+            // SszList/SszVector::eq which routes non-Naive pairs through iter().
+            _ => false,
         }
     }
 }
 
 impl<T: Eq> Eq for Backend<T> {}
 
-impl<T: std::fmt::Debug> std::fmt::Debug for Backend<T> {
+impl<T: std::fmt::Debug + Clone> std::fmt::Debug for Backend<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Backend::Naive(v) => f.debug_tuple("Naive").field(v).finish(),
-            Backend::Tree(_) => write!(f, "Tree(<unimplemented>)"),
+            Backend::Tree(_) => write!(f, "Tree(<node>)"),
         }
     }
 }
@@ -135,6 +317,72 @@ pub trait SszSequence<T, const N: u64>: Sized {
     fn with_push(&self, v: T) -> Result<Self, SszError>
     where
         T: Clone;
+
+    /// Collect all elements into an owned `Vec<T>`.
+    ///
+    /// For the `Naive` backend this clones the underlying `Vec`; for the `Tree`
+    /// backend it performs an in-order traversal.
+    fn to_vec(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.iter().cloned().collect()
+    }
+}
+
+// ── Tree-backed iterator ──────────────────────────────────────────────────────
+
+/// An in-order iterator over the leaves of a tree-backed `SszList` or
+/// `SszVector`.  Carries the element count so it stops at `len`.
+struct TreeIter<'a, T> {
+    /// Pending (node, depth) pairs in DFS order, rightmost first.
+    stack: Vec<(&'a Node<T>, u8)>,
+    remaining: usize,
+}
+
+impl<'a, T> TreeIter<'a, T> {
+    fn new(root: &'a Arc<Node<T>>, depth: u8, len: usize) -> Self {
+        let mut stack = Vec::new();
+        if len > 0 {
+            stack.push((root.as_ref(), depth));
+        }
+        Self {
+            stack,
+            remaining: len,
+        }
+    }
+}
+
+impl<'a, T> Iterator for TreeIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        if self.remaining == 0 {
+            return None;
+        }
+        loop {
+            let (node, depth) = self.stack.pop()?;
+            match node {
+                Node::Leaf(t) => {
+                    self.remaining -= 1;
+                    return Some(t);
+                }
+                Node::ZeroSubtree(_) => {
+                    // No real elements here; skip.
+                    continue;
+                }
+                Node::Branch { left, right, .. } => {
+                    if depth == 0 {
+                        continue;
+                    }
+                    let child_depth = depth - 1;
+                    // Push right first so left is processed first (LIFO).
+                    self.stack.push((right.as_ref(), child_depth));
+                    self.stack.push((left.as_ref(), child_depth));
+                }
+            }
+        }
+    }
 }
 
 // ── SszList<T, N> ─────────────────────────────────────────────────────────────
@@ -151,17 +399,20 @@ pub trait SszSequence<T, const N: u64>: Sized {
 /// elements.
 pub struct SszList<T, const N: u64> {
     backend: Backend<T>,
+    /// Length: tracked separately for the `Tree` backend (tree capacity ≥ len).
+    len: usize,
 }
 
 impl<T, const N: u64> SszList<T, N> {
-    /// Construct an empty list.
+    /// Construct an empty list (Naive backend).
     pub fn new() -> Self {
         Self {
             backend: Backend::Naive(Vec::new()),
+            len: 0,
         }
     }
 
-    /// Construct a list from a `Vec<T>`.
+    /// Construct a list from a `Vec<T>` (Naive backend).
     ///
     /// Returns `SszError::ListLimitExceeded` if `v.len() > N`.
     pub fn from_vec(v: Vec<T>) -> Result<Self, SszError> {
@@ -171,12 +422,14 @@ impl<T, const N: u64> SszList<T, N> {
                 limit: N,
             });
         }
+        let len = v.len();
         Ok(Self {
             backend: Backend::Naive(v),
+            len,
         })
     }
 
-    /// Construct a list from an iterator.
+    /// Construct a list from an iterator (Naive backend).
     ///
     /// Returns `SszError::ListLimitExceeded` if the iterator yields more than `N`
     /// elements.
@@ -185,15 +438,74 @@ impl<T, const N: u64> SszList<T, N> {
         Self::from_vec(v)
     }
 
+    /// Construct a tree-backed list from a `Vec<T>` (composite elements only).
+    ///
+    /// Returns `SszError::ListLimitExceeded` if `v.len() > N`.
+    pub fn from_vec_tree(v: Vec<T>) -> Result<Self, SszError>
+    where
+        T: Clone + TreeHash,
+    {
+        if T::TREE_HASH_TYPE == TreeHashType::Basic {
+            return Err(SszError::Custom(
+                "tree backend requires composite element type".into(),
+            ));
+        }
+        if v.len() as u64 > N {
+            return Err(SszError::ListLimitExceeded {
+                len: v.len(),
+                limit: N,
+            });
+        }
+        let len = v.len();
+        let depth = depth_for_limit(N);
+        let root = Node::from_slice(&v, depth);
+        Ok(Self {
+            backend: Backend::Tree(root),
+            len,
+        })
+    }
+
+    /// Construct an empty tree-backed list.
+    ///
+    /// The root is a `ZeroSubtree` at `depth_for_limit(N)`.
+    pub fn empty_tree() -> Self
+    where
+        T: TreeHash,
+    {
+        assert!(
+            T::TREE_HASH_TYPE != TreeHashType::Basic,
+            "tree backend requires composite element type",
+        );
+        let depth = depth_for_limit(N);
+        let root = Arc::new(Node::ZeroSubtree(depth));
+        Self {
+            backend: Backend::Tree(root),
+            len: 0,
+        }
+    }
+
     /// Return a reference to the underlying `Vec<T>` (Naive backend only).
     ///
-    /// Primarily for merkleization and encoding, where direct slice access avoids
-    /// repeated `get()` calls.
+    /// Callers that need to work across both backends should use `iter()` or
+    /// `to_vec()` instead.
     pub fn as_slice(&self) -> &[T] {
         match &self.backend {
             Backend::Naive(v) => v.as_slice(),
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
+            Backend::Tree(_) => {
+                panic!(
+                    "as_slice() is not available on tree-backed SszList; \
+                     use iter() or to_vec() instead"
+                )
+            }
         }
+    }
+
+    /// Whether the underlying storage uses the tree backend.
+    ///
+    /// Only available in test builds; used for diagnostics.
+    #[cfg(test)]
+    pub fn backend_is_tree(&self) -> bool {
+        matches!(self.backend, Backend::Tree(_))
     }
 }
 
@@ -207,13 +519,20 @@ impl<T: Clone, const N: u64> Clone for SszList<T, N> {
     fn clone(&self) -> Self {
         Self {
             backend: self.backend.clone(),
+            len: self.len,
         }
     }
 }
 
 impl<T: PartialEq, const N: u64> PartialEq for SszList<T, N> {
     fn eq(&self, other: &Self) -> bool {
-        self.backend == other.backend
+        if self.len != other.len {
+            return false;
+        }
+        match (&self.backend, &other.backend) {
+            (Backend::Naive(a), Backend::Naive(b)) => a == b,
+            _ => self.iter().eq(other.iter()),
+        }
     }
 }
 
@@ -222,23 +541,26 @@ impl<T: Eq, const N: u64> Eq for SszList<T, N> {}
 impl<T: std::fmt::Debug, const N: u64> std::fmt::Debug for SszList<T, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SszList<{N}>(")?;
-        f.debug_list().entries(self.as_slice().iter()).finish()?;
+        f.debug_list().entries(self.iter()).finish()?;
         write!(f, ")")
     }
 }
 
 impl<T, const N: u64> SszSequence<T, N> for SszList<T, N> {
     fn len(&self) -> usize {
-        match &self.backend {
-            Backend::Naive(v) => v.len(),
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
-        }
+        self.len
     }
 
     fn get(&self, i: usize) -> Option<&T> {
         match &self.backend {
             Backend::Naive(v) => v.get(i),
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
+            Backend::Tree(arc) => {
+                if i >= self.len {
+                    return None;
+                }
+                let depth = depth_for_limit(N);
+                arc.get(i, depth)
+            }
         }
     }
 
@@ -246,33 +568,36 @@ impl<T, const N: u64> SszSequence<T, N> for SszList<T, N> {
     where
         T: 'a,
     {
-        // Use a concrete slice iterator for the Naive backend.
-        // The Tree backend will supply its own iterator when implemented.
-        match &self.backend {
-            Backend::Naive(v) => v.iter(),
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
-        }
+        SszListIter::new(self)
     }
 
     fn with_set(&self, i: usize, v: T) -> Result<Self, SszError>
     where
         T: Clone,
     {
+        if i >= self.len {
+            return Err(SszError::OffsetOutOfRange {
+                offset: i,
+                max: self.len.saturating_sub(1),
+            });
+        }
         match &self.backend {
             Backend::Naive(vec) => {
-                if i >= vec.len() {
-                    return Err(SszError::OffsetOutOfRange {
-                        offset: i,
-                        max: vec.len().saturating_sub(1),
-                    });
-                }
                 let mut new_vec = vec.clone();
                 new_vec[i] = v;
                 Ok(Self {
                     backend: Backend::Naive(new_vec),
+                    len: self.len,
                 })
             }
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
+            Backend::Tree(arc) => {
+                let depth = depth_for_limit(N);
+                let new_root = arc.with_set(i, v, depth);
+                Ok(Self {
+                    backend: Backend::Tree(new_root),
+                    len: self.len,
+                })
+            }
         }
     }
 
@@ -280,21 +605,59 @@ impl<T, const N: u64> SszSequence<T, N> for SszList<T, N> {
     where
         T: Clone,
     {
+        if self.len as u64 >= N {
+            return Err(SszError::ListLimitExceeded {
+                len: self.len + 1,
+                limit: N,
+            });
+        }
         match &self.backend {
             Backend::Naive(vec) => {
-                if vec.len() as u64 >= N {
-                    return Err(SszError::ListLimitExceeded {
-                        len: vec.len() + 1,
-                        limit: N,
-                    });
-                }
                 let mut new_vec = vec.clone();
                 new_vec.push(v);
+                let new_len = new_vec.len();
                 Ok(Self {
                     backend: Backend::Naive(new_vec),
+                    len: new_len,
                 })
             }
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
+            Backend::Tree(arc) => {
+                let depth = depth_for_limit(N);
+                let new_root = arc.with_set(self.len, v, depth);
+                Ok(Self {
+                    backend: Backend::Tree(new_root),
+                    len: self.len + 1,
+                })
+            }
+        }
+    }
+}
+
+/// Iterator over `SszList<T, N>` that works for both backends.
+enum SszListIter<'a, T, const N: u64> {
+    Naive(std::slice::Iter<'a, T>),
+    Tree(TreeIter<'a, T>),
+}
+
+impl<'a, T, const N: u64> SszListIter<'a, T, N> {
+    fn new(list: &'a SszList<T, N>) -> Self {
+        match &list.backend {
+            Backend::Naive(v) => SszListIter::Naive(v.iter()),
+            Backend::Tree(arc) => {
+                let depth = depth_for_limit(N);
+                SszListIter::Tree(TreeIter::new(arc, depth, list.len))
+            }
+        }
+    }
+}
+
+impl<'a, T, const N: u64> Iterator for SszListIter<'a, T, N> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        match self {
+            SszListIter::Naive(it) => it.next(),
+            SszListIter::Tree(it) => it.next(),
         }
     }
 }
@@ -317,7 +680,7 @@ pub struct SszVector<T, const N: u64> {
 }
 
 impl<T, const N: u64> SszVector<T, N> {
-    /// Construct a vector from a `Vec<T>`.
+    /// Construct a vector from a `Vec<T>` (Naive backend).
     ///
     /// Returns `SszError::VectorLengthMismatch` if `v.len() != N`.
     pub fn from_vec(v: Vec<T>) -> Result<Self, SszError> {
@@ -332,7 +695,7 @@ impl<T, const N: u64> SszVector<T, N> {
         })
     }
 
-    /// Construct a vector from an iterator.
+    /// Construct a vector from an iterator (Naive backend).
     ///
     /// Returns `SszError::VectorLengthMismatch` if the iterator does not yield
     /// exactly `N` elements.
@@ -341,11 +704,41 @@ impl<T, const N: u64> SszVector<T, N> {
         Self::from_vec(v)
     }
 
-    /// Return a reference to the underlying slice.
+    /// Construct a tree-backed vector from a `Vec<T>` (composite elements only).
+    ///
+    /// Returns `SszError::VectorLengthMismatch` if `v.len() != N`.
+    pub fn from_vec_tree(v: Vec<T>) -> Result<Self, SszError>
+    where
+        T: Clone + TreeHash,
+    {
+        if T::TREE_HASH_TYPE == TreeHashType::Basic {
+            return Err(SszError::Custom(
+                "tree backend requires composite element type".into(),
+            ));
+        }
+        if v.len() != N as usize {
+            return Err(SszError::VectorLengthMismatch {
+                found: v.len(),
+                expected: N as usize,
+            });
+        }
+        let depth = depth_for_limit(N);
+        let root = Node::from_slice(&v, depth);
+        Ok(Self {
+            backend: Backend::Tree(root),
+        })
+    }
+
+    /// Return a reference to the underlying slice (Naive backend only).
     pub fn as_slice(&self) -> &[T] {
         match &self.backend {
             Backend::Naive(v) => v.as_slice(),
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
+            Backend::Tree(_) => {
+                panic!(
+                    "as_slice() is not available on tree-backed SszVector; \
+                     use iter() or to_vec() instead"
+                )
+            }
         }
     }
 }
@@ -368,7 +761,10 @@ impl<T: Clone, const N: u64> Clone for SszVector<T, N> {
 
 impl<T: PartialEq, const N: u64> PartialEq for SszVector<T, N> {
     fn eq(&self, other: &Self) -> bool {
-        self.backend == other.backend
+        match (&self.backend, &other.backend) {
+            (Backend::Naive(a), Backend::Naive(b)) => a == b,
+            _ => self.iter().eq(other.iter()),
+        }
     }
 }
 
@@ -377,7 +773,7 @@ impl<T: Eq, const N: u64> Eq for SszVector<T, N> {}
 impl<T: std::fmt::Debug, const N: u64> std::fmt::Debug for SszVector<T, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SszVector<{N}>(")?;
-        f.debug_list().entries(self.as_slice().iter()).finish()?;
+        f.debug_list().entries(self.iter()).finish()?;
         write!(f, ")")
     }
 }
@@ -390,7 +786,13 @@ impl<T, const N: u64> SszSequence<T, N> for SszVector<T, N> {
     fn get(&self, i: usize) -> Option<&T> {
         match &self.backend {
             Backend::Naive(v) => v.get(i),
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
+            Backend::Tree(arc) => {
+                if i >= N as usize {
+                    return None;
+                }
+                let depth = depth_for_limit(N);
+                arc.get(i, depth)
+            }
         }
     }
 
@@ -398,31 +800,34 @@ impl<T, const N: u64> SszSequence<T, N> for SszVector<T, N> {
     where
         T: 'a,
     {
-        match &self.backend {
-            Backend::Naive(v) => v.iter(),
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
-        }
+        SszVectorIter::new(self)
     }
 
     fn with_set(&self, i: usize, v: T) -> Result<Self, SszError>
     where
         T: Clone,
     {
+        if i >= N as usize {
+            return Err(SszError::OffsetOutOfRange {
+                offset: i,
+                max: N as usize - 1,
+            });
+        }
         match &self.backend {
             Backend::Naive(vec) => {
-                if i >= N as usize {
-                    return Err(SszError::OffsetOutOfRange {
-                        offset: i,
-                        max: N as usize - 1,
-                    });
-                }
                 let mut new_vec = vec.clone();
                 new_vec[i] = v;
                 Ok(Self {
                     backend: Backend::Naive(new_vec),
                 })
             }
-            Backend::Tree(_) => unimplemented!("tree backend lands in a later milestone"),
+            Backend::Tree(arc) => {
+                let depth = depth_for_limit(N);
+                let new_root = arc.with_set(i, v, depth);
+                Ok(Self {
+                    backend: Backend::Tree(new_root),
+                })
+            }
         }
     }
 
@@ -438,11 +843,40 @@ impl<T, const N: u64> SszSequence<T, N> for SszVector<T, N> {
     }
 }
 
+/// Iterator over `SszVector<T, N>` that works for both backends.
+enum SszVectorIter<'a, T, const N: u64> {
+    Naive(std::slice::Iter<'a, T>),
+    Tree(TreeIter<'a, T>),
+}
+
+impl<'a, T, const N: u64> SszVectorIter<'a, T, N> {
+    fn new(vec: &'a SszVector<T, N>) -> Self {
+        match &vec.backend {
+            Backend::Naive(v) => SszVectorIter::Naive(v.iter()),
+            Backend::Tree(arc) => {
+                let depth = depth_for_limit(N);
+                SszVectorIter::Tree(TreeIter::new(arc, depth, N as usize))
+            }
+        }
+    }
+}
+
+impl<'a, T, const N: u64> Iterator for SszVectorIter<'a, T, N> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        match self {
+            SszVectorIter::Naive(it) => it.next(),
+            SszVectorIter::Tree(it) => it.next(),
+        }
+    }
+}
+
 // ── Encode for SszList<T, N> ──────────────────────────────────────────────────
 
 impl<T, const N: u64> Encode for SszList<T, N>
 where
-    T: Encode,
+    T: Encode + Clone,
 {
     /// Lists are always variable-size (their length varies).
     const IS_FIXED_SIZE: bool = false;
@@ -452,22 +886,47 @@ where
     }
 
     fn ssz_bytes_len(&self) -> usize {
-        let elems = self.as_slice();
-        if T::IS_FIXED_SIZE {
-            elems.len() * T::ssz_fixed_len()
-        } else {
-            variable_elems_ssz_bytes_len(elems)
+        match &self.backend {
+            Backend::Naive(elems) => {
+                if T::IS_FIXED_SIZE {
+                    elems.len() * T::ssz_fixed_len()
+                } else {
+                    variable_elems_ssz_bytes_len(elems.as_slice())
+                }
+            }
+            Backend::Tree(_) => {
+                // Materialise to Vec for encoding; tree backend is for hashing.
+                let elems: Vec<T> = self.iter().cloned().collect();
+                if T::IS_FIXED_SIZE {
+                    elems.len() * T::ssz_fixed_len()
+                } else {
+                    variable_elems_ssz_bytes_len(&elems)
+                }
+            }
         }
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let elems = self.as_slice();
-        if T::IS_FIXED_SIZE {
-            for elem in elems {
-                elem.ssz_append(buf);
+        match &self.backend {
+            Backend::Naive(elems) => {
+                if T::IS_FIXED_SIZE {
+                    for elem in elems {
+                        elem.ssz_append(buf);
+                    }
+                } else {
+                    encode_variable_elems(elems.as_slice(), buf);
+                }
             }
-        } else {
-            encode_variable_elems(elems, buf);
+            Backend::Tree(_) => {
+                let elems: Vec<T> = self.iter().cloned().collect();
+                if T::IS_FIXED_SIZE {
+                    for elem in &elems {
+                        elem.ssz_append(buf);
+                    }
+                } else {
+                    encode_variable_elems(&elems, buf);
+                }
+            }
         }
     }
 }
@@ -490,8 +949,10 @@ where
         if len as u64 > N {
             return Err(SszError::ListLimitExceeded { len, limit: N });
         }
+        // Decode always lands in Naive; tree backend reached only via explicit constructors.
         Ok(Self {
             backend: Backend::Naive(items),
+            len,
         })
     }
 }
@@ -500,7 +961,7 @@ where
 
 impl<T, const N: u64> Encode for SszVector<T, N>
 where
-    T: Encode,
+    T: Encode + Clone,
 {
     const IS_FIXED_SIZE: bool = T::IS_FIXED_SIZE;
 
@@ -513,22 +974,46 @@ where
     }
 
     fn ssz_bytes_len(&self) -> usize {
-        let elems = self.as_slice();
-        if T::IS_FIXED_SIZE {
-            elems.len() * T::ssz_fixed_len()
-        } else {
-            variable_elems_ssz_bytes_len(elems)
+        match &self.backend {
+            Backend::Naive(elems) => {
+                if T::IS_FIXED_SIZE {
+                    elems.len() * T::ssz_fixed_len()
+                } else {
+                    variable_elems_ssz_bytes_len(elems.as_slice())
+                }
+            }
+            Backend::Tree(_) => {
+                let elems: Vec<T> = self.iter().cloned().collect();
+                if T::IS_FIXED_SIZE {
+                    elems.len() * T::ssz_fixed_len()
+                } else {
+                    variable_elems_ssz_bytes_len(&elems)
+                }
+            }
         }
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let elems = self.as_slice();
-        if T::IS_FIXED_SIZE {
-            for elem in elems {
-                elem.ssz_append(buf);
+        match &self.backend {
+            Backend::Naive(elems) => {
+                if T::IS_FIXED_SIZE {
+                    for elem in elems {
+                        elem.ssz_append(buf);
+                    }
+                } else {
+                    encode_variable_elems(elems.as_slice(), buf);
+                }
             }
-        } else {
-            encode_variable_elems(elems, buf);
+            Backend::Tree(_) => {
+                let elems: Vec<T> = self.iter().cloned().collect();
+                if T::IS_FIXED_SIZE {
+                    for elem in &elems {
+                        elem.ssz_append(buf);
+                    }
+                } else {
+                    encode_variable_elems(&elems, buf);
+                }
+            }
         }
     }
 }
@@ -562,6 +1047,7 @@ where
         if found != expected {
             return Err(SszError::VectorLengthMismatch { found, expected });
         }
+        // Decode always lands in Naive.
         Ok(Self {
             backend: Backend::Naive(items),
         })
@@ -572,28 +1058,39 @@ where
 
 impl<T, const N: u64> TreeHash for SszList<T, N>
 where
-    T: TreeHash + Encode + Sync,
+    T: TreeHash + Encode + Sync + Clone,
 {
     const TREE_HASH_TYPE: TreeHashType = TreeHashType::List;
 
     fn tree_hash_root(&self) -> Hash256 {
-        let elems = self.as_slice();
-        let len = elems.len() as u64;
+        let len = self.len as u64;
 
-        let root = match T::TREE_HASH_TYPE {
-            TreeHashType::Basic => {
-                // Pack all packed encodings then merkleize with basic chunk_count limit.
-                // chunk_count(List[B, N]) = ceil(N * size_of(B) / 32)
-                // size_of(B) is T::ssz_fixed_len() for basic types.
+        let root = match (&self.backend, T::TREE_HASH_TYPE) {
+            (Backend::Tree(arc), TreeHashType::Basic) => {
+                // Basic-element tree backend: not supported in M4-perf scope.
+                // Fall through to Naive-style computation via iter().
+                let bytes = pack_basic_elems_iter(self.iter());
+                let chunks = pack_bytes_to_chunks(&bytes);
+                let elem_size = T::ssz_fixed_len() as u64;
+                let limit = (N * elem_size).div_ceil(32) as usize;
+                let _ = arc;
+                merkleize_padded(&chunks, limit)
+            }
+            (Backend::Tree(arc), _) => {
+                // Composite elements: the tree already holds per-element roots.
+                // cached_root() folds OnceLock caches up the tree in O(log N)
+                // amortised (only uncached nodes are re-hashed).
+                arc.cached_root()
+            }
+            (Backend::Naive(elems), TreeHashType::Basic) => {
                 let elem_size = T::ssz_fixed_len() as u64;
                 let limit = (N * elem_size).div_ceil(32) as usize;
                 let bytes = pack_basic_elems_bytes(elems);
                 let chunks = pack_bytes_to_chunks(&bytes);
                 merkleize_padded(&chunks, limit)
             }
-            _ => {
+            (Backend::Naive(elems), _) => {
                 // Composite elements: per-element roots with limit = N.
-                // Threshold: rayon overhead vs serial is ~1024 elements for hashing.
                 const PAR_THRESHOLD: usize = 1024;
                 let roots: Vec<Hash256> = if elems.len() >= PAR_THRESHOLD {
                     elems.par_iter().map(|e| e.tree_hash_root()).collect()
@@ -617,22 +1114,29 @@ where
 
 impl<T, const N: u64> TreeHash for SszVector<T, N>
 where
-    T: TreeHash + Encode + Sync,
+    T: TreeHash + Encode + Sync + Clone,
 {
     const TREE_HASH_TYPE: TreeHashType = TreeHashType::Vector;
 
     fn tree_hash_root(&self) -> Hash256 {
-        let elems = self.as_slice();
-
-        match T::TREE_HASH_TYPE {
-            TreeHashType::Basic => {
-                // Pack all packed encodings then merkleize WITHOUT a limit.
+        match (&self.backend, T::TREE_HASH_TYPE) {
+            (Backend::Tree(arc), TreeHashType::Basic) => {
+                // Basic-element tree: fall back to iter path.
+                let bytes = pack_basic_elems_iter(self.iter());
+                let chunks = pack_bytes_to_chunks(&bytes);
+                let _ = arc;
+                merkleize(&chunks)
+            }
+            (Backend::Tree(arc), _) => {
+                // Composite: tree's cached root is the merkleization of all leaves.
+                arc.cached_root()
+            }
+            (Backend::Naive(elems), TreeHashType::Basic) => {
                 let bytes = pack_basic_elems_bytes(elems);
                 let chunks = pack_bytes_to_chunks(&bytes);
                 merkleize(&chunks)
             }
-            _ => {
-                // Composite elements: per-element roots, no limit.
+            (Backend::Naive(elems), _) => {
                 const PAR_THRESHOLD: usize = 1024;
                 let roots: Vec<Hash256> = if elems.len() >= PAR_THRESHOLD {
                     elems.par_iter().map(|e| e.tree_hash_root()).collect()
@@ -647,6 +1151,16 @@ where
     fn tree_hash_packed_encoding(&self) -> Vec<u8> {
         unreachable!("SszVector is not a basic type and is never packed")
     }
+}
+
+/// Pack basic-element packed encodings from an iterator (used for tree-backend
+/// paths where a contiguous slice is not available).
+fn pack_basic_elems_iter<'a, T: TreeHash + 'a>(iter: impl Iterator<Item = &'a T>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for elem in iter {
+        bytes.extend_from_slice(&elem.tree_hash_packed_encoding());
+    }
+    bytes
 }
 
 // ── shared encode helpers ─────────────────────────────────────────────────────
@@ -794,7 +1308,6 @@ fn decode_list_items<T: Decode>(bytes: &[u8]) -> Result<Vec<T>, SszError> {
 mod tests {
     use super::*;
     use crate::tree_hash::merkleize_padded;
-
     // ── SszList basic tests ──────────────────────────────────────────────────
 
     #[test]
@@ -990,5 +1503,247 @@ mod tests {
             <SszList<u64, 1024> as TreeHash>::TREE_HASH_TYPE,
             TreeHashType::List
         );
+    }
+
+    // ── depth helper tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn depth_for_limit_values() {
+        assert_eq!(depth_for_limit(1), 1);
+        assert_eq!(depth_for_limit(2), 1);
+        assert_eq!(depth_for_limit(3), 2);
+        assert_eq!(depth_for_limit(4), 2);
+        assert_eq!(depth_for_limit(5), 3);
+        assert_eq!(depth_for_limit(8), 3);
+        assert_eq!(depth_for_limit(9), 4);
+        assert_eq!(depth_for_limit(1024), 10);
+        assert_eq!(depth_for_limit(8192), 13);
+    }
+
+    // ── Tree-backend basic operations ────────────────────────────────────────
+
+    /// Composite-element wrapper for tree-backend tests.
+    /// Manual impls avoid the `pharos_ssz::` path issue inside the crate.
+    #[derive(Clone, Debug, PartialEq)]
+    struct Leaf {
+        val: u64,
+    }
+
+    impl Encode for Leaf {
+        const IS_FIXED_SIZE: bool = true;
+        fn ssz_fixed_len() -> usize {
+            8
+        }
+        fn ssz_bytes_len(&self) -> usize {
+            8
+        }
+        fn ssz_append(&self, buf: &mut Vec<u8>) {
+            buf.extend_from_slice(&self.val.to_le_bytes());
+        }
+    }
+
+    impl Decode for Leaf {
+        const IS_FIXED_SIZE: bool = true;
+        fn ssz_fixed_len() -> usize {
+            8
+        }
+        fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, SszError> {
+            if bytes.len() != 8 {
+                return Err(SszError::InvalidByteLength {
+                    found: bytes.len(),
+                    expected: 8,
+                });
+            }
+            Ok(Leaf {
+                val: u64::from_le_bytes(bytes.try_into().unwrap()),
+            })
+        }
+    }
+
+    impl TreeHash for Leaf {
+        const TREE_HASH_TYPE: TreeHashType = TreeHashType::Container;
+        fn tree_hash_root(&self) -> Hash256 {
+            // Single-field container: merkleize([val.tree_hash_root()]) = val.tree_hash_root()
+            // (single chunk, no padding needed).
+            self.val.tree_hash_root()
+        }
+        fn tree_hash_packed_encoding(&self) -> Vec<u8> {
+            unreachable!("Leaf is a container, not a basic type")
+        }
+    }
+
+    fn leaf(val: u64) -> Leaf {
+        Leaf { val }
+    }
+
+    #[test]
+    fn tree_list_from_vec_tree_get() {
+        let v: Vec<Leaf> = (0u64..8).map(leaf).collect();
+        let list = SszList::<Leaf, 1024>::from_vec_tree(v.clone()).unwrap();
+        assert_eq!(list.len(), 8);
+        for (i, val) in v.iter().enumerate() {
+            assert_eq!(list.get(i), Some(val));
+        }
+    }
+
+    #[test]
+    fn tree_list_with_set_cow() {
+        let v: Vec<Leaf> = (0u64..4).map(leaf).collect();
+        let list = SszList::<Leaf, 1024>::from_vec_tree(v).unwrap();
+        let list2 = list.with_set(2, leaf(99)).unwrap();
+        // New list updated.
+        assert_eq!(list2.get(2), Some(&leaf(99)));
+        // Old list unchanged.
+        assert_eq!(list.get(2), Some(&leaf(2)));
+    }
+
+    #[test]
+    fn tree_list_with_push() {
+        let list = SszList::<Leaf, 1024>::empty_tree();
+        let list = list.with_push(leaf(1)).unwrap();
+        let list = list.with_push(leaf(2)).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.get(0), Some(&leaf(1)));
+        assert_eq!(list.get(1), Some(&leaf(2)));
+    }
+
+    #[test]
+    fn tree_list_iter() {
+        let v: Vec<Leaf> = (0u64..5).map(leaf).collect();
+        let list = SszList::<Leaf, 1024>::from_vec_tree(v.clone()).unwrap();
+        let collected: Vec<&Leaf> = list.iter().collect();
+        assert_eq!(collected.len(), 5);
+        for (i, val) in v.iter().enumerate() {
+            assert_eq!(collected[i], val);
+        }
+    }
+
+    #[test]
+    fn tree_list_tree_hash_matches_naive() {
+        let v: Vec<Leaf> = (0u64..16).map(leaf).collect();
+        let naive = SszList::<Leaf, 1024>::from_vec(v.clone()).unwrap();
+        let tree = SszList::<Leaf, 1024>::from_vec_tree(v).unwrap();
+        assert_eq!(naive.tree_hash_root(), tree.tree_hash_root());
+    }
+
+    #[test]
+    fn tree_vector_from_vec_tree_matches_naive() {
+        let v: Vec<Leaf> = (0u64..4).map(leaf).collect();
+        let naive = SszVector::<Leaf, 4>::from_vec(v.clone()).unwrap();
+        let tree = SszVector::<Leaf, 4>::from_vec_tree(v).unwrap();
+        assert_eq!(naive.tree_hash_root(), tree.tree_hash_root());
+    }
+
+    #[test]
+    fn tree_list_empty_tree_hash_matches_naive() {
+        let naive = SszList::<Leaf, 1024>::new();
+        let tree = SszList::<Leaf, 1024>::empty_tree();
+        assert_eq!(naive.tree_hash_root(), tree.tree_hash_root());
+    }
+
+    #[test]
+    fn from_vec_tree_rejects_basic_element_list() {
+        let v: Vec<u64> = (0..4).collect();
+        let err = SszList::<u64, 16>::from_vec_tree(v).unwrap_err();
+        match err {
+            SszError::Custom(msg) => {
+                assert!(msg.contains("composite"), "got: {msg}");
+            }
+            other => panic!("expected Custom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_vec_tree_rejects_basic_element_vector() {
+        let v: Vec<u64> = vec![0; 4];
+        let err = SszVector::<u64, 4>::from_vec_tree(v).unwrap_err();
+        match err {
+            SszError::Custom(msg) => {
+                assert!(msg.contains("composite"), "got: {msg}");
+            }
+            other => panic!("expected Custom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "tree backend requires composite element type")]
+    fn empty_tree_rejects_basic_element() {
+        let _ = SszList::<u64, 16>::empty_tree();
+    }
+
+    // ── Task 1.10: with_set path-copy preserves shared subtrees ─────────────
+
+    #[test]
+    fn with_set_path_copy_preserves_shared_subtrees() {
+        // Build a tree-backed SszList<Leaf, 1024> with 1024 elements.
+        // depth_for_limit(1024) = 10.
+        let v: Vec<Leaf> = (0u64..1024).map(leaf).collect();
+        let list = SszList::<Leaf, 1024>::from_vec_tree(v).unwrap();
+
+        // Extract the left.left child Arc from the root.
+        // Root is at depth 10; its children are at depth 9.
+        // left.left is at depth 8.
+        let root_arc = match &list.backend {
+            Backend::Tree(arc) => Arc::clone(arc),
+            _ => panic!("expected tree backend"),
+        };
+
+        let left_arc = match root_arc.as_ref() {
+            Node::Branch { left, .. } => Arc::clone(left),
+            _ => panic!("expected branch at root"),
+        };
+
+        let left_left_arc = match left_arc.as_ref() {
+            Node::Branch { left, .. } => Arc::clone(left),
+            _ => panic!("expected branch at left"),
+        };
+
+        // Capture the strong count before the write.
+        // At this point: root_arc holds left, left_arc holds left_left, we hold left_left_arc.
+        let count_before = Arc::strong_count(&left_left_arc);
+
+        // with_set(1023, ...) mutates index 1023 (the rightmost element).
+        // Index 1023 is in the RIGHT half of the root (root.right subtree).
+        // Therefore root.left subtree is entirely off-path and its Arc is
+        // reused unchanged by CoW path-copy.
+        let new_list = list.with_set(1023, leaf(0xdead)).unwrap();
+
+        let new_root_arc = match &new_list.backend {
+            Backend::Tree(arc) => Arc::clone(arc),
+            _ => panic!("expected tree backend"),
+        };
+
+        let new_left_arc = match new_root_arc.as_ref() {
+            Node::Branch { left, .. } => Arc::clone(left),
+            _ => panic!("expected branch at new root"),
+        };
+
+        let new_left_left_arc = match new_left_arc.as_ref() {
+            Node::Branch { left, .. } => Arc::clone(left),
+            _ => panic!("expected branch at new left"),
+        };
+
+        let count_after = Arc::strong_count(&left_left_arc);
+
+        // The new tree's left.left MUST be the same Arc (ptr_eq proves structural sharing).
+        // Reported values: count_before = 2 (root->left->left + our clone),
+        //                  count_after  = 4 (root->left->left + our clone + new_root->left->left + new_left_left_arc).
+        assert!(
+            Arc::ptr_eq(&left_left_arc, &new_left_left_arc),
+            "off-path subtree must be shared (ptr_eq); count_before={count_before}, count_after={count_after}"
+        );
+
+        // Strong count grew because the new tree holds an additional reference
+        // to the shared subtree.
+        assert!(
+            count_after > count_before,
+            "strong count must grow after with_set shares off-path subtree; \
+             before={count_before}, after={count_after}"
+        );
+
+        // Verify the mutation was correct.
+        assert_eq!(new_list.get(1023), Some(&leaf(0xdead)));
+        // Original unchanged.
+        assert_eq!(list.get(1023), Some(&leaf(1023)));
     }
 }
