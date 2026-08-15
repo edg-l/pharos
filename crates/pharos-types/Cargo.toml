@@ -14,5 +14,4 @@ pharos-ssz-derive.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-serde_yaml_ng.workspace = true
 snap.workspace = true

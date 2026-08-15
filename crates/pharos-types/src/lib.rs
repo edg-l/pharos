@@ -13,7 +13,7 @@ pub mod shuffling;
 pub mod state;
 pub mod views;
 
-pub use config::RuntimeConfig;
+pub use config::{ConfigError, RuntimeConfig, load_config_dir};
 pub use eth_spec::{EthSpec, MainnetEthSpec, MinimalEthSpec};
 pub use state::{BeaconBlock, BeaconBlockBody, BeaconState, SignedBeaconBlock};
 pub use views::{BeaconBlockBodyView, BeaconBlockView, BeaconStateView, SignedBeaconBlockView};

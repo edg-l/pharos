@@ -18,7 +18,7 @@ use pharos_storage::{RocksStore, RocksStoreConfig};
 use pharos_types::phase0::MainnetBeaconState as Phase0MainnetBeaconState;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::state::{BeaconBlock as ForkBeaconBlock, MainnetBeaconState};
-use pharos_types::{EthSpec, MainnetEthSpec};
+use pharos_types::{EthSpec, MainnetEthSpec, load_config_dir};
 use tracing::info;
 
 use pharos_node::fork_migration::run_fork_migration_loop;
@@ -56,6 +56,18 @@ struct Args {
     /// (M4) for production mainnet.
     #[arg(long, value_name = "PATH")]
     genesis_state_path: PathBuf,
+
+    /// Path to the network config directory (without `.yaml` extension).
+    ///
+    /// Accepts a path of the form `<repo>/configs/<network>`, e.g.:
+    ///   `~/dev/consensus-specs/configs/mainnet`
+    ///
+    /// The loader appends `.yaml` to read the network config file, then
+    /// discovers the preset files at `<repo>/presets/<PRESET_BASE>/`.
+    ///
+    /// When absent, defaults to the `MainnetEthSpec` compile-time preset.
+    #[arg(long, value_name = "PATH")]
+    config_dir: Option<PathBuf>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -87,6 +99,26 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // ── Step 0: Load RuntimeConfig ─────────────────────────────────────────
+    //
+    // `--config-dir` absent: use compile-time mainnet defaults.
+    // `--config-dir <path>`: load from YAML and assert the preset matches
+    // the binary's compile-time `MainnetEthSpec` constants.
+    let runtime_cfg = if let Some(ref config_dir) = args.config_dir {
+        info!(path = %config_dir.display(), "loading runtime config from YAML");
+        let cfg = load_config_dir(config_dir)
+            .with_context(|| format!("loading config from {:?}", config_dir))?;
+        cfg.assert_matches_preset::<MainnetEthSpec>()
+            .with_context(|| "runtime config does not match MainnetEthSpec preset")?;
+        info!(
+            altair_fork_epoch = cfg.altair_fork_epoch,
+            "runtime config loaded"
+        );
+        cfg
+    } else {
+        MainnetEthSpec::default_runtime_config()
+    };
 
     info!(version = env!("CARGO_PKG_VERSION"), "pharos starting");
     info!(listen_addr = %args.listen_addr, discv5_port = args.discv5_port, "configuration");
@@ -210,15 +242,15 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Build fork schedule for the subnet rotation and fork migration loops.
-    // M3b: populate real altair fork version + epoch from EthSpec compile-time consts.
+    // Use runtime_cfg so --config-dir overrides take effect.
     let fork_schedule = Arc::new(pharos_types::fork::ForkSchedule {
         genesis_fork_version: pharos_types::phase0::primitives::Version::from_array(
-            MainnetEthSpec::GENESIS_FORK_VERSION,
+            runtime_cfg.genesis_fork_version,
         ),
         altair_fork_version: pharos_types::phase0::primitives::Version::from_array(
-            MainnetEthSpec::ALTAIR_FORK_VERSION,
+            runtime_cfg.altair_fork_version,
         ),
-        altair_fork_epoch: pharos_utils::Epoch(MainnetEthSpec::ALTAIR_FORK_EPOCH),
+        altair_fork_epoch: pharos_utils::Epoch(runtime_cfg.altair_fork_epoch),
         genesis_validators_root,
     });
 

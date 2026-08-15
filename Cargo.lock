@@ -2753,7 +2753,6 @@ dependencies = [
  "pharos-ssz",
  "pharos-ssz-derive",
  "pharos-utils",
- "serde_yaml_ng",
  "snap",
  "thiserror 2.0.18",
 ]
