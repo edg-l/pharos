@@ -16,6 +16,7 @@
 //! Any additional epoch sub-routines consumed by pharos-fork-choice should be
 //! re-exported here at the same time.
 
+pub mod altair;
 pub mod error;
 pub mod phase0;
 

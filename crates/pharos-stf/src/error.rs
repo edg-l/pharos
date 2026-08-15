@@ -57,6 +57,9 @@ pub enum StateTransitionError {
 
     #[error("unsupported fork: altair STF not yet implemented")]
     UnsupportedFork,
+
+    #[error("sync committee pubkey not found in validator registry")]
+    InvalidSyncCommittee,
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
