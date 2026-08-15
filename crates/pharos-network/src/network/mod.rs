@@ -1944,6 +1944,10 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
         // response reflects the node's current seq_number / attnets / syncnets.
         let initial_meta = self.host.local_metadata();
         let host_metadata = Arc::new(ArcSwap::from_pointee(initial_meta));
+        // Clone the Arc so `NetworkHandle` can expose live metadata reads to
+        // external consumers (e.g. the Beacon API `NodeIdentityCache`) without
+        // holding a reference to the non-Clone `Network` or `NetworkHandle`.
+        let host_metadata_ref = Arc::clone(&host_metadata);
 
         let network = Network {
             swarm,
@@ -1969,7 +1973,14 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
             _phantom: PhantomData,
         };
 
-        let handle = NetworkHandle::new(cmd_tx, event_rx, shutdown_tx, local_peer_id, node_id);
+        let handle = NetworkHandle::new(
+            cmd_tx,
+            event_rx,
+            shutdown_tx,
+            local_peer_id,
+            node_id,
+            host_metadata_ref,
+        );
 
         Ok((network, handle, discovery_handle))
     }

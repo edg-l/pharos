@@ -8,8 +8,10 @@
 //! - Do NOT wrap `event_rx` in `Arc<Mutex<_>>`; that is a footgun for an mpsc
 //!   receiver and violates single-consumer ownership.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use discv5::enr::NodeId;
 use libp2p::{Multiaddr, PeerId};
 use pharos_ssz::Encode;
@@ -133,6 +135,12 @@ pub struct NetworkHandle<E: EthSpec> {
     ///
     /// Wrapped in `Option` so `shutdown()` can take it by value.
     shutdown_tx: Option<oneshot::Sender<()>>,
+    /// Shared reference to the live local `MetaData` (Altair v2).
+    ///
+    /// Cloned from `Network::host_metadata` at build time so the Beacon API
+    /// `NodeIdentityCache` can read the current metadata seq/attnets/syncnets
+    /// without holding a reference to the non-`Clone` `NetworkHandle`.
+    host_metadata: Arc<ArcSwap<AltairMetaData>>,
 }
 
 impl<E: EthSpec> NetworkHandle<E> {
@@ -143,6 +151,7 @@ impl<E: EthSpec> NetworkHandle<E> {
         shutdown_tx: oneshot::Sender<()>,
         local_peer_id: PeerId,
         local_node_id: NodeId,
+        host_metadata: Arc<ArcSwap<AltairMetaData>>,
     ) -> Self {
         Self {
             cmd_tx,
@@ -150,7 +159,20 @@ impl<E: EthSpec> NetworkHandle<E> {
             local_peer_id,
             local_node_id,
             shutdown_tx: Some(shutdown_tx),
+            host_metadata,
         }
+    }
+
+    /// Return a cloned `Arc` to the live local `MetaData` (Altair v2).
+    ///
+    /// The returned `Arc<ArcSwap<AltairMetaData>>` is a shared reference to
+    /// `Network::host_metadata` and reflects live updates issued via
+    /// `NetworkCommand::UpdateMetaData`. Safe to hold across `take_event_receiver`.
+    ///
+    /// Used by `pharos-node` to populate `NodeIdentityCache::metadata` for the
+    /// Beacon API server (`D-api-node-identity-cache`).
+    pub fn metadata_ref(&self) -> Arc<ArcSwap<AltairMetaData>> {
+        Arc::clone(&self.host_metadata)
     }
 
     /// Return a clonable `NetworkCommandSender` for multi-producer command use.

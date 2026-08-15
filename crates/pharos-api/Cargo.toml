@@ -10,6 +10,25 @@ description = "Beacon API HTTP server (axum-based)."
 [dependencies]
 pharos-types.workspace = true
 pharos-storage.workspace = true
-pharos-stf.workspace = true
 pharos-fork-choice.workspace = true
 pharos-utils.workspace = true
+pharos-ssz.workspace = true
+pharos-network.workspace = true
+axum.workspace = true
+tokio = { workspace = true, features = ["net"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+arc-swap.workspace = true
+libp2p.workspace = true
+parking_lot.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+discv5.workspace = true
+arc-swap.workspace = true
+tower = { version = "0.5", features = ["util"] }
+serde_json.workspace = true

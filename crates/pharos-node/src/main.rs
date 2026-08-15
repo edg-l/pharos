@@ -122,6 +122,26 @@ struct Args {
     /// after `MAX_HEALTH_FAILURES` consecutive primary health-check failures.
     #[arg(long, value_name = "URL")]
     execution_endpoint_secondary: Option<String>,
+
+    // ── Beacon API HTTP server ────────────────────────────────────────────────
+    /// Enable the Beacon API HTTP server.
+    ///
+    /// When set, an HTTP server is started on `--http-address:--http-port`
+    /// serving the `eth/v1` Beacon API endpoints. Default: off.
+    #[arg(long, default_value_t = false)]
+    http: bool,
+
+    /// IP address for the Beacon API HTTP server.
+    ///
+    /// Only consulted when `--http` is set.
+    #[arg(long, default_value = "127.0.0.1", value_name = "ADDR")]
+    http_address: std::net::IpAddr,
+
+    /// Port for the Beacon API HTTP server.
+    ///
+    /// Only consulted when `--http` is set.
+    #[arg(long, default_value_t = 5052, value_name = "PORT")]
+    http_port: u16,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -532,6 +552,7 @@ async fn main() -> anyhow::Result<()> {
     // on_head_change / on_new_block are live for the M4b/M4c gossip-validator
     // path. Clones of head_tx / payload_tx are used here; the block-ingestion
     // loop owns the originals (passed separately in Step 5b below).
+    let store_arc = Arc::clone(&store);
     let mut host_inner = HostImpl::<MainnetEthSpec>::new(
         store,
         fork_choice.clone(),
@@ -596,6 +617,44 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             run_fork_migration_loop::<MainnetEthSpec>(cmd, disc, sched, genesis_time_secs).await;
         });
+    }
+
+    // ── Beacon API HTTP server (optional, --http flag) ────────────────────────
+    //
+    // Build the `NodeIdentityCache` here — BEFORE `handle.take_event_receiver()`
+    // is called inside the engine block below. `wait_for_local_enr` and
+    // `wait_for_listen_addr` drain early events from the event receiver;
+    // both must complete while `handle` still owns the receiver.
+    if args.http {
+        // Wait for the network task to emit its ENR and bound listen address.
+        let enr = handle.wait_for_local_enr().await;
+        let listen_addr = handle.wait_for_listen_addr().await;
+
+        // Derive discovery addrs from the ENR (IP + UDP port).
+        let discovery_addrs = pharos_network::discovery::enr::enr_to_dial_multiaddr(&enr)
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let identity = pharos_api::NodeIdentityCache {
+            peer_id: handle.local_peer_id(),
+            enr,
+            listen_addrs: vec![listen_addr],
+            discovery_addrs,
+            metadata: handle.metadata_ref(),
+        };
+
+        let chain_state = pharos_api::NodeChainState::new(
+            Arc::clone(&store_arc),
+            Arc::clone(&fork_choice),
+            identity,
+            Arc::new(runtime_cfg.clone()),
+        );
+        let api_state = pharos_api::ApiState::new(Arc::new(chain_state));
+        let http_addr = SocketAddr::new(args.http_address, args.http_port);
+        tokio::spawn(async move {
+            pharos_api::serve::<MainnetEthSpec>(http_addr, api_state).await;
+        });
+        info!(%http_addr, "Beacon API HTTP server spawned");
     }
 
     // Spawn engine driver loop + block ingestion loop when the engine is active.
