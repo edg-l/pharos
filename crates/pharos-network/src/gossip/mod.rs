@@ -1,6 +1,7 @@
 //! Gossipsub topic subscription, message dispatch, and validation bridge.
 //!
-//! - `subscribe_phase0_topics`: subscribe to the standard Phase-0 gossip topics.
+//! - `subscribe_base_topics`: subscribe to the base beacon gossip topics under the
+//!   supplied (active) fork digest, plus altair-era extras when active fork ≥ altair.
 //! - `dispatch_gossip_message`: SSZ-decode + validate an already-decompressed
 //!   gossip payload. Snappy decompression is the caller's responsibility (the
 //!   network task pulls it out of `message.data` so the decompressed bytes
@@ -33,16 +34,22 @@ use crate::host::{GossipVerdict, Host};
 use crate::topics::{GossipTopic, GossipTopicKind};
 use crate::types::ForkDigest;
 
-// ── subscribe_phase0_topics ───────────────────────────────────────────────────
+// ── subscribe_base_topics ─────────────────────────────────────────────────────
 
-/// Subscribe to all Phase-0 gossipsub topics for the given fork and attnets mask.
+/// Subscribe to the base beacon gossipsub topics under the supplied (active) fork
+/// digest, plus `beacon_attestation_<i>` for each bit `i` set in `attnets`.
 ///
-/// Subscribes to the five base topics (`beacon_block`, `beacon_aggregate_and_proof`,
-/// `voluntary_exit`, `proposer_slashing`, `attester_slashing`) plus
-/// `beacon_attestation_<i>` for each bit `i` set in `attnets`.
+/// The five base topics (`beacon_block`, `beacon_aggregate_and_proof`,
+/// `voluntary_exit`, `proposer_slashing`, `attester_slashing`) are the same
+/// across all forks; only the fork-digest segment of the topic string differs.
+///
+/// For altair-or-later active forks, callers MUST also subscribe the altair-era
+/// extras (`sync_committee_*`, `light_client_*`) via `subscribe_altair_extra_topics`
+/// so a bellatrix-at-genesis node starts on the full topic set.
+/// (`D-bellatrix-startup-topic-set`)
 ///
 /// Topic list per `specs/phase0/p2p-interface.md:507-514`.
-pub fn subscribe_phase0_topics(
+pub fn subscribe_base_topics(
     gs: &mut gossipsub::Behaviour,
     fork_digest: ForkDigest,
     attnets: &Bitvector<ATTESTATION_SUBNET_COUNT>,
@@ -81,6 +88,67 @@ pub fn subscribe_phase0_topics(
     Ok(topic_map)
 }
 
+// ── subscribe_altair_extra_topics ─────────────────────────────────────────────
+
+/// Subscribe to the altair-era extra topics under `fork_digest` and merge them
+/// into an existing `topic_map`.
+///
+/// Subscribes `sync_committee_contribution_and_proof`, each `sync_committee_<i>`
+/// subnet, `light_client_finality_update`, and `light_client_optimistic_update`.
+///
+/// Called at startup when the active fork is altair or bellatrix so the node
+/// starts on the complete topic set even when those forks are at epoch 0.
+/// (`D-bellatrix-startup-topic-set`)
+pub fn subscribe_altair_extra_topics<E: EthSpec>(
+    gs: &mut gossipsub::Behaviour,
+    fork_digest: ForkDigest,
+    topic_map: &mut HashMap<TopicHash, GossipTopic>,
+) -> Result<(), NetworkError> {
+    // `sync_committee_contribution_and_proof`.
+    let contrib_topic = GossipTopic {
+        fork_digest,
+        kind: GossipTopicKind::SyncCommitteeContributionAndProof,
+    };
+    gs.subscribe(&IdentTopic::new(contrib_topic.topic_str()))
+        .map_err(|e| {
+            NetworkError::Libp2p(format!("subscribe sync_committee_contrib failed: {e}"))
+        })?;
+    topic_map.insert(contrib_topic.topic_hash(), contrib_topic);
+
+    // `sync_committee_<i>` for each subnet.
+    for i in 0..E::SYNC_COMMITTEE_SUBNET_COUNT {
+        let topic = GossipTopic {
+            fork_digest,
+            kind: GossipTopicKind::SyncCommittee(i),
+        };
+        gs.subscribe(&IdentTopic::new(topic.topic_str()))
+            .map_err(|e| {
+                NetworkError::Libp2p(format!("subscribe sync_committee_{i} failed: {e}"))
+            })?;
+        topic_map.insert(topic.topic_hash(), topic);
+    }
+
+    // `light_client_finality_update`.
+    let lc_fin = GossipTopic {
+        fork_digest,
+        kind: GossipTopicKind::LightClientFinalityUpdate,
+    };
+    gs.subscribe(&IdentTopic::new(lc_fin.topic_str()))
+        .map_err(|e| NetworkError::Libp2p(format!("subscribe lc_finality_update failed: {e}")))?;
+    topic_map.insert(lc_fin.topic_hash(), lc_fin);
+
+    // `light_client_optimistic_update`.
+    let lc_opt = GossipTopic {
+        fork_digest,
+        kind: GossipTopicKind::LightClientOptimisticUpdate,
+    };
+    gs.subscribe(&IdentTopic::new(lc_opt.topic_str()))
+        .map_err(|e| NetworkError::Libp2p(format!("subscribe lc_optimistic_update failed: {e}")))?;
+    topic_map.insert(lc_opt.topic_hash(), lc_opt);
+
+    Ok(())
+}
+
 // ── dispatch_gossip_message ───────────────────────────────────────────────────
 
 /// SSZ-decode an already-decompressed gossip payload and dispatch to the
@@ -99,14 +167,39 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
 ) -> GossipVerdict {
     match &topic.kind {
         GossipTopicKind::BeaconBlock => {
-            // Gossip wire format sends raw phase0 SSZ with no discriminant prefix.
-            // Decode as the concrete phase0 inner type, then wrap into fork-enum.
-            match E::Phase0SignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
-                Ok(inner) => {
-                    let block = E::phase0_into_signed_block(inner);
-                    host.validate_beacon_block(&block)
+            // Gossip beacon_block carries raw fork-specific SSZ with no discriminant
+            // prefix. Dispatch to the correct inner type based on the topic's fork
+            // digest per `specs/altair/p2p-interface.md` and
+            // `specs/bellatrix/p2p-interface.md`.
+            match host.fork_from_context(&topic.fork_digest.into_inner()) {
+                Some(crate::types::Fork::Altair) => {
+                    match E::AltairSignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
+                        Ok(inner) => {
+                            let block = E::altair_into_signed_block(inner);
+                            host.validate_beacon_block(&block)
+                        }
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
                 }
-                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                Some(crate::types::Fork::Bellatrix) => {
+                    match E::BellatrixSignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
+                        Ok(inner) => {
+                            let block = E::bellatrix_into_signed_block(inner);
+                            host.validate_beacon_block(&block)
+                        }
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
+                }
+                // Phase0 or unknown digest: fall back to phase0 block type.
+                Some(crate::types::Fork::Phase0) | None => {
+                    match E::Phase0SignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
+                        Ok(inner) => {
+                            let block = E::phase0_into_signed_block(inner);
+                            host.validate_beacon_block(&block)
+                        }
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
+                }
             }
         }
         GossipTopicKind::BeaconAggregateAndProof => {
@@ -203,9 +296,11 @@ mod tests {
             Root::default()
         }
         fn fork_digest_for(&self, _fork: crate::types::Fork) -> ForkDigest {
+            // Return zero digest for all forks in tests.
             ForkDigest::from_array([0u8; 4])
         }
         fn fork_from_context(&self, _ctx: &[u8; 4]) -> Option<crate::types::Fork> {
+            // Mock: all context bytes are unknown.
             None
         }
     }
@@ -288,7 +383,7 @@ mod tests {
         }
     }
 
-    // ── subscribe_phase0_topics tests ─────────────────────────────────────────
+    // ── subscribe_base_topics tests ───────────────────────────────────────────
 
     fn make_gossipsub() -> gossipsub::Behaviour {
         let fd = ForkDigest::from_array([0u8; 4]);
@@ -296,10 +391,10 @@ mod tests {
         gossipsub::Behaviour::new(MessageAuthenticity::Anonymous, cfg).expect("behaviour failed")
     }
 
-    /// After `subscribe_phase0_topics` with bits 0 and 5 set, unsubscribing
+    /// After `subscribe_base_topics` with bits 0 and 5 set, unsubscribing
     /// each expected topic returns `true` (proves it was subscribed).
     #[test]
-    fn subscribe_phase0_topics_subscribes_expected_topics() {
+    fn subscribe_base_topics_subscribes_expected_topics() {
         let mut gs = make_gossipsub();
         let fork_digest = ForkDigest::from_array([1, 2, 3, 4]);
 
@@ -307,8 +402,8 @@ mod tests {
         attnets.set(0, true);
         attnets.set(5, true);
 
-        subscribe_phase0_topics(&mut gs, fork_digest, &attnets)
-            .expect("subscribe_phase0_topics failed");
+        subscribe_base_topics(&mut gs, fork_digest, &attnets)
+            .expect("subscribe_base_topics failed");
 
         // Verify the 5 base topics.
         let base_kinds = [

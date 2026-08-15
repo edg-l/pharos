@@ -5,12 +5,27 @@
 //! with an actor: `EngineHandle` sends typed requests over an mpsc channel
 //! and blocks on a `oneshot::Receiver` via a dedicated multi-thread tokio
 //! runtime. The actor task drives the underlying `EngineClient` and replies.
+//!
+//! ## Runtime ownership
+//!
+//! The engine runtime is *owned by a dedicated OS thread* (`spawn_engine_actor`
+//! spawns it). That thread builds the `Runtime`, hands a cheap `Handle` to the
+//! `EngineHandle`, runs the actor loop via `Runtime::block_on`, and only then
+//! lets the `Runtime` drop — on that thread, in a *synchronous* context. This
+//! is required: dropping a `tokio::runtime::Runtime` from inside an async
+//! context (e.g. from a task running on that same runtime) panics with
+//! "Cannot drop a runtime in a context where blocking is not allowed". The old
+//! design captured an `Arc<Runtime>` inside the actor task itself, so the last
+//! `Arc` ref dropped on an engine worker thread → panic on shutdown. Holding a
+//! `Handle` (not the `Runtime`) in `EngineHandle` keeps `dispatch_blocking`
+//! working from any thread while making the runtime impossible to drop in an
+//! async context.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder, Handle};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::client::{EngineClient, ForkchoiceUpdatedVersion, GetPayloadVersion, NewPayloadVersion};
@@ -74,13 +89,17 @@ pub enum EngineRequest {
 #[derive(Clone)]
 pub struct EngineHandle {
     tx: mpsc::Sender<EngineRequest>,
-    runtime: Arc<Runtime>,
+    /// Handle to the engine runtime. A `Handle` is a cheap, cloneable, NON-owning
+    /// reference; dropping it never tears down the runtime, so it can be dropped
+    /// from any context (including an async one) without panicking. The owning
+    /// `Runtime` lives on the dedicated thread spawned by `spawn_engine_actor`.
+    runtime: Handle,
 }
 
 impl EngineHandle {
-    /// Wrap an existing actor channel + tokio runtime. The async-context
-    /// constructor (`spawn_engine_actor` below) is the usual entry point.
-    pub fn new(runtime: Arc<Runtime>, tx: mpsc::Sender<EngineRequest>) -> Self {
+    /// Wrap an existing actor channel + runtime `Handle`. `spawn_engine_actor`
+    /// below is the usual entry point and owns the runtime correctly.
+    pub fn new(runtime: Handle, tx: mpsc::Sender<EngineRequest>) -> Self {
         Self { runtime, tx }
     }
 
@@ -173,19 +192,50 @@ impl EngineHandle {
 
 // ── Actor loop + failover ────────────────────────────────────────────────────
 
-/// Spawn the engine actor on `runtime` driving `primary` (with optional
-/// `secondary` for hot failover). Returns the `EngineHandle` used by the
-/// node and the STF.
-pub fn spawn_engine_actor(
-    runtime: Arc<Runtime>,
-    primary: EngineClient,
-    secondary: Option<EngineClient>,
-) -> EngineHandle {
+/// Spawn the engine actor on a freshly built multi-thread runtime owned by a
+/// dedicated OS thread, driving `primary` (with optional `secondary` for hot
+/// failover). Returns the `EngineHandle` used by the node and the STF.
+///
+/// The dedicated thread builds the `Runtime`, runs the actor loop to completion
+/// via `Runtime::block_on`, and drops the `Runtime` *on that thread in a sync
+/// context*. This is the only correct place to drop it: dropping a `Runtime`
+/// from within an async context panics. See the module-level docs.
+///
+/// The returned `EngineHandle` holds only a `Handle` (non-owning), so all of
+/// its clones — and the actor task itself — can be dropped from any context
+/// without tearing down or panicking the runtime.
+pub fn spawn_engine_actor(primary: EngineClient, secondary: Option<EngineClient>) -> EngineHandle {
     let (tx, rx) = mpsc::channel(ENGINE_REQUEST_CAPACITY);
-    let actor_runtime = runtime.clone();
-    runtime.spawn(async move {
-        run_engine_actor(actor_runtime, primary, secondary, rx).await;
-    });
+    // Hand the runtime `Handle` back out of the spawned thread via a oneshot.
+    let (handle_tx, handle_rx) = std::sync::mpsc::channel::<Handle>();
+
+    std::thread::Builder::new()
+        .name("pharos-engine".into())
+        .spawn(move || {
+            let runtime = Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("pharos-engine-worker")
+                .enable_all()
+                .build()
+                .expect("building engine tokio runtime");
+            // Publish the Handle so `spawn_engine_actor` can return the
+            // EngineHandle. If the receiver is gone the node is already
+            // shutting down; nothing to do.
+            let handle = runtime.handle().clone();
+            if handle_tx.send(handle.clone()).is_err() {
+                return;
+            }
+            // Run the actor loop to completion. When every `EngineRequest`
+            // sender (every EngineHandle clone) drops, `rx.recv()` yields
+            // `None`, the loop ends, `block_on` returns, and `runtime` drops
+            // HERE — on this OS thread, outside any async context. No panic.
+            runtime.block_on(run_engine_actor(handle, primary, secondary, rx));
+        })
+        .expect("spawning engine runtime thread");
+
+    let runtime = handle_rx
+        .recv()
+        .expect("engine runtime thread failed to start");
     EngineHandle::new(runtime, tx)
 }
 
@@ -193,7 +243,7 @@ pub fn spawn_engine_actor(
 /// flip to the secondary after `MAX_HEALTH_FAILURES` consecutive health-check
 /// failures.
 pub async fn run_engine_actor(
-    runtime: Arc<Runtime>,
+    runtime: Handle,
     primary: EngineClient,
     mut secondary: Option<EngineClient>,
     mut rx: mpsc::Receiver<EngineRequest>,
@@ -398,33 +448,9 @@ mod tests {
 
         let primary = EngineClient::new(mock.url.clone(), mock.secret.clone()).unwrap();
 
-        // Wire actor directly on the current test tokio runtime to avoid
-        // nesting a new runtime inside an async context (which panics on drop).
-        let (tx, rx) = mpsc::channel(8);
-
-        // Build two runtimes we need to supply but must not drop in async context.
-        // `std::mem::forget` prevents the drop-in-async-context panic; this is
-        // acceptable in tests (the OS reclaims memory at process exit).
-        let actor_rt: Arc<Runtime> = Arc::new(
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap(),
-        );
-        let placeholder_rt: Arc<Runtime> = Arc::new(
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap(),
-        );
-        let rt_for_actor = actor_rt.clone();
-        tokio::spawn(async move {
-            run_engine_actor(rt_for_actor, primary, None, rx).await;
-        });
-        std::mem::forget(actor_rt);
-
-        let handle = EngineHandle::new(placeholder_rt.clone(), tx);
-        std::mem::forget(placeholder_rt);
+        // Mirror production: own the engine runtime on a dedicated OS thread so
+        // it drops in a sync context. The `EngineHandle` holds only a `Handle`.
+        let handle = spawn_engine_actor(primary, None);
 
         let config = TransitionConfigurationV1 {
             terminal_total_difficulty: "0x123".into(),

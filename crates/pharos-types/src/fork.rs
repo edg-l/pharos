@@ -286,6 +286,66 @@ mod tests {
         assert_eq!(sched.next_fork_epoch(Epoch(100)), Epoch(u64::MAX));
     }
 
+    // ── Fork-digest tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn bellatrix_fork_digest_differs_from_altair() {
+        let gvr = Root::default();
+        let phase0_version = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+        let altair_version = Version::from_array([0x01, 0x00, 0x00, 0x00]);
+        let bellatrix_version = Version::from_array([0x02, 0x00, 0x00, 0x00]);
+
+        let phase0_digest = compute_fork_digest(phase0_version, &gvr);
+        let altair_digest = compute_fork_digest(altair_version, &gvr);
+        let bellatrix_digest = compute_fork_digest(bellatrix_version, &gvr);
+
+        assert_ne!(
+            bellatrix_digest, altair_digest,
+            "Bellatrix digest must differ from Altair digest"
+        );
+        assert_ne!(
+            bellatrix_digest, phase0_digest,
+            "Bellatrix digest must differ from Phase0 digest"
+        );
+        assert_ne!(
+            altair_digest, phase0_digest,
+            "Altair digest must differ from Phase0 digest"
+        );
+    }
+
+    #[test]
+    fn enr_next_fork_at_bellatrix_boundary() {
+        let sched = three_fork_schedule();
+        // altair_fork_epoch = 10, bellatrix_fork_epoch = 20
+
+        // One epoch before bellatrix: next_fork_version == bellatrix, next_fork_epoch == 20.
+        let pre_bellatrix_epoch = Epoch(sched.bellatrix_fork_epoch.0 - 1);
+        assert_eq!(
+            sched.next_fork_version(pre_bellatrix_epoch),
+            sched.bellatrix_fork_version,
+            "one epoch before bellatrix: next_fork_version must be bellatrix_fork_version"
+        );
+        assert_eq!(
+            sched.next_fork_epoch(pre_bellatrix_epoch),
+            sched.bellatrix_fork_epoch,
+            "one epoch before bellatrix: next_fork_epoch must be bellatrix_fork_epoch"
+        );
+
+        // At the bellatrix epoch and beyond: no further fork, next_fork_epoch == FAR_FUTURE.
+        for epoch_n in [
+            sched.bellatrix_fork_epoch.0,
+            sched.bellatrix_fork_epoch.0 + 1,
+            100,
+            u64::MAX - 1,
+        ] {
+            assert_eq!(
+                sched.next_fork_epoch(Epoch(epoch_n)),
+                Epoch(u64::MAX),
+                "epoch {epoch_n}: after last fork, next_fork_epoch must be FAR_FUTURE"
+            );
+        }
+    }
+
     #[test]
     fn mainnet_bellatrix_fork_epoch_crossing() {
         // Validate the mainnet fork epoch values from EthSpec consts.

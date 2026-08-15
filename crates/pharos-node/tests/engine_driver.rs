@@ -217,15 +217,8 @@ async fn engine_driver_marks_invalid_payload_and_skips_in_get_head() {
     );
 
     // 3. Spawn the engine actor + driver loop.
-    let engine_runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap(),
-    );
     let client = EngineClient::new(mock.url.clone(), mock.secret.clone()).unwrap();
-    let engine_handle = spawn_engine_actor(engine_runtime, client, None);
+    let engine_handle = spawn_engine_actor(client, None);
 
     let (head_tx, head_rx) = watch::channel::<Option<pharos_node::engine_driver::HeadChange>>(None);
     let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(16);

@@ -45,7 +45,9 @@ use crate::discovery::service::{DiscoveryConfig, DiscoveryService};
 use crate::discovery::subnets::compute_subscribed_subnets;
 use crate::error::NetworkError;
 use crate::gossip::config::gossipsub_behaviour;
-use crate::gossip::{dispatch_gossip_message, subscribe_phase0_topics};
+use crate::gossip::{
+    dispatch_gossip_message, subscribe_altair_extra_topics, subscribe_base_topics,
+};
 use crate::handle::NetworkHandle;
 use crate::host::{GossipVerdict, Host, LightClientProvider};
 use crate::peer::manager::PeerManager;
@@ -1542,9 +1544,20 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
         let public_key = local_key.public();
 
         // Use the spec-conforming gossipsub config.
-        // Phase-0 fork digest is captured once; the message-id closure uses it
-        // to dispatch between phase-0 and altair message-id formulas per
-        // `specs/altair/p2p-interface.md:163-171`.
+        //
+        // The message-id closure (in `gossip::config::gossipsub_behaviour`) takes
+        // the PHASE-0 fork digest as a sentinel to distinguish the two message-id
+        // formulas: phase0 topics match the sentinel and use the
+        // `message_domain_valid_snappy ++ data` SHA256 formula; all other fork
+        // digests (altair, bellatrix, …) fall through to the altair formula
+        // (`first_8_bytes(SHA256(MESSAGE_DOMAIN_VALID_SNAPPY ++ topic_len ++ topic ++ data))`).
+        //
+        // Bellatrix uses the SAME message-id formula as altair
+        // (`specs/bellatrix/p2p-interface.md` inherits from altair p2p-interface).
+        // After Ph2, `fork_digest_for(Fork::Phase0)` is always the REAL phase0
+        // digest (≠ bellatrix digest) regardless of the active fork, so the
+        // comparison in the closure is spec-correct: bellatrix messages take the
+        // else-branch (altair formula) as required.
         let phase0_fork_digest = self.host.fork_digest_for(crate::types::Fork::Phase0);
         let gossipsub = gossipsub_behaviour::<E>(phase0_fork_digest)?;
 
@@ -1623,10 +1636,35 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
             .with_swarm_config(|c| c.with_idle_connection_timeout(transport::idle_timeout()))
             .build();
 
-        // ── Step 5: subscribe to Phase-0 topics and build lookup map ─────────
+        // ── Step 5: subscribe to active-fork topics and build lookup map ─────
+        //
+        // `fork_digest` is `host.current_fork_digest()`, which after Ph2 is the
+        // ACTIVE fork digest at startup (bellatrix when both altair+bellatrix are
+        // at epoch 0, phase0 for a plain phase0 genesis).
+        //
+        // Base topics (5 beacon topics + attnets) are always subscribed.  When
+        // the active fork is altair or bellatrix, the altair-era extras
+        // (sync_committee_*, light_client_*) are also subscribed under the same
+        // active digest so a bellatrix-at-genesis node starts on the full set.
+        // (`D-bellatrix-startup-topic-set`)
         let mut swarm = swarm;
-        let topic_map =
-            subscribe_phase0_topics(&mut swarm.behaviour_mut().gossipsub, fork_digest, &attnets)?;
+        let mut topic_map =
+            subscribe_base_topics(&mut swarm.behaviour_mut().gossipsub, fork_digest, &attnets)?;
+
+        // Determine the active fork from the digest; subscribe altair extras if ≥ altair.
+        let active_fork = self.host.fork_from_context(&fork_digest.into_inner());
+        match active_fork {
+            Some(crate::types::Fork::Altair) | Some(crate::types::Fork::Bellatrix) => {
+                subscribe_altair_extra_topics::<E>(
+                    &mut swarm.behaviour_mut().gossipsub,
+                    fork_digest,
+                    &mut topic_map,
+                )?;
+            }
+            _ => {
+                // Phase0 or unknown digest: base topics only.
+            }
+        }
 
         // ── Step 6: add listeners ─────────────────────────────────────────────
         if !self.no_tcp {
@@ -1756,8 +1794,13 @@ mod tests {
         fn genesis_validators_root(&self) -> Root {
             Root::default()
         }
-        fn fork_digest_for(&self, _fork: crate::types::Fork) -> ForkDigest {
-            ForkDigest::from_array([0u8; 4])
+        fn fork_digest_for(&self, fork: crate::types::Fork) -> ForkDigest {
+            use crate::types::Fork;
+            // MockHost uses the zero digest for every fork; the explicit match
+            // forces an update here if a future Fork variant is added.
+            match fork {
+                Fork::Phase0 | Fork::Altair | Fork::Bellatrix => ForkDigest::from_array([0u8; 4]),
+            }
         }
         fn fork_from_context(&self, _ctx: &[u8; 4]) -> Option<crate::types::Fork> {
             None

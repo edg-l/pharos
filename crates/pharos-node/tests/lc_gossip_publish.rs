@@ -32,6 +32,7 @@ use pharos_types::altair::{
     MinimalSignedBeaconBlock as AltairMinimalSignedBeaconBlock, MinimalSyncAggregate,
     MinimalSyncCommittee,
 };
+use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::misc::{Fork, Validator};
 use pharos_types::phase0::operations::BeaconBlockHeader;
 use pharos_types::phase0::primitives::{
@@ -244,27 +245,30 @@ fn build_altair_test_infra() -> (
     );
 
     let genesis_validators_root = Root::default();
-    let fork_version = Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION);
+    // Altair-at-genesis schedule: altair_fork_epoch = 0, bellatrix = FAR_FUTURE.
+    let fork_schedule = ForkSchedule {
+        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        altair_fork_epoch: Epoch(0),
+        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_epoch: Epoch(u64::MAX),
+        genesis_validators_root,
+    };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
         store,
         Arc::clone(&fc),
         genesis_validators_root,
-        fork_version,
+        fork_schedule,
+        0,
         Arc::new(RuntimeConfig::default()),
     ));
 
     // EnginePowBlockProvider: for Altair blocks, pow-block lookup is never called.
     // We still need a real engine handle to construct it.
-    let engine_runtime = Arc::new(
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap(),
-    );
     let jwt_secret = pharos_engine::JwtSecret::from_bytes([0u8; 32]);
     let dummy_url: reqwest::Url = "http://127.0.0.1:9999/".parse().unwrap();
     let client = pharos_engine::EngineClient::new(dummy_url, jwt_secret).unwrap();
-    let engine_handle = spawn_engine_actor(engine_runtime, client, None);
+    let engine_handle = spawn_engine_actor(client, None);
     let pow_provider = Arc::new(EnginePowBlockProvider::new(engine_handle));
 
     (fc, host, pow_provider, tmpdir)
@@ -558,25 +562,28 @@ async fn no_publish_for_phase0_block() {
         .unwrap(),
     );
     let genesis_validators_root = Root::default();
-    let fork_version = Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION);
+    // Phase0-only schedule: altair/bellatrix epochs = FAR_FUTURE.
+    let fork_schedule = ForkSchedule {
+        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        altair_fork_epoch: Epoch(u64::MAX),
+        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_epoch: Epoch(u64::MAX),
+        genesis_validators_root,
+    };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
         store,
         Arc::clone(&fc),
         genesis_validators_root,
-        fork_version,
+        fork_schedule,
+        0,
         Arc::new(RuntimeConfig::default()),
     ));
 
-    let engine_runtime = Arc::new(
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap(),
-    );
     let jwt_secret = pharos_engine::JwtSecret::from_bytes([0u8; 32]);
     let dummy_url: reqwest::Url = "http://127.0.0.1:9999/".parse().unwrap();
     let client = pharos_engine::EngineClient::new(dummy_url, jwt_secret).unwrap();
-    let engine_handle = spawn_engine_actor(engine_runtime, client, None);
+    let engine_handle = spawn_engine_actor(client, None);
     let pow_provider = Arc::new(EnginePowBlockProvider::new(engine_handle));
 
     // Build a Phase0 signed block at slot 1.

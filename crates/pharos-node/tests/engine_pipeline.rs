@@ -40,13 +40,14 @@ use pharos_types::bellatrix::{
     MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalSignedBeaconBlock,
     execution_payload::MinimalExecutionPayload,
 };
+use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::primitives::{Root, Slot, ValidatorIndex, Version};
 use pharos_types::state::{
     BeaconBlock as ForkBeaconBlock, MinimalBeaconState as ForkMinimalBeaconState,
 };
 use pharos_types::views::BeaconBlockView as _;
 use pharos_types::{EthSpec, MinimalEthSpec, PayloadStatus};
-use pharos_utils::{BLSSignature, Hash256};
+use pharos_utils::{BLSSignature, Epoch, Hash256};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -442,15 +443,8 @@ async fn engine_pipeline_drives_bellatrix_chain() {
     );
 
     // 4. Spawn engine actor + driver loop.
-    let engine_runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap(),
-    );
     let client = EngineClient::new(mock.url.clone(), mock.secret.clone()).unwrap();
-    let engine_handle = spawn_engine_actor(engine_runtime, client, None);
+    let engine_handle = spawn_engine_actor(client, None);
 
     let (head_tx, head_rx) = watch::channel::<Option<HeadChange>>(None);
     let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(16);
@@ -478,12 +472,21 @@ async fn engine_pipeline_drives_bellatrix_chain() {
     );
 
     let genesis_validators_root = Root::default();
-    let fork_version = Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION);
+    // Bellatrix-at-genesis schedule: all three epochs = 0.
+    let fork_schedule = ForkSchedule {
+        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        altair_fork_epoch: Epoch(0),
+        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_epoch: Epoch(0),
+        genesis_validators_root,
+    };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
         store,
         Arc::clone(&fc),
         genesis_validators_root,
-        fork_version,
+        fork_schedule,
+        0,
         Arc::new(pharos_types::RuntimeConfig::default()),
     ));
 

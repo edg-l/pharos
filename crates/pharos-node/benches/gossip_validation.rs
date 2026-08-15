@@ -52,11 +52,10 @@ use pharos_types::EthSpec;
 use pharos_types::MinimalEthSpec as E;
 use pharos_types::RuntimeConfig;
 use pharos_types::altair::light_client::LightClientFinalityUpdate;
+use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::misc::{AttestationData, Checkpoint, Fork, Validator};
 use pharos_types::phase0::operations::BeaconBlockHeader;
-use pharos_types::phase0::primitives::{
-    CommitteeIndex, Epoch, Root, Slot, ValidatorIndex, Version,
-};
+use pharos_types::phase0::primitives::{CommitteeIndex, Root, Slot, ValidatorIndex, Version};
 use pharos_types::phase0::{
     AggregateAndProof, Attestation, MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState,
     MinimalSignedBeaconBlock, SignedAggregateAndProof,
@@ -65,6 +64,7 @@ use pharos_types::state::{
     MinimalBeaconBlock as ForkMinimalBeaconBlock, MinimalBeaconState as ForkMinimalBeaconState,
     MinimalSignedBeaconBlock as ForkMinimalSignedBeaconBlock,
 };
+use pharos_utils::Epoch;
 use pharos_utils::bls::BLS_DST;
 use pharos_utils::{BLSPubkey, BLSSignature, Gwei};
 
@@ -183,12 +183,20 @@ fn make_bench_host(
     }
 
     let gvr = Root::default();
-    let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+    // Phase0-only schedule: altair/bellatrix epochs = FAR_FUTURE, versions = mainnet defaults.
+    let fork_schedule = ForkSchedule {
+        genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+        altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+        altair_fork_epoch: Epoch(u64::MAX),
+        bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+        bellatrix_fork_epoch: Epoch(u64::MAX),
+        genesis_validators_root: gvr,
+    };
     let runtime_cfg = Arc::new(RuntimeConfig {
         seconds_per_slot,
         ..Default::default()
     });
-    let host = HostImpl::<E>::new(store, fork_choice, gvr, fv, runtime_cfg);
+    let host = HostImpl::<E>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg);
     (host, genesis_root, fork_genesis_state)
 }
 
@@ -354,9 +362,17 @@ fn bench_lc_finality_update(c: &mut Criterion) {
         let fc_store = pharos_fork_choice::get_forkchoice_store::<E>(genesis_state, anchor_block);
         let fork_choice = Arc::new(RwLock::new(fc_store));
         let gvr = Root::default();
-        let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+        // Phase0-only schedule: altair/bellatrix epochs = FAR_FUTURE.
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(u64::MAX),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(u64::MAX),
+            genesis_validators_root: gvr,
+        };
         let runtime_cfg = Arc::new(RuntimeConfig::default());
-        HostImpl::new(store, fork_choice, gvr, fv, runtime_cfg)
+        HostImpl::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
     };
 
     let make_lc_update = |slot: u64| LightClientFinalityUpdate {

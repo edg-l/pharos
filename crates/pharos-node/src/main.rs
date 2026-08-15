@@ -328,9 +328,6 @@ async fn main() -> anyhow::Result<()> {
         );
     };
 
-    let genesis_fork_version = MainnetEthSpec::GENESIS_FORK_VERSION;
-    let fork_version = pharos_types::phase0::primitives::Version::from_array(genesis_fork_version);
-
     let mut fc_store_mut = fc_store;
 
     // Advance the fork-choice time cursor to wall-clock after warm restart.
@@ -388,16 +385,11 @@ async fn main() -> anyhow::Result<()> {
             None
         };
 
-        let engine_runtime = Arc::new(
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .thread_name("pharos-engine")
-                .enable_all()
-                .build()
-                .context("building engine tokio runtime")?,
-        );
-
-        let handle = spawn_engine_actor(engine_runtime, primary, secondary_opt);
+        // `spawn_engine_actor` builds and OWNS the engine runtime on a dedicated
+        // OS thread, so the runtime drops in a sync context at shutdown (a
+        // `Runtime` dropped from inside an async context panics). The returned
+        // `EngineHandle` holds only a non-owning `Handle`.
+        let handle = spawn_engine_actor(primary, secondary_opt);
         info!(endpoint = %args.execution_endpoint, "engine actor started");
         Some(handle)
     } else {
@@ -459,6 +451,29 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Step 5: Construct host + network ──────────────────────────────────
 
+    // Build the fork schedule from runtime_cfg so --config-dir overrides take
+    // effect. Constructed here (single source of truth) so the same Arc is
+    // shared with both HostImpl and the migration/rotation loops.
+    let fork_schedule = Arc::new(pharos_types::fork::ForkSchedule {
+        genesis_fork_version: pharos_types::phase0::primitives::Version::from_array(
+            runtime_cfg.genesis_fork_version,
+        ),
+        altair_fork_version: pharos_types::phase0::primitives::Version::from_array(
+            runtime_cfg.altair_fork_version,
+        ),
+        altair_fork_epoch: pharos_utils::Epoch(runtime_cfg.altair_fork_epoch),
+        bellatrix_fork_version: pharos_types::phase0::primitives::Version::from_array(
+            runtime_cfg.bellatrix_fork_version,
+        ),
+        bellatrix_fork_epoch: pharos_utils::Epoch(runtime_cfg.bellatrix_fork_epoch),
+        genesis_validators_root,
+    });
+
+    // Genesis time: for a production node this would be read from the chain
+    // database or the genesis state's `genesis_time` field. For now, use
+    // wall clock as a conservative approximation (cold-start scenario).
+    let genesis_time_secs = wall_clock_secs;
+
     // Wrap in Arc so we can retain a handle for record_attnets_change after
     // passing a clone into the network builder. Arc<HostImpl<E>> satisfies
     // Host<E> via the blanket impls in pharos_network::host.
@@ -471,7 +486,8 @@ async fn main() -> anyhow::Result<()> {
         store,
         fork_choice.clone(),
         genesis_validators_root,
-        fork_version,
+        (*fork_schedule).clone(),
+        genesis_time_secs,
         Arc::new(runtime_cfg.clone()),
     );
     host_inner.wire_engine(head_tx.clone(), payload_tx.clone());
@@ -508,28 +524,6 @@ async fn main() -> anyhow::Result<()> {
         "initial attnets recorded; metadata seq_number = 1"
     );
 
-    // Build fork schedule for the subnet rotation and fork migration loops.
-    // Use runtime_cfg so --config-dir overrides take effect.
-    let fork_schedule = Arc::new(pharos_types::fork::ForkSchedule {
-        genesis_fork_version: pharos_types::phase0::primitives::Version::from_array(
-            runtime_cfg.genesis_fork_version,
-        ),
-        altair_fork_version: pharos_types::phase0::primitives::Version::from_array(
-            runtime_cfg.altair_fork_version,
-        ),
-        altair_fork_epoch: pharos_utils::Epoch(runtime_cfg.altair_fork_epoch),
-        bellatrix_fork_version: pharos_types::phase0::primitives::Version::from_array(
-            runtime_cfg.bellatrix_fork_version,
-        ),
-        bellatrix_fork_epoch: pharos_utils::Epoch(runtime_cfg.bellatrix_fork_epoch),
-        genesis_validators_root,
-    });
-
-    // Genesis time: for a production node this would be read from the chain
-    // database or the genesis state's `genesis_time` field. For now, use
-    // wall clock as a conservative approximation (cold-start scenario).
-    let genesis_time_secs = wall_clock_secs;
-
     // Spawn subnet rotation loop (attestation subnet re-assignment every
     // EPOCHS_PER_SUBNET_SUBSCRIPTION = 256 epochs).
     // Takes a clonable `NetworkCommandSender` so we retain `handle` ownership.
@@ -542,8 +536,9 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Spawn fork migration loop (fires once at ALTAIR_FORK_EPOCH to update the
-    // ENR `eth2` field and rotate gossip topics).
+    // Spawn fork migration loop: handles ALL fork crossings (phase0→altair,
+    // altair→bellatrix, and future forks) within a single run, updating the
+    // ENR `eth2` field and rotating gossip topics at each boundary.
     {
         let cmd = handle.command_sender();
         let disc = discovery_handle.clone();

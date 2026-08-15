@@ -58,15 +58,19 @@ use crate::engine_driver::{HeadChange, NewPayloadRequest};
 // ── ForkContextInner ──────────────────────────────────────────────────────────
 
 /// Private fork-context state stored inside `HostImpl`.
+///
+/// `current_fork_digest()` is computed dynamically from `fork_schedule` +
+/// wall-clock epoch derived from `genesis_time_secs`; there is no frozen
+/// digest field. This means Status / ENR / message-id stay correct as the
+/// epoch advances without any mutation path. (ADR `D-epoch-driven-fork-digest`.)
 struct ForkContextInner {
     genesis_validators_root: Root,
-    current_fork_version: Version,
-    /// Precomputed at construction so `current_fork_digest` has no runtime cost.
-    current_fork_digest: ForkDigest,
-    // Accessed via HostImpl::fork_schedule(); the field itself is not read
-    // within this module but is part of the public API surface for Phase 3+.
-    #[allow(dead_code)]
     fork_schedule: ForkSchedule,
+    /// Unix timestamp of genesis slot 0 (seconds).
+    ///
+    /// `0` is treated as "epoch 0 forever" (suitable for tests where no real
+    /// wall-clock alignment is needed).
+    genesis_time_secs: u64,
 }
 
 // ── HostImpl ──────────────────────────────────────────────────────────────────
@@ -152,26 +156,14 @@ impl<E: EthSpec> HostImpl<E> {
         store: Arc<RocksStore>,
         fork_choice: Arc<RwLock<pharos_fork_choice::Store<E>>>,
         genesis_validators_root: Root,
-        current_fork_version: Version,
+        fork_schedule: ForkSchedule,
+        genesis_time_secs: u64,
         runtime_cfg: Arc<RuntimeConfig>,
     ) -> Self {
-        let current_fork_digest =
-            compute_fork_digest(current_fork_version, &genesis_validators_root);
-
-        let fork_schedule = ForkSchedule {
-            genesis_fork_version: current_fork_version,
-            altair_fork_version: current_fork_version,
-            altair_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH; overridden by RuntimeConfig
-            bellatrix_fork_version: current_fork_version,
-            bellatrix_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
-            genesis_validators_root,
-        };
-
         let fork_context = ForkContextInner {
             genesis_validators_root,
-            current_fork_version,
-            current_fork_digest,
             fork_schedule,
+            genesis_time_secs,
         };
 
         Self {
@@ -252,13 +244,49 @@ impl<E: EthSpec> HostImpl<E> {
     }
 
     /// The fork schedule for this node.
-    ///
-    /// At M3a, `altair_fork_epoch = FAR_FUTURE_EPOCH`; `fork_at_epoch` returns
-    /// Phase 0 for all epochs. M3b's YAML loader overwrites `altair_fork_epoch`
-    /// with the real value without changing this struct shape.
     #[allow(dead_code)]
     pub fn fork_schedule(&self) -> &ForkSchedule {
         &self.fork_context.fork_schedule
+    }
+
+    // ── Private epoch/fork helpers ────────────────────────────────────────────
+
+    /// Wall-clock epoch derived from `genesis_time_secs`.
+    ///
+    /// Uses the same ms-based arithmetic as `fork_migration.rs:77-85` so that
+    /// sub-second slot durations (used in tests) don't round to zero:
+    ///
+    /// ```text
+    /// elapsed_ms   = (now_secs - genesis_time_secs) * 1000
+    /// elapsed_slots = elapsed_ms / SLOT_DURATION_MS
+    /// epoch        = elapsed_slots / SLOTS_PER_EPOCH
+    /// ```
+    ///
+    /// When `genesis_time_secs == 0` the epoch is always 0 (suitable for
+    /// tests where no real genesis-time alignment is needed).
+    fn current_epoch(&self) -> Epoch {
+        let genesis_time_secs = self.fork_context.genesis_time_secs;
+        if genesis_time_secs == 0 {
+            return Epoch(0);
+        }
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now_secs < genesis_time_secs {
+            return Epoch(0);
+        }
+        let elapsed_ms = (now_secs - genesis_time_secs).saturating_mul(1000);
+        let slot_ms = E::SLOT_DURATION_MS.max(1);
+        let elapsed_slots = elapsed_ms / slot_ms;
+        Epoch(elapsed_slots / E::SLOTS_PER_EPOCH)
+    }
+
+    /// The fork version active at the current wall-clock epoch.
+    fn current_fork_version_now(&self) -> Version {
+        self.fork_context
+            .fork_schedule
+            .current_fork_version(self.current_epoch())
     }
 
     /// Return a clone of the `Arc<RocksStore>` backing this host.
@@ -434,19 +462,27 @@ impl<E: EthSpec> HostImpl<E> {
 // ── ForkContext ───────────────────────────────────────────────────────────────
 
 impl<E: EthSpec> ForkContext for HostImpl<E> {
+    /// Compute the current fork digest from the wall-clock epoch.
+    ///
+    /// Computed on every call from `fork_schedule.current_fork_version(current_epoch())`
+    /// combined with `genesis_validators_root`. No frozen field; the value tracks the
+    /// epoch boundary automatically. (ADR `D-epoch-driven-fork-digest`.)
     fn current_fork_digest(&self) -> ForkDigest {
-        self.fork_context.current_fork_digest
+        let gvr = &self.fork_context.genesis_validators_root;
+        compute_fork_digest(self.current_fork_version_now(), gvr)
     }
 
-    /// Returns the Phase-0-only ENR fork ID.
+    /// Returns the ENR fork ID for the current epoch.
     ///
-    /// `next_fork_version` and `next_fork_epoch` use `FAR_FUTURE_EPOCH`
-    /// (Phase 0 only). M3b extends to real Altair values.
+    /// `fork_digest` reflects the active fork; `next_fork_version` and
+    /// `next_fork_epoch` are taken from the fork schedule so that ENR
+    /// announcements remain correct across fork boundaries.
     fn enr_fork_id(&self) -> ENRForkID {
+        let epoch = self.current_epoch();
         ENRForkID {
-            fork_digest: self.fork_context.current_fork_digest,
-            next_fork_version: self.fork_context.current_fork_version,
-            next_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            fork_digest: self.current_fork_digest(),
+            next_fork_version: self.fork_context.fork_schedule.next_fork_version(epoch),
+            next_fork_epoch: self.fork_context.fork_schedule.next_fork_epoch(epoch),
         }
     }
 
@@ -456,21 +492,23 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
 
     /// Returns the fork digest for the given network `Fork`.
     ///
-    /// Phase 0: `compute_fork_digest(genesis_fork_version, gvr)`.
-    /// Altair:  `compute_fork_digest(altair_fork_version,  gvr)`.
+    /// Each fork maps to its own version field in `fork_schedule`, so all
+    /// three digests are distinct (Phase0 ≠ Altair ≠ Bellatrix) whenever the
+    /// schedule has distinct version bytes.
     fn fork_digest_for(&self, fork: Fork) -> ForkDigest {
+        let sched = &self.fork_context.fork_schedule;
         let version = match fork {
-            Fork::Phase0 => self.fork_context.fork_schedule.genesis_fork_version,
-            Fork::Altair => self.fork_context.fork_schedule.altair_fork_version,
+            Fork::Phase0 => sched.genesis_fork_version,
+            Fork::Altair => sched.altair_fork_version,
+            Fork::Bellatrix => sched.bellatrix_fork_version,
         };
         compute_fork_digest(version, &self.fork_context.genesis_validators_root)
     }
 
     /// Reverse-maps a raw 4-byte context to a `Fork`.
     ///
-    /// Computes the known fork digests on the fly (two calls to
-    /// `compute_fork_digest`; result is tiny and computed once per chunk).
-    /// Returns `None` for any unknown context bytes.
+    /// Computes the three known fork digests on the fly and compares against
+    /// `ctx`. Returns `None` for any unrecognised context bytes.
     fn fork_from_context(&self, ctx: &[u8; 4]) -> Option<Fork> {
         let gvr = &self.fork_context.genesis_validators_root;
         let sched = &self.fork_context.fork_schedule;
@@ -481,6 +519,10 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
         let altair_digest = compute_fork_digest(sched.altair_fork_version, gvr);
         if *ctx == altair_digest.into_inner() {
             return Some(Fork::Altair);
+        }
+        let bellatrix_digest = compute_fork_digest(sched.bellatrix_fork_version, gvr);
+        if *ctx == bellatrix_digest.into_inner() {
+            return Some(Fork::Bellatrix);
         }
         None
     }
@@ -1423,9 +1465,147 @@ mod tests {
             pharos_fork_choice::get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
         let fork_choice = Arc::new(RwLock::new(fc_store));
         let gvr = Root::default();
-        let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+        // Phase0-only schedule: altair/bellatrix epochs = FAR_FUTURE, versions = mainnet defaults.
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(u64::MAX),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(u64::MAX),
+            genesis_validators_root: gvr,
+        };
         let runtime_cfg = Arc::new(RuntimeConfig::default());
-        HostImpl::new(store, fork_choice, gvr, fv, runtime_cfg)
+        HostImpl::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
+    }
+
+    /// Build a `HostImpl` with a bellatrix-at-genesis schedule:
+    /// `altair_fork_epoch == bellatrix_fork_epoch == 0`.
+    /// `genesis_time_secs = 0` causes `current_epoch()` to always return 0,
+    /// which resolves to the bellatrix fork version.
+    fn make_bellatrix_genesis_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
+        use pharos_ssz::TreeHash;
+        use pharos_types::state::BeaconBlock as ForkBeaconBlock;
+        let store = Arc::new(
+            RocksStore::open::<MainnetEthSpec>(RocksStoreConfig {
+                path: dir.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("open store"),
+        );
+        let genesis_state = <MainnetEthSpec as EthSpec>::BeaconState::default();
+        let state_root = genesis_state.tree_hash_root();
+        let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MainnetBeaconBlock {
+            state_root,
+            ..pharos_types::phase0::MainnetBeaconBlock::default()
+        });
+        let fc_store =
+            pharos_fork_choice::get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
+        let fork_choice = Arc::new(RwLock::new(fc_store));
+        let gvr = Root::default();
+        // Bellatrix-at-genesis: both altair and bellatrix activate at epoch 0.
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(0),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(0),
+            genesis_validators_root: gvr,
+        };
+        let runtime_cfg = Arc::new(RuntimeConfig::default());
+        HostImpl::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
+    }
+
+    // ── Task 5.2: current_fork_digest / enr_fork_id on bellatrix-genesis host ──
+
+    /// A `HostImpl` with bellatrix-at-genesis schedule and `genesis_time_secs=0`
+    /// must report the bellatrix fork digest from `current_fork_digest()` and
+    /// the same digest from `enr_fork_id().fork_digest`.
+    #[test]
+    fn bellatrix_genesis_host_reports_bellatrix_digest() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_bellatrix_genesis_host(&dir);
+        let gvr = Root::default();
+        let bellatrix_version = Version::from_array([0x02, 0x00, 0x00, 0x00]);
+        let expected_digest = compute_fork_digest(bellatrix_version, &gvr);
+
+        let got = host.current_fork_digest();
+        assert_eq!(
+            got, expected_digest,
+            "bellatrix-genesis HostImpl must report bellatrix fork digest"
+        );
+        let enr_id = host.enr_fork_id();
+        assert_eq!(
+            enr_id.fork_digest, expected_digest,
+            "enr_fork_id().fork_digest must match bellatrix digest"
+        );
+    }
+
+    /// A phase0-only `HostImpl` (altair/bellatrix at FAR_FUTURE) must report
+    /// the phase0 fork digest. Regression guard: confirms the dynamic lookup
+    /// does not accidentally return a non-phase0 digest on a phase0-only schedule.
+    #[test]
+    fn phase0_only_host_reports_phase0_digest() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+        let gvr = Root::default();
+        let phase0_version = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+        let bellatrix_version = Version::from_array([0x02, 0x00, 0x00, 0x00]);
+        let expected_phase0_digest = compute_fork_digest(phase0_version, &gvr);
+        let bellatrix_digest = compute_fork_digest(bellatrix_version, &gvr);
+
+        let got = host.current_fork_digest();
+        assert_eq!(
+            got, expected_phase0_digest,
+            "phase0-only HostImpl must report phase0 fork digest"
+        );
+        // `fork_digest_for(Fork::Phase0)` must not equal the bellatrix digest.
+        let phase0_fd = host.fork_digest_for(pharos_network::types::Fork::Phase0);
+        assert_ne!(
+            phase0_fd, bellatrix_digest,
+            "fork_digest_for(Phase0) must differ from bellatrix digest"
+        );
+    }
+
+    // ── Task 5.3: fork_from_context round-trips ───────────────────────────────
+
+    /// `fork_from_context` correctly reverse-maps each of the three fork digests
+    /// and returns `None` for an unknown 4-byte value.
+    #[test]
+    fn fork_from_context_round_trips() {
+        use pharos_network::types::Fork;
+        let dir = tempfile::TempDir::new().unwrap();
+        // Use a three-fork schedule so all three digests are distinct.
+        let host = make_bellatrix_genesis_host(&dir);
+        let gvr = Root::default();
+        let phase0_version = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+        let altair_version = Version::from_array([0x01, 0x00, 0x00, 0x00]);
+        let bellatrix_version = Version::from_array([0x02, 0x00, 0x00, 0x00]);
+
+        let phase0_bytes = compute_fork_digest(phase0_version, &gvr).into_inner();
+        let altair_bytes = compute_fork_digest(altair_version, &gvr).into_inner();
+        let bellatrix_bytes = compute_fork_digest(bellatrix_version, &gvr).into_inner();
+        let unknown_bytes = [0xde, 0xad, 0xbe, 0xef];
+
+        assert_eq!(
+            host.fork_from_context(&bellatrix_bytes),
+            Some(Fork::Bellatrix),
+            "bellatrix digest must round-trip to Fork::Bellatrix"
+        );
+        assert_eq!(
+            host.fork_from_context(&altair_bytes),
+            Some(Fork::Altair),
+            "altair digest must round-trip to Fork::Altair"
+        );
+        assert_eq!(
+            host.fork_from_context(&phase0_bytes),
+            Some(Fork::Phase0),
+            "phase0 digest must round-trip to Fork::Phase0"
+        );
+        assert_eq!(
+            host.fork_from_context(&unknown_bytes),
+            None,
+            "unknown 4-byte context must return None"
+        );
     }
 
     #[test]
@@ -1882,12 +2062,21 @@ mod tests {
         }
 
         let gvr = Root::default();
-        let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+        // Phase0-only schedule: altair/bellatrix epochs = FAR_FUTURE, versions = mainnet defaults.
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(u64::MAX),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(u64::MAX),
+            genesis_validators_root: gvr,
+        };
         let runtime_cfg = Arc::new(RuntimeConfig {
             seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
             ..Default::default()
         });
-        let host = HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fv, runtime_cfg);
+        let host =
+            HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg);
         (host, genesis_root, genesis_slot)
     }
 
@@ -2529,9 +2718,18 @@ mod tests {
         }
 
         let gvr = Root::default();
-        let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+        // Phase0-only schedule: altair/bellatrix epochs = FAR_FUTURE, versions = mainnet defaults.
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(u64::MAX),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(u64::MAX),
+            genesis_validators_root: gvr,
+        };
         let runtime_cfg = att_runtime_cfg(att_slot);
-        let host = HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fv, runtime_cfg);
+        let host =
+            HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg);
         (host, genesis_root, fork_genesis_state)
     }
 

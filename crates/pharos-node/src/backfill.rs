@@ -358,6 +358,7 @@ mod tests {
 
     use crate::engine_driver::{HeadChange, NewPayloadRequest};
     use crate::host_impl::HostImpl;
+    use pharos_types::fork::ForkSchedule;
 
     use super::{BackfillBlockProvider, BackfillError, run_backfill_loop};
 
@@ -707,12 +708,21 @@ mod tests {
             .unwrap(),
         );
         let genesis_validators_root = Root::default();
-        let fork_version = Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION);
+        // Bellatrix-at-genesis schedule: all three epochs = 0.
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
+            altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+            altair_fork_epoch: Epoch(0),
+            bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+            bellatrix_fork_epoch: Epoch(0),
+            genesis_validators_root,
+        };
         let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
             store,
             Arc::clone(&fc),
             genesis_validators_root,
-            fork_version,
+            fork_schedule,
+            0,
             Arc::new(pharos_types::config::RuntimeConfig::default()),
         ));
 

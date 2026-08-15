@@ -36,6 +36,7 @@ use pharos_stf::phase0::helpers::{
     DOMAIN_SELECTION_PROOF,
 };
 use pharos_storage::{RocksStore, RocksStoreConfig};
+use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::misc::{AttestationData, Checkpoint, Fork, Validator};
 use pharos_types::phase0::operations::BeaconBlockHeader;
 use pharos_types::phase0::primitives::{
@@ -179,12 +180,21 @@ fn make_e2e_host(
     }
 
     let gvr = Root::default();
-    let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+    // Phase0-only schedule: altair/bellatrix epochs = FAR_FUTURE, versions = mainnet defaults.
+    let fork_schedule = ForkSchedule {
+        genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+        altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+        altair_fork_epoch: Epoch(u64::MAX),
+        bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+        bellatrix_fork_epoch: Epoch(u64::MAX),
+        genesis_validators_root: gvr,
+    };
     let runtime_cfg = Arc::new(RuntimeConfig {
         seconds_per_slot,
         ..Default::default()
     });
-    let host = HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fv, runtime_cfg);
+    let host =
+        HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg);
     (host, genesis_root, fork_genesis_state)
 }
 

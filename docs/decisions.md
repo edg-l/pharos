@@ -48,6 +48,10 @@ numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
   - D-bls-on-hot-path D-invalid-roots-cache D-future-slot-disparity
   - D-domain-types-additions D-is-aggregator-location D-cache-key-on-head
   - D-seen-cache-after-accept D-no-tokio-from-validator
+- [M4d — Bellatrix gossip fork-migration](#m4d-decisions)
+  - D-epoch-driven-fork-digest D-bellatrix-migration-startup-no-op
+  - D-bellatrix-startup-topic-set D-gossip-block-decode-by-digest
+  - D-bellatrix-reqresp-both-paths
 
 ## M1 — Phase 0 STF + fork choice
 
@@ -2050,3 +2054,128 @@ returns empty, confirming no `tokio::spawn` call is present in the file.
 Enforced in: `crates/pharos-node/src/host_impl.rs:585-1131` (entire
 GossipValidator impl block — no `.await`, no `tokio::spawn`), `crates/pharos-network/src/network/mod.rs:535`
 (the spawn_blocking boundary that makes sync validators safe to call from async context).
+
+---
+
+## M4d decisions
+
+### D-epoch-driven-fork-digest
+
+**Status**: Accepted. **Date**: 2026-05-28.
+
+`HostImpl<E>::current_fork_digest()` computes the active fork digest on every call
+from `fork_schedule.current_fork_version(current_epoch())` + `genesis_validators_root`,
+where `current_epoch()` is derived from `genesis_time_secs` + wall-clock via the same
+arithmetic as the migration loop. There is no frozen `current_fork_digest` field and no
+`RwLock` holding a cached value. Because the digest is always derived from the live
+wall-clock epoch, `Status` responses, the ENR `eth2` field, and gossip message-id
+computations all stay correct across fork crossings automatically — no mutation path is
+needed and no window exists where the cached value diverges from the active fork.
+
+`ForkContextInner` (the private struct inside `HostImpl<E>`) stores `fork_schedule:
+ForkSchedule` and `genesis_time_secs: u64`; `current_epoch()` and `current_fork_version_now()`
+are small private helpers that read these fields without any shared state. Rejected
+alternative: a `parking_lot::RwLock<ForkDigest>` written by the migration loop — would
+require the loop and every caller to coordinate writes and reads; the dynamic-derive
+approach is simpler and strictly correct.
+
+Enforced in: `crates/pharos-node/src/host_impl.rs:267` (`current_epoch` helper),
+`crates/pharos-node/src/host_impl.rs:286` (`current_fork_version_now` helper),
+`crates/pharos-node/src/host_impl.rs:470` (`current_fork_digest` impl — no cache field),
+`crates/pharos-node/src/host_impl.rs:481` (`enr_fork_id` reads from same dynamic path).
+
+### D-bellatrix-migration-startup-no-op
+
+**Status**: Accepted. **Date**: 2026-05-28.
+
+`run_fork_migration_loop` tracks the last-applied fork version in `prior: Option<Version>`.
+On the first loop tick, `prior` is `None`; the loop sets `prior = Some(current)` WITHOUT
+calling `do_migration`, regardless of whether `current` matches the genesis fork version.
+For a node that starts already at the Bellatrix fork (e.g. `ALTAIR_FORK_EPOCH ==
+BELLATRIX_FORK_EPOCH == 0`), the first tick sees `current = bellatrix_fork_version` and
+records it; no spurious phase0-to-altair or altair-to-bellatrix migration fires. This
+avoids duplicate subscribes and spurious unsubscribes on the gossip topics that the
+startup subscription (Phase 4) already set up correctly under the active digest.
+
+Subsequent ticks compare `current` against `prior`; if they differ, `do_migration` is
+called and `prior` is updated. The loop does NOT exit after the first crossing, so the
+same instance handles both the phase0→altair and altair→bellatrix boundaries.
+
+Enforced in: `crates/pharos-node/src/fork_migration.rs:103-111` (first-tick `None` arm:
+`prior = Some(current)` with no migration call), `crates/pharos-node/src/fork_migration.rs:113-125`
+(subsequent-tick arm: migrate only when `current != prior_version`).
+
+### D-bellatrix-startup-topic-set
+
+**Status**: Accepted. **Date**: 2026-05-28.
+
+At startup the node subscribes the base beacon topics (5 non-attestation topics +
+attestation subnet topics) under the ACTIVE fork digest, computed via
+`host.current_fork_digest()` (dynamic per `D-epoch-driven-fork-digest`). When the
+active fork is altair or bellatrix, the altair-era extras (`sync_committee_contribution_and_proof`,
+`sync_committee_<i>` for each subnet, `light_client_finality_update`,
+`light_client_optimistic_update`) are also subscribed under the same active digest.
+A bellatrix-at-genesis node therefore starts with the full bellatrix topic set without
+needing to wait for a migration tick.
+
+The startup subscription calls `subscribe_base_topics` unconditionally, then checks
+`host.fork_from_context(&fork_digest.into_inner())` and calls
+`subscribe_altair_extra_topics` when the result is `Some(Fork::Altair)` or
+`Some(Fork::Bellatrix)`. Phase0-only nodes skip the extra topics without branching logic.
+
+Enforced in: `crates/pharos-network/src/network/mod.rs:1650` (`subscribe_base_topics`
+call at startup), `crates/pharos-network/src/network/mod.rs:1653-1665`
+(active-fork check and `subscribe_altair_extra_topics` conditional call),
+`crates/pharos-network/src/gossip/mod.rs:52` (`subscribe_base_topics` function),
+`crates/pharos-network/src/gossip/mod.rs:102` (`subscribe_altair_extra_topics` function).
+
+### D-gossip-block-decode-by-digest
+
+**Status**: Accepted. **Date**: 2026-05-28.
+
+The `beacon_block` gossip handler in `dispatch_gossip_message`
+(`crates/pharos-network/src/gossip/mod.rs`) dispatches SSZ decode to the fork-appropriate
+block type by calling `host.fork_from_context(&topic.fork_digest.into_inner())`:
+`Fork::Bellatrix` decodes as `E::BellatrixSignedBeaconBlock`, `Fork::Altair` as
+`E::AltairSignedBeaconBlock`, and `Fork::Phase0` or an unknown digest as
+`E::Phase0SignedBeaconBlock`. This matches the spec rule that the fork-digest topic
+segment identifies the block type; a gossip client MUST send the block type that matches
+the active fork digest.
+
+Prior to M4d the dispatch was hardcoded to Phase0; adding the match on
+`fork_from_context` is the change that enables a bellatrix-genesis node to accept
+bellatrix `beacon_block` messages from peers without returning `Reject("ssz decode")`.
+The `fork_from_context` method is already implemented on `HostImpl<E>` for all three
+forks, so the dispatch is exhaustive.
+
+Enforced in: `crates/pharos-network/src/gossip/mod.rs:170-198` (`beacon_block` match on
+`fork_from_context`, three arms for Bellatrix / Altair / Phase0), verified by
+`crates/pharos-network/tests/bellatrix_fork_migration.rs` (`bellatrix_beacon_block_dispatch_no_ssz_reject`
+test and `bellatrix_subscription_round_trip` integration test).
+
+### D-bellatrix-reqresp-both-paths
+
+**Status**: Accepted. **Date**: 2026-05-28.
+
+The `BeaconBlocksByRange/2` and `BeaconBlocksByRoot/2` codec in
+`crates/pharos-network/src/rpc/codec.rs` handles `Fork::Bellatrix` on BOTH the receive
+(decode) and the send (encode) paths. On receive, the `chunk_fork` discriminant
+(`Some(Fork::Bellatrix)`) routes to
+`read_ssz_snappy_payload::<_, E::BellatrixSignedBeaconBlock>` before wrapping via
+`E::bellatrix_into_signed_block`. On send, the per-block dispatch unwraps via
+`E::unwrap_bellatrix_signed_block` and writes the Bellatrix fork digest as the 4-byte
+context bytes followed by the inner SSZ.
+
+Both paths are required for real operation: the receive path is exercised during backfill
+(the node receives Bellatrix blocks from peers via `BeaconBlocksByRange`) and during
+sync from a peer that serves Bellatrix blocks; the send path is exercised when a
+connected peer (e.g. Lighthouse) requests blocks by range or root and the local DB
+contains Bellatrix blocks.
+
+Rejected alternative: implement receive only and stub send — would break any peer that
+requests Bellatrix blocks from Pharos, blocking interop with Lighthouse in a
+Bellatrix-genesis devnet.
+
+Enforced in: `crates/pharos-network/src/rpc/codec.rs:224` (receive path
+`Some(Fork::Bellatrix)` arm), `crates/pharos-network/src/rpc/codec.rs:436-438`
+(send path `unwrap_bellatrix_signed_block` dispatch and `Fork::Bellatrix` context bytes).

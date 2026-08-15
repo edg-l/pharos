@@ -30,9 +30,10 @@ use pharos_fork_choice::get_head;
 use pharos_ssz::{Encode, TreeHash};
 use pharos_stf::NullExecutionEngine;
 use pharos_storage::{ForkChoiceSnapshot, RocksStore, RocksStoreConfig};
+use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::primitives::{Root, Slot, Version};
 use pharos_types::{EthSpec, MinimalEthSpec};
-use pharos_utils::{Hash256, Uint256};
+use pharos_utils::{Epoch, Hash256, Uint256};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -386,15 +387,8 @@ async fn checkpoint_sync_then_backfill_advances_head() {
 
     // ── 9. Build EngineClient + spawn engine actor ────────────────────────────
 
-    let engine_runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap(),
-    );
     let client = EngineClient::new(engine_mock.url.clone(), engine_mock.secret.clone()).unwrap();
-    let engine_handle = spawn_engine_actor(engine_runtime, client, None);
+    let engine_handle = spawn_engine_actor(client, None);
 
     // ── 10. Wire channels ─────────────────────────────────────────────────────
 
@@ -404,12 +398,21 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     // ── 11. Build HostImpl and wire engine ────────────────────────────────────
 
     let genesis_validators_root = Root::default();
-    let fork_version = Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION);
+    // Bellatrix-at-genesis schedule: all three epochs = 0.
+    let fork_schedule = ForkSchedule {
+        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        altair_fork_epoch: Epoch(0),
+        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_epoch: Epoch(0),
+        genesis_validators_root,
+    };
     let mut host = HostImpl::<MinimalEthSpec>::new(
         Arc::clone(&store),
         Arc::clone(&fc_store),
         genesis_validators_root,
-        fork_version,
+        fork_schedule,
+        0,
         Arc::new(pharos_types::RuntimeConfig::default()),
     );
     host.wire_engine(head_tx.clone(), payload_tx.clone());

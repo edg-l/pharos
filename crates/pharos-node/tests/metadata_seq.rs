@@ -17,9 +17,11 @@ use pharos_network::host::ForkContext;
 use pharos_node::host_impl::HostImpl;
 use pharos_ssz::{Bitvector, TreeHash};
 use pharos_storage::{RocksStore, RocksStoreConfig};
+use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::primitives::{ATTESTATION_SUBNET_COUNT, Root, Version};
 use pharos_types::state::BeaconBlock as ForkBeaconBlock;
 use pharos_types::{EthSpec, MainnetEthSpec};
+use pharos_utils::Epoch;
 
 fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
     let store = Arc::new(
@@ -41,12 +43,21 @@ fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
     let fork_choice = Arc::new(RwLock::new(fc_store));
 
     let gvr = Root::default();
-    let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+    // Phase0-only schedule: altair/bellatrix epochs = FAR_FUTURE, versions = mainnet defaults.
+    let fork_schedule = ForkSchedule {
+        genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+        altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+        altair_fork_epoch: Epoch(u64::MAX),
+        bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+        bellatrix_fork_epoch: Epoch(u64::MAX),
+        genesis_validators_root: gvr,
+    };
     HostImpl::new(
         store,
         fork_choice,
         gvr,
-        fv,
+        fork_schedule,
+        0,
         Arc::new(pharos_types::RuntimeConfig::default()),
     )
 }

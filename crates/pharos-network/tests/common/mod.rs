@@ -41,6 +41,10 @@ pub struct TestHost {
     /// Altair fork digest for context-bytes codec tests. When `None`, the phase-0
     /// digest is used for all forks (safe for tests that don't exercise altair).
     altair_fork_digest: Option<ForkDigest>,
+    /// Bellatrix fork digest for bellatrix gossip/codec tests. When `None`, the
+    /// phase-0 digest is used for `Fork::Bellatrix` (safe for tests that don't
+    /// exercise bellatrix).
+    bellatrix_fork_digest: Option<ForkDigest>,
     blocks: Arc<Mutex<HashMap<Root, <MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock>>>,
     /// When `Some(idx)`, `validate_beacon_block` rejects any block with
     /// `proposer_index == idx`.
@@ -64,6 +68,7 @@ impl TestHost {
         Self {
             fork_digest,
             altair_fork_digest: None,
+            bellatrix_fork_digest: None,
             blocks: Arc::new(Mutex::new(HashMap::new())),
             reject_proposer_index: None,
             head_slot: Slot(2_000_000),
@@ -75,6 +80,12 @@ impl TestHost {
     /// Builder helper: configure an altair fork digest for context-bytes tests.
     pub fn with_altair_fork_digest(mut self, altair_digest: ForkDigest) -> Self {
         self.altair_fork_digest = Some(altair_digest);
+        self
+    }
+
+    /// Builder helper: configure a bellatrix fork digest for bellatrix gossip tests.
+    pub fn with_bellatrix_fork_digest(mut self, bellatrix_digest: ForkDigest) -> Self {
+        self.bellatrix_fork_digest = Some(bellatrix_digest);
         self
     }
 
@@ -166,6 +177,7 @@ impl ForkContext for TestHost {
         match fork {
             Fork::Phase0 => self.fork_digest,
             Fork::Altair => self.altair_fork_digest.unwrap_or(self.fork_digest),
+            Fork::Bellatrix => self.bellatrix_fork_digest.unwrap_or(self.fork_digest),
         }
     }
 
@@ -176,6 +188,11 @@ impl ForkContext for TestHost {
         if let Some(afd) = &self.altair_fork_digest {
             if *ctx == afd.into_inner() {
                 return Some(Fork::Altair);
+            }
+        }
+        if let Some(bfd) = &self.bellatrix_fork_digest {
+            if *ctx == bfd.into_inner() {
+                return Some(Fork::Bellatrix);
             }
         }
         None

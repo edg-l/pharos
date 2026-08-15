@@ -1,22 +1,25 @@
 //! Cross-fork ENR migration and gossip topic rotation driver.
 //!
-//! At `ALTAIR_FORK_EPOCH`, this loop:
-//! 1. Updates the local ENR `eth2` field with the Altair `ENRForkID` via
-//!    `DiscoveryHandle::update_enr_eth2` so that discovering peers see the
-//!    correct fork digest.
-//! 2. Unsubscribes from phase-0 gossip topics (which carry the phase-0 fork
-//!    digest in their topic string).
-//! 3. Subscribes to the altair gossip topics (which carry the altair fork
-//!    digest).
+//! This loop handles BOTH the phase0→altair AND altair→bellatrix crossings
+//! (and any future crossings) within a single run. It tracks the last-applied
+//! fork version (`prior`) and fires `do_migration` whenever the wall-clock
+//! epoch enters a new fork. The loop does NOT exit after the first crossing.
 //!
-//! Per `specs/altair/p2p-interface.md` cross-fork ENR migration requirements
-//! and `D-fork-schedule-source` (M3b).
+//! Per `specs/altair/p2p-interface.md` and `specs/bellatrix/p2p-interface.md`
+//! cross-fork ENR migration requirements and `D-fork-schedule-source` (M3b).
 //!
-//! Note: the attestation-subnet topics also change fork digest at the boundary;
-//! the subnet rotation loop handles its own re-subscription at the next epoch
-//! tick. This module adds the altair-specific topics (`sync_committee_*`,
-//! `light_client_*`, and the base beacon topics under the altair digest) and
-//! drops the phase-0 variants.
+//! **Startup no-op** (`D-bellatrix-migration-startup-no-op`): on the first
+//! tick, if the active fork version is already past the genesis fork version,
+//! the loop records `prior = current` WITHOUT migrating. The startup gossip
+//! subscription (Phase 4) already subscribes under the active fork digest;
+//! re-migrating would produce duplicate subscribes and spurious unsubscribes.
+//! For configs where ALTAIR_FORK_EPOCH == BELLATRIX_FORK_EPOCH == 0, this
+//! means the first tick sees `current = bellatrix_fork_version`, records it,
+//! and does nothing — no spurious intermediate altair step.
+//!
+//! Note: attestation-subnet topics change fork digest at every boundary; the
+//! subnet rotation loop handles its own re-subscription at the next epoch tick.
+//! This module manages the non-attestation topics.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,6 +27,7 @@ use std::time::Duration;
 use pharos_types::EthSpec;
 use pharos_types::fork::{ForkSchedule, compute_fork_digest};
 use pharos_types::phase0::ENRForkID;
+use pharos_types::phase0::primitives::Version;
 use pharos_utils::Epoch;
 use tracing::info;
 
@@ -37,25 +41,32 @@ use pharos_network::types::ForkDigest;
 
 /// Run the cross-fork ENR migration and gossip topic rotation loop.
 ///
-/// Ticks every slot (`E::SLOT_DURATION_MS`). When the fork epoch is crossed:
-/// - Updates the local ENR `eth2` field with the altair `ENRForkID`.
-/// - Drops gossip subscriptions that use the phase-0 fork digest.
-/// - Adds gossip subscriptions for the altair gossip topics.
+/// Ticks every slot (`E::SLOT_DURATION_MS`). Tracks the last-applied fork
+/// version (`prior`). When the wall-clock epoch crosses into a new fork:
+/// - Updates the local ENR `eth2` field with the new fork's `ENRForkID`.
+/// - Unsubscribes gossip topics using the old fork digest.
+/// - Subscribes to gossip topics using the new fork digest.
 ///
-/// Idempotent: once the migration has fired it exits (there is only one such
-/// crossing in the M3b scope).
+/// Handles BOTH the phase0→altair AND altair→bellatrix crossings in one run.
+/// The loop does NOT exit after the first crossing.
+///
+/// On the first tick, if `current != genesis_fork_version`, the loop records
+/// `prior = current` without migrating — see module-level doc for rationale
+/// (`D-bellatrix-migration-startup-no-op`).
 ///
 /// The `genesis_time_secs` parameter is the Unix timestamp of the genesis slot.
-/// When `0`, the current epoch is treated as 0 (suitable for tests where the
-/// fork epoch is also 0 or very small).
+/// When `0`, the current epoch is treated as 0.
 pub async fn run_fork_migration_loop<E: EthSpec>(
     cmd: NetworkCommandSender<E>,
     discovery: DiscoveryHandle,
     fork_schedule: Arc<ForkSchedule>,
     genesis_time_secs: u64,
 ) {
-    // If the altair fork epoch is FAR_FUTURE_EPOCH, never trigger.
-    if fork_schedule.altair_fork_epoch == Epoch(u64::MAX) {
+    // If both altair and bellatrix are FAR_FUTURE_EPOCH, no migrations will
+    // ever occur; exit immediately to avoid a useless spinning loop.
+    if fork_schedule.altair_fork_epoch == Epoch(u64::MAX)
+        && fork_schedule.bellatrix_fork_epoch == Epoch(u64::MAX)
+    {
         return;
     }
 
@@ -63,7 +74,9 @@ pub async fn run_fork_migration_loop<E: EthSpec>(
     let slots_per_epoch = E::SLOTS_PER_EPOCH;
     let mut interval = tokio::time::interval(Duration::from_millis(slot_ms));
 
-    let mut prior_fork_is_phase0: Option<bool> = None;
+    // `prior` tracks the last-applied fork version. `None` on the very first
+    // tick so we can detect startup-already-past-fork.
+    let mut prior: Option<Version> = None;
 
     loop {
         interval.tick().await;
@@ -75,8 +88,8 @@ pub async fn run_fork_migration_loop<E: EthSpec>(
             .as_secs();
 
         let epoch = if genesis_time_secs > 0 && now_secs >= genesis_time_secs {
-            // Compute in milliseconds so sub-second slot durations (used in tests
-            // with SLOT_DURATION_MS < 1000) don't round to zero.
+            // Compute in milliseconds so sub-second slot durations (used in
+            // tests with SLOT_DURATION_MS < 1000) don't round to zero.
             let elapsed_ms = (now_secs - genesis_time_secs).saturating_mul(1000);
             let elapsed_slots = elapsed_ms / slot_ms.max(1);
             elapsed_slots / slots_per_epoch
@@ -85,113 +98,165 @@ pub async fn run_fork_migration_loop<E: EthSpec>(
         };
 
         let current_epoch = Epoch(epoch);
-        let in_phase0 = current_epoch < fork_schedule.altair_fork_epoch;
+        let current = fork_schedule.current_fork_version(current_epoch);
 
-        // On the first tick, record the prior fork without migrating.
-        if prior_fork_is_phase0.is_none() {
-            prior_fork_is_phase0 = Some(in_phase0);
-            // If we are already past the fork epoch on first tick, migrate immediately.
-            if !in_phase0 {
-                do_migration::<E>(&cmd, &discovery, &fork_schedule).await;
-                return;
+        match prior {
+            None => {
+                // First tick. Record the active fork version without migrating.
+                // `D-bellatrix-migration-startup-no-op`: if we are already past
+                // genesis_fork_version at startup, the startup subscription
+                // (Phase 4) is already on the correct digest; migrating here
+                // would produce spurious unsubscribes.
+                prior = Some(current);
+                // Do not migrate even if current != genesis_fork_version.
             }
-            continue;
+            Some(prior_version) if current != prior_version => {
+                // Fork boundary crossed: migrate from prior_version → current.
+                do_migration::<E>(
+                    &cmd,
+                    &discovery,
+                    &fork_schedule,
+                    prior_version,
+                    current,
+                    current_epoch,
+                )
+                .await;
+                prior = Some(current);
+            }
+            _ => {
+                // Same fork as last tick; nothing to do.
+            }
         }
-
-        // Detect transition: was phase-0, now altair.
-        if prior_fork_is_phase0 == Some(true) && !in_phase0 {
-            do_migration::<E>(&cmd, &discovery, &fork_schedule).await;
-            return; // Migration fires once; exit the loop.
-        }
-
-        prior_fork_is_phase0 = Some(in_phase0);
     }
 }
 
 // ── do_migration ─────────────────────────────────────────────────────────────
 
-/// Execute the one-time fork migration: update ENR, drop phase-0 topics,
-/// subscribe to altair topics.
+/// Execute a fork migration: update ENR, drop old-digest topics, subscribe
+/// to new-digest topics.
+///
+/// `old_version` and `new_version` are the fork versions before and after the
+/// boundary. `epoch` is the current epoch (used for ENRForkID next-fork fields).
 async fn do_migration<E: EthSpec>(
     cmd: &NetworkCommandSender<E>,
     discovery: &DiscoveryHandle,
     fork_schedule: &ForkSchedule,
+    old_version: Version,
+    new_version: Version,
+    epoch: Epoch,
 ) {
     let gvr = fork_schedule.genesis_validators_root;
 
-    let phase0_digest = compute_fork_digest(fork_schedule.genesis_fork_version, &gvr);
-    let altair_digest = compute_fork_digest(fork_schedule.altair_fork_version, &gvr);
+    let old_digest = compute_fork_digest(old_version, &gvr);
+    let new_digest = compute_fork_digest(new_version, &gvr);
 
     info!(
-        altair_fork_epoch = %fork_schedule.altair_fork_epoch,
-        phase0_digest = ?phase0_digest,
-        altair_digest = ?altair_digest,
-        "fork migration: crossing ALTAIR_FORK_EPOCH"
+        old_version = ?old_version,
+        new_version = ?new_version,
+        old_digest = ?old_digest,
+        new_digest = ?new_digest,
+        "fork migration: crossing fork boundary"
     );
 
-    // Step 1: Update the ENR `eth2` field with the altair fork identity.
+    // Step 1: Update the ENR `eth2` field with the new fork identity.
+    // next_fork_version/next_fork_epoch reflect what comes AFTER `new_version`.
     let enr_fork_id = ENRForkID {
-        fork_digest: altair_digest,
-        next_fork_version: fork_schedule.altair_fork_version,
-        next_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH (no further forks in M3b)
+        fork_digest: new_digest,
+        next_fork_version: fork_schedule.next_fork_version(epoch),
+        next_fork_epoch: fork_schedule.next_fork_epoch(epoch),
     };
     if let Err(e) = discovery.update_enr_eth2(enr_fork_id).await {
         tracing::warn!(%e, "fork migration: ENR eth2 update failed");
     }
 
-    // Step 2: Unsubscribe from phase-0 gossip topics.
-    let phase0_topics = phase0_gossip_topics(phase0_digest);
-    for topic in phase0_topics {
+    // Step 2: Unsubscribe from old-digest gossip topics.
+    let old_topics = topics_for_version::<E>(old_version, fork_schedule, old_digest);
+    for topic in old_topics {
         if let Err(e) = send_unsubscribe(cmd, topic).await {
-            tracing::debug!(%e, "fork migration: phase0 unsubscribe error");
+            tracing::debug!(%e, "fork migration: old-digest unsubscribe error");
         }
     }
 
-    // Step 3: Subscribe to altair gossip topics.
-    let altair_topics = altair_gossip_topics::<E>(altair_digest);
-    for topic in altair_topics {
+    // Step 3: Subscribe to new-digest gossip topics.
+    let new_topics = topics_for_version::<E>(new_version, fork_schedule, new_digest);
+    for topic in new_topics {
         if let Err(e) = send_subscribe(cmd, topic).await {
-            tracing::debug!(%e, "fork migration: altair subscribe error");
+            tracing::debug!(%e, "fork migration: new-digest subscribe error");
         }
     }
 
-    info!("fork migration: complete; now on altair topics");
+    info!(
+        new_fork_version = ?new_version,
+        "fork migration: complete"
+    );
 }
 
 // ── Topic helpers ─────────────────────────────────────────────────────────────
 
-/// The phase-0 gossip topics (using the phase-0 fork digest) that must be
-/// dropped when crossing to Altair.
+/// Select the full topic set appropriate for `version` at `digest`.
 ///
-/// Attestation topics are NOT included here; the subnet rotation driver
-/// re-subscribes them with the correct (altair) fork digest at the next tick.
-pub(crate) fn phase0_gossip_topics(phase0_digest: ForkDigest) -> Vec<GossipTopic> {
-    let base_kinds = [
+/// - genesis_fork_version → `phase0_gossip_topics` (5 base topics)
+/// - altair_fork_version  → `altair_gossip_topics` (5 base + altair extras)
+/// - bellatrix_fork_version (or unknown) → `bellatrix_gossip_topics`
+///   (5 base + same altair extras, all under the bellatrix digest)
+fn topics_for_version<E: EthSpec>(
+    version: Version,
+    fork_schedule: &ForkSchedule,
+    digest: ForkDigest,
+) -> Vec<GossipTopic> {
+    if version == fork_schedule.genesis_fork_version {
+        phase0_gossip_topics(digest)
+    } else if version == fork_schedule.altair_fork_version {
+        altair_gossip_topics::<E>(digest)
+    } else {
+        // Bellatrix (and any future fork): same topic shape as altair —
+        // per bellatrix/p2p-interface.md only the beacon_block TYPE changes;
+        // all topic names remain the same, only the fork-digest segment bumps.
+        bellatrix_gossip_topics::<E>(digest)
+    }
+}
+
+/// The 5 base beacon gossip topics under `digest`.
+///
+/// These are shared across all forks; the fork-digest segment in the topic
+/// string is the only thing that differs per fork.
+///
+/// Attestation subnet topics are NOT included; the subnet rotation driver
+/// manages them.
+fn base_beacon_topics(digest: ForkDigest) -> Vec<GossipTopic> {
+    [
         GossipTopicKind::BeaconBlock,
         GossipTopicKind::BeaconAggregateAndProof,
         GossipTopicKind::VoluntaryExit,
         GossipTopicKind::ProposerSlashing,
         GossipTopicKind::AttesterSlashing,
-    ];
-    base_kinds
-        .into_iter()
-        .map(|kind| GossipTopic {
-            fork_digest: phase0_digest,
-            kind,
-        })
-        .collect()
+    ]
+    .into_iter()
+    .map(|kind| GossipTopic {
+        fork_digest: digest,
+        kind,
+    })
+    .collect()
 }
 
-/// The altair gossip topics (using the altair fork digest) to subscribe to
-/// when crossing `ALTAIR_FORK_EPOCH`.
+/// The phase-0 gossip topics (5 base topics under the phase-0 fork digest).
+///
+/// Attestation topics are NOT included; the subnet rotation driver re-subscribes
+/// them with the correct fork digest at the next tick.
+pub(crate) fn phase0_gossip_topics(phase0_digest: ForkDigest) -> Vec<GossipTopic> {
+    base_beacon_topics(phase0_digest)
+}
+
+/// The altair gossip topics: 5 base topics + altair-specific extras
+/// (`sync_committee_contribution_and_proof`, `sync_committee_<i>`, and
+/// light-client update topics), all under the altair fork digest.
 ///
 /// Per `specs/altair/p2p-interface.md:184-188` and
 /// `specs/altair/light-client/p2p-interface.md:47-48`.
 ///
-/// Attestation subnet topics (per-subnet `BeaconAttestation`) are handled by
-/// the subnet rotation driver, not by this function.
+/// Attestation subnet topics are handled by the subnet rotation driver.
 pub(crate) fn altair_gossip_topics<E: EthSpec>(altair_digest: ForkDigest) -> Vec<GossipTopic> {
-    let mut topics = Vec::new();
+    let mut topics = base_beacon_topics(altair_digest);
 
     // `sync_committee_contribution_and_proof` topic.
     topics.push(GossipTopic {
@@ -217,22 +282,45 @@ pub(crate) fn altair_gossip_topics<E: EthSpec>(altair_digest: ForkDigest) -> Vec
         kind: GossipTopicKind::LightClientOptimisticUpdate,
     });
 
-    // Also subscribe to the core beacon topics under the altair fork digest.
-    // Peers will send blocks, attestations, etc. using the altair fork digest
-    // once they have also crossed the boundary.
-    let base_kinds = [
-        GossipTopicKind::BeaconBlock,
-        GossipTopicKind::BeaconAggregateAndProof,
-        GossipTopicKind::VoluntaryExit,
-        GossipTopicKind::ProposerSlashing,
-        GossipTopicKind::AttesterSlashing,
-    ];
-    for kind in base_kinds {
+    topics
+}
+
+/// The bellatrix gossip topics: 5 base topics + the same altair-era extras
+/// (`sync_committee_*`, `light_client_*`), all under the bellatrix fork digest.
+///
+/// Per `specs/bellatrix/p2p-interface.md`: Bellatrix changes only the
+/// `beacon_block` container type; all topic names remain the same as Altair.
+/// Every topic's fork-digest segment bumps at the Bellatrix boundary.
+///
+/// Attestation subnet topics are handled by the subnet rotation driver.
+pub(crate) fn bellatrix_gossip_topics<E: EthSpec>(
+    bellatrix_digest: ForkDigest,
+) -> Vec<GossipTopic> {
+    let mut topics = base_beacon_topics(bellatrix_digest);
+
+    // `sync_committee_contribution_and_proof` topic.
+    topics.push(GossipTopic {
+        fork_digest: bellatrix_digest,
+        kind: GossipTopicKind::SyncCommitteeContributionAndProof,
+    });
+
+    // `sync_committee_<i>` for each sync committee subnet.
+    for i in 0..E::SYNC_COMMITTEE_SUBNET_COUNT {
         topics.push(GossipTopic {
-            fork_digest: altair_digest,
-            kind,
+            fork_digest: bellatrix_digest,
+            kind: GossipTopicKind::SyncCommittee(i),
         });
     }
+
+    // Light-client update topics.
+    topics.push(GossipTopic {
+        fork_digest: bellatrix_digest,
+        kind: GossipTopicKind::LightClientFinalityUpdate,
+    });
+    topics.push(GossipTopic {
+        fork_digest: bellatrix_digest,
+        kind: GossipTopicKind::LightClientOptimisticUpdate,
+    });
 
     topics
 }
@@ -243,6 +331,16 @@ pub(crate) fn altair_gossip_topics<E: EthSpec>(altair_digest: ForkDigest) -> Vec
 /// to the expected set of altair topics.
 pub fn altair_topic_list<E: EthSpec>(altair_digest: ForkDigest) -> Vec<GossipTopic> {
     altair_gossip_topics::<E>(altair_digest)
+}
+
+/// Returns the list of bellatrix topics for a given fork digest.
+///
+/// Public helper used by integration tests to verify that the migration
+/// correctly subscribes to the bellatrix topic set. The set is identical in
+/// shape to the altair set (5 base + sync_committee_* + light_client_*) but
+/// all topics carry the bellatrix fork digest.
+pub fn bellatrix_topic_list<E: EthSpec>(bellatrix_digest: ForkDigest) -> Vec<GossipTopic> {
+    bellatrix_gossip_topics::<E>(bellatrix_digest)
 }
 
 // ── Command helpers ───────────────────────────────────────────────────────────
@@ -277,4 +375,148 @@ async fn send_unsubscribe<E: EthSpec>(
     reply_rx
         .await
         .map_err(|_| pharos_network::NetworkError::ChannelClosed)?
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pharos_types::MainnetEthSpec;
+    use pharos_types::fork::compute_fork_digest;
+    use pharos_types::phase0::primitives::{Root, Version};
+    use pharos_utils::Epoch;
+
+    /// Build a three-fork schedule with distinct versions.
+    fn three_fork_schedule() -> ForkSchedule {
+        ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(10),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(20),
+            genesis_validators_root: Root::default(),
+        }
+    }
+
+    /// `bellatrix_topic_list` must return exactly:
+    /// - 5 base beacon topics
+    /// - 1 `sync_committee_contribution_and_proof`
+    /// - `SYNC_COMMITTEE_SUBNET_COUNT` `sync_committee_<i>` topics
+    /// - 1 `light_client_finality_update`
+    /// - 1 `light_client_optimistic_update`
+    ///
+    /// Total = 5 + 1 + SYNC_COMMITTEE_SUBNET_COUNT + 2
+    /// For MainnetEthSpec: SYNC_COMMITTEE_SUBNET_COUNT = 4 → total = 12.
+    ///
+    /// All topics must carry the bellatrix digest, NOT the altair digest.
+    #[test]
+    fn bellatrix_topic_list_shape_and_digest() {
+        use pharos_network::topics::GossipTopicKind;
+        let sched = three_fork_schedule();
+        let gvr = Root::default();
+        let bellatrix_digest = compute_fork_digest(sched.bellatrix_fork_version, &gvr);
+        let altair_digest = compute_fork_digest(sched.altair_fork_version, &gvr);
+
+        let topics = bellatrix_topic_list::<MainnetEthSpec>(bellatrix_digest);
+
+        // Count expected: 5 base + 1 contrib + SYNC_COMMITTEE_SUBNET_COUNT subnets + 2 lc.
+        let sync_subnet_count =
+            <MainnetEthSpec as pharos_types::EthSpec>::SYNC_COMMITTEE_SUBNET_COUNT as usize;
+        let expected_count = 5 + 1 + sync_subnet_count + 2;
+        assert_eq!(
+            topics.len(),
+            expected_count,
+            "bellatrix topic list must have {} topics, got {}",
+            expected_count,
+            topics.len()
+        );
+
+        // Verify every topic carries the bellatrix digest.
+        for topic in &topics {
+            assert_eq!(
+                topic.fork_digest, bellatrix_digest,
+                "all bellatrix topics must carry the bellatrix digest, got {:?}",
+                topic.kind
+            );
+            assert_ne!(
+                topic.fork_digest, altair_digest,
+                "bellatrix topics must NOT carry the altair digest (kind: {:?})",
+                topic.kind
+            );
+        }
+
+        // Verify the 5 base kinds are present.
+        let base_kinds = [
+            GossipTopicKind::BeaconBlock,
+            GossipTopicKind::BeaconAggregateAndProof,
+            GossipTopicKind::VoluntaryExit,
+            GossipTopicKind::ProposerSlashing,
+            GossipTopicKind::AttesterSlashing,
+        ];
+        for kind in base_kinds {
+            assert!(
+                topics.iter().any(|t| t.kind == kind),
+                "bellatrix topic list must contain {:?}",
+                kind
+            );
+        }
+
+        // Verify altair-era extras are present.
+        assert!(
+            topics
+                .iter()
+                .any(|t| t.kind == GossipTopicKind::SyncCommitteeContributionAndProof),
+            "bellatrix topic list must contain SyncCommitteeContributionAndProof"
+        );
+        assert!(
+            topics
+                .iter()
+                .any(|t| t.kind == GossipTopicKind::LightClientFinalityUpdate),
+            "bellatrix topic list must contain LightClientFinalityUpdate"
+        );
+        assert!(
+            topics
+                .iter()
+                .any(|t| t.kind == GossipTopicKind::LightClientOptimisticUpdate),
+            "bellatrix topic list must contain LightClientOptimisticUpdate"
+        );
+
+        // Verify all SYNC_COMMITTEE_SUBNET_COUNT sync_committee_<i> subnets are present.
+        for i in 0..<MainnetEthSpec as pharos_types::EthSpec>::SYNC_COMMITTEE_SUBNET_COUNT {
+            assert!(
+                topics
+                    .iter()
+                    .any(|t| t.kind == GossipTopicKind::SyncCommittee(i)),
+                "bellatrix topic list must contain SyncCommittee({i})"
+            );
+        }
+    }
+
+    /// `bellatrix_gossip_topics` has the same shape as `altair_gossip_topics`
+    /// (topic kinds are identical), but the digests differ.
+    #[test]
+    fn bellatrix_gossip_topics_same_kinds_as_altair() {
+        let sched = three_fork_schedule();
+        let gvr = Root::default();
+        let altair_digest = compute_fork_digest(sched.altair_fork_version, &gvr);
+        let bellatrix_digest = compute_fork_digest(sched.bellatrix_fork_version, &gvr);
+
+        let altair_topics = altair_topic_list::<MainnetEthSpec>(altair_digest);
+        let bellatrix_topics = bellatrix_topic_list::<MainnetEthSpec>(bellatrix_digest);
+
+        assert_eq!(
+            altair_topics.len(),
+            bellatrix_topics.len(),
+            "altair and bellatrix topic lists must have the same length"
+        );
+
+        // Extract kinds from each list (digests differ, kinds must match).
+        let altair_kinds: Vec<_> = altair_topics.iter().map(|t| &t.kind).collect();
+        let bellatrix_kinds: Vec<_> = bellatrix_topics.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            altair_kinds, bellatrix_kinds,
+            "altair and bellatrix topic lists must have identical topic kinds"
+        );
+    }
 }

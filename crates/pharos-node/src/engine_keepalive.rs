@@ -155,11 +155,10 @@ mod tests {
     };
     use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
     use parking_lot::Mutex;
-    use pharos_engine::{EngineClient, EngineHandle, run_engine_actor};
+    use pharos_engine::{EngineClient, EngineHandle};
     use serde::Deserialize;
     use serde_json::{Value, json};
     use tokio::net::TcpListener;
-    use tokio::runtime::Runtime;
 
     use super::*;
     use pharos_engine::JwtSecret;
@@ -251,28 +250,8 @@ mod tests {
 
     fn make_engine_handle(mock: &MockServer) -> EngineHandle {
         let primary = EngineClient::new(mock.url.clone(), mock.secret.clone()).unwrap();
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
-
-        let actor_rt: Arc<Runtime> = Arc::new(
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap(),
-        );
-        let placeholder_rt: Arc<Runtime> = Arc::new(
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap(),
-        );
-        let rt_for_actor = actor_rt.clone();
-        tokio::spawn(async move {
-            run_engine_actor(rt_for_actor, primary, None, rx).await;
-        });
-        std::mem::forget(actor_rt);
-        let handle = EngineHandle::new(placeholder_rt.clone(), tx);
-        std::mem::forget(placeholder_rt);
-        handle
+        // Production spawn path: engine runtime owned by a dedicated OS thread.
+        pharos_engine::spawn_engine_actor(primary, None)
     }
 
     // ── Hex helpers ───────────────────────────────────────────────────────────

@@ -221,6 +221,15 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     }
                     // Dispatch SSZ decode based on the chunk's fork (context bytes).
                     let block = match chunk_fork {
+                        Some(Fork::Bellatrix) => {
+                            let inner =
+                                read_ssz_snappy_payload::<_, E::BellatrixSignedBeaconBlock>(
+                                    io,
+                                    MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                                )
+                                .await?;
+                            E::bellatrix_into_signed_block(inner)
+                        }
                         Some(Fork::Altair) => {
                             let inner = read_ssz_snappy_payload::<_, E::AltairSignedBeaconBlock>(
                                 io,
@@ -230,7 +239,7 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                             E::altair_into_signed_block(inner)
                         }
                         // Phase0 or no context (legacy / test path).
-                        _ => {
+                        Some(Fork::Phase0) | None => {
                             let inner = read_ssz_snappy_payload::<_, E::Phase0SignedBeaconBlock>(
                                 io,
                                 MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
@@ -424,7 +433,9 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     // Write 4 context bytes (fork digest) before the SSZ payload
                     // per `specs/altair/p2p-interface.md:445-461`.
                     // Dispatch to the inner SSZ bytes (no fork discriminant byte).
-                    let (fork, ssz) = if let Some(inner) = E::unwrap_altair_signed_block(block) {
+                    let (fork, ssz) = if let Some(inner) = E::unwrap_bellatrix_signed_block(block) {
+                        (Fork::Bellatrix, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_altair_signed_block(block) {
                         (Fork::Altair, inner.as_ssz_bytes())
                     } else if let Some(inner) = E::unwrap_phase0_signed_block(block) {
                         (Fork::Phase0, inner.as_ssz_bytes())

@@ -86,7 +86,7 @@ impl GossipTopic {
     /// Look up a `GossipTopic` by its `TopicHash` in the local subscription map.
     ///
     /// The network's `topic_map` (`HashMap<TopicHash, GossipTopic>`) is built
-    /// from the topics subscribed at startup via `subscribe_phase0_topics`.
+    /// from the topics subscribed at startup via `subscribe_base_topics`.
     /// Returns `NetworkError::InvalidTopic` when the hash is not present (e.g.
     /// a peer subscribed to a topic we are not tracking).
     pub fn from_topic_hash(
