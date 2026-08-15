@@ -205,6 +205,44 @@ bumped `0.4.0` → `0.5.0`. Phase 6 wrap-up in `docs/m4-perf-plan.md`. Latent wi
 caller migration to `cached_tree_hash_root()` + `into_tree_backend()` at storage /
 checkpoint-sync / genesis entry points.
 
+## M4c status
+
+Closed. Three carry-ins from M3b/M4a/M4-perf landed: (1) full-node `GossipValidator`
+bodies for `light_client_finality_update` and `light_client_optimistic_update` in
+`crates/pharos-node/src/host_impl.rs` implementing the altair p2p-interface IGNORE
+rule (snapshot lookup → monotonic finalized-slot / attested-slot check → clock-window
+gate vs `get_sync_message_due_ms` ± `MAXIMUM_GOSSIP_CLOCK_DISPARITY` → `tree_hash_root`
+equality short-circuit → exact equality against the locally produced update); (2) LC
+snapshot writes from STF via `crates/pharos-stf/src/altair/light_client_dispatch.rs`,
+fired by altair-or-later blocks and surfaced to the ingestion loop via
+`IngestionEgress::has_lc_snapshots` so `run_block_ingestion_loop`
+(`crates/pharos-node/src/block_ingestion.rs`) publishes
+`light_client_finality_update` / `light_client_optimistic_update` to gossip
+immediately after each head advance that produced a fresh snapshot (Approach B —
+spec SHOULD-wait is intentionally deviated, accepted under
+`D-lc-broadcast-from-ingestion`); (3) criterion bench harness with four benches —
+`process_block` (phase0/altair/bellatrix), `tree_hash_beacon_state` (naive / tree /
+cached_root), `gossip_validation` (in `crates/pharos-node/benches/` per
+`D-bench-location-per-crate`, with RocksDB `put` lifted into unmeasured `iter_batched`
+setup), and `rpc_roundtrip`. `bellatrix_cold` flips inner state to `Tree` backend
+before the iter loop so we don't accidentally re-time a Naive full Vec clone
+(`D-no-tree-backend-on-decode` guardrail). `make bench` drives all four and writes
+`bench-history/<sha>.json`; `scripts/bench-summary.sh` exits 1 on empty
+`target/criterion/` so we never silently record an empty baseline. Bellatrix LC
+bootstrap/update header uses `block.state_root` (STF-verified), NOT a recomputed
+`state.tree_hash_root()` on the Altair-projected state (commit `aaa5440`); the
+projected state omits `execution_payload_header` so a recompute would never match
+what a full-node consumer verifies. MSRV bumped `1.85` → `1.86` (criterion 0.8
+requirement). First baseline recorded at SHA `d96e1f8` on the canonical `PERF_HOST`
+(AMD Ryzen 5 5600); numbers ledgered in `docs/perf/m4-perf.md`. `docs/conformance.md`
+row counts are byte-identical to v0.5.0 (only the date line moved). ADRs added to
+`docs/decisions.md` (M4c section): `D-lc-gossip-validation-full-node-arm`,
+`D-lc-snapshot-trait-on-host`, `D-lc-gossip-clock-window`,
+`D-lc-broadcast-from-ingestion`, `D-lc-snapshot-write-trigger`,
+`D-bench-location-per-crate`, `D-bench-history-format`. Workspace version bumped
+`0.5.0` → `0.6.0`. Phase 6 wrap-up + audits in `docs/m4c-plan.md`. Deferred: bench
+regression check in CI (M4d), real `validate_beacon_block` gossip validator (M5).
+
 ## Reference repos (cloned in `~/dev/`)
 
 - `consensus-specs/` — Python specs + reference tests (test fixtures live
