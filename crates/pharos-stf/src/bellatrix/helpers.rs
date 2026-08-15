@@ -201,6 +201,7 @@ pub fn bellatrix_state_to_altair<
         inactivity_scores: state.inactivity_scores.clone(),
         current_sync_committee: state.current_sync_committee.clone(),
         next_sync_committee: state.next_sync_committee.clone(),
+        cached_root: pharos_utils::CachedRoot::default(),
     }
 }
 

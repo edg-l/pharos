@@ -7,7 +7,7 @@
 //!   (`[New in Bellatrix]`).
 
 use pharos_ssz::{Bitvector, Decode, Encode, SszError, SszList, SszSequence, SszVector, TreeHash};
-use pharos_utils::Hash256;
+use pharos_utils::{CachedRoot, Hash256};
 
 use crate::altair::constants::ParticipationFlags;
 use crate::altair::operations::SyncCommittee;
@@ -111,6 +111,9 @@ pub struct BeaconState<
     /// — `specs/bellatrix/beacon-chain.md:143` ([New in Bellatrix]).
     pub latest_execution_payload_header:
         ExecutionPayloadHeader<BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>,
+    /// Cached top-level Merkle root (see `phase0::BeaconState::cached_root`).
+    #[ssz(skip)]
+    pub cached_root: CachedRoot,
 }
 
 impl<
@@ -181,6 +184,7 @@ where
             current_sync_committee: SyncCommittee::default(),
             next_sync_committee: SyncCommittee::default(),
             latest_execution_payload_header: ExecutionPayloadHeader::default(),
+            cached_root: CachedRoot::default(),
         }
     }
 }
@@ -221,6 +225,18 @@ where
         self.validators = self.validators.into_tree()?;
         self.randao_mixes = self.randao_mixes.into_tree()?;
         Ok(self)
+    }
+
+    /// Lazily compute and cache the top-level Merkle root (see
+    /// `phase0::BeaconState::cached_tree_hash_root`).
+    pub fn cached_tree_hash_root(&self) -> Hash256 {
+        self.cached_root
+            .get_or_init(|| <Self as TreeHash>::tree_hash_root(self))
+    }
+
+    /// Clear the cached top-level Merkle root.
+    pub fn invalidate_root_cache(&mut self) {
+        self.cached_root.invalidate();
     }
 }
 
@@ -363,6 +379,7 @@ where
             current_sync_committee,
             next_sync_committee,
             latest_execution_payload_header,
+            cached_root: CachedRoot::default(),
         })
     }
 }
@@ -460,6 +477,9 @@ impl<
     }
     fn finalized_checkpoint(&self) -> &Checkpoint {
         &self.finalized_checkpoint
+    }
+    fn invalidate_root_cache(&mut self) {
+        self.cached_root.invalidate();
     }
 }
 

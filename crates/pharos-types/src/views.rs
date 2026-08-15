@@ -137,6 +137,11 @@ pub trait BeaconStateView {
     fn previous_justified_checkpoint(&self) -> &Checkpoint;
     fn current_justified_checkpoint(&self) -> &Checkpoint;
     fn finalized_checkpoint(&self) -> &Checkpoint;
+
+    /// Clear the cached top-level Merkle root.  STF entrypoints must call this
+    /// after mutating any field; otherwise a subsequent `cached_tree_hash_root`
+    /// call would return a stale value.
+    fn invalidate_root_cache(&mut self);
 }
 
 // ── Blanket impls over the generic phase0 structs ─────────────────────────────
@@ -323,5 +328,8 @@ impl<
     }
     fn finalized_checkpoint(&self) -> &Checkpoint {
         &self.finalized_checkpoint
+    }
+    fn invalidate_root_cache(&mut self) {
+        self.cached_root.invalidate();
     }
 }

@@ -132,6 +132,62 @@ where
     }
 }
 
+// ── Inherent methods on the enum (fork-agnostic cache access) ────────────────
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const MAX_PENDING_ATTESTATIONS: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+>
+    BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        MAX_PENDING_ATTESTATIONS,
+        JUSTIFICATION_BITS_LENGTH,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+{
+    /// Fork-agnostic wrapper over the inner per-fork
+    /// `cached_tree_hash_root`. Lazily computes and caches the top-level
+    /// Merkle root; subsequent calls return the cached value.
+    ///
+    /// Live-node callers (Beacon API, fork-choice, block production) should
+    /// prefer this over the uncached `<Self as TreeHash>::tree_hash_root`.
+    pub fn cached_tree_hash_root(&self) -> Hash256 {
+        match self {
+            BeaconState::Phase0(s) => s.cached_tree_hash_root(),
+            BeaconState::Altair(s) => s.cached_tree_hash_root(),
+            BeaconState::Bellatrix(s) => s.cached_tree_hash_root(),
+        }
+    }
+
+    /// Clear the cached top-level Merkle root.  STF entrypoints must call
+    /// this after mutating any field.
+    pub fn invalidate_root_cache(&mut self) {
+        match self {
+            BeaconState::Phase0(s) => s.invalidate_root_cache(),
+            BeaconState::Altair(s) => s.invalidate_root_cache(),
+            BeaconState::Bellatrix(s) => s.invalidate_root_cache(),
+        }
+    }
+}
+
 impl<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
@@ -314,6 +370,13 @@ impl<
             BeaconState::Phase0(s) => s.finalized_checkpoint(),
             BeaconState::Altair(s) => s.finalized_checkpoint(),
             BeaconState::Bellatrix(s) => s.finalized_checkpoint(),
+        }
+    }
+    fn invalidate_root_cache(&mut self) {
+        match self {
+            BeaconState::Phase0(s) => s.invalidate_root_cache(),
+            BeaconState::Altair(s) => s.invalidate_root_cache(),
+            BeaconState::Bellatrix(s) => s.invalidate_root_cache(),
         }
     }
 }

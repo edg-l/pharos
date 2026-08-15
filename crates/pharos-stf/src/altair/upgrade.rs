@@ -158,6 +158,7 @@ where
         inactivity_scores,
         current_sync_committee: pharos_types::altair::SyncCommittee::default(),
         next_sync_committee: pharos_types::altair::SyncCommittee::default(),
+        cached_root: pharos_utils::CachedRoot::default(),
     };
 
     // Translate previous_epoch_attestations into participation flags.

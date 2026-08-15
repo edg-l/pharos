@@ -3,7 +3,7 @@
 //! Defined in `specs/phase0/beacon-chain.md:566-588`.
 
 use pharos_ssz::{Bitvector, Decode, Encode, SszError, SszList, SszVector, TreeHash};
-use pharos_utils::Hash256;
+use pharos_utils::{CachedRoot, Hash256};
 
 use crate::phase0::misc::{Checkpoint, Eth1Data, Fork, PendingAttestation, Validator};
 use crate::phase0::operations::BeaconBlockHeader;
@@ -101,6 +101,15 @@ pub struct BeaconState<
     pub current_justified_checkpoint: Checkpoint,
     /// `finalized_checkpoint: Checkpoint` — `specs/phase0/beacon-chain.md:587`.
     pub finalized_checkpoint: Checkpoint,
+    /// Cached top-level Merkle root. Populated lazily by
+    /// `cached_tree_hash_root()`; reset by `invalidate_root_cache()`.
+    /// `CachedRoot` is transparent to the struct-level derives:
+    /// `Clone` resets the cache (no stale-root after clone-mutate),
+    /// `PartialEq`/`Eq` ignore it. `#[ssz(skip)]` excludes it from
+    /// `Encode`/`Decode`/`TreeHash` derive emissions, so wire format and
+    /// merkleization are unchanged.
+    #[ssz(skip)]
+    pub cached_root: CachedRoot,
 }
 
 impl<
@@ -165,6 +174,7 @@ where
             previous_justified_checkpoint: Checkpoint::default(),
             current_justified_checkpoint: Checkpoint::default(),
             finalized_checkpoint: Checkpoint::default(),
+            cached_root: CachedRoot::default(),
         }
     }
 }
@@ -208,6 +218,27 @@ where
         self.previous_epoch_attestations = self.previous_epoch_attestations.into_tree()?;
         self.current_epoch_attestations = self.current_epoch_attestations.into_tree()?;
         Ok(self)
+    }
+
+    /// Lazily compute and cache the top-level Merkle root.
+    ///
+    /// First call computes via `<Self as TreeHash>::tree_hash_root`; subsequent
+    /// calls return the cached value without recomputing. Live-node callers
+    /// (Beacon API, fork-choice, block production) should prefer this over the
+    /// uncached trait method; STF entrypoints must call `invalidate_root_cache`
+    /// after mutating to ensure the next call recomputes.
+    pub fn cached_tree_hash_root(&self) -> Hash256 {
+        self.cached_root
+            .get_or_init(|| <Self as TreeHash>::tree_hash_root(self))
+    }
+
+    /// Clear the cached top-level Merkle root.
+    ///
+    /// STF entrypoints (`state_transition`, `process_slots`, `process_epoch`)
+    /// must call this after mutating any field, before the next external
+    /// caller invokes `cached_tree_hash_root`.
+    pub fn invalidate_root_cache(&mut self) {
+        self.cached_root.invalidate();
     }
 }
 
@@ -340,6 +371,7 @@ where
             previous_justified_checkpoint,
             current_justified_checkpoint,
             finalized_checkpoint,
+            cached_root: CachedRoot::default(),
         })
     }
 }

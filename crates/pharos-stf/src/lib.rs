@@ -127,10 +127,16 @@ where
                 validate_result,
                 runtime_cfg,
             )?;
-            // Wrap the result back into the fork-enum.
-            return Ok(E::bellatrix_into_state(updated));
+            // Wrap the result back into the fork-enum + invalidate the root cache.
+            let mut wrapped = E::bellatrix_into_state(updated);
+            wrapped.invalidate_root_cache();
+            return Ok(wrapped);
         }
     }
+    // STF mutated `state` (phase0 + altair arms operate on `&mut state`); reset
+    // the cached top-level root so the next `cached_tree_hash_root` call
+    // recomputes from the post-STF state.
+    state.invalidate_root_cache();
     Ok(state)
 }
 

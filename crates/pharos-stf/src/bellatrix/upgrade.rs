@@ -131,5 +131,6 @@ where
         next_sync_committee: pre.next_sync_committee,
         // spec fork.md:87: [New in Bellatrix] — zero-filled ExecutionPayloadHeader.
         latest_execution_payload_header: ExecutionPayloadHeader::default(),
+        cached_root: pharos_utils::CachedRoot::default(),
     })
 }
