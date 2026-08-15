@@ -4,7 +4,7 @@
 //! `specs/phase0/beacon-chain.md:590-614` (Signed envelopes).
 //! Networking wire types defined in `specs/phase0/p2p-interface.md`.
 
-use pharos_ssz::{Bitlist, Bitvector, Decode, Encode, SszList, SszVector, TreeHash};
+use pharos_ssz::{Bitlist, Bitvector, Decode, Encode, SszError, SszList, SszVector, TreeHash};
 use pharos_utils::{BLSPubkey, BLSSignature, Bytes32};
 
 use crate::phase0::misc::{AttestationData, IndexedAttestation};
@@ -291,10 +291,47 @@ pub struct BeaconBlocksByRangeRequest {
 ///
 /// SSZ-encoded as the inner list per the single-field rule
 /// (`p2p-interface.md:1308-1309`). `MAX_REQUEST_BLOCKS` caps the list length.
-#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+///
+/// `Encode`/`Decode` are hand-written (NOT derived) precisely because of that
+/// single-field rule: a derived container impl would prepend a 4-byte SSZ
+/// offset for the lone variable-length field, but the wire format is the *bare*
+/// `List[Root, N]` with no wrapper. Deriving caused peers (e.g. lighthouse) to
+/// reject the request as `InvalidByteLength` and ban us on the spot.
+#[derive(TreeHash, Clone, Debug, PartialEq, Eq, Default)]
 pub struct BeaconBlocksByRootRequest<const MAX_REQUEST_BLOCKS: u64> {
     /// The list of block roots requested — `p2p-interface.md:1498`.
     pub block_roots: SszList<Root, MAX_REQUEST_BLOCKS>,
+}
+
+impl<const MAX_REQUEST_BLOCKS: u64> Encode for BeaconBlocksByRootRequest<MAX_REQUEST_BLOCKS> {
+    // Transparent over `block_roots`: the request IS the list (single-field rule).
+    const IS_FIXED_SIZE: bool = false;
+
+    fn ssz_fixed_len() -> usize {
+        <SszList<Root, MAX_REQUEST_BLOCKS> as Encode>::ssz_fixed_len()
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        self.block_roots.ssz_bytes_len()
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        self.block_roots.ssz_append(buf);
+    }
+}
+
+impl<const MAX_REQUEST_BLOCKS: u64> Decode for BeaconBlocksByRootRequest<MAX_REQUEST_BLOCKS> {
+    const IS_FIXED_SIZE: bool = false;
+
+    fn ssz_fixed_len() -> usize {
+        <SszList<Root, MAX_REQUEST_BLOCKS> as Decode>::ssz_fixed_len()
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, SszError> {
+        Ok(Self {
+            block_roots: SszList::from_ssz_bytes(bytes)?,
+        })
+    }
 }
 
 // ── MetaData ──────────────────────────────────────────────────────────────────
@@ -334,6 +371,37 @@ mod tests {
     use super::*;
     use pharos_ssz::{Decode, Encode, TreeHash};
     use pharos_utils::{Bytes4, Epoch, Hash256, Slot};
+
+    // ── BeaconBlocksByRootRequest ─────────────────────────────────────────────
+
+    /// The request must serialize as the *bare* `List[Root, N]` (single-field
+    /// rule) — exactly `32 * n` bytes with NO 4-byte container offset. A derived
+    /// container impl would prepend the offset; lighthouse rejects that as
+    /// `InvalidByteLength` and bans the peer. Empty list MUST be 0 bytes, not 4.
+    #[test]
+    fn blocks_by_root_request_is_bare_list_no_offset() {
+        type Req = BeaconBlocksByRootRequest<1024>;
+
+        // Empty request: zero bytes on the wire (NOT a 4-byte offset).
+        let empty = Req::default();
+        assert_eq!(empty.as_ssz_bytes().len(), 0, "empty request must be 0 bytes");
+
+        // Two roots: exactly 64 bytes, byte-identical to the two roots back-to-back.
+        let r0 = Hash256::from([0x11u8; 32]);
+        let r1 = Hash256::from([0x22u8; 32]);
+        let req = Req {
+            block_roots: SszList::from_vec(vec![r0, r1]).unwrap(),
+        };
+        let bytes = req.as_ssz_bytes();
+        assert_eq!(bytes.len(), 64, "two roots must be 2*32 bytes, no offset");
+        assert_eq!(&bytes[0..32], r0.as_slice());
+        assert_eq!(&bytes[32..64], r1.as_slice());
+        assert_eq!(req.ssz_bytes_len(), 64);
+
+        // Round-trips back to the same value.
+        let decoded = Req::from_ssz_bytes(&bytes).expect("decode");
+        assert_eq!(req, decoded);
+    }
 
     // ── ENRForkID ─────────────────────────────────────────────────────────────
 
