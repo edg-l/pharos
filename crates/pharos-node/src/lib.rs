@@ -9,6 +9,7 @@ pub mod checkpoint_sync;
 pub mod engine_driver;
 pub mod engine_keepalive;
 pub mod fork_migration;
+pub mod freezer;
 pub mod host_impl;
 pub mod import;
 pub mod jwt_autogen;

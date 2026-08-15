@@ -20,5 +20,5 @@ pub use db::{RocksStore, RocksStoreConfig};
 pub use error::StorageError;
 pub use forkchoice::ForkChoiceSnapshot;
 pub use state_summary::StateSummary;
-pub use store::Store;
+pub use store::{ColdMigrationBatch, Store};
 pub use transition::BlockTransition;

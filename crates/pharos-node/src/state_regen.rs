@@ -51,44 +51,9 @@ pub enum RegenError {
     NotFound(String),
 }
 
-// ── Phase-3 cold-CF helpers (stubs until Phase 3 freezer runs) ───────────────
-//
-// These methods add the `nearest_restore_point` / `get_cold_state` lookups to
-// `RocksStore` without modifying the `Store<E>` trait (which lives in
-// pharos-storage). Phase 3 will implement real reads from the `cold-states` /
-// `restore-points` CFs; for Phase 2 both return `None` because those CFs are
-// empty until the freezer writes them.
-
-pub(crate) trait RocksStoreColdExt {
-    /// Query the `restore-points` CF for the nearest restore point ≤ `target_slot`.
-    ///
-    /// Returns `(restore_slot, state_root)` or `None` when the CF is empty
-    /// (Phase 2 — no freezer output yet).
-    fn nearest_restore_point(&self, target_slot: Slot) -> Option<(Slot, Root)>;
-
-    /// Load the `BeaconState` from the `cold-states` CF at `restore_slot`.
-    ///
-    /// Returns `None` when the CF is empty (Phase 2 stub).
-    fn get_cold_state<E: EthSpec>(
-        &self,
-        restore_slot: Slot,
-    ) -> Result<Option<E::BeaconState>, pharos_storage::StorageError>;
-}
-
-impl RocksStoreColdExt for RocksStore {
-    fn nearest_restore_point(&self, _target_slot: Slot) -> Option<(Slot, Root)> {
-        // Phase-2: cold restore-points CF is empty until Phase-3 freezer runs.
-        None
-    }
-
-    fn get_cold_state<E: EthSpec>(
-        &self,
-        _restore_slot: Slot,
-    ) -> Result<Option<E::BeaconState>, pharos_storage::StorageError> {
-        // Phase-2: cold-states CF is empty until Phase-3 freezer runs.
-        Ok(None)
-    }
-}
+// (Phase-3: cold-CF reads are implemented directly on `Store<E>` in
+// pharos-storage/src/store.rs + db.rs. The Phase-2 `RocksStoreColdExt` stub
+// is removed; `nearest_cold_restore_point` now calls the real trait methods.)
 
 // ── StateRegenService ─────────────────────────────────────────────────────────
 
@@ -251,23 +216,24 @@ impl<E: EthSpec> StateRegenService<E> {
 
     /// Query the cold `restore-points` CF for the nearest restore point ≤ `target_slot`.
     ///
-    /// Returns `None` until the Phase-3 freezer has written restore points.
+    /// Returns `None` when no restore points have been written yet (pre-Phase-3
+    /// or a node that has not yet finalized past the split slot).
     fn nearest_cold_restore_point(
         &self,
         target_slot: Slot,
     ) -> Option<(Root, E::BeaconState, Slot)> {
-        let (restore_slot, state_root) = self.store.nearest_restore_point(target_slot)?;
-        let state = self
-            .store
-            .get_cold_state::<E>(restore_slot)
+        let (restore_slot, _state_root) =
+            <RocksStore as DbStore<E>>::nearest_restore_point(&self.store, target_slot)
+                .ok()
+                .flatten()?;
+        let state = <RocksStore as DbStore<E>>::get_cold_state(&self.store, restore_slot)
             .ok()
             .flatten()?;
-        // Use the slot-index to find the canonical block root at the restore slot.
-        // A `state_root` is NOT a valid `block_root`, so on a missing slot-index
-        // entry return None rather than fabricating a root (which would surface as
-        // a spurious MissingBlock downstream).
+        // Map restore slot → block root via the hot slot-index (written during
+        // import and not deleted by migration — only the `blocks` CF entry moves
+        // to cold). A missing slot-index entry means we have no block at that
+        // slot; return None rather than fabricating a root.
         let block_root = self.store.block_root_at_slot(restore_slot).ok().flatten()?;
-        let _ = state_root;
         Some((block_root, state, restore_slot))
     }
 
@@ -340,10 +306,18 @@ impl<E: EthSpec> StateRegenService<E> {
                 .map_err(RegenError::Storage)?;
 
             if let Some(block_root) = block_root_opt {
-                // A block exists at this slot: load it and apply state_transition.
-                let signed_block = <RocksStore as DbStore<E>>::get_block(&self.store, &block_root)
-                    .map_err(RegenError::Storage)?
-                    .ok_or(RegenError::MissingBlock { root: block_root })?;
+                // A block exists at this slot: load it from the hot CF, falling
+                // through to the cold CF when the block has been migrated by the
+                // Phase-3 freezer (Task 3.6).
+                let hot = <RocksStore as DbStore<E>>::get_block(&self.store, &block_root)
+                    .map_err(RegenError::Storage)?;
+                let signed_block = if let Some(b) = hot {
+                    b
+                } else {
+                    <RocksStore as DbStore<E>>::get_cold_block(&self.store, &block_root)
+                        .map_err(RegenError::Storage)?
+                        .ok_or(RegenError::MissingBlock { root: block_root })?
+                };
 
                 // `validate_result = false` — skip BLS + state-root check for replay.
                 state = state_transition::<E, NullExecutionEngine>(

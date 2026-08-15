@@ -1,8 +1,8 @@
 //! RocksDB-backed `Store<E>` implementation.
 //!
-//! Per `D-rocksdb`: single DB file with 7 column families, big-endian slot
-//! keys, Lz4 compression on `blocks` and `states` CFs, schema-version
-//! sentinel in the `metadata` CF.
+//! Per `D-rocksdb`: single DB file with the schema-v3 column-family set
+//! (see `cf::all_cfs`), big-endian slot keys, Lz4 compression on `blocks` and
+//! `states` CFs, schema-version sentinel in the `metadata` CF.
 
 use std::path::PathBuf;
 
@@ -16,16 +16,17 @@ use rocksdb::{
 use tracing::warn;
 
 use crate::cf::{
-    CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_FORKCHOICE, CF_LC_BOOTSTRAP, CF_LC_BOOTSTRAP_CAPELLA,
-    CF_LC_FINALITY_UPDATE, CF_LC_FINALITY_UPDATE_CAPELLA, CF_LC_OPTIMISTIC_UPDATE,
-    CF_LC_OPTIMISTIC_UPDATE_CAPELLA, CF_LC_UPDATE, CF_LC_UPDATE_CAPELLA, CF_METADATA,
-    CF_PAYLOAD_STATUS, CF_SLOT_TO_BLOCK_ROOT, CF_STATE_SUMMARY, CF_STATES, LC_LATEST_KEY, all_cfs,
+    CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_COLD_BLOCKS, CF_COLD_STATES, CF_FORKCHOICE,
+    CF_LC_BOOTSTRAP, CF_LC_BOOTSTRAP_CAPELLA, CF_LC_FINALITY_UPDATE, CF_LC_FINALITY_UPDATE_CAPELLA,
+    CF_LC_OPTIMISTIC_UPDATE, CF_LC_OPTIMISTIC_UPDATE_CAPELLA, CF_LC_UPDATE, CF_LC_UPDATE_CAPELLA,
+    CF_METADATA, CF_PAYLOAD_STATUS, CF_RESTORE_POINTS, CF_SLOT_TO_BLOCK_ROOT, CF_STATE_SUMMARY,
+    CF_STATES, LC_LATEST_KEY, all_cfs,
 };
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
 use crate::keys::{parse_slot_key, root_key, slot_key};
 use crate::state_summary::StateSummary;
-use crate::store::Store;
+use crate::store::{ColdMigrationBatch, Store};
 use crate::transition::BlockTransition;
 
 /// Schema version written to `metadata[b"schema_version"]` at DB creation.
@@ -66,8 +67,8 @@ pub struct RocksStore {
 }
 
 impl RocksStore {
-    /// Open (or create) the RocksDB database at `cfg.path` with all seven
-    /// column families registered.
+    /// Open (or create) the RocksDB database at `cfg.path` with the full
+    /// schema-v3 column-family set registered (`cf::all_cfs`).
     ///
     /// Steps per `D-rocksdb`:
     /// 1. Build global `Options` with `create_if_missing` / `create_missing_column_families`.
@@ -413,6 +414,139 @@ impl<E: EthSpec> Store<E> for RocksStore {
             out.push((root, status));
         }
         Ok(out)
+    }
+
+    // ── Cold-CF accessors (Phase 3 freezer) ──────────────────────────────────
+
+    fn put_cold_block(&self, root: Root, block: &E::SignedBeaconBlock) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_COLD_BLOCKS)?;
+        self.db.put_cf(cf, root_key(&root), block.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_cold_block(&self, root: &Root) -> Result<Option<E::SignedBeaconBlock>, StorageError> {
+        let cf = self.cf_handle(CF_COLD_BLOCKS)?;
+        match self.db.get_cf(cf, root_key(root))? {
+            None => Ok(None),
+            Some(bytes) => {
+                let block = E::SignedBeaconBlock::from_ssz_bytes(&bytes)?;
+                Ok(Some(block))
+            }
+        }
+    }
+
+    fn put_cold_state(
+        &self,
+        restore_slot: Slot,
+        state: &E::BeaconState,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_COLD_STATES)?;
+        self.db
+            .put_cf(cf, slot_key(restore_slot), state.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_cold_state(&self, restore_slot: Slot) -> Result<Option<E::BeaconState>, StorageError> {
+        let cf = self.cf_handle(CF_COLD_STATES)?;
+        match self.db.get_cf(cf, slot_key(restore_slot))? {
+            None => Ok(None),
+            Some(bytes) => {
+                // Per `D-no-tree-backend-on-decode` live-node carveout: flip to
+                // tree backend so structural sharing applies on restore.
+                let state = E::BeaconState::from_ssz_bytes(&bytes)?.into_tree_backend()?;
+                Ok(Some(state))
+            }
+        }
+    }
+
+    fn put_restore_point(&self, slot: Slot, state_root: Root) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_RESTORE_POINTS)?;
+        self.db.put_cf(cf, slot_key(slot), root_key(&state_root))?;
+        Ok(())
+    }
+
+    fn nearest_restore_point(
+        &self,
+        target_slot: Slot,
+    ) -> Result<Option<(Slot, Root)>, StorageError> {
+        let cf = self.cf_handle(CF_RESTORE_POINTS)?;
+        // Reverse-iterate from target_slot (inclusive). With big-endian keys
+        // (lexicographic == numeric order), `From(key, Reverse)` positions at the
+        // last key ≤ start_key and iterates downward, so the first non-skipped
+        // entry is the highest restore-point slot ≤ target_slot.
+        let start_key = slot_key(target_slot);
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(&start_key, Direction::Reverse));
+
+        for item in iter {
+            let (k, v) = item?;
+            let rp_slot = parse_slot_key(&k)?;
+            if rp_slot > target_slot {
+                // The reverse iterator landed on a key strictly above target
+                // (can happen when the seek key is between two keys).
+                continue;
+            }
+            if v.len() != 32 {
+                return Err(StorageError::InvalidKeyLength {
+                    got: v.len(),
+                    expected: 32,
+                });
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&v);
+            return Ok(Some((rp_slot, Root::from(arr))));
+        }
+        Ok(None)
+    }
+
+    fn migrate_to_cold(&self, batch: ColdMigrationBatch<E>) -> Result<(), StorageError> {
+        let mut wb = WriteBatch::default();
+
+        // ── 1. Copy finalized blocks into cold-blocks CF ──────────────────────
+        let cold_blocks_cf = self.cf_handle(CF_COLD_BLOCKS)?;
+        for (root, block) in &batch.cold_blocks {
+            wb.put_cf(cold_blocks_cf, root_key(root), block.as_ssz_bytes());
+        }
+
+        // ── 2. Write restore-point states + index entries ────────────────────
+        // ALL interval-multiple boundaries in the window (not just the highest)
+        // so cold regen never replays more than the restore-point interval.
+        let cold_states_cf = self.cf_handle(CF_COLD_STATES)?;
+        let rp_cf = self.cf_handle(CF_RESTORE_POINTS)?;
+        for (restore_slot, state_root, state) in &batch.cold_states {
+            wb.put_cf(
+                cold_states_cf,
+                slot_key(*restore_slot),
+                state.as_ssz_bytes(),
+            );
+            wb.put_cf(rp_cf, slot_key(*restore_slot), root_key(state_root));
+        }
+
+        // ── 3. Delete pruned hot blocks ───────────────────────────────────────
+        let hot_blocks_cf = self.cf_handle(CF_BLOCKS)?;
+        for root in &batch.prune_block_roots {
+            wb.delete_cf(hot_blocks_cf, root_key(root));
+        }
+
+        // ── 4. Delete pruned hot states ───────────────────────────────────────
+        let hot_states_cf = self.cf_handle(CF_STATES)?;
+        for state_root in &batch.prune_state_roots {
+            wb.delete_cf(hot_states_cf, root_key(state_root));
+        }
+
+        // NOTE: the `slot_to_block_root` / `block_root_to_slot` index CFs are
+        // intentionally NOT pruned. They are append-only navigational indexes
+        // that cold regen (`block_root_at_slot` → nearest restore point + replay)
+        // and the network `BeaconBlocksByRange` serving path require for migrated
+        // history. Only the payload CFs (`blocks`, `states`) move hot→cold.
+
+        // ── 5. Advance metadata[b"split_slot"] ───────────────────────────────
+        let meta_cf = self.cf_handle(CF_METADATA)?;
+        wb.put_cf(meta_cf, b"split_slot", batch.split_slot.0.to_be_bytes());
+
+        self.db.write(wb)?;
+        Ok(())
     }
 
     // ── Light-client snapshot put/get ─────────────────────────────────────────

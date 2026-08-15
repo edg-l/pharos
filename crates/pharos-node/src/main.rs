@@ -29,6 +29,7 @@ use pharos_node::checkpoint_sync::{apply_anchor, fetch_checkpoint};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::engine_keepalive::{hex_to_u256, run_transition_config_keepalive, u256_to_hex};
 use pharos_node::fork_migration::run_fork_migration_loop;
+use pharos_node::freezer::run_freezer_loop;
 use pharos_node::host_impl::HostImpl;
 use pharos_node::jwt_autogen::ensure_jwt_secret;
 use pharos_node::lookup::{LookupRequest, run_lookup_loop};
@@ -125,6 +126,25 @@ struct Args {
     execution_endpoint_secondary: Option<String>,
 
     // ── Beacon API HTTP server ────────────────────────────────────────────────
+    // ── Freezer / hot-cold split ──────────────────────────────────────────────
+    /// Restore-point cadence: how many epochs between cold state snapshots.
+    ///
+    /// At each finalization step the freezer writes one full `BeaconState` per
+    /// `N` epochs into the `cold-states` CF (per `D-restore-point-interval`).
+    /// Lower values reduce max replay cost; higher values reduce disk growth.
+    /// Default: 8 (balance of replay speed vs. cold-DB growth; see write-budget
+    /// appendix in `docs/storage-plan.md`).
+    #[arg(long, default_value_t = 8, value_name = "EPOCHS")]
+    restore_point_interval_epochs: u64,
+
+    /// Disable the freezer/hot-cold migration loop.
+    ///
+    /// When set, finalized blocks/states are never migrated to the cold CFs and
+    /// hot data is never pruned. Useful for short devnets and integration tests
+    /// where bounded DB growth is not a concern.
+    #[arg(long, default_value_t = false)]
+    no_freezer: bool,
+
     /// Enable the Beacon API HTTP server.
     ///
     /// When set, an HTTP server is started on `--http-address:--http-port`
@@ -703,6 +723,36 @@ async fn main() -> anyhow::Result<()> {
             pharos_api::serve::<MainnetEthSpec>(http_addr, api_state).await;
         });
         info!(%http_addr, "Beacon API HTTP server spawned");
+    }
+
+    // ── Freezer loop (hot→cold migration at finalization) ────────────────────
+    //
+    // Driven off the existing `head_tx` watch per `D-freezer-driver-off-head-watch`.
+    // A clone of `head_rx` is used so that both the engine driver and the freezer
+    // receive head-advance notifications independently (watch semantics: multiple
+    // receivers, no consumption).
+    if !args.no_freezer {
+        let freezer_head_rx = head_rx.clone();
+        let freezer_store = Arc::clone(&store_arc);
+        let freezer_fc = Arc::clone(&fork_choice);
+        let rpi = args.restore_point_interval_epochs;
+        let freezer_shutdown = pharos_node_shutdown_rx.clone();
+        tokio::spawn(async move {
+            run_freezer_loop::<MainnetEthSpec>(
+                freezer_head_rx,
+                freezer_store,
+                freezer_fc,
+                rpi,
+                freezer_shutdown,
+            )
+            .await;
+        });
+        info!(
+            restore_point_interval_epochs = args.restore_point_interval_epochs,
+            "freezer loop started"
+        );
+    } else {
+        info!("--no-freezer: hot/cold migration disabled");
     }
 
     // Spawn engine driver loop + block ingestion loop when the engine is active.

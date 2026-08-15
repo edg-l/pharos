@@ -15,6 +15,40 @@ use crate::forkchoice::ForkChoiceSnapshot;
 use crate::state_summary::StateSummary;
 use crate::transition::BlockTransition;
 
+// ── ColdMigrationBatch ────────────────────────────────────────────────────────
+
+/// Parameters for one atomic hot→cold migration step.
+///
+/// Passed to `Store::migrate_to_cold`; all writes and deletes execute in a
+/// single `WriteBatch` so neither the copy nor the delete is visible
+/// independently. Per `D-freezer-in-rocksdb`.
+pub struct ColdMigrationBatch<E: EthSpec> {
+    /// Finalized blocks to copy into `cold-blocks` CF.
+    pub cold_blocks: Vec<(Root, E::SignedBeaconBlock)>,
+
+    /// Restore-point states to write: `(restore_slot, state_root, BeaconState)`.
+    ///
+    /// Each is written to `cold-states` (keyed by `restore_slot`) and the
+    /// `restore-points` index (`restore_slot → state_root`) in the same batch.
+    /// ALL interval-multiple boundaries in the migration window are written (not
+    /// just the highest) so the replay-cost bound holds across finalization gaps.
+    pub cold_states: Vec<(Slot, Root, E::BeaconState)>,
+
+    /// Block roots to delete from `CF_BLOCKS` (hot blocks now in cold).
+    pub prune_block_roots: Vec<Root>,
+
+    /// State roots to delete from `CF_STATES` (hot epoch-boundary states now cold).
+    pub prune_state_roots: Vec<Root>,
+
+    /// The new hot/cold boundary: written to `metadata[b"split_slot"]`.
+    ///
+    /// NOTE: the `slot_to_block_root` / `block_root_to_slot` index CFs are
+    /// deliberately NOT pruned — they are append-only navigational indexes that
+    /// cold regen (`block_root_at_slot`) and the network `BeaconBlocksByRange`
+    /// path require for migrated history indefinitely.
+    pub split_slot: Slot,
+}
+
 /// Synchronous storage trait for the Pharos chain database.
 ///
 /// All methods take `&self` (interior mutability via RocksDB's `Send + Sync`
@@ -93,6 +127,64 @@ pub trait Store<E: EthSpec>: Send + Sync + 'static {
     /// Used at startup by `rehydrate_fork_choice_store` to seed the in-memory
     /// `pharos_fork_choice::Store::payload_statuses` map.
     fn payload_statuses_iter(&self) -> Result<Vec<(Root, PayloadStatus)>, StorageError>;
+
+    // ── Cold-CF accessors (Phase 3 freezer) ──────────────────────────────────
+
+    /// Write an SSZ-encoded `SignedBeaconBlock` to the `cold-blocks` CF, keyed
+    /// by block root.
+    ///
+    /// Per schema v3 (`D-freezer-in-rocksdb`): finalized blocks are migrated
+    /// here by `migrate_to_cold`; called as part of the atomic migration batch.
+    fn put_cold_block(&self, root: Root, block: &E::SignedBeaconBlock) -> Result<(), StorageError>;
+
+    /// Retrieve an SSZ `SignedBeaconBlock` from the `cold-blocks` CF.
+    ///
+    /// Returns `None` when the block has not been migrated (pre-Phase-3 or
+    /// hot-only database).
+    fn get_cold_block(&self, root: &Root) -> Result<Option<E::SignedBeaconBlock>, StorageError>;
+
+    /// Write an SSZ `BeaconState` to the `cold-states` CF, keyed by the
+    /// restore-point slot (big-endian `u64`).
+    ///
+    /// Per schema v3 (`D-restore-point-interval`): only restore-point-cadence
+    /// epoch-boundary states are stored; intermediate states are reconstructed
+    /// by replay.
+    fn put_cold_state(
+        &self,
+        restore_slot: Slot,
+        state: &E::BeaconState,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the cold `BeaconState` at exact `restore_slot`.
+    ///
+    /// Returns `None` when no restore point was written at that slot.
+    fn get_cold_state(&self, restore_slot: Slot) -> Result<Option<E::BeaconState>, StorageError>;
+
+    /// Write a restore-point index entry: `restore-points[slot] = state_root`.
+    ///
+    /// Per schema v3 (`D-restore-point-interval`): the `restore-points` CF maps
+    /// a restore-point slot to its state root for quick lookup.
+    fn put_restore_point(&self, slot: Slot, state_root: Root) -> Result<(), StorageError>;
+
+    /// Reverse-iterate the `restore-points` CF from `target_slot` downward to
+    /// find the nearest restore point ≤ `target_slot`.
+    ///
+    /// Returns `(restore_slot, state_root)` or `None` when the CF is empty.
+    fn nearest_restore_point(
+        &self,
+        target_slot: Slot,
+    ) -> Result<Option<(Slot, Root)>, StorageError>;
+
+    /// Execute one hot→cold migration atomically.
+    ///
+    /// Writes all `cold_blocks` into `CF_COLD_BLOCKS`, optionally writes a
+    /// `cold_state` into `CF_COLD_STATES` + `CF_RESTORE_POINTS`, then deletes
+    /// all `prune_block_roots` from `CF_BLOCKS`, `prune_state_roots` from
+    /// `CF_STATES`, `prune_slots` from the slot-index CFs, and advances
+    /// `metadata[b"split_slot"]` — all in one atomic `WriteBatch`.
+    ///
+    /// Per `D-freezer-in-rocksdb` + `D-prune-behind-finalized`.
+    fn migrate_to_cold(&self, batch: ColdMigrationBatch<E>) -> Result<(), StorageError>;
 
     // ── State-summary store ───────────────────────────────────────────────────
 
