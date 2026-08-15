@@ -27,8 +27,7 @@ where
     if verify_signatures {
         let proposer_index = get_beacon_proposer_index::<E>(state);
         let proposer_pubkey = state
-            .validators()
-            .get(proposer_index.0 as usize)
+            .validator(proposer_index.0 as usize)
             .ok_or(StateTransitionError::InvalidRandaoReveal)?
             .pubkey;
 

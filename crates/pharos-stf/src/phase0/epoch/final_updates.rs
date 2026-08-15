@@ -57,8 +57,7 @@ where
         .map(|i| {
             let balance = state.balances().get(i).copied().unwrap_or(Gwei(0)).0;
             let eff_bal = state
-                .validators()
-                .get(i)
+                .validator(i)
                 .map(|v| v.effective_balance.0)
                 .unwrap_or(0);
             (balance, eff_bal)
@@ -83,8 +82,7 @@ where
     for (i, maybe_new) in updates.into_iter().enumerate() {
         if let Some(new_eff) = maybe_new {
             let mut v = state
-                .validators()
-                .get(i)
+                .validator(i)
                 .ok_or(EpochProcessingError::ValidatorIndexOutOfRange { index: i })?
                 .clone();
             v.effective_balance = Gwei(new_eff);

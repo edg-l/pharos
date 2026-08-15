@@ -22,8 +22,7 @@ where
 {
     let exit = &signed_exit.message;
     let validator = state
-        .validators()
-        .get(exit.validator_index.0 as usize)
+        .validator(exit.validator_index.0 as usize)
         .ok_or(StateTransitionError::InvalidVoluntaryExit {
             reason: VoluntaryExitInvalidReason::ValidatorNotActive,
         })?

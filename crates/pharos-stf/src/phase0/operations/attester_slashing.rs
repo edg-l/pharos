@@ -67,8 +67,7 @@ where
     let mut slashed_any = false;
     for index in &intersection {
         let is_slashable = state
-            .validators()
-            .get(index.0 as usize)
+            .validator(index.0 as usize)
             .map(|v| is_slashable_validator(v, epoch.0))
             .unwrap_or(false);
         if is_slashable {

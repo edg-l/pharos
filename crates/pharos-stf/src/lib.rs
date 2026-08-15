@@ -166,8 +166,7 @@ where
     if validate_result {
         let proposer_index = block.proposer_index();
         let proposer_pubkey = state
-            .validators()
-            .get(proposer_index.0 as usize)
+            .validator(proposer_index.0 as usize)
             .ok_or(StateTransitionError::InvalidBlockSignature)?
             .pubkey;
 

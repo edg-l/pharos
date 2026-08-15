@@ -47,8 +47,7 @@ where
     // Verify proposer is slashable.
     let proposer_idx = header_1.proposer_index;
     let proposer = state
-        .validators()
-        .get(proposer_idx.0 as usize)
+        .validator(proposer_idx.0 as usize)
         .ok_or(StateTransitionError::InvalidProposerSlashing {
             reason: ProposerSlashingInvalidReason::ValidatorNotSlashable,
         })?

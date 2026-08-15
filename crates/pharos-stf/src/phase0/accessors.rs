@@ -198,8 +198,7 @@ pub fn compute_proposer_index<E: EthSpec>(
         hash_input.extend_from_slice(&uint_to_bytes(i / 32));
         let random_byte = hash(&hash_input).as_slice()[(i % 32) as usize] as u64;
         let effective_balance = state
-            .validators()
-            .get(candidate_index.0 as usize)
+            .validator(candidate_index.0 as usize)
             .unwrap()
             .effective_balance
             .0;

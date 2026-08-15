@@ -113,8 +113,7 @@ where
         .into_iter()
         .filter(|idx| {
             state
-                .validators()
-                .get(idx.0 as usize)
+                .validator(idx.0 as usize)
                 .map(|v| !v.slashed)
                 .unwrap_or(false)
         })

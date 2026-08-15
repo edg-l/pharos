@@ -38,8 +38,7 @@ use super::helpers::{
 fn get_base_reward<E: EthSpec>(state: &E::BeaconState, index: ValidatorIndex) -> u64 {
     let total_balance = get_total_active_balance::<E>(state).0;
     let effective_balance = state
-        .validators()
-        .get(index.0 as usize)
+        .validator(index.0 as usize)
         .map(|v| v.effective_balance.0)
         .unwrap_or(0);
     effective_balance * E::BASE_REWARD_FACTOR
@@ -68,8 +67,7 @@ fn is_in_inactivity_leak<E: EthSpec>(state: &E::BeaconState) -> bool {
 fn get_eligible_validator_indices<E: EthSpec>(state: &E::BeaconState) -> Vec<ValidatorIndex> {
     let previous_epoch = get_previous_epoch::<E>(state);
     state
-        .validators()
-        .iter()
+        .validators_iter()
         .enumerate()
         .filter_map(|(i, v)| {
             let is_active = is_active_validator(v, previous_epoch.0);
@@ -248,8 +246,7 @@ where
             penalties[i] += E::BASE_REWARDS_PER_EPOCH * base_reward - proposer_reward;
             if !matching_target_attesting.contains(&index) {
                 let effective_balance = state
-                    .validators()
-                    .get(i)
+                    .validator(i)
                     .map(|v| v.effective_balance.0)
                     .unwrap_or(0);
                 penalties[i] += effective_balance * finality_delay / E::INACTIVITY_PENALTY_QUOTIENT;

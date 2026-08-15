@@ -66,8 +66,7 @@ where
 
     // Verify proposer is not slashed.
     let proposer_slashed = state
-        .validators()
-        .get(proposer_index.0 as usize)
+        .validator(proposer_index.0 as usize)
         .map(|v| v.slashed)
         .unwrap_or(false);
     if proposer_slashed {

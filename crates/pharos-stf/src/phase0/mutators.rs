@@ -157,8 +157,7 @@ where
 
     {
         let mut v = state
-            .validators()
-            .get(slashed_index.0 as usize)
+            .validator(slashed_index.0 as usize)
             .ok_or(StateTransitionError::SlotOutOfRange)?
             .clone();
         v.slashed = true;
