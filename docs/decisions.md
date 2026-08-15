@@ -1257,3 +1257,45 @@ Enforced in: `crates/pharos-types/src/state.rs:36-90` (`BeaconState` enum defini
 with Bellatrix variant), `crates/pharos-types/src/bellatrix/state.rs` (Bellatrix inner
 state struct), `crates/pharos-stf/src/lib.rs` (outer fork dispatch for Bellatrix),
 `crates/pharos-stf/src/bellatrix/` (Bellatrix STF modules).
+
+---
+
+## M4b decisions
+
+### D-anchor-as-weak-subj-root — Anchor block is the local finalized/justified root
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+`apply_anchor` (in `crates/pharos-node/src/checkpoint_sync.rs:262-322`) previously
+copied `state.finalized_checkpoint` and `state.current_justified_checkpoint` verbatim
+into the synthesised `ForkChoiceSnapshot`. For a real Bellatrix anchor state fetched
+from `GET /eth/v2/debug/beacon/states/finalized`, those fields reference blocks at
+earlier epoch boundaries, not the anchor block itself. Only the anchor block is written
+to storage by `apply_anchor`, so `rehydrate_fork_choice_store` (`startup.rs:79-81`)
+failed with `KeyNotFound` when it tried to load the finalized block, and
+`checkpoint_states` ended up empty (`startup.rs:124-140`) because neither checkpoint
+root existed in `block_states`.
+
+The fix treats the anchor block as the local finalized/justified root, matching the
+weak-subjectivity sync convention used by all major CL implementations (Lighthouse,
+Teku, Prysm). Pre-anchor history is opaque and trusted via the operator's choice of
+checkpoint-sync URL per `D-checkpoint-sync-source`.
+
+`finalized_checkpoint` is set to `{ epoch: anchor_epoch, root: anchor.block_root }`.
+This ensures `get_checkpoint_block(store, block_root, finalized_epoch)` in
+`filter_block_tree` walks back to `anchor_epoch * SLOTS_PER_EPOCH = anchor_slot` and
+returns `anchor_block_root`, satisfying the `correct_finalized` check.
+
+`justified_checkpoint` is set to `{ epoch: 0 (GENESIS_EPOCH), root: anchor.block_root }`.
+Without attestations, `get_voting_source` returns epoch 0 for all blocks (the
+`unrealized_justifications` map is empty; `block_states` post-state
+`current_justified_checkpoint` is epoch 0). Using `anchor_epoch` for the justified
+epoch would fail the `correct_justified` check because neither the GENESIS_EPOCH
+shortcut nor `voting_source + 2 >= current_epoch` would hold. The GENESIS_EPOCH
+shortcut (`epoch.0 == 0`) is the correct and spec-aligned choice for an anchor with
+no prior attestation history.
+
+Enforced in: `crates/pharos-node/src/checkpoint_sync.rs:272-303` (comment + checkpoint
+construction in `apply_anchor`). The test workaround that previously patched the snapshot
+post-`apply_anchor` at `checkpoint_backfill_pipeline.rs` has been removed; the snapshot
+is now correct as returned.

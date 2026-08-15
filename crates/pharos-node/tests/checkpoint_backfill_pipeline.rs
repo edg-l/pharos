@@ -30,7 +30,7 @@ use pharos_fork_choice::get_head;
 use pharos_ssz::{Encode, TreeHash};
 use pharos_stf::NullExecutionEngine;
 use pharos_storage::{ForkChoiceSnapshot, RocksStore, RocksStoreConfig};
-use pharos_types::phase0::primitives::{Epoch, Root, Slot, Version};
+use pharos_types::phase0::primitives::{Root, Slot, Version};
 use pharos_types::{EthSpec, MinimalEthSpec};
 use pharos_utils::{Hash256, Uint256};
 use serde::Deserialize;
@@ -351,49 +351,13 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         .await
         .expect("fetch_checkpoint must succeed");
 
-    let fetched_block_root = anchor.block_root;
-
     // ── 7. Persist anchor + synthesise fork-choice snapshot ──────────────────
 
-    let mut snapshot: ForkChoiceSnapshot =
+    // `apply_anchor` now sets the correct checkpoint roots/epochs directly
+    // (weak-subjectivity convention: anchor block = local finalized/justified
+    // root). No caller-side patching needed; the snapshot is used as-is.
+    let snapshot: ForkChoiceSnapshot =
         apply_anchor::<MinimalEthSpec>(anchor, &store).expect("apply_anchor must succeed");
-
-    // Patch checkpoint roots and epochs so that:
-    //
-    // (a) `rehydrate_fork_choice_store` can find the anchor block (stored at
-    //     `fetched_block_root`). The freshly built state has
-    //     `finalized_checkpoint.root = Root::default()`, but the block is
-    //     stored at `fetched_block_root`.
-    //
-    // (b) The fork-choice `on_block` descendant check passes for blocks at
-    //     slots 65..=72. `on_block` calls
-    //     `get_checkpoint_block(store, parent_root, finalized_epoch)` which
-    //     walks back to `epoch_first_slot = finalized_epoch * SLOTS_PER_EPOCH`.
-    //     With `epoch = 0` the walk goes to slot 0, but the anchor's
-    //     `parent_root` is `Root::default()` (not in the store), returning
-    //     `Root::default()` instead of `anchor_block_root`. With
-    //     `epoch = anchor_epoch` (8) the walk stops at slot 64, returning
-    //     `anchor_block_root`.
-    //
-    // (c) `filter_block_tree` includes the new blocks as viable heads.
-    //     The leaf-node `correct_justified` check is:
-    //       `epoch == GENESIS_EPOCH  || voting_source == justified_epoch || ...`
-    //     Without attestations the post-state `current_justified_checkpoint.epoch
-    //     = 0`, so `get_voting_source` returns epoch 0. Setting
-    //     `justified_checkpoint.epoch = 0 = GENESIS_EPOCH` makes condition 1
-    //     true and the block is always included as a viable head.
-    let anchor_epoch = Epoch(ANCHOR_SLOT / MinimalEthSpec::SLOTS_PER_EPOCH);
-    // finalized: epoch = anchor epoch so descendant-check (b) passes
-    snapshot.finalized_checkpoint.root = fetched_block_root;
-    snapshot.finalized_checkpoint.epoch = anchor_epoch;
-    // justified: epoch = 0 (GENESIS_EPOCH) so filter_block_tree (c) passes
-    snapshot.justified_checkpoint.root = fetched_block_root;
-    snapshot.justified_checkpoint.epoch = Epoch(0);
-    // unrealized mirrors the realized checkpoints
-    snapshot.unrealized_justified_checkpoint.root = fetched_block_root;
-    snapshot.unrealized_justified_checkpoint.epoch = Epoch(0);
-    snapshot.unrealized_finalized_checkpoint.root = fetched_block_root;
-    snapshot.unrealized_finalized_checkpoint.epoch = anchor_epoch;
 
     // ── 8. Rehydrate fork-choice store ────────────────────────────────────────
 
@@ -404,8 +368,12 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     // `ANCHOR_SLOT + N_BACKFILL_BLOCKS`.  `genesis_time = wall_now -
     // ANCHOR_SLOT * seconds_per_slot`, so we need
     // `time >= genesis_time + (ANCHOR_SLOT + N_BACKFILL_BLOCKS) * seconds_per_slot`.
-    // Adding `FC_STORE_TIME_ADVANCE_SECS` (~11 days) to wall-clock satisfies this.
-    fc_store.time = wall_now + FC_STORE_TIME_ADVANCE_SECS;
+    // `FC_STORE_TIME_ADVANCE_SECS` (~11 days) past wall-clock satisfies this.
+    // Use the public `on_tick` API rather than reaching into `fc_store.time`.
+    pharos_fork_choice::on_tick::<MinimalEthSpec>(
+        &mut fc_store,
+        wall_now + FC_STORE_TIME_ADVANCE_SECS,
+    );
 
     // Set terminal_block_hash override so the merge-transition guard passes.
     fc_store.set_terminal_config(

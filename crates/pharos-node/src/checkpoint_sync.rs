@@ -17,8 +17,9 @@
 use pharos_ssz::{Decode, TreeHash};
 use pharos_storage::{BlockTransition, ForkChoiceSnapshot, RocksStore, Store};
 use pharos_types::EthSpec;
+use pharos_types::phase0::misc::Checkpoint;
 use pharos_types::phase0::operations::BeaconBlockHeader;
-use pharos_types::phase0::primitives::{Root, Slot, ValidatorIndex};
+use pharos_types::phase0::primitives::{Epoch, Root, Slot, ValidatorIndex};
 use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _, SignedBeaconBlockView};
 use reqwest::header::ACCEPT;
 
@@ -268,13 +269,36 @@ pub fn apply_anchor<E: EthSpec>(
     let seconds_per_slot = E::SLOT_DURATION_MS / 1000;
     let last_known_time = genesis_time + state_slot.0 * seconds_per_slot;
 
-    let finalized_checkpoint = anchor.state.finalized_checkpoint().clone();
-    let justified_checkpoint = anchor.state.current_justified_checkpoint().clone();
+    // Per `D-anchor-state-on-disk` + weak-subjectivity sync convention:
+    // the anchor block is treated as the local finalized/justified root.
+    // Pre-anchor history is opaque (trusted via operator URL choice per
+    // `D-checkpoint-sync-source`); using `state.finalized_checkpoint` as-is
+    // would reference earlier epoch-boundary blocks we never fetched,
+    // breaking `rehydrate_fork_choice_store` block lookup at startup.rs:80.
+    //
+    // `finalized_checkpoint.epoch = anchor_epoch` so that
+    // `get_checkpoint_block(store, block_root, finalized_epoch)` walks back to
+    // `anchor_epoch * SLOTS_PER_EPOCH = anchor_slot`, resolving to
+    // `anchor_block_root` and satisfying the `correct_finalized` check in
+    // `filter_block_tree`.
+    //
+    // `justified_checkpoint.epoch = 0 (GENESIS_EPOCH)` so that
+    // `filter_block_tree`'s `correct_justified` shortcut fires unconditionally.
+    // Without attestations, `get_voting_source` returns epoch 0 for all
+    // blocks, which cannot match `anchor_epoch` on the second condition; the
+    // GENESIS_EPOCH shortcut is the only path that keeps descendant blocks
+    // viable as fork-choice heads.
+    let anchor_epoch = Epoch(state_slot.0 / E::SLOTS_PER_EPOCH);
 
-    // Per `D-anchor-state-on-disk`: unrealized_justified_checkpoint =
-    // state.current_justified_checkpoint (same as the realized justified
-    // checkpoint); unrealized_finalized_checkpoint = state.finalized_checkpoint.
-    // Using fabricated values (wrong epoch or root) would corrupt fork-choice.
+    let finalized_checkpoint = Checkpoint {
+        epoch: anchor_epoch,
+        root: anchor.block_root,
+    };
+    let justified_checkpoint = Checkpoint {
+        epoch: Epoch(0),
+        root: anchor.block_root,
+    };
+
     let unrealized_justified_checkpoint = justified_checkpoint.clone();
     let unrealized_finalized_checkpoint = finalized_checkpoint.clone();
 
