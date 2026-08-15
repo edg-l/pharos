@@ -11,6 +11,7 @@ use pharos_ssz::{Bitvector, SszSequence};
 use pharos_types::{
     BeaconStateView,
     phase0::{BeaconBlockHeader, Checkpoint, Eth1Data, PendingAttestation, Validator},
+    state::BeaconState as ForkBeaconState,
 };
 use pharos_utils::{Gwei, Hash256};
 
@@ -330,5 +331,334 @@ where
             .with_set(idx, root)
             .map_err(StateTransitionError::Ssz)?;
         Ok(())
+    }
+}
+
+// ── BeaconStateWrite for fork-enum BeaconState ────────────────────────────────
+//
+// Task 1.12: The fork-enum `pharos_types::BeaconState` must satisfy
+// `BeaconStateWrite` so that phase0 STF code (which is generic over
+// `E::BeaconState: BeaconStateWrite`) compiles without changes.
+//
+// Delegation: all methods delegate to the `Phase0` inner state.
+// The `Altair` variant is not reached by phase0 STF code; `unreachable!()`
+// guards these arms per the project conventions (CLAUDE.md).
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const MAX_PENDING_ATTESTATIONS: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+> BeaconStateWrite
+    for ForkBeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        MAX_PENDING_ATTESTATIONS,
+        JUSTIFICATION_BITS_LENGTH,
+        2048, // MAX_VALIDATORS_PER_COMMITTEE
+        SYNC_COMMITTEE_SIZE,
+    >
+where
+    pharos_utils::Hash256: Default + Clone,
+    pharos_types::phase0::Root: Default + Clone,
+    Gwei: Default + Clone,
+{
+    fn set_slot(&mut self, slot: pharos_types::phase0::Slot) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_slot(slot),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_latest_block_header(&mut self, header: BeaconBlockHeader) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_latest_block_header(header),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_eth1_data(&mut self, data: Eth1Data) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_eth1_data(data),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn push_eth1_data_vote(&mut self, data: Eth1Data) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.push_eth1_data_vote(data),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn increment_eth1_deposit_index(&mut self) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.increment_eth1_deposit_index(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_validator(&mut self, idx: usize, v: Validator) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_validator(idx, v),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn push_validator(&mut self, v: Validator) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.push_validator(v),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_balance(&mut self, idx: usize, val: Gwei) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_balance(idx, val),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn push_balance(&mut self, val: Gwei) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.push_balance(val),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_slashing(&mut self, idx: usize, val: Gwei) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_slashing(idx, val),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_randao_mix(&mut self, idx: usize, mix: Hash256) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_randao_mix(idx, mix),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn push_current_epoch_attestation(
+        &mut self,
+        att: PendingAttestation<2048>,
+    ) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.push_current_epoch_attestation(att),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn push_previous_epoch_attestation(
+        &mut self,
+        att: PendingAttestation<2048>,
+    ) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.push_previous_epoch_attestation(att),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn eth1_deposit_index(&self) -> u64 {
+        match self {
+            ForkBeaconState::Phase0(s) => s.eth1_deposit_index(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn eth1_data_votes_count(&self) -> usize {
+        match self {
+            ForkBeaconState::Phase0(s) => s.eth1_data_votes_count(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn eth1_data_votes_count_matching(&self, data: &Eth1Data) -> usize {
+        match self {
+            ForkBeaconState::Phase0(s) => s.eth1_data_votes_count_matching(data),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_justification_bits(&mut self, bits: Bitvector<4>) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_justification_bits(bits),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_previous_justified_checkpoint(&mut self, cp: Checkpoint) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_previous_justified_checkpoint(cp),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_current_justified_checkpoint(&mut self, cp: Checkpoint) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_current_justified_checkpoint(cp),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_finalized_checkpoint(&mut self, cp: Checkpoint) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_finalized_checkpoint(cp),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn push_historical_root(
+        &mut self,
+        root: pharos_types::phase0::Root,
+    ) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.push_historical_root(root),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_previous_epoch_attestations(
+        &mut self,
+        atts: Vec<PendingAttestation<2048>>,
+    ) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_previous_epoch_attestations(atts),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn clear_current_epoch_attestations(&mut self) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.clear_current_epoch_attestations(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn clear_eth1_data_votes(&mut self) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.clear_eth1_data_votes(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn previous_epoch_attestations(&self) -> &[PendingAttestation<2048>] {
+        match self {
+            ForkBeaconState::Phase0(s) => s.previous_epoch_attestations(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn current_epoch_attestations(&self) -> &[PendingAttestation<2048>] {
+        match self {
+            ForkBeaconState::Phase0(s) => s.current_epoch_attestations(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn justification_bits(&self) -> Bitvector<4> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.justification_bits(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn historical_roots_len(&self) -> usize {
+        match self {
+            ForkBeaconState::Phase0(s) => s.historical_roots_len(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_state_root(
+        &mut self,
+        idx: usize,
+        root: pharos_types::phase0::Root,
+    ) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_state_root(idx, root),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_block_root(
+        &mut self,
+        idx: usize,
+        root: pharos_types::phase0::Root,
+    ) -> Result<(), StateTransitionError> {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_block_root(idx, root),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("phase0 STF called on Altair BeaconState")
+            }
+        }
     }
 }

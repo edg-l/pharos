@@ -15,8 +15,9 @@ use pharos_network::discovery::subnets::compute_subscribed_subnets;
 use pharos_network::{NetworkBuilder, NoopScorer};
 use pharos_ssz::{Bitvector, Decode, TreeHash};
 use pharos_storage::{RocksStore, RocksStoreConfig};
+use pharos_types::phase0::MainnetBeaconState as Phase0MainnetBeaconState;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
-use pharos_types::phase0::{MainnetBeaconBlock, MainnetBeaconState};
+use pharos_types::state::{BeaconBlock as ForkBeaconBlock, MainnetBeaconState};
 use pharos_types::{EthSpec, MainnetEthSpec};
 use tracing::info;
 
@@ -120,8 +121,11 @@ async fn main() -> anyhow::Result<()> {
 
     let genesis_bytes = std::fs::read(&args.genesis_state_path)
         .with_context(|| format!("reading genesis state from {:?}", args.genesis_state_path))?;
-    let genesis_state = MainnetBeaconState::from_ssz_bytes(&genesis_bytes)
+    // The genesis state is stored as a raw phase0 SSZ blob. Decode as the
+    // concrete phase0 type and wrap in the fork-enum (Phase0 variant).
+    let genesis_state_inner = Phase0MainnetBeaconState::from_ssz_bytes(&genesis_bytes)
         .context("decoding genesis BeaconState SSZ")?;
+    let genesis_state = MainnetBeaconState::Phase0(genesis_state_inner);
 
     // Compute genesis validators root and fork version from the state.
     use pharos_types::views::BeaconStateView;
@@ -142,10 +146,10 @@ async fn main() -> anyhow::Result<()> {
         info!("cold start: seeding fork-choice from genesis state");
         // Anchor block: state_root = hash_tree_root(genesis_state), empty sig.
         let state_root = genesis_state.tree_hash_root();
-        let anchor_block = MainnetBeaconBlock {
+        let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MainnetBeaconBlock {
             state_root,
-            ..MainnetBeaconBlock::default()
-        };
+            ..pharos_types::phase0::MainnetBeaconBlock::default()
+        });
         get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block)
     };
 

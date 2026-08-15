@@ -32,7 +32,7 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView},
 };
 
-use crate::fixture_walker::{WalkOpts, load_pre_post, load_ssz_snappy, walk_category};
+use crate::fixture_walker::{WalkOpts, load_pre_post_phase0_state, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
 
 /// Result of running all operation tests for a single operation sub-category
@@ -134,8 +134,8 @@ fn run_block_header_preset<E>(root: &Path, preset: &str) -> OpsResult
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlock: BeaconBlockView + Decode,
-    <E::BeaconBlock as BeaconBlockView>::Body: pharos_ssz::TreeHash,
+    E::Phase0BeaconBlock: BeaconBlockView + Decode,
+    <E::Phase0BeaconBlock as BeaconBlockView>::Body: pharos_ssz::TreeHash,
 {
     let mut out = OpsResult::new();
     for (case_dir, meta) in walk_category(
@@ -164,15 +164,16 @@ fn run_block_header_case<E>(
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlock: BeaconBlockView + Decode,
-    <E::BeaconBlock as BeaconBlockView>::Body: pharos_ssz::TreeHash,
+    E::Phase0BeaconBlock: BeaconBlockView + Decode,
+    <E::Phase0BeaconBlock as BeaconBlockView>::Body: pharos_ssz::TreeHash,
 {
     // block_header fixture uses block.ssz_snappy (not block_header.ssz_snappy).
-    let (mut pre, post) = match load_pre_post::<E::BeaconState>(case_dir) {
+    // Decode as the concrete phase0 block (raw SSZ, no discriminant prefix).
+    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
         Ok(v) => v,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };
-    let block = match load_ssz_snappy::<E::BeaconBlock>(case_dir, "block.ssz_snappy") {
+    let block = match load_ssz_snappy::<E::Phase0BeaconBlock>(case_dir, "block.ssz_snappy") {
         Ok(v) => v,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };
@@ -237,7 +238,7 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
 {
-    let (mut pre, post) = match load_pre_post::<E::BeaconState>(case_dir) {
+    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
         Ok(v) => v,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };
@@ -309,7 +310,7 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
 {
-    let (mut pre, post) = match load_pre_post::<E::BeaconState>(case_dir) {
+    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
         Ok(v) => v,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };
@@ -374,7 +375,7 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
 {
-    let (mut pre, post) = match load_pre_post::<E::BeaconState>(case_dir) {
+    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
         Ok(v) => v,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };
@@ -413,7 +414,7 @@ fn run_attestation_preset<E>(root: &Path, preset: &str) -> OpsResult
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let mut out = OpsResult::new();
     for (case_dir, meta) in walk_category(
@@ -439,9 +440,9 @@ fn run_attestation_case<E>(case_dir: &Path, case_name: &str, verify_signatures: 
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
-    let (mut pre, post) = match load_pre_post::<E::BeaconState>(case_dir) {
+    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
         Ok(v) => v,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };
@@ -511,7 +512,7 @@ where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
 {
-    let (mut pre, post) = match load_pre_post::<E::BeaconState>(case_dir) {
+    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
         Ok(v) => v,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };

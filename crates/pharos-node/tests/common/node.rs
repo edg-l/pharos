@@ -22,8 +22,8 @@ use pharos_node::host_impl::HostImpl;
 use pharos_ssz::TreeHash;
 use pharos_storage::{RocksStore, RocksStoreConfig};
 use pharos_types::MinimalEthSpec;
-use pharos_types::phase0::MinimalBeaconBlock;
 use pharos_types::phase0::primitives::{Root, Version};
+use pharos_types::state::BeaconBlock as ForkBeaconBlock;
 
 use super::genesis::minimal_genesis;
 
@@ -64,10 +64,10 @@ pub fn build_host(path: &Path) -> HostImpl<MinimalEthSpec> {
 
     let genesis_state = minimal_genesis().clone();
     let state_root = genesis_state.tree_hash_root();
-    let anchor_block = MinimalBeaconBlock {
+    let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MinimalBeaconBlock {
         state_root,
-        ..MinimalBeaconBlock::default()
-    };
+        ..pharos_types::phase0::MinimalBeaconBlock::default()
+    });
     let fc_store =
         pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
     let fork_choice = Arc::new(RwLock::new(fc_store));

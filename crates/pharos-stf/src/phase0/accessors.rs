@@ -301,7 +301,7 @@ pub fn get_attesting_indices<E: EthSpec>(
     aggregation_bits: &pharos_ssz::Bitlist<2048>,
 ) -> Vec<ValidatorIndex>
 where
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let committee = get_beacon_committee::<E>(state, data.slot, data.index.0);
     committee
@@ -319,15 +319,14 @@ where
 
 /// `get_indexed_attestation` per `specs/phase0/beacon-chain.md:1176-1186`.
 ///
-/// Uses the D8 associated-type pattern. `Attestation<2048>` is the concrete
-/// type for `<E::BeaconBlockBody as BeaconBlockBodyView>::Attestation` in all
-/// current presets.
+/// Accepts `&Attestation<2048>` directly; the concrete attestation type used
+/// in all current presets.
 pub fn get_indexed_attestation<E: EthSpec>(
     state: &E::BeaconState,
-    attestation: &<E::BeaconBlockBody as BeaconBlockBodyView>::Attestation,
+    attestation: &Attestation<2048>,
 ) -> IndexedAttestation<2048>
 where
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use pharos_ssz::SszList;
     let mut attesting =

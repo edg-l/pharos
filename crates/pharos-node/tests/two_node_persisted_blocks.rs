@@ -21,9 +21,9 @@ use pharos_network::NetworkEvent;
 use pharos_network::rpc::types::RpcRequest;
 use pharos_storage::{BlockTransition, RocksStore, RocksStoreConfig, Store as StoreTrait};
 use pharos_types::MinimalEthSpec;
-use pharos_types::phase0::{
-    BeaconBlocksByRangeRequest, MinimalBeaconBlock, MinimalSignedBeaconBlock, Slot,
-};
+use pharos_types::phase0::MinimalSignedBeaconBlock as Phase0MinimalBlock;
+use pharos_types::phase0::{BeaconBlocksByRangeRequest, MinimalBeaconBlock, Slot};
+use pharos_types::state::MinimalSignedBeaconBlock;
 use serial_test::serial;
 
 use common::node::{build_host, spawn_node};
@@ -40,15 +40,15 @@ fn make_blocks() -> Vec<(
     use pharos_ssz::TreeHash;
     (1u64..=10)
         .map(|n| {
-            let block = MinimalSignedBeaconBlock {
+            let inner = Phase0MinimalBlock {
                 message: MinimalBeaconBlock {
                     slot: Slot(n),
                     ..MinimalBeaconBlock::default()
                 },
-                ..MinimalSignedBeaconBlock::default()
+                ..Phase0MinimalBlock::default()
             };
-            let root = block.message.tree_hash_root();
-            (root, block)
+            let root = inner.message.tree_hash_root();
+            (root, MinimalSignedBeaconBlock::Phase0(inner))
         })
         .collect()
 }
@@ -72,9 +72,13 @@ fn populate_store(
     .expect("open RocksStore for pre-population");
 
     for (root, block) in blocks {
+        let slot = match block {
+            MinimalSignedBeaconBlock::Phase0(inner) => inner.message.slot,
+            MinimalSignedBeaconBlock::Altair(inner) => inner.message.slot,
+        };
         let transition = BlockTransition::<MinimalEthSpec> {
             block: Some((*root, block.clone())),
-            slot_index: Some((block.message.slot, *root)),
+            slot_index: Some((slot, *root)),
             state: None,
             forkchoice: None,
         };
@@ -162,8 +166,12 @@ async fn persisted_blocks_survive_restart() {
 
     assert_eq!(received_blocks.len(), 10, "must receive exactly 10 blocks");
     for (i, blk) in received_blocks.iter().enumerate() {
+        let slot = match blk {
+            MinimalSignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
+            MinimalSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+        };
         assert_eq!(
-            blk.message.slot.0,
+            slot,
             (i as u64) + 1,
             "blocks must be in ascending slot order"
         );
@@ -208,8 +216,12 @@ async fn persisted_blocks_survive_restart() {
         "must receive exactly 10 blocks after restart"
     );
     for (i, blk) in received_blocks2.iter().enumerate() {
+        let slot = match blk {
+            MinimalSignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
+            MinimalSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+        };
         assert_eq!(
-            blk.message.slot.0,
+            slot,
             (i as u64) + 1,
             "blocks must be in ascending slot order after restart"
         );

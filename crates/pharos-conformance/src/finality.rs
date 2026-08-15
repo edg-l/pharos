@@ -20,7 +20,9 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
 
-use crate::fixture_walker::{WalkOpts, load_pre_post, load_ssz_snappy, walk_category};
+use crate::fixture_walker::{
+    WalkOpts, load_phase0_signed_block, load_pre_post_phase0_state, walk_category,
+};
 use crate::fs_util::dir_name;
 
 /// Result tally for a single finality preset run.
@@ -58,15 +60,16 @@ pub fn run_finality_minimal(root: &Path) -> FinalityResult {
 pub fn run_finality_preset<E>(root: &Path, preset: &'static str) -> FinalityResult
 where
     E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash + Decode,
-    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock> + Decode,
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody>,
-    E::BeaconBlockBody: TreeHash
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::Phase0BeaconState: Decode,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
             Attestation = Attestation<2048>,
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = Deposit<33>,
         >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
     let mut out = FinalityResult::new();
     for (case_dir, meta) in walk_category(
@@ -111,17 +114,18 @@ fn run_blocks_case<E>(
 ) -> CaseResult
 where
     E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash + Decode,
-    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock> + Decode,
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody>,
-    E::BeaconBlockBody: TreeHash
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::Phase0BeaconState: Decode,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
             Attestation = Attestation<2048>,
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = Deposit<33>,
         >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
 {
-    let (pre, post) = match load_pre_post::<E::BeaconState>(case_dir) {
+    let (pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
         Ok(v) => v,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };
@@ -131,7 +135,7 @@ where
 
     for i in 0..blocks_count {
         let block_file = format!("blocks_{i}.ssz_snappy");
-        let block = match load_ssz_snappy::<E::SignedBeaconBlock>(case_dir, &block_file) {
+        let block = match load_phase0_signed_block::<E>(case_dir, &block_file) {
             Ok(v) => v,
             Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
         };

@@ -8,6 +8,7 @@ use pharos_types::{
     phase0::{
         BeaconBlockHeader, Deposit, DepositData, Epoch, Eth1Data, Fork, Gwei, Slot, ValidatorIndex,
     },
+    state::BeaconState as ForkBeaconState,
 };
 use pharos_utils::{Bytes4, Hash256};
 
@@ -30,7 +31,7 @@ pub fn initialize_beacon_state_from_eth1<E: EthSpec>(
 ) -> E::BeaconState
 where
     E::BeaconState: BeaconStateMut + BeaconStateWrite,
-    E::BeaconBlockBody: Default + TreeHash,
+    E::Phase0BeaconBlockBody: Default + TreeHash,
 {
     let fork = Fork {
         previous_version: Bytes4::from_array(E::GENESIS_FORK_VERSION),
@@ -39,7 +40,7 @@ where
     };
 
     // Compute hash_tree_root(BeaconBlockBody()) for latest_block_header.body_root.
-    let empty_body_root = E::BeaconBlockBody::default().tree_hash_root();
+    let empty_body_root = E::Phase0BeaconBlockBody::default().tree_hash_root();
 
     let genesis_time = eth1_timestamp + E::GENESIS_DELAY;
     let eth1_data = Eth1Data {
@@ -284,6 +285,167 @@ where
         state.randao_mixes = mixes;
 
         state
+    }
+}
+
+// ── BeaconStateMut for fork-enum BeaconState ─────────────────────────────────
+//
+// Task 1.12: Implements genesis construction on the fork-enum `BeaconState`.
+// Genesis always starts in Phase0, so `genesis_state()` returns `Phase0(...)`.
+// All other methods delegate to the inner Phase0 state; the Altair variant is
+// guarded by `unreachable!()` per project conventions.
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const MAX_PENDING_ATTESTATIONS: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+> BeaconStateMut
+    for ForkBeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        MAX_PENDING_ATTESTATIONS,
+        JUSTIFICATION_BITS_LENGTH,
+        2048, // MAX_VALIDATORS_PER_COMMITTEE
+        SYNC_COMMITTEE_SIZE,
+    >
+where
+    pharos_utils::Hash256: Default + Clone,
+    pharos_types::phase0::Root: Default + Clone,
+    Gwei: Default + Clone,
+{
+    fn genesis_time_val(&self) -> u64 {
+        match self {
+            ForkBeaconState::Phase0(s) => s.genesis_time_val(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis query called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_eth1_deposit_root(&mut self, root: Hash256) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_eth1_deposit_root(root),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis mutation called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn validators_len(&self) -> usize {
+        match self {
+            ForkBeaconState::Phase0(s) => s.validators_len(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis query called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn validator_pubkey_at(&self, idx: usize) -> pharos_utils::BLSPubkey {
+        match self {
+            ForkBeaconState::Phase0(s) => s.validator_pubkey_at(idx),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis query called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn balance_at(&self, idx: usize) -> u64 {
+        match self {
+            ForkBeaconState::Phase0(s) => s.balance_at(idx),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis query called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_balance_at(&mut self, idx: usize, val: u64) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_balance_at(idx, val),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis mutation called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_validator_effective_balance(&mut self, idx: usize, val: Gwei) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_validator_effective_balance(idx, val),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis mutation called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_validator_activation_eligibility_epoch(&mut self, idx: usize, epoch: Epoch) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_validator_activation_eligibility_epoch(idx, epoch),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis mutation called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_validator_activation_epoch(&mut self, idx: usize, epoch: Epoch) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_validator_activation_epoch(idx, epoch),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis mutation called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn validators_tree_hash(&self) -> Hash256 {
+        match self {
+            ForkBeaconState::Phase0(s) => s.validators_tree_hash(),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis query called on Altair BeaconState")
+            }
+        }
+    }
+
+    fn set_genesis_validators_root(&mut self, root: Hash256) {
+        match self {
+            ForkBeaconState::Phase0(s) => s.set_genesis_validators_root(root),
+            ForkBeaconState::Altair(_) => {
+                unreachable!("genesis mutation called on Altair BeaconState")
+            }
+        }
+    }
+
+    /// Construct a genesis (Phase0) BeaconState.
+    ///
+    /// Genesis always starts in Phase0; the returned state wraps the
+    /// inner `phase0::BeaconState` in `BeaconState::Phase0(...)`.
+    fn genesis_state(
+        genesis_time: u64,
+        fork: Fork,
+        eth1_data: Eth1Data,
+        body_root: Hash256,
+        eth1_block_hash: Hash256,
+    ) -> Self {
+        ForkBeaconState::Phase0(pharos_types::phase0::BeaconState::<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            MAX_PENDING_ATTESTATIONS,
+            JUSTIFICATION_BITS_LENGTH,
+            2048,
+        >::genesis_state(
+            genesis_time, fork, eth1_data, body_root, eth1_block_hash
+        ))
     }
 }
 

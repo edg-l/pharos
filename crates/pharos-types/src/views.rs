@@ -34,6 +34,19 @@ use crate::phase0::{
 };
 use pharos_utils::{Bytes32, Gwei, Hash256};
 
+// ── ForkVariant ───────────────────────────────────────────────────────────────
+
+/// Identifies which fork a `BeaconState` (or block) belongs to.
+///
+/// Used by `BeaconStateView::fork_variant()` so that STF dispatch code can
+/// branch on the fork without needing to pattern-match on the opaque
+/// `E::BeaconState` associated type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkVariant {
+    Phase0,
+    Altair,
+}
+
 // ── BeaconBlockBodyView ───────────────────────────────────────────────────────
 
 /// Read-only accessors for `BeaconBlockBody` fields.
@@ -90,6 +103,13 @@ pub trait SignedBeaconBlockView {
 /// Collection fields are exposed as slices so the concrete const-generic
 /// parameter does not appear at call sites.
 pub trait BeaconStateView {
+    /// Returns the fork variant of this state.
+    ///
+    /// Allows STF dispatch code to branch on the fork via the opaque
+    /// `E::BeaconState` associated type (pattern-matching on a concrete enum
+    /// through an associated type is not permitted on stable Rust 1.85).
+    fn fork_variant(&self) -> ForkVariant;
+
     fn genesis_time(&self) -> u64;
     fn genesis_validators_root(&self) -> Root;
     fn slot(&self) -> Slot;
@@ -225,6 +245,10 @@ impl<
         MAX_VALIDATORS_PER_COMMITTEE,
     >
 {
+    fn fork_variant(&self) -> ForkVariant {
+        ForkVariant::Phase0
+    }
+
     fn genesis_time(&self) -> u64 {
         self.genesis_time
     }

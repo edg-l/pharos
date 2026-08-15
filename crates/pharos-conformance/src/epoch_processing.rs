@@ -33,7 +33,7 @@ use pharos_types::{
     EthSpec, MainnetEthSpec, MinimalEthSpec, phase0::Attestation, views::BeaconBlockBodyView,
 };
 
-use crate::fixture_walker::{WalkOpts, load_pre_post, walk_category};
+use crate::fixture_walker::{WalkOpts, load_pre_post_phase0_state, walk_category};
 use crate::fs_util::dir_name;
 
 /// Result of running all epoch-processing tests for a single preset.
@@ -76,7 +76,7 @@ fn run_epoch_processing_preset<E>(root: &Path, preset: &str) -> EpochResult
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let mut total = EpochResult::new();
     total.merge(run_sub::<E, _>(
@@ -181,7 +181,7 @@ where
     E::BeaconState: BeaconStateWrite + pharos_ssz::Decode,
     F: FnMut(&mut E::BeaconState) -> Result<(), String>,
 {
-    let (mut pre, post) = match load_pre_post::<E::BeaconState>(case_dir) {
+    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
         Ok(v) => v,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };

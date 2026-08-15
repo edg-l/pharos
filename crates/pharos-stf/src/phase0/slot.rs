@@ -50,7 +50,8 @@ pub fn process_slots<E: EthSpec>(
 ) -> Result<(), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite + TreeHash,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = pharos_types::phase0::Attestation<2048>>,
+    E::Phase0BeaconBlockBody:
+        BeaconBlockBodyView<Attestation = pharos_types::phase0::Attestation<2048>>,
 {
     if target_slot <= state.slot() {
         return Err(StateTransitionError::TargetSlotNotAfterCurrent {

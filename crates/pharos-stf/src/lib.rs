@@ -35,7 +35,7 @@ use pharos_ssz::TreeHash;
 use pharos_types::{
     BeaconStateView, EthSpec,
     phase0::{Attestation, AttesterSlashing, Deposit},
-    views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
+    views::{BeaconBlockBodyView, BeaconBlockView, ForkVariant, SignedBeaconBlockView},
 };
 
 use phase0::{
@@ -45,6 +45,11 @@ use phase0::{
 };
 
 /// `state_transition` per `specs/phase0/beacon-chain.md:1370-1393`.
+///
+/// Dispatches on the `BeaconState` fork variant:
+/// - `Phase0` → unwraps the block to the concrete phase0 signed block, then
+///   calls the phase0 STF (`process_slots`, `process_block`).
+/// - `Altair` → returns an error (altair STF ships in Phase 2).
 ///
 /// Advances `state` to `signed_block.message.slot` via `process_slots`,
 /// optionally verifies the block signature and final state root, then
@@ -61,9 +66,50 @@ pub fn state_transition<E: EthSpec>(
 ) -> Result<E::BeaconState, StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite + TreeHash,
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody>,
-    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
-    E::BeaconBlockBody: TreeHash
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+{
+    // Fork dispatch via `fork_variant()`. Cannot pattern-match on a concrete
+    // enum variant through the opaque `E::BeaconState` associated type;
+    // `fork_variant()` provides the required discriminant.
+    match state.fork_variant() {
+        ForkVariant::Phase0 => {
+            // Unwrap the fork-enum signed block to the concrete phase0 inner type.
+            // The block must be a Phase0 variant; if it isn't, return an error rather
+            // than panic.
+            let phase0_signed = E::unwrap_phase0_signed_block(signed_block)
+                .ok_or(StateTransitionError::UnsupportedFork)?;
+            phase0_state_transition::<E>(&mut state, phase0_signed, validate_result)?;
+        }
+        ForkVariant::Altair => {
+            // Altair STF not yet implemented (Phase 2). Altair dispatch will be
+            // added in Phase 2's state_transition.rs.
+            return Err(StateTransitionError::UnsupportedFork);
+        }
+    }
+    Ok(state)
+}
+
+/// Phase0 inner state transition.
+///
+/// Called from `state_transition` after variant dispatch. Takes the concrete
+/// phase0 signed block (already unwrapped from the fork-enum by the caller).
+fn phase0_state_transition<E: EthSpec>(
+    state: &mut E::BeaconState,
+    signed_block: &E::Phase0SignedBeaconBlock,
+    validate_result: bool,
+) -> Result<(), StateTransitionError>
+where
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
             Attestation = Attestation<2048>,
             AttesterSlashing = AttesterSlashing<2048>,
@@ -73,7 +119,7 @@ where
     let block = signed_block.message();
 
     // Process slots (including those with no blocks) since block.
-    process_slots::<E>(&mut state, block.slot())?;
+    process_slots::<E>(state, block.slot())?;
 
     // Verify block signature when validate_result is true.
     // Per `specs/phase0/beacon-chain.md:1387-1392`, the proposer pubkey is
@@ -87,7 +133,7 @@ where
             .ok_or(StateTransitionError::InvalidBlockSignature)?
             .pubkey;
 
-        let domain = get_domain::<E>(&state, DOMAIN_BEACON_PROPOSER, None);
+        let domain = get_domain::<E>(state, DOMAIN_BEACON_PROPOSER, None);
         let signing_root = compute_signing_root(block, domain);
 
         let valid = pharos_utils::bls::verify(
@@ -102,7 +148,7 @@ where
     }
 
     // Process block, threading verify_signatures from validate_result.
-    process_block::<E>(&mut state, block, validate_result)?;
+    process_block::<E>(state, block, validate_result)?;
 
     // Verify state root when validate_result is true.
     if validate_result {
@@ -113,5 +159,5 @@ where
         }
     }
 
-    Ok(state)
+    Ok(())
 }

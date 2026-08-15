@@ -95,7 +95,7 @@ fn get_attestation_component_deltas<E: EthSpec>(
 ) -> Result<(Vec<u64>, Vec<u64>), EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let n = state.validators().len();
     let mut rewards = vec![0u64; n];
@@ -139,7 +139,7 @@ pub fn get_source_deltas<E: EthSpec>(
 ) -> Result<Deltas<1_099_511_627_776u64>, EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let prev_epoch = get_previous_epoch::<E>(state);
     let atts = get_matching_source_attestations::<E>(state, prev_epoch)?;
@@ -153,7 +153,7 @@ pub fn get_target_deltas<E: EthSpec>(
 ) -> Result<Deltas<1_099_511_627_776u64>, EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let prev_epoch = get_previous_epoch::<E>(state);
     let atts = get_matching_target_attestations::<E>(state, prev_epoch)?;
@@ -167,7 +167,7 @@ pub fn get_head_deltas<E: EthSpec>(
 ) -> Result<Deltas<1_099_511_627_776u64>, EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let prev_epoch = get_previous_epoch::<E>(state);
     let atts = get_matching_head_attestations::<E>(state, prev_epoch)?;
@@ -181,7 +181,7 @@ pub fn get_inclusion_delay_deltas<E: EthSpec>(
 ) -> Result<Deltas<1_099_511_627_776u64>, EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let n = state.validators().len();
     let mut rewards = vec![0u64; n];
@@ -226,7 +226,7 @@ pub fn get_inactivity_penalty_deltas<E: EthSpec>(
 ) -> Result<Deltas<1_099_511_627_776u64>, EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let n = state.validators().len();
     let rewards = vec![0u64; n];
@@ -283,7 +283,7 @@ fn get_attestation_deltas<E: EthSpec>(
 ) -> Result<(Vec<u64>, Vec<u64>), EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let n = state.validators().len();
 
@@ -329,7 +329,7 @@ pub fn process_rewards_and_penalties<E: EthSpec>(
 ) -> Result<(), EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     // No rewards for work done in GENESIS_EPOCH (no previous epoch existed).
     if get_current_epoch::<E>(state).0 == GENESIS_EPOCH {

@@ -8,11 +8,11 @@ use crate::phase0::state_write::BeaconStateWrite;
 /// `process_eth1_data` per `specs/phase0/beacon-chain.md:1926-1956`.
 pub fn process_eth1_data<E: EthSpec>(
     state: &mut E::BeaconState,
-    body: &E::BeaconBlockBody,
+    body: &E::Phase0BeaconBlockBody,
 ) -> Result<(), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView,
 {
     let eth1_data = body.eth1_data().clone();
     state.push_eth1_data_vote(eth1_data.clone())?;

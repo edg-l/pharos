@@ -36,7 +36,7 @@ use crate::phase0::state_write::BeaconStateWrite;
 pub fn process_epoch<E: EthSpec>(state: &mut E::BeaconState) -> Result<(), EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     process_justification_and_finalization::<E>(state)?;
     process_rewards_and_penalties::<E>(state)?;

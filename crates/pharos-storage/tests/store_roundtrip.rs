@@ -8,8 +8,9 @@ use pharos_storage::{
     BlockTransition, ForkChoiceSnapshot, RocksStore, StorageError, Store, db::RocksStoreConfig,
 };
 use pharos_types::MainnetEthSpec;
+use pharos_types::phase0::Checkpoint;
 use pharos_types::phase0::primitives::{Epoch, Root, Slot};
-use pharos_types::phase0::{Checkpoint, MainnetSignedBeaconBlock};
+use pharos_types::state::MainnetSignedBeaconBlock;
 
 // ── Type alias for readability ────────────────────────────────────────────────
 
@@ -27,8 +28,9 @@ fn open(path: &std::path::Path) -> S {
 }
 
 fn make_block(slot: u64) -> (Root, MainnetSignedBeaconBlock) {
-    let mut block = MainnetSignedBeaconBlock::default();
-    block.message.slot = Slot(slot);
+    let mut inner = pharos_types::phase0::MainnetSignedBeaconBlock::default();
+    inner.message.slot = Slot(slot);
+    let block = MainnetSignedBeaconBlock::Phase0(inner);
     // Use a simple non-zero root derived from the slot.
     let mut root_bytes = [0u8; 32];
     root_bytes[..8].copy_from_slice(&slot.to_le_bytes());
@@ -108,7 +110,10 @@ fn blocks_by_range_ordering() {
 
     let slots: Vec<u64> = result
         .iter()
-        .map(|b: &MainnetSignedBeaconBlock| b.message.slot.0)
+        .map(|b: &MainnetSignedBeaconBlock| match b {
+            MainnetSignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
+            MainnetSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+        })
         .collect();
     assert_eq!(slots, vec![1, 3, 5, 7], "must be in ascending slot order");
 }

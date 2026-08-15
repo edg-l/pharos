@@ -97,10 +97,17 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
     ssz_bytes: &[u8],
 ) -> GossipVerdict {
     match &topic.kind {
-        GossipTopicKind::BeaconBlock => match E::SignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
-            Ok(block) => host.validate_beacon_block(&block),
-            Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
-        },
+        GossipTopicKind::BeaconBlock => {
+            // Gossip wire format sends raw phase0 SSZ with no discriminant prefix.
+            // Decode as the concrete phase0 inner type, then wrap into fork-enum.
+            match E::Phase0SignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
+                Ok(inner) => {
+                    let block = E::phase0_into_signed_block(inner);
+                    host.validate_beacon_block(&block)
+                }
+                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+            }
+        }
         GossipTopicKind::BeaconAggregateAndProof => {
             match SignedAggregateAndProof::<2048>::from_ssz_bytes(ssz_bytes) {
                 Ok(saap) => host.validate_aggregate_and_proof(&saap.message),

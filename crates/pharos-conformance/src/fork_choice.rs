@@ -45,7 +45,7 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
 
-use crate::fixture_walker::{WalkOpts, load_ssz_snappy, walk_category};
+use crate::fixture_walker::{WalkOpts, load_phase0_state, load_ssz_snappy, walk_category};
 use crate::fs_util::{dir_name, read_dir_sorted};
 
 // ── Result tally ──────────────────────────────────────────────────────────────
@@ -96,15 +96,18 @@ pub fn run_fork_choice_minimal(root: &Path) -> ForkChoiceResult {
 pub fn run_fork_choice_preset<E>(root: &Path, preset: &'static str) -> ForkChoiceResult
 where
     E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash + Decode + Clone,
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody> + TreeHash + Decode + Clone,
-    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock> + Decode,
-    E::BeaconBlockBody: TreeHash
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::Phase0BeaconState: Decode,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
             Attestation = Attestation<2048>,
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = Deposit<33>,
         >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
 {
     let fork = "altair";
     let base = root
@@ -141,15 +144,18 @@ fn run_sub_category<E>(
 ) -> ForkChoiceResult
 where
     E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash + Decode + Clone,
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody> + TreeHash + Decode + Clone,
-    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock> + Decode,
-    E::BeaconBlockBody: TreeHash
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::Phase0BeaconState: Decode,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
             Attestation = Attestation<2048>,
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = Deposit<33>,
         >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
 {
     let mut out = ForkChoiceResult::new();
     for (case_dir, _meta) in walk_category(
@@ -190,26 +196,44 @@ enum CaseResult {
 fn run_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
     E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash + Decode + Clone,
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody> + TreeHash + Decode + Clone,
-    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock> + Decode,
-    E::BeaconBlockBody: TreeHash
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::Phase0BeaconState: Decode,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
             Attestation = Attestation<2048>,
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = Deposit<33>,
         >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
 {
     // Anchor state: skip on SSZ decode failure (e.g. altair layout vs phase-0
-    // types in M1).  This is the dominant skip path until M3 lands altair
-    // types.
-    let anchor_state: E::BeaconState = match load_ssz_snappy(case_dir, "anchor_state.ssz_snappy") {
-        Ok(s) => s,
-        Err(_) => return CaseResult::Skip,
-    };
-    let anchor_block: E::BeaconBlock = match load_ssz_snappy(case_dir, "anchor_block.ssz_snappy") {
-        Ok(b) => b,
-        Err(_) => return CaseResult::Skip,
+    // types; altair fixture files contain raw altair SSZ without a discriminant
+    // prefix, which phase0 decode rejects).  This is the dominant skip path
+    // until M3 lands full altair conformance support.
+    let anchor_state: E::BeaconState =
+        match load_phase0_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+            Ok(s) => s,
+            Err(_) => return CaseResult::Skip,
+        };
+    // Anchor block: skip on decode failure (altair fixture blocks are raw altair SSZ).
+    // Try loading as phase0 block; if it fails (altair layout mismatch), skip the case.
+    let anchor_block: E::BeaconBlock = {
+        use pharos_ssz::Decode as _;
+        let compressed = match std::fs::read(case_dir.join("anchor_block.ssz_snappy")) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        let raw = match crate::snappy::decompress_raw(&compressed) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        match E::Phase0BeaconBlock::from_ssz_bytes(&raw) {
+            Ok(b) => E::phase0_into_block(b),
+            Err(_) => return CaseResult::Skip,
+        }
     };
 
     // `get_forkchoice_store` asserts `state_root == hash_tree_root(state)`.
@@ -231,17 +255,21 @@ where
                 on_tick::<E>(&mut store, tick);
             }
             Step::Block { block, valid } => {
-                let signed: E::SignedBeaconBlock =
-                    match load_ssz_snappy(case_dir, &format!("{block}.ssz_snappy")) {
+                // Decode as the phase0 inner type so we can access body attestations
+                // without going through the fork-enum `message()` (which panics).
+                let block_file = format!("{block}.ssz_snappy");
+                let phase0_inner: E::Phase0SignedBeaconBlock =
+                    match load_ssz_snappy(case_dir, &block_file) {
                         Ok(b) => b,
                         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
                     };
+                let signed = E::phase0_into_signed_block(phase0_inner.clone());
                 let outcome = on_block::<E>(&mut store, &signed);
                 match (outcome, valid) {
                     (Ok(()), true) => {
                         // Per spec: also feed body attestations through
                         // on_attestation when block applied successfully.
-                        for att in signed.message().body().attestations() {
+                        for att in phase0_inner.message().body().attestations() {
                             let _ = on_attestation::<E>(&mut store, att, true);
                         }
                     }

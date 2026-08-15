@@ -57,7 +57,7 @@ pub fn get_matching_target_attestations<E: EthSpec>(
 ) -> Result<Vec<pharos_types::phase0::PendingAttestation<2048>>, EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let source = get_matching_source_attestations::<E>(state, epoch)?;
     if source.is_empty() {
@@ -79,7 +79,7 @@ pub fn get_matching_head_attestations<E: EthSpec>(
 ) -> Result<Vec<pharos_types::phase0::PendingAttestation<2048>>, EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let target = get_matching_target_attestations::<E>(state, epoch)?;
     let mut result = Vec::new();
@@ -100,7 +100,7 @@ pub fn get_unslashed_attesting_indices<E: EthSpec>(
     attestations: &[pharos_types::phase0::PendingAttestation<2048>],
 ) -> HashSet<ValidatorIndex>
 where
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let mut output: HashSet<ValidatorIndex> = HashSet::new();
     for a in attestations {
@@ -127,7 +127,7 @@ pub fn get_attesting_balance<E: EthSpec>(
     attestations: &[pharos_types::phase0::PendingAttestation<2048>],
 ) -> Gwei
 where
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let indices: Vec<ValidatorIndex> = get_unslashed_attesting_indices::<E>(state, attestations)
         .into_iter()

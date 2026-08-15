@@ -15,12 +15,12 @@ use crate::phase0::{
 /// `process_randao` per `specs/phase0/beacon-chain.md:1912-1924`.
 pub fn process_randao<E: EthSpec>(
     state: &mut E::BeaconState,
-    body: &E::BeaconBlockBody,
+    body: &E::Phase0BeaconBlockBody,
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView,
 {
     let epoch = get_current_epoch::<E>(state);
 

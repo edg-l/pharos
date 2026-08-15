@@ -10,7 +10,10 @@ use pharos_network::{NetworkHandle, RpcRequest};
 use pharos_ssz::TreeHash;
 use pharos_types::MainnetEthSpec;
 use pharos_types::phase0::primitives::{ForkDigest, Slot};
-use pharos_types::phase0::{BeaconBlocksByRangeRequest, MainnetSignedBeaconBlock};
+use pharos_types::phase0::{
+    BeaconBlocksByRangeRequest, MainnetSignedBeaconBlock as Phase0MainnetBlock,
+};
+use pharos_types::state::MainnetSignedBeaconBlock;
 use tokio::time::timeout;
 
 const FORK_DIGEST: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
@@ -143,10 +146,10 @@ async fn metadata_round_trip() {
 async fn blocks_by_range_request() {
     let mut blocks_for_b: Vec<(pharos_types::phase0::Root, MainnetSignedBeaconBlock)> = Vec::new();
     for slot_num in 10u64..15 {
-        let mut b = MainnetSignedBeaconBlock::default();
-        b.message.slot = Slot(slot_num);
-        let root = b.message.tree_hash_root();
-        blocks_for_b.push((root, b));
+        let mut inner = Phase0MainnetBlock::default();
+        inner.message.slot = Slot(slot_num);
+        let root = inner.message.tree_hash_root();
+        blocks_for_b.push((root, MainnetSignedBeaconBlock::Phase0(inner)));
     }
 
     // head_slot = 1,056,778: oldest_allowed = 1,056,778 - 1,056,768 = 10. slot 10 >= 10. OK.
@@ -178,11 +181,11 @@ async fn blocks_by_range_request() {
         RpcResponse::BlocksByRange(blocks) => {
             assert_eq!(blocks.len(), 5, "expected 5 blocks, got {}", blocks.len());
             for (i, block) in blocks.iter().enumerate() {
-                assert_eq!(
-                    block.message.slot.0,
-                    10 + i as u64,
-                    "block {i} slot mismatch"
-                );
+                let slot = match block {
+                    MainnetSignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
+                    MainnetSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+                };
+                assert_eq!(slot, 10 + i as u64, "block {i} slot mismatch");
             }
         }
         other => panic!("expected RpcResponse::BlocksByRange, got: {other:?}"),
@@ -195,13 +198,15 @@ async fn blocks_by_root_request() {
     use pharos_ssz::SszList;
     use pharos_types::phase0::BeaconBlocksByRootRequest;
 
-    let mut block_a = MainnetSignedBeaconBlock::default();
-    block_a.message.slot = Slot(100);
-    let root_a = block_a.message.tree_hash_root();
+    let mut inner_a = Phase0MainnetBlock::default();
+    inner_a.message.slot = Slot(100);
+    let root_a = inner_a.message.tree_hash_root();
+    let block_a = MainnetSignedBeaconBlock::Phase0(inner_a);
 
-    let mut block_b_val = MainnetSignedBeaconBlock::default();
-    block_b_val.message.slot = Slot(200);
-    let root_b = block_b_val.message.tree_hash_root();
+    let mut inner_b = Phase0MainnetBlock::default();
+    inner_b.message.slot = Slot(200);
+    let root_b = inner_b.message.tree_hash_root();
+    let block_b_val = MainnetSignedBeaconBlock::Phase0(inner_b);
 
     let b_host = TestHost::new(fd()).with_blocks(vec![(root_a, block_a), (root_b, block_b_val)]);
 
@@ -226,7 +231,13 @@ async fn blocks_by_root_request() {
     match response {
         RpcResponse::BlocksByRoot(blocks) => {
             assert_eq!(blocks.len(), 2, "expected 2 blocks, got {}", blocks.len());
-            let slots: Vec<u64> = blocks.iter().map(|b| b.message.slot.0).collect();
+            let slots: Vec<u64> = blocks
+                .iter()
+                .map(|b| match b {
+                    MainnetSignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
+                    MainnetSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+                })
+                .collect();
             assert!(slots.contains(&100), "slot 100 block missing");
             assert!(slots.contains(&200), "slot 200 block missing");
         }

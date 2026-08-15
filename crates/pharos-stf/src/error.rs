@@ -54,6 +54,9 @@ pub enum StateTransitionError {
 
     #[error("ssz error: {0}")]
     Ssz(#[from] pharos_ssz::SszError),
+
+    #[error("unsupported fork: altair STF not yet implemented")]
+    UnsupportedFork,
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]

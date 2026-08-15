@@ -18,22 +18,25 @@ use crate::phase0::{
 };
 
 /// `process_block` per `specs/phase0/beacon-chain.md:1876-1884`.
+///
+/// Accepts the concrete phase0 block (not the fork-enum). The caller
+/// (`state_transition`) unwraps the fork-enum before calling this.
 pub fn process_block<E: EthSpec>(
     state: &mut E::BeaconState,
-    block: &E::BeaconBlock,
+    block: &E::Phase0BeaconBlock,
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody>,
-    E::BeaconBlockBody: TreeHash
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
             Attestation = Attestation<2048>,
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = Deposit<33>,
         >,
 {
-    let body: &E::BeaconBlockBody = block.body();
+    let body: &E::Phase0BeaconBlockBody = block.body();
     process_block_header::<E>(state, block)?;
     process_randao::<E>(state, body, verify_signatures)?;
     process_eth1_data::<E>(state, body)?;
@@ -48,12 +51,12 @@ where
 /// processor that performs BLS verification.
 fn process_operations<E: EthSpec>(
     state: &mut E::BeaconState,
-    body: &E::BeaconBlockBody,
+    body: &E::Phase0BeaconBlockBody,
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<
             Attestation = Attestation<2048>,
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = Deposit<33>,

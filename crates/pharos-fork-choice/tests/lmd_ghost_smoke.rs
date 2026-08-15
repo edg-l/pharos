@@ -57,8 +57,13 @@ use pharos_utils::{BLSPubkey, Bytes32, Hash256};
 
 // ── Preset shorthands ─────────────────────────────────────────────────────────
 
+// The concrete phase0 structs, used for state/block construction and mutation.
 type MinState = pharos_types::phase0::MinimalBeaconState;
 type MinBlock = pharos_types::phase0::MinimalBeaconBlock;
+
+// The fork-enum wrappers that Store<MinimalEthSpec> actually stores.
+type ForkMinState = pharos_types::state::MinimalBeaconState;
+type ForkMinBlock = pharos_types::state::MinimalBeaconBlock;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -127,8 +132,10 @@ fn insert_block(
     // Advance the state slot field directly.  Do NOT call process_slots
     // (which would require proper block roots filled in).
     state.set_slot(block.slot);
-    store.blocks.insert(root, block);
-    store.block_states.insert(root, state);
+    // Wrap in the fork-enum before inserting; Store<E> holds E::BeaconBlock
+    // and E::BeaconState which are now fork-enum types.
+    store.blocks.insert(root, ForkMinBlock::Phase0(block));
+    store.block_states.insert(root, ForkMinState::Phase0(state));
     root
 }
 
@@ -163,13 +170,17 @@ fn lmd_ghost_basic_weight_switch() {
     };
 
     // Seed checkpoint state so get_weight can read it.
-    let mut store =
-        get_forkchoice_store::<MinimalEthSpec>(anchor_state.clone(), anchor_block.clone());
+    // get_forkchoice_store expects E::BeaconState and E::BeaconBlock (fork-enum).
+    let mut store = get_forkchoice_store::<MinimalEthSpec>(
+        ForkMinState::Phase0(anchor_state.clone()),
+        ForkMinBlock::Phase0(anchor_block.clone()),
+    );
 
     // Insert the justified checkpoint state so get_weight works.
-    store
-        .checkpoint_states
-        .insert(store.justified_checkpoint.clone(), anchor_state.clone());
+    store.checkpoint_states.insert(
+        store.justified_checkpoint.clone(),
+        ForkMinState::Phase0(anchor_state.clone()),
+    );
 
     // ── Build chain: genesis -> A -> B ────────────────────────────────────────
     let genesis_root: Root = anchor_block.tree_hash_root();

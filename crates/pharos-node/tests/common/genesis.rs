@@ -12,7 +12,7 @@
 
 use std::sync::OnceLock;
 
-use pharos_types::phase0::MinimalBeaconState;
+use pharos_types::state::MinimalBeaconState;
 use pharos_utils::Hash256;
 
 static GENESIS: OnceLock<MinimalBeaconState> = OnceLock::new();

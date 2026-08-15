@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use pharos_ssz::Decode;
+use pharos_types::EthSpec;
 
 use crate::fs_util::read_dir_sorted;
 use crate::snappy::decompress_raw;
@@ -157,6 +158,59 @@ pub fn load_pre_post<S: Decode>(dir: &Path) -> Result<(S, Option<S>), String> {
         None
     };
     Ok((pre, post))
+}
+
+/// Load `pre.ssz_snappy` and `post.ssz_snappy` as phase0 `BeaconState`s, then
+/// wrap each in the fork-enum `E::BeaconState` via `E::phase0_into_state`.
+///
+/// Phase0 fixture files contain raw phase0 SSZ without a fork-discriminant
+/// prefix. This helper decodes them as `E::Phase0BeaconState` and promotes to
+/// the fork-enum so they can be passed to STF functions.
+pub fn load_pre_post_phase0_state<E: EthSpec>(
+    dir: &Path,
+) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
+where
+    E::Phase0BeaconState: Decode,
+{
+    let pre_inner: E::Phase0BeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
+    let pre = E::phase0_into_state(pre_inner);
+    let post = if dir.join("post.ssz_snappy").exists() {
+        let post_inner: E::Phase0BeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
+        Some(E::phase0_into_state(post_inner))
+    } else {
+        None
+    };
+    Ok((pre, post))
+}
+
+/// Decode a single `<name>.ssz_snappy` file as a phase0 `SignedBeaconBlock`,
+/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
+///
+/// Phase0 fixture block files contain raw phase0 SSZ without a fork-discriminant
+/// prefix. This helper decodes them as `E::Phase0SignedBeaconBlock` and promotes
+/// to the fork-enum so they can be passed to STF functions.
+pub fn load_phase0_signed_block<E: EthSpec>(
+    dir: &Path,
+    name: &str,
+) -> Result<E::SignedBeaconBlock, String>
+where
+    E::Phase0SignedBeaconBlock: Decode,
+{
+    let inner: E::Phase0SignedBeaconBlock = load_ssz_snappy(dir, name)?;
+    Ok(E::phase0_into_signed_block(inner))
+}
+
+/// Decode a single `<name>.ssz_snappy` file as a phase0 `BeaconState`,
+/// then wrap it in the fork-enum `E::BeaconState`.
+///
+/// For use when a single raw phase0 state file (not a pre/post pair) needs to
+/// be decoded and promoted to the fork-enum.
+pub fn load_phase0_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+where
+    E::Phase0BeaconState: Decode,
+{
+    let inner: E::Phase0BeaconState = load_ssz_snappy(dir, name)?;
+    Ok(E::phase0_into_state(inner))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

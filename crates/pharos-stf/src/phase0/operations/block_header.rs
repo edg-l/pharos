@@ -8,16 +8,20 @@ use crate::phase0::{accessors::get_beacon_proposer_index, state_write::BeaconSta
 
 /// `process_block_header` per `specs/phase0/beacon-chain.md:1886-1910`.
 ///
+/// Accepts the concrete phase0 block (not the fork-enum). The fork dispatch
+/// happens in `state_transition`; by the time this is called the fork variant
+/// is already known to be phase0.
+///
 /// Block signature is NOT verified here — the outer `state_transition` flow
 /// is responsible per the spec NOTE at line 1886.
 pub fn process_block_header<E: EthSpec>(
     state: &mut E::BeaconState,
-    block: &E::BeaconBlock,
+    block: &E::Phase0BeaconBlock,
 ) -> Result<(), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlock: BeaconBlockView,
-    <E::BeaconBlock as BeaconBlockView>::Body: TreeHash,
+    E::Phase0BeaconBlock: BeaconBlockView,
+    <E::Phase0BeaconBlock as BeaconBlockView>::Body: TreeHash,
 {
     // Verify slot matches state.
     if block.slot() != state.slot() {

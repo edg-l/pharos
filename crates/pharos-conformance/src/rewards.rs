@@ -30,7 +30,7 @@ use pharos_types::{
     views::BeaconBlockBodyView,
 };
 
-use crate::fixture_walker::{WalkOpts, load_ssz_snappy, walk_category};
+use crate::fixture_walker::{WalkOpts, load_phase0_state, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
 
 /// Result tally for a single rewards preset run.
@@ -75,8 +75,9 @@ pub fn run_rewards_minimal(root: &Path) -> RewardsResult {
 pub fn run_rewards_preset<E>(root: &Path, preset: &'static str) -> RewardsResult
 where
     E: EthSpec,
-    E::BeaconState: BeaconStateWrite + Decode + Clone,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::BeaconState: BeaconStateWrite + Clone,
+    E::Phase0BeaconState: Decode,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let mut total = RewardsResult::new();
     for sub in ["basic", "leak", "random"] {
@@ -90,8 +91,9 @@ where
 fn run_rewards_sub<E>(root: &Path, preset: &'static str, sub: &str) -> RewardsResult
 where
     E: EthSpec,
-    E::BeaconState: BeaconStateWrite + Decode + Clone,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::BeaconState: BeaconStateWrite + Clone,
+    E::Phase0BeaconState: Decode,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let mut out = RewardsResult::new();
     for (case_dir, _meta) in walk_category(
@@ -123,10 +125,11 @@ where
 fn run_rewards_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
     E: EthSpec,
-    E::BeaconState: BeaconStateWrite + Decode,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::BeaconState: BeaconStateWrite,
+    E::Phase0BeaconState: Decode,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
-    let pre = match load_ssz_snappy::<E::BeaconState>(case_dir, "pre.ssz_snappy") {
+    let pre = match load_phase0_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };

@@ -17,8 +17,8 @@ use pharos_network::host::ForkContext;
 use pharos_node::host_impl::HostImpl;
 use pharos_ssz::{Bitvector, TreeHash};
 use pharos_storage::{RocksStore, RocksStoreConfig};
-use pharos_types::phase0::MainnetBeaconBlock;
 use pharos_types::phase0::primitives::{ATTESTATION_SUBNET_COUNT, Root, Version};
+use pharos_types::state::BeaconBlock as ForkBeaconBlock;
 use pharos_types::{EthSpec, MainnetEthSpec};
 
 fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
@@ -32,10 +32,10 @@ fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
 
     let genesis_state = <MainnetEthSpec as EthSpec>::BeaconState::default();
     let state_root = genesis_state.tree_hash_root();
-    let anchor_block = MainnetBeaconBlock {
+    let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MainnetBeaconBlock {
         state_root,
-        ..MainnetBeaconBlock::default()
-    };
+        ..pharos_types::phase0::MainnetBeaconBlock::default()
+    });
     let fc_store =
         pharos_fork_choice::get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
     let fork_choice = Arc::new(RwLock::new(fc_store));

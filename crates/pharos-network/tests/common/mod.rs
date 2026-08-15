@@ -144,16 +144,23 @@ impl BlockProvider<MainnetEthSpec> for TestHost {
         start_slot: Slot,
         count: u64,
     ) -> Vec<<MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock> {
+        use pharos_types::SignedBeaconBlock;
         let map = self.blocks.lock().expect("TestHost blocks lock poisoned");
         let mut results: Vec<_> = map
             .values()
             .filter(|b| {
-                let s = b.message.slot.0;
+                let s = match b {
+                    SignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
+                    SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+                };
                 s >= start_slot.0 && s < start_slot.0 + count
             })
             .cloned()
             .collect();
-        results.sort_by_key(|b| b.message.slot.0);
+        results.sort_by_key(|b| match b {
+            SignedBeaconBlock::Phase0(inner) => inner.message.slot.0,
+            SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
+        });
         results
     }
 
@@ -174,8 +181,13 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
         &self,
         block: &<MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock,
     ) -> GossipVerdict {
+        use pharos_types::SignedBeaconBlock;
         if let Some(reject_idx) = self.reject_proposer_index {
-            if block.message.proposer_index.0 == reject_idx {
+            let proposer_index = match block {
+                SignedBeaconBlock::Phase0(inner) => inner.message.proposer_index.0,
+                SignedBeaconBlock::Altair(inner) => inner.message.proposer_index.0,
+            };
+            if proposer_index == reject_idx {
                 return GossipVerdict::Reject(format!(
                     "proposer_index {reject_idx} rejected by test policy"
                 ));

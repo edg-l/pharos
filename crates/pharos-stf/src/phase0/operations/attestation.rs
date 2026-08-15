@@ -22,12 +22,12 @@ use crate::phase0::{
 /// `process_attestation` per `specs/phase0/beacon-chain.md:2004-2086`.
 pub fn process_attestation<E: EthSpec>(
     state: &mut E::BeaconState,
-    attestation: &<E::BeaconBlockBody as BeaconBlockBodyView>::Attestation,
+    attestation: &Attestation<2048>,
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let data = &attestation.data;
 

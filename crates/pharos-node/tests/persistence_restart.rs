@@ -14,7 +14,10 @@ use pharos_network::host::{BlockProvider, ForkContext};
 use pharos_ssz::TreeHash;
 use pharos_storage::{RocksStore, RocksStoreConfig, Store as StoreTrait};
 use pharos_types::MinimalEthSpec;
-use pharos_types::phase0::{MinimalBeaconBlock, MinimalSignedBeaconBlock, Slot};
+use pharos_types::phase0::{
+    MinimalBeaconBlock, MinimalSignedBeaconBlock as Phase0MinimalBlock, Slot,
+};
+use pharos_types::state::MinimalSignedBeaconBlock;
 
 use common::node::build_host;
 
@@ -32,14 +35,15 @@ fn block_survives_host_restart() {
 
     // ── First open: insert a block ────────────────────────────────────────────
 
-    let known_block = MinimalSignedBeaconBlock {
+    let known_inner = Phase0MinimalBlock {
         message: MinimalBeaconBlock {
             slot: Slot(42),
             ..MinimalBeaconBlock::default()
         },
-        ..MinimalSignedBeaconBlock::default()
+        ..Phase0MinimalBlock::default()
     };
-    let known_root = known_block.message.tree_hash_root();
+    let known_root = known_inner.message.tree_hash_root();
+    let known_block = MinimalSignedBeaconBlock::Phase0(known_inner);
 
     {
         let store = Arc::new(

@@ -345,12 +345,47 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// starting point for runtime YAML overrides (Phase 8).
     fn default_runtime_config() -> crate::config::RuntimeConfig;
 
+    /// Wrap a concrete phase0 `BeaconState` into the fork-enum `BeaconState`.
+    ///
+    /// Used by the conformance runner and any code that decodes raw phase0 SSZ
+    /// (which has no fork-discriminant prefix) and needs to pass the result to
+    /// STF functions that accept `E::BeaconState`.
+    fn phase0_into_state(s: Self::Phase0BeaconState) -> Self::BeaconState;
+
+    /// Wrap a concrete phase0 `SignedBeaconBlock` into the fork-enum `SignedBeaconBlock`.
+    ///
+    /// Used by the conformance runner when loading raw phase0 SSZ blocks from
+    /// fixture files.
+    fn phase0_into_signed_block(s: Self::Phase0SignedBeaconBlock) -> Self::SignedBeaconBlock;
+
+    /// Wrap a concrete phase0 `BeaconBlock` into the fork-enum `BeaconBlock`.
+    ///
+    /// Used by the conformance runner when loading raw phase0 SSZ blocks from
+    /// fixture files.
+    fn phase0_into_block(s: Self::Phase0BeaconBlock) -> Self::BeaconBlock;
+
+    /// Unwrap a fork-enum `SignedBeaconBlock` to the inner phase0 variant.
+    ///
+    /// Returns `Some` if the block is a `Phase0` variant, `None` otherwise.
+    /// Used by the phase0 STF dispatcher to access the concrete inner block
+    /// without going through `SignedBeaconBlockView::message()` (which panics
+    /// on the fork-enum since it cannot return a reference to the contained
+    /// concrete type as the fork-enum return type).
+    fn unwrap_phase0_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::Phase0SignedBeaconBlock>;
+
     // -- Container associated types (D7) --
     // These allow STF code to be generic over `<E: EthSpec>` and reference
     // `E::BeaconState`, `E::BeaconBlock`, etc. without naming the concrete
     // preset-stamped struct directly.
+    //
+    // `BeaconState`, `BeaconBlock`, `SignedBeaconBlock`, and `BeaconBlockBody`
+    // are the fork-enum types from `crate::state`. The concrete phase0 and
+    // altair inner types are exposed via `Phase0BeaconState` / `AltairBeaconState`
+    // etc. so that STF code can unwrap to the per-fork concrete type.
 
-    /// Concrete `BeaconState` for this preset.
+    /// Fork-enum `BeaconState` for this preset (wraps Phase0 and Altair variants).
     type BeaconState: pharos_ssz::Encode
         + pharos_ssz::Decode
         + pharos_ssz::TreeHash
@@ -364,7 +399,35 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + 'static
         + crate::views::BeaconStateView;
 
-    /// Concrete `BeaconBlock` for this preset.
+    /// Phase0 inner `BeaconState` (unwrapped; used by phase0 STF entry).
+    type Phase0BeaconState: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconStateView;
+
+    /// Altair inner `BeaconState` (unwrapped; used by altair STF entry).
+    type AltairBeaconState: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconStateView;
+
+    /// Fork-enum `BeaconBlock` for this preset.
     type BeaconBlock: pharos_ssz::Encode
         + pharos_ssz::Decode
         + pharos_ssz::TreeHash
@@ -378,7 +441,35 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + 'static
         + crate::views::BeaconBlockView;
 
-    /// Concrete `SignedBeaconBlock` for this preset.
+    /// Phase0 inner `BeaconBlock` (unwrapped).
+    type Phase0BeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockView;
+
+    /// Altair inner `BeaconBlock` (unwrapped).
+    type AltairBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockView;
+
+    /// Fork-enum `SignedBeaconBlock` for this preset.
     type SignedBeaconBlock: pharos_ssz::Encode
         + pharos_ssz::Decode
         + pharos_ssz::TreeHash
@@ -392,8 +483,64 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + 'static
         + crate::views::SignedBeaconBlockView;
 
-    /// Concrete `BeaconBlockBody` for this preset.
+    /// Phase0 inner `SignedBeaconBlock` (unwrapped).
+    type Phase0SignedBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::SignedBeaconBlockView;
+
+    /// Altair inner `SignedBeaconBlock` (unwrapped).
+    type AltairSignedBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::SignedBeaconBlockView;
+
+    /// Fork-enum `BeaconBlockBody` for this preset.
     type BeaconBlockBody: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockBodyView;
+
+    /// Phase0 inner `BeaconBlockBody` (unwrapped).
+    type Phase0BeaconBlockBody: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockBodyView;
+
+    /// Altair inner `BeaconBlockBody` (unwrapped).
+    type AltairBeaconBlockBody: pharos_ssz::Encode
         + pharos_ssz::Decode
         + pharos_ssz::TreeHash
         + Clone
@@ -600,10 +747,70 @@ impl EthSpec for MainnetEthSpec {
         }
     }
 
-    type BeaconState = crate::phase0::MainnetBeaconState;
-    type BeaconBlock = crate::phase0::MainnetBeaconBlock;
-    type SignedBeaconBlock = crate::phase0::MainnetSignedBeaconBlock;
-    type BeaconBlockBody = crate::phase0::MainnetBeaconBlockBody;
+    fn phase0_into_state(s: Self::Phase0BeaconState) -> Self::BeaconState {
+        crate::state::MainnetBeaconState::Phase0(s)
+    }
+
+    fn phase0_into_signed_block(s: Self::Phase0SignedBeaconBlock) -> Self::SignedBeaconBlock {
+        crate::state::MainnetSignedBeaconBlock::Phase0(s)
+    }
+
+    fn phase0_into_block(s: Self::Phase0BeaconBlock) -> Self::BeaconBlock {
+        crate::state::MainnetBeaconBlock::Phase0(s)
+    }
+
+    fn unwrap_phase0_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::Phase0SignedBeaconBlock> {
+        match s {
+            crate::state::MainnetSignedBeaconBlock::Phase0(inner) => Some(inner),
+            crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    // Fork-enum types (D7 / Task 1.9)
+    type BeaconState = crate::state::MainnetBeaconState;
+    type Phase0BeaconState = crate::phase0::MainnetBeaconState;
+    type AltairBeaconState = crate::altair::MainnetBeaconState;
+
+    type BeaconBlock = crate::state::BeaconBlock<
+        16,   // MAX_PROPOSER_SLASHINGS
+        2,    // MAX_ATTESTER_SLASHINGS
+        128,  // MAX_ATTESTATIONS
+        16,   // MAX_DEPOSITS
+        16,   // MAX_VOLUNTARY_EXITS
+        2048, // MAX_VALIDATORS_PER_COMMITTEE
+        33,   // DEPOSIT_PROOF_LENGTH
+        512,  // SYNC_COMMITTEE_SIZE
+    >;
+    type Phase0BeaconBlock = crate::phase0::MainnetBeaconBlock;
+    type AltairBeaconBlock = crate::altair::MainnetBeaconBlock;
+
+    type SignedBeaconBlock = crate::state::SignedBeaconBlock<
+        16,   // MAX_PROPOSER_SLASHINGS
+        2,    // MAX_ATTESTER_SLASHINGS
+        128,  // MAX_ATTESTATIONS
+        16,   // MAX_DEPOSITS
+        16,   // MAX_VOLUNTARY_EXITS
+        2048, // MAX_VALIDATORS_PER_COMMITTEE
+        33,   // DEPOSIT_PROOF_LENGTH
+        512,  // SYNC_COMMITTEE_SIZE
+    >;
+    type Phase0SignedBeaconBlock = crate::phase0::MainnetSignedBeaconBlock;
+    type AltairSignedBeaconBlock = crate::altair::MainnetSignedBeaconBlock;
+
+    type BeaconBlockBody = crate::state::BeaconBlockBody<
+        16,   // MAX_PROPOSER_SLASHINGS
+        2,    // MAX_ATTESTER_SLASHINGS
+        128,  // MAX_ATTESTATIONS
+        16,   // MAX_DEPOSITS
+        16,   // MAX_VOLUNTARY_EXITS
+        2048, // MAX_VALIDATORS_PER_COMMITTEE
+        33,   // DEPOSIT_PROOF_LENGTH
+        512,  // SYNC_COMMITTEE_SIZE
+    >;
+    type Phase0BeaconBlockBody = crate::phase0::MainnetBeaconBlockBody;
+    type AltairBeaconBlockBody = crate::altair::MainnetBeaconBlockBody;
 }
 
 // ── MinimalEthSpec ─────────────────────────────────────────────────────────────
@@ -804,8 +1011,68 @@ impl EthSpec for MinimalEthSpec {
         }
     }
 
-    type BeaconState = crate::phase0::MinimalBeaconState;
-    type BeaconBlock = crate::phase0::MinimalBeaconBlock;
-    type SignedBeaconBlock = crate::phase0::MinimalSignedBeaconBlock;
-    type BeaconBlockBody = crate::phase0::MinimalBeaconBlockBody;
+    fn phase0_into_state(s: Self::Phase0BeaconState) -> Self::BeaconState {
+        crate::state::MinimalBeaconState::Phase0(s)
+    }
+
+    fn phase0_into_signed_block(s: Self::Phase0SignedBeaconBlock) -> Self::SignedBeaconBlock {
+        crate::state::MinimalSignedBeaconBlock::Phase0(s)
+    }
+
+    fn phase0_into_block(s: Self::Phase0BeaconBlock) -> Self::BeaconBlock {
+        crate::state::MinimalBeaconBlock::Phase0(s)
+    }
+
+    fn unwrap_phase0_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::Phase0SignedBeaconBlock> {
+        match s {
+            crate::state::MinimalSignedBeaconBlock::Phase0(inner) => Some(inner),
+            crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    // Fork-enum types (D7 / Task 1.9)
+    type BeaconState = crate::state::MinimalBeaconState;
+    type Phase0BeaconState = crate::phase0::MinimalBeaconState;
+    type AltairBeaconState = crate::altair::MinimalBeaconState;
+
+    type BeaconBlock = crate::state::BeaconBlock<
+        16,   // MAX_PROPOSER_SLASHINGS
+        2,    // MAX_ATTESTER_SLASHINGS
+        128,  // MAX_ATTESTATIONS
+        16,   // MAX_DEPOSITS
+        16,   // MAX_VOLUNTARY_EXITS
+        2048, // MAX_VALIDATORS_PER_COMMITTEE
+        33,   // DEPOSIT_PROOF_LENGTH
+        32,   // SYNC_COMMITTEE_SIZE
+    >;
+    type Phase0BeaconBlock = crate::phase0::MinimalBeaconBlock;
+    type AltairBeaconBlock = crate::altair::MinimalBeaconBlock;
+
+    type SignedBeaconBlock = crate::state::SignedBeaconBlock<
+        16,   // MAX_PROPOSER_SLASHINGS
+        2,    // MAX_ATTESTER_SLASHINGS
+        128,  // MAX_ATTESTATIONS
+        16,   // MAX_DEPOSITS
+        16,   // MAX_VOLUNTARY_EXITS
+        2048, // MAX_VALIDATORS_PER_COMMITTEE
+        33,   // DEPOSIT_PROOF_LENGTH
+        32,   // SYNC_COMMITTEE_SIZE
+    >;
+    type Phase0SignedBeaconBlock = crate::phase0::MinimalSignedBeaconBlock;
+    type AltairSignedBeaconBlock = crate::altair::MinimalSignedBeaconBlock;
+
+    type BeaconBlockBody = crate::state::BeaconBlockBody<
+        16,   // MAX_PROPOSER_SLASHINGS
+        2,    // MAX_ATTESTER_SLASHINGS
+        128,  // MAX_ATTESTATIONS
+        16,   // MAX_DEPOSITS
+        16,   // MAX_VOLUNTARY_EXITS
+        2048, // MAX_VALIDATORS_PER_COMMITTEE
+        33,   // DEPOSIT_PROOF_LENGTH
+        32,   // SYNC_COMMITTEE_SIZE
+    >;
+    type Phase0BeaconBlockBody = crate::phase0::MinimalBeaconBlockBody;
+    type AltairBeaconBlockBody = crate::altair::MinimalBeaconBlockBody;
 }

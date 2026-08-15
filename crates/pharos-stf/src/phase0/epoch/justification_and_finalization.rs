@@ -32,7 +32,7 @@ pub fn process_justification_and_finalization<E: EthSpec>(
 ) -> Result<(), EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     let current_epoch = get_current_epoch::<E>(state);
     if current_epoch.0 <= GENESIS_EPOCH + 1 {

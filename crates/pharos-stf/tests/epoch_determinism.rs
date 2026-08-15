@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use pharos_ssz::{Decode, Encode};
 use pharos_stf::phase0::epoch::process_rewards_and_penalties;
-use pharos_types::MainnetEthSpec;
+use pharos_types::{EthSpec, MainnetEthSpec};
 
 // ── Fixture resolution ────────────────────────────────────────────────────────
 
@@ -73,9 +73,13 @@ fn rewards_and_penalties_deterministic() {
     let pre_path = case_dir.join("pre.ssz_snappy");
 
     // Load 8 independent copies of the pre-state.
+    // Fixture files are raw phase0 SSZ (no discriminant prefix); decode as
+    // the concrete phase0 type then wrap into the fork-enum BeaconState.
     let mut states: Vec<<MainnetEthSpec as pharos_types::EthSpec>::BeaconState> = (0..8)
         .map(|_| {
-            load_ssz_snappy::<<MainnetEthSpec as pharos_types::EthSpec>::BeaconState>(&pre_path)
+            let inner =
+                load_ssz_snappy::<<MainnetEthSpec as EthSpec>::Phase0BeaconState>(&pre_path);
+            MainnetEthSpec::phase0_into_state(inner)
         })
         .collect();
 

@@ -70,8 +70,9 @@ pub fn compute_pulled_up_tip<E: EthSpec>(
 ) -> Result<(), ForkChoiceError>
 where
     E::BeaconState: BeaconStateWrite + Clone,
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody>,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = pharos_types::phase0::Attestation<2048>>,
+    E::BeaconBlock: BeaconBlockView,
+    E::Phase0BeaconBlockBody:
+        BeaconBlockBodyView<Attestation = pharos_types::phase0::Attestation<2048>>,
 {
     use pharos_stf::phase0::accessors::compute_epoch_at_slot;
     use pharos_stf::process_justification_and_finalization;
@@ -169,9 +170,9 @@ where
 /// `update_proposer_boost_root` per `specs/phase0/fork-choice.md:810-827`.
 fn update_proposer_boost_root<E: EthSpec>(store: &mut Store<E>, root: Root)
 where
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody> + Clone,
+    E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateWrite + Clone,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use crate::get_head::get_head;
     use pharos_stf::phase0::accessors::get_beacon_proposer_index;
@@ -213,10 +214,13 @@ pub fn on_block<E: EthSpec>(
     signed_block: &E::SignedBeaconBlock,
 ) -> Result<(), ForkChoiceError>
 where
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody> + TreeHash + Clone,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
     E::BeaconState: BeaconStateWrite + Clone,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
-    E::BeaconBlockBody: BeaconBlockBodyView<
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
             Attestation = Attestation<2048>,
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = pharos_types::phase0::Deposit<33>,
@@ -404,8 +408,7 @@ pub fn store_target_checkpoint_state<E: EthSpec>(
 ) -> Result<(), ForkChoiceError>
 where
     E::BeaconState: BeaconStateWrite + Clone,
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody>,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
     use pharos_stf::process_slots;
@@ -468,9 +471,9 @@ pub fn on_attestation<E: EthSpec>(
     is_from_block: bool,
 ) -> Result<(), ForkChoiceError>
 where
-    E::BeaconBlock: BeaconBlockView<Body = E::BeaconBlockBody>,
+    E::BeaconBlock: BeaconBlockView,
     E::BeaconState: BeaconStateWrite + Clone,
-    E::BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use pharos_stf::phase0::accessors::get_attesting_indices;
     use pharos_stf::phase0::predicates::is_valid_indexed_attestation;

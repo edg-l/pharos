@@ -14,7 +14,7 @@ use pharos_stf::phase0::{
     BeaconStateWrite,
     genesis::{BeaconStateMut, initialize_beacon_state_from_eth1, is_valid_genesis_state},
 };
-use pharos_types::{MinimalEthSpec, phase0::Deposit};
+use pharos_types::{EthSpec, MinimalEthSpec, phase0::Deposit};
 
 use crate::fixture_walker::{WalkOpts, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
@@ -98,14 +98,15 @@ enum CaseResult {
     Skip,
 }
 
-fn run_initialization_case<E: pharos_types::EthSpec>(
+fn run_initialization_case<E: EthSpec>(
     case_dir: &Path,
     case_name: &str,
     meta: Option<crate::fixture_walker::MetaYaml>,
 ) -> CaseResult
 where
     E::BeaconState: BeaconStateMut + BeaconStateWrite,
-    E::BeaconBlockBody: Default + pharos_ssz::TreeHash,
+    E::Phase0BeaconBlockBody: Default + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: Decode,
 {
     // Read eth1.yaml for eth1_block_hash and eth1_timestamp.
     let eth1_path = case_dir.join("eth1.yaml");
@@ -153,15 +154,16 @@ where
     let produced_state =
         initialize_beacon_state_from_eth1::<E>(eth1_block_hash, eth1_timestamp, &deposits);
 
-    // Load expected state.
+    // Load expected state (raw phase0 SSZ, no discriminant prefix).
     let expected_bytes = match load_raw_ssz_snappy(case_dir, "state.ssz_snappy") {
         Ok(b) => b,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };
-    let expected_state = match E::BeaconState::from_ssz_bytes(&expected_bytes) {
+    let expected_inner = match E::Phase0BeaconState::from_ssz_bytes(&expected_bytes) {
         Ok(s) => s,
         Err(e) => return CaseResult::Fail(format!("{case_name}: decode state.ssz_snappy: {e:?}")),
     };
+    let expected_state = E::phase0_into_state(expected_inner);
 
     // Compare by SSZ encoding (bytewise equality).
     let produced_bytes = produced_state.as_ssz_bytes();
@@ -177,21 +179,23 @@ where
     }
 }
 
-fn run_validity_case<E: pharos_types::EthSpec>(case_dir: &Path, case_name: &str) -> CaseResult
+fn run_validity_case<E: EthSpec>(case_dir: &Path, case_name: &str) -> CaseResult
 where
     E::BeaconState: BeaconStateMut,
+    E::Phase0BeaconState: Decode,
 {
-    // Decode genesis.ssz_snappy.
+    // Decode genesis.ssz_snappy (raw phase0 SSZ, no discriminant prefix).
     let state_bytes = match load_raw_ssz_snappy(case_dir, "genesis.ssz_snappy") {
         Ok(b) => b,
         Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
     };
-    let state = match E::BeaconState::from_ssz_bytes(&state_bytes) {
+    let state_inner = match E::Phase0BeaconState::from_ssz_bytes(&state_bytes) {
         Ok(s) => s,
         Err(e) => {
             return CaseResult::Fail(format!("{case_name}: decode genesis.ssz_snappy: {e:?}"));
         }
     };
+    let state = E::phase0_into_state(state_inner);
 
     // Read expected bool from is_valid.yaml.
     let is_valid_path = case_dir.join("is_valid.yaml");

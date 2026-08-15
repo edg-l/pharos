@@ -275,7 +275,7 @@ mod tests {
 
     fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
         use pharos_ssz::TreeHash;
-        use pharos_types::phase0::MainnetBeaconBlock;
+        use pharos_types::state::BeaconBlock as ForkBeaconBlock;
         let store = Arc::new(
             RocksStore::open::<MainnetEthSpec>(RocksStoreConfig {
                 path: dir.path().join("chain_db"),
@@ -286,10 +286,10 @@ mod tests {
         let genesis_state = <MainnetEthSpec as EthSpec>::BeaconState::default();
         let state_root = genesis_state.tree_hash_root();
         // Satisfy get_forkchoice_store's assertion: anchor_block.state_root == hash_tree_root(anchor_state).
-        let anchor_block = MainnetBeaconBlock {
+        let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MainnetBeaconBlock {
             state_root,
-            ..MainnetBeaconBlock::default()
-        };
+            ..pharos_types::phase0::MainnetBeaconBlock::default()
+        });
         let fc_store =
             pharos_fork_choice::get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
         let fork_choice = Arc::new(RwLock::new(fc_store));
