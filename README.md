@@ -158,6 +158,25 @@ make run GENESIS_PATH=/path/to/genesis.ssz ARGS="--quic-only"
 
 `make install` puts `pharos` and `pharos-vc` in `~/.cargo/bin`.
 
+## Cross-client devnet
+
+[`scripts/devnet/`](scripts/devnet/) brings up a hand-rolled, host-process
+Bellatrix devnet (no Docker): a `lighthouse` BN+VC + `ethrex` EL produce a
+merge-at-genesis chain, and `pharos` peers in to follow it. This is the M4d
+interop harness (Kurtosis replaces it at M7).
+
+```sh
+scripts/devnet/gen-testnet.sh    # fresh genesis + testnet-dir + keys
+scripts/devnet/run-devnet.sh     # lighthouse + ethrex (reference chain)
+scripts/devnet/run-pharos.sh     # pharos + its own ethrex, peered in
+scripts/devnet/stop-devnet.sh    # tear down
+```
+
+Prerequisites, ports, and the interop gotchas are documented in
+[`scripts/devnet/README.md`](scripts/devnet/README.md). Current status:
+peering + Status handshake on the Bellatrix fork-digest work; full block
+following pends M5 sync/backfill.
+
 ## Docker
 
 A multi-stage Dockerfile is provided. It uses
