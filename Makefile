@@ -8,11 +8,18 @@
 #   commit, pre-push.                                                        #
 #                                                                            #
 
+# pipefail propagates failure from `cargo` through `| tee` so target exits
+# nonzero on test failure. Required for long-running targets that capture
+# output to a log file (CLAUDE.md long-running-tests policy).
+SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+
 CARGO         ?= cargo
 DATA_DIR      ?= ./data
 GENESIS_PATH  ?=
 CONFIG_DIR    ?=
 SPEC_TESTS_TAG?= v1.6.1
+LOGS          := target/test-logs
 
 # Forward extra args after `--` to cargo. Example: `make run ARGS="--metrics"`.
 ARGS ?=
@@ -60,14 +67,16 @@ fetch-spec-tests: ## Download consensus-spec-tests fixtures to ~/.cache/pharos-s
 	SPEC_TESTS_TAG=$(SPEC_TESTS_TAG) ./scripts/fetch-spec-tests.sh
 
 .PHONY: conformance
-conformance: ## Run the conformance suite and write docs/conformance.md.
-	$(CARGO) run --release -p pharos-conformance -- --write
+conformance: ## Run the conformance suite and write docs/conformance.md. Captured to $(LOGS)/conformance.log.
+	@mkdir -p $(LOGS)
+	$(CARGO) run --release -p pharos-conformance -- --write 2>&1 | tee $(LOGS)/conformance.log
 
 ## ----- Dev targets --------------------------------------------------------
 
 .PHONY: check
-check: ## cargo check the whole workspace (all targets).
-	$(CARGO) check --workspace --all-targets
+check: ## cargo check the whole workspace (all targets). Captured to $(LOGS)/check.log.
+	@mkdir -p $(LOGS)
+	$(CARGO) check --workspace --all-targets 2>&1 | tee $(LOGS)/check.log
 
 .PHONY: fmt
 fmt: ## Apply rustfmt to the whole workspace.
@@ -78,25 +87,48 @@ fmt-check: ## Verify rustfmt is satisfied (CI gate).
 	$(CARGO) fmt --all -- --check
 
 .PHONY: lint
-lint: ## clippy --workspace --all-targets -D warnings.
-	$(CARGO) clippy --workspace --all-targets -- -D warnings
+lint: ## clippy --workspace --all-targets -D warnings. Captured to $(LOGS)/lint.log.
+	@mkdir -p $(LOGS)
+	$(CARGO) clippy --workspace --all-targets -- -D warnings 2>&1 | tee $(LOGS)/lint.log
 
 .PHONY: lint-fix
 lint-fix: ## clippy --fix.
 	$(CARGO) clippy --workspace --all-targets --fix --allow-dirty --allow-staged -- -D warnings
 
+# --- Test targets ------------------------------------------------------------
+# `make test`        — fast: workspace tests minus the slow m0_acceptance walk
+# `make test-all`    — workspace tests INCLUDING m0_acceptance (use before commit/push)
+# `make test-conf`   — m0_acceptance only
+# `make test-crate`  — tests for one crate (CRATE=<name>)
+#
+# All long-running test targets capture full stdout+stderr to $(LOGS)/<name>.log
+# per CLAUDE.md long-running-tests policy. NEVER run two of these concurrently.
+
 .PHONY: test
-test: ## Run the full test suite.
-	$(CARGO) test --workspace
+test: ## Workspace tests minus m0_acceptance (fast). Captured to $(LOGS)/test.log.
+	@mkdir -p $(LOGS)
+	$(CARGO) test --workspace -- --skip m0_acceptance 2>&1 | tee $(LOGS)/test.log
+
+.PHONY: test-all
+test-all: ## Workspace tests INCLUDING m0_acceptance (slow). Captured to $(LOGS)/test-all.log.
+	@mkdir -p $(LOGS)
+	$(CARGO) test --workspace 2>&1 | tee $(LOGS)/test-all.log
+
+.PHONY: test-conf
+test-conf: ## Just the m0_acceptance conformance walk. Captured to $(LOGS)/test-conf.log.
+	@mkdir -p $(LOGS)
+	$(CARGO) test -p pharos-conformance --test m0_acceptance 2>&1 | tee $(LOGS)/test-conf.log
 
 .PHONY: test-quick
-test-quick: ## Run library + bin unit tests only (skip integration tests).
-	$(CARGO) test --workspace --lib --bins
+test-quick: ## Library + bin unit tests only (no integration tests). Captured to $(LOGS)/test-quick.log.
+	@mkdir -p $(LOGS)
+	$(CARGO) test --workspace --lib --bins 2>&1 | tee $(LOGS)/test-quick.log
 
 .PHONY: test-crate
-test-crate: ## Run tests for one crate. CRATE=<name>.
+test-crate: ## Run tests for one crate. CRATE=<name>. Captured to $(LOGS)/test-$(CRATE).log.
 	@test -n "$(CRATE)" || { echo "error: set CRATE=<crate-name>"; exit 1; }
-	$(CARGO) test -p $(CRATE)
+	@mkdir -p $(LOGS)
+	$(CARGO) test -p $(CRATE) 2>&1 | tee $(LOGS)/test-$(CRATE).log
 
 .PHONY: doc
 doc: ## Build rustdoc with all features and open it.
@@ -125,13 +157,13 @@ clean: ## Clear the cargo target directory.
 ## ----- CI / pre-commit ----------------------------------------------------
 
 .PHONY: ci
-ci: fmt-check lint check test ## Full CI gate: fmt, clippy, check, test.
+ci: fmt-check lint check test-all ## Full CI gate: fmt + clippy + check + ALL tests (slow).
 
 .PHONY: pre-commit
-pre-commit: fmt lint test-quick ## Fast pre-commit gate: fmt + clippy + unit tests.
+pre-commit: fmt lint test ## Pre-commit gate: fmt + clippy + fast workspace tests (skips m0_acceptance).
 
 .PHONY: pre-push
-pre-push: fmt-check lint test ## Pre-push gate: same as CI without the doc-check.
+pre-push: fmt-check lint test-all ## Pre-push gate: full workspace tests including m0_acceptance.
 
 ## ----- Utility ------------------------------------------------------------
 
