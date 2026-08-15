@@ -17,6 +17,8 @@ use pharos_utils::{Bytes4, Gwei, Hash256};
 
 pub use pharos_types::fork::compute_fork_data_root;
 
+use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
+
 use crate::error::StateTransitionError;
 use crate::phase0::helpers::{GENESIS_EPOCH, uint_to_bytes};
 use crate::phase0::predicates::is_active_validator;
@@ -336,5 +338,55 @@ where
             .expect("attesting indices within MAX_VALIDATORS_PER_COMMITTEE"),
         data: attestation.data.clone(),
         signature: attestation.signature,
+    }
+}
+
+/// `compute_subnet_for_attestation` per `specs/phase0/p2p-interface.md:382-398`.
+///
+/// Returns the gossip subnet index for a given attestation.
+/// `committees_per_slot` should be obtained via `get_committee_count_per_slot`.
+pub fn compute_subnet_for_attestation<E: EthSpec>(
+    committees_per_slot: u64,
+    slot: Slot,
+    committee_index: u64,
+) -> u64 {
+    let slots_since_epoch_start = slot.0 % E::SLOTS_PER_EPOCH;
+    let committees_since = committees_per_slot * slots_since_epoch_start;
+    (committees_since + committee_index) % ATTESTATION_SUBNET_COUNT
+}
+
+#[cfg(test)]
+mod subnet_tests {
+    use super::*;
+    use pharos_types::MinimalEthSpec;
+
+    /// Spec-fixture cases for `compute_subnet_for_attestation`.
+    ///
+    /// MinimalEthSpec: SLOTS_PER_EPOCH = 8.
+    /// At slot=0, idx=0, committees_per_slot=1:
+    ///   slots_since_epoch_start = 0, committees_since = 0, subnet = 0 % 64 = 0.
+    /// Mid-epoch: slot=4, idx=2, committees_per_slot=2:
+    ///   slots_since_epoch_start = 4, committees_since = 2 * 4 = 8, subnet = (8 + 2) % 64 = 10.
+    /// Epoch-end: slot=7, idx=1, committees_per_slot=2:
+    ///   slots_since_epoch_start = 7, committees_since = 2 * 7 = 14, subnet = (14 + 1) % 64 = 15.
+    #[test]
+    fn compute_subnet_for_attestation_matches_spec() {
+        // Case 1: slot=0, idx=0 → 0
+        assert_eq!(
+            compute_subnet_for_attestation::<MinimalEthSpec>(1, Slot(0), 0),
+            0,
+        );
+
+        // Case 2: mid-epoch slot=4, idx=2, committees_per_slot=2 → 10
+        assert_eq!(
+            compute_subnet_for_attestation::<MinimalEthSpec>(2, Slot(4), 2),
+            10,
+        );
+
+        // Case 3: epoch-end slot=7, idx=1, committees_per_slot=2 → 15
+        assert_eq!(
+            compute_subnet_for_attestation::<MinimalEthSpec>(2, Slot(7), 1),
+            15,
+        );
     }
 }

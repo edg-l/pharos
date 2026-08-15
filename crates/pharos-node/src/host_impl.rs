@@ -116,6 +116,17 @@ pub struct HostImpl<E: EthSpec> {
     /// short-circuit children of bad blocks per `D-invalid-roots-cache`.
     /// Capacity: 256 entries.
     invalid_block_roots: RwLock<LruCache<Root, ()>>,
+    /// Tracks `(validator_index, target_epoch)` pairs that have already produced
+    /// an accepted unaggregated attestation; gates the RAT7 duplicate-validator
+    /// IGNORE rule per `specs/phase0/p2p-interface.md:979`.
+    /// Capacity: 131072 entries (D-seen-cache-after-accept).
+    seen_attestation_validators: RwLock<LruCache<(u64, Epoch), ()>>,
+    /// Caches `(slot, committee_index, head_root) → Vec<validator_index>` to
+    /// avoid re-running `get_beacon_committee` for repeated attestation-validator
+    /// lookups against the same head. Key includes `head_root` for reorg safety
+    /// (D-cache-key-on-head).
+    /// Capacity: 4096 entries.
+    committee_cache: RwLock<LruCache<(Slot, u64, Root), Vec<u64>>>,
     _phantom: PhantomData<E>,
 }
 
@@ -170,6 +181,10 @@ impl<E: EthSpec> HostImpl<E> {
             seen_block_proposers: RwLock::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
             proposer_cache: RwLock::new(LruCache::new(NonZeroUsize::new(1024).unwrap())),
             invalid_block_roots: RwLock::new(LruCache::new(NonZeroUsize::new(256).unwrap())),
+            seen_attestation_validators: RwLock::new(LruCache::new(
+                NonZeroUsize::new(131072).unwrap(),
+            )),
+            committee_cache: RwLock::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
             _phantom: PhantomData,
         }
     }
@@ -253,6 +268,97 @@ impl<E: EthSpec> HostImpl<E> {
             md.attnets = new_attnets;
             md.seq_number = md.seq_number.wrapping_add(1);
         }
+    }
+
+    /// Return a clone of the head state advanced to `slot`.
+    ///
+    /// Mirrors `crates/pharos-fork-choice/src/handlers.rs:194-199`. Used by
+    /// `validate_attestation` (step 1) and `validate_aggregate_and_proof`
+    /// (Phase 3 step 1). Returns `None` when the head state is unavailable
+    /// (e.g., during the checkpoint-sync window before the first block).
+    fn head_state_at_slot(&self, slot: pharos_types::phase0::Slot) -> Option<E::BeaconState>
+    where
+        E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
+        E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
+        E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+        E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
+                Attestation = pharos_types::phase0::Attestation<2048>,
+            >,
+    {
+        use pharos_stf::process_slots_fork;
+        use pharos_types::BeaconStateView as _;
+
+        let head_root = {
+            let fc = self.fork_choice.read();
+            pharos_fork_choice::get_head(&*fc)
+        };
+        let mut state = self
+            .fork_choice
+            .read()
+            .block_states
+            .get(&head_root)?
+            .clone();
+        if state.slot() < slot {
+            process_slots_fork::<E>(&mut state, slot).ok()?;
+        }
+        Some(state)
+    }
+
+    /// Look up the committee for `(slot, index)` from cache, or compute it by
+    /// advancing the head state.
+    ///
+    /// Cache key is `(slot, index, head_root)` per D-cache-key-on-head so that
+    /// a reorg transparently invalidates stale entries.
+    ///
+    /// Returns `None` when the head state is unavailable or committee computation
+    /// fails (caller should IGNORE).
+    fn lookup_or_compute_committee(
+        &self,
+        slot: pharos_types::phase0::Slot,
+        index: u64,
+    ) -> Option<Vec<u64>>
+    where
+        E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
+        E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
+        E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+        E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
+                Attestation = pharos_types::phase0::Attestation<2048>,
+            >,
+    {
+        use pharos_stf::phase0::accessors::get_beacon_committee;
+        use pharos_stf::process_slots_fork;
+        use pharos_types::BeaconStateView as _;
+
+        let head_root = {
+            let fc = self.fork_choice.read();
+            pharos_fork_choice::get_head(&*fc)
+        };
+
+        let cache_key = (slot, index, head_root);
+
+        // Fast path: peek cache (preserves LRU order on read path).
+        if let Some(committee) = self.committee_cache.read().peek(&cache_key) {
+            return Some(committee.clone());
+        }
+
+        // Slow path: advance head state to `slot` and compute committee.
+        let mut state = self
+            .fork_choice
+            .read()
+            .block_states
+            .get(&head_root)?
+            .clone();
+        if state.slot() < slot {
+            process_slots_fork::<E>(&mut state, slot).ok()?;
+        }
+        let committee: Vec<u64> = get_beacon_committee::<E>(&state, slot, index)
+            .iter()
+            .map(|vi| vi.0)
+            .collect();
+        self.committee_cache
+            .write()
+            .put(cache_key, committee.clone());
+        Some(committee)
     }
 
     /// Look up the expected proposer for `(slot, parent_root)` from the cache,
@@ -633,8 +739,151 @@ where
         GossipVerdict::Accept
     }
 
-    /// TODO(M4): Validate attestation target epoch, aggregation bits, signature.
-    fn validate_attestation(&self, _subnet: SubnetId, _att: &Attestation<2048>) -> GossipVerdict {
+    /// Validate a gossip unaggregated attestation per
+    /// `specs/phase0/p2p-interface.md:929-1013` (rules RAT1-RAT12).
+    ///
+    /// Step order:
+    ///   1.  Defensive — head state unavailable (IGNORE, covers checkpoint-sync window).
+    ///   2.  RAT1  — committee index out of range (REJECT).
+    ///   3.  RAT2  — attestation is for the correct subnet (REJECT).
+    ///   4.  RAT3  — attestation slot within propagation range (IGNORE).
+    ///   5.  RAT4  — attestation's epoch matches its target (REJECT).
+    ///   6.  RAT5  — attestation is unaggregated (exactly one bit set) (REJECT).
+    ///   7.  RAT6  — aggregation bits length matches committee size (REJECT).
+    ///   8.  RAT7  — no other valid attestation seen for this validator/epoch (IGNORE).
+    ///   9.  RAT8  — attestation signature is valid (REJECT).
+    ///  10.  RAT9  — block being voted for has been seen (IGNORE).
+    ///  11.  RAT10 — block being voted for passes validation (REJECT).
+    ///  12.  RAT11 — target block is ancestor of LMD vote block (REJECT).
+    ///  13.  RAT12 — finalized checkpoint is an ancestor of the block (IGNORE).
+    ///  14.  Insert into seen cache; return Accept.
+    ///
+    /// See `D-seen-cache-after-accept`, `D-cache-key-on-head`,
+    /// `D-bls-on-hot-path` in `docs/decisions.md`.
+    fn validate_attestation(&self, subnet: SubnetId, att: &Attestation<2048>) -> GossipVerdict {
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_subnet_for_attestation, get_committee_count_per_slot,
+            get_indexed_attestation,
+        };
+        use pharos_stf::phase0::predicates::is_valid_indexed_attestation;
+        use pharos_types::phase0::primitives::{
+            ATTESTATION_PROPAGATION_SLOT_RANGE, MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS,
+        };
+
+        // Step 1 — Defensive: head state must be available.
+        let head_state = match self.head_state_at_slot(att.data.slot) {
+            Some(s) => s,
+            None => return GossipVerdict::Ignore("att: head state unavailable".into()),
+        };
+
+        // Step 2 — RAT1: committee index must be within range.
+        let committee_count = get_committee_count_per_slot::<E>(&head_state, att.data.target.epoch);
+        if att.data.index.0 >= committee_count {
+            return GossipVerdict::Reject("att: committee index out of range".into());
+        }
+
+        // Step 3 — RAT2: attestation must be for the correct subnet.
+        let expected_subnet =
+            compute_subnet_for_attestation::<E>(committee_count, att.data.slot, att.data.index.0);
+        if expected_subnet != subnet {
+            return GossipVerdict::Reject("att: wrong subnet".into());
+        }
+
+        // Step 4 — RAT3: attestation slot must be within propagation range.
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as u64,
+            Err(_) => return GossipVerdict::Ignore("att: clock unavailable".into()),
+        };
+        let genesis_time_s = self.fork_choice.read().genesis_time;
+        let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
+        let att_slot = att.data.slot.0;
+        let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
+        let start_time_ms = genesis_time_s * 1000 + att_slot * seconds_per_slot * 1000;
+        let end_time_ms = genesis_time_s * 1000 + (att_slot + range + 1) * seconds_per_slot * 1000;
+        if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < start_time_ms
+            || end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms
+        {
+            return GossipVerdict::Ignore("att: slot not in propagation range".into());
+        }
+
+        // Step 5 — RAT4: attestation's epoch must match its target.
+        if att.data.target.epoch != compute_epoch_at_slot(att.data.slot, E::SLOTS_PER_EPOCH) {
+            return GossipVerdict::Reject("att: target epoch mismatch".into());
+        }
+
+        // Step 6 — RAT5: attestation must be unaggregated (exactly one bit set).
+        let num_bits_set = att.aggregation_bits.iter().filter(|b| *b).count();
+        if num_bits_set != 1 {
+            return GossipVerdict::Reject("att: not unaggregated".into());
+        }
+
+        // Step 7 — RAT6: aggregation bits length must match committee size.
+        let committee = match self.lookup_or_compute_committee(att.data.slot, att.data.index.0) {
+            Some(c) => c,
+            None => return GossipVerdict::Ignore("att: committee unavailable".into()),
+        };
+        if att.aggregation_bits.len() != committee.len() {
+            return GossipVerdict::Reject("att: agg bits length mismatch".into());
+        }
+
+        // Step 8 — RAT7: no other valid attestation seen for this validator/epoch.
+        // Safe: step 6 confirmed exactly one bit is set.
+        let bit_idx = att.aggregation_bits.iter().position(|b| b).unwrap();
+        let participant = committee[bit_idx];
+        if self
+            .seen_attestation_validators
+            .read()
+            .peek(&(participant, att.data.target.epoch))
+            .is_some()
+        {
+            return GossipVerdict::Ignore("att: duplicate validator/epoch".into());
+        }
+
+        // Step 9 — RAT8: attestation signature must be valid.
+        let indexed = get_indexed_attestation::<E>(&head_state, att);
+        if !is_valid_indexed_attestation::<E>(&head_state, &indexed, true) {
+            return GossipVerdict::Reject("att: invalid signature".into());
+        }
+
+        // Steps 10-12 require the fork-choice lock; acquire once.
+        {
+            let fc = self.fork_choice.read();
+
+            // Step 10 — RAT9: block being voted for must have been seen.
+            if !fc.blocks.contains_key(&att.data.beacon_block_root) {
+                return GossipVerdict::Ignore("att: voted block unseen".into());
+            }
+
+            // Step 11 — RAT10: block being voted for must pass validation.
+            if !fc.block_states.contains_key(&att.data.beacon_block_root) {
+                return GossipVerdict::Reject("att: voted block invalid".into());
+            }
+
+            // Step 12 — RAT11: target block must be an ancestor of the LMD vote block.
+            let target_cp = pharos_fork_choice::get_checkpoint_block::<E>(
+                &*fc,
+                att.data.beacon_block_root,
+                att.data.target.epoch,
+            );
+            if target_cp != att.data.target.root {
+                return GossipVerdict::Reject("att: target not ancestor".into());
+            }
+
+            // Step 13 — RAT12: finalized checkpoint must be an ancestor of the block.
+            let final_cp = pharos_fork_choice::get_checkpoint_block::<E>(
+                &*fc,
+                att.data.beacon_block_root,
+                fc.finalized_checkpoint.epoch,
+            );
+            if final_cp != fc.finalized_checkpoint.root {
+                return GossipVerdict::Ignore("att: finalized not ancestor".into());
+            }
+        }
+
+        // Step 14 — Insert into seen-validators cache and accept.
+        self.seen_attestation_validators
+            .write()
+            .put((participant, att.data.target.epoch), ());
         GossipVerdict::Accept
     }
 
@@ -1911,6 +2160,622 @@ mod tests {
         assert_eq!(
             host.validate_beacon_block(&child_block),
             GossipVerdict::Reject("block: parent in invalid set".into()),
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Attestation validation tests (Tasks 2.5 a–m, RAT1–RAT12 + happy path)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    use pharos_stf::phase0::accessors::{
+        compute_signing_root as att_signing_root, get_domain as att_get_domain,
+    };
+    use pharos_stf::phase0::helpers::DOMAIN_BEACON_ATTESTER;
+    use pharos_types::phase0::misc::{AttestationData, Checkpoint};
+    use pharos_types::phase0::primitives::CommitteeIndex;
+
+    /// Attestation-test runtime config with `seconds_per_slot` for MinimalEthSpec.
+    fn att_runtime_cfg(_att_slot: u64) -> Arc<RuntimeConfig> {
+        let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000; // 6 s
+        Arc::new(RuntimeConfig {
+            seconds_per_slot,
+            ..Default::default()
+        })
+    }
+
+    /// Build a `HostImpl<MinimalEthSpec>` wired for attestation testing.
+    ///
+    /// - One validator at index 0 (pubkey = `att_test_pubkey()`).
+    /// - Fork-choice has genesis block+state at root `genesis_root`.
+    /// - genesis_time set so `att_slot` is within the propagation window.
+    ///
+    /// Returns `(host, genesis_root, genesis_state)`.
+    fn make_att_test_host(
+        dir: &tempfile::TempDir,
+        att_slot: u64,
+    ) -> (HostImpl<MinimalEthSpec>, Root, ForkMinimalState) {
+        use pharos_types::phase0::misc::Fork;
+        use pharos_types::phase0::operations::BeaconBlockHeader;
+        use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
+
+        let store = Arc::new(
+            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+                path: dir.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("open store"),
+        );
+
+        let genesis_slot = Slot(0);
+
+        // Use 8 validators (all with att_test_pubkey) so that slot=0 / index=0
+        // committee is non-empty (size=1 with 8 validators and SLOTS_PER_EPOCH=8).
+        let validator = pharos_types::phase0::misc::Validator {
+            pubkey: att_test_pubkey(),
+            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            activation_epoch: Epoch(0),
+            exit_epoch: Epoch(u64::MAX),
+            withdrawable_epoch: Epoch(u64::MAX),
+            slashed: false,
+            ..Default::default()
+        };
+        let validators_vec = vec![validator.clone(); 8];
+        let balances_vec = vec![Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE); 8];
+        let validators_list =
+            pharos_ssz::SszList::from_vec(validators_vec).expect("8 validators within limit");
+        let balances_list =
+            pharos_ssz::SszList::from_vec(balances_vec).expect("8 balances within limit");
+
+        let genesis_body_root = MinimalBeaconBlockBody::default().tree_hash_root();
+        let genesis_state_inner = MinimalBeaconState {
+            genesis_time: 0,
+            slot: genesis_slot,
+            fork: Fork {
+                previous_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+                current_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+                epoch: Epoch(0),
+            },
+            latest_block_header: BeaconBlockHeader {
+                slot: genesis_slot,
+                proposer_index: ValidatorIndex(0),
+                parent_root: Root::default(),
+                state_root: Root::default(),
+                body_root: genesis_body_root,
+            },
+            validators: validators_list,
+            balances: balances_list,
+            ..Default::default()
+        };
+
+        let fork_genesis_state = ForkMinimalState::Phase0(genesis_state_inner.clone());
+        let state_root = fork_genesis_state.tree_hash_root();
+
+        let genesis_block = MinimalBeaconBlock {
+            slot: genesis_slot,
+            proposer_index: ValidatorIndex(0),
+            parent_root: Root::default(),
+            state_root,
+            body: MinimalBeaconBlockBody::default(),
+        };
+        let genesis_root: Root = genesis_block.tree_hash_root();
+
+        let fork_genesis_block = pharos_types::state::BeaconBlock::Phase0(genesis_block);
+
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(
+            fork_genesis_state.clone(),
+            fork_genesis_block,
+        );
+        let fork_choice = Arc::new(RwLock::new(fc_store));
+
+        {
+            let mut fc = fork_choice.write();
+            fc.block_states
+                .insert(genesis_root, fork_genesis_state.clone());
+            fc.blocks.insert(genesis_root, {
+                let b = MinimalBeaconBlock {
+                    slot: genesis_slot,
+                    proposer_index: ValidatorIndex(0),
+                    parent_root: Root::default(),
+                    state_root: fork_genesis_state.tree_hash_root(),
+                    body: MinimalBeaconBlockBody::default(),
+                };
+                pharos_types::state::BeaconBlock::Phase0(b)
+            });
+            // Set genesis_time in the fork_choice store to match att_runtime_cfg.
+            let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000;
+            let now_sec = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            fc.genesis_time = now_sec.saturating_sub(att_slot * seconds_per_slot + 1);
+        }
+
+        let gvr = Root::default();
+        let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+        let runtime_cfg = att_runtime_cfg(att_slot);
+        let host = HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fv, runtime_cfg);
+        (host, genesis_root, fork_genesis_state)
+    }
+
+    fn att_test_sk() -> BlstSecretKey {
+        BlstSecretKey::key_gen(&[99u8; 32], &[]).expect("valid IKM")
+    }
+
+    fn att_test_pubkey() -> BLSPubkey {
+        BLSPubkey::from_array(att_test_sk().sk_to_pk().compress())
+    }
+
+    fn att_test_sign(msg: &[u8]) -> BLSSignature {
+        BLSSignature::from_array(att_test_sk().sign(msg, BLS_DST, &[]).compress())
+    }
+
+    /// Build a valid-looking attestation data for slot=0, committee_index=0,
+    /// targeting `beacon_block_root` as both the voted block and target root.
+    fn make_att_data(beacon_block_root: Root) -> AttestationData {
+        AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(0),
+            beacon_block_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(0),
+                root: beacon_block_root,
+            },
+        }
+    }
+
+    /// Build a properly-signed unaggregated attestation for validator 0 in a
+    /// single-validator committee at slot 0 / committee_index 0.
+    fn make_signed_att(
+        beacon_block_root: Root,
+        head_state: &ForkMinimalState,
+        flip_sig: bool,
+    ) -> pharos_types::phase0::Attestation<2048> {
+        use pharos_ssz::Bitlist;
+        let data = make_att_data(beacon_block_root);
+        let domain =
+            att_get_domain::<MinimalEthSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
+        let signing_root = att_signing_root(&data, domain);
+        let mut sig_bytes: [u8; 96] = att_test_sign(signing_root.as_ref()).into();
+        if flip_sig {
+            sig_bytes[0] ^= 0xff;
+        }
+        let sig = BLSSignature::from_array(sig_bytes);
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap(); // validator 0 attests
+        pharos_types::phase0::Attestation {
+            aggregation_bits: bits,
+            data,
+            signature: sig,
+        }
+    }
+
+    /// Compute the expected subnet for slot=0, index=0, committees_per_slot=1,
+    /// MinimalEthSpec: 0 % 64 = 0.
+    fn att_expected_subnet() -> u64 {
+        0
+    }
+
+    // ── (a) RAT1: att_rejects_committee_index_out_of_range ──────────────────
+
+    #[test]
+    fn att_rejects_committee_index_out_of_range() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, _) = make_att_test_host(&dir, 0);
+
+        let data = AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(9999), // way out of range
+            beacon_block_root: genesis_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(0),
+                root: genesis_root,
+            },
+        };
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let att = pharos_types::phase0::Attestation {
+            aggregation_bits: bits,
+            data,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Reject("att: committee index out of range".into()),
+        );
+    }
+
+    // ── (b) RAT2: att_rejects_wrong_subnet ──────────────────────────────────
+
+    #[test]
+    fn att_rejects_wrong_subnet() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, _) = make_att_test_host(&dir, 0);
+
+        let data = make_att_data(genesis_root);
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let att = pharos_types::phase0::Attestation {
+            aggregation_bits: bits,
+            data,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+
+        // Pass subnet=1 but expected is 0.
+        assert_eq!(
+            host.validate_attestation(1, &att),
+            GossipVerdict::Reject("att: wrong subnet".into()),
+        );
+    }
+
+    // ── (c) RAT3: att_ignores_slot_out_of_range ──────────────────────────────
+
+    #[test]
+    fn att_ignores_slot_out_of_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, _) = make_att_test_host(&dir, 0);
+
+        // Override genesis_time to 0 so all slots are "too old" for the propagation window.
+        host.fork_choice.write().genesis_time = 0;
+
+        let data = make_att_data(genesis_root);
+        let mut bits = pharos_ssz::Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let att = pharos_types::phase0::Attestation {
+            aggregation_bits: bits,
+            data,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Ignore("att: slot not in propagation range".into()),
+        );
+    }
+
+    // ── (d) RAT4: att_rejects_target_epoch_mismatch ─────────────────────────
+
+    #[test]
+    fn att_rejects_target_epoch_mismatch() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, _) = make_att_test_host(&dir, 0);
+
+        // slot=0 → epoch=0, but target.epoch=1 → mismatch.
+        let data = AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(0),
+            beacon_block_root: genesis_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(1),
+                root: genesis_root,
+            }, // wrong epoch
+        };
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let att = pharos_types::phase0::Attestation {
+            aggregation_bits: bits,
+            data,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Reject("att: target epoch mismatch".into()),
+        );
+    }
+
+    // ── (e) RAT5: att_rejects_aggregated_bits ───────────────────────────────
+
+    #[test]
+    fn att_rejects_aggregated_bits() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, _) = make_att_test_host(&dir, 0);
+
+        let data = make_att_data(genesis_root);
+        // Zero bits set → not unaggregated.
+        let bits = Bitlist::<2048>::new();
+        let att_zero = pharos_types::phase0::Attestation {
+            aggregation_bits: bits,
+            data: data.clone(),
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att_zero),
+            GossipVerdict::Reject("att: not unaggregated".into()),
+        );
+
+        // Two bits set → aggregated.
+        let mut bits2 = Bitlist::<2048>::new();
+        bits2.push(true).unwrap();
+        bits2.push(true).unwrap();
+        let att_two = pharos_types::phase0::Attestation {
+            aggregation_bits: bits2,
+            data,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att_two),
+            GossipVerdict::Reject("att: not unaggregated".into()),
+        );
+    }
+
+    // ── (f) RAT6: att_rejects_agg_bits_length_mismatch ──────────────────────
+
+    #[test]
+    fn att_rejects_agg_bits_length_mismatch() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, _) = make_att_test_host(&dir, 0);
+
+        let data = make_att_data(genesis_root);
+        // Committee has 1 member but we send a bitlist with bit 5 set (length > committee).
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(false).unwrap();
+        bits.push(false).unwrap();
+        bits.push(false).unwrap();
+        bits.push(false).unwrap();
+        bits.push(false).unwrap();
+        bits.push(true).unwrap(); // bit 5 set, length=6 > committee size=1
+        let att = pharos_types::phase0::Attestation {
+            aggregation_bits: bits,
+            data,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Reject("att: agg bits length mismatch".into()),
+        );
+    }
+
+    // ── (g) RAT7: att_ignores_duplicate_validator_epoch ─────────────────────
+
+    #[test]
+    fn att_ignores_duplicate_validator_epoch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        let att = make_signed_att(genesis_root, &genesis_state, false);
+
+        // Determine the actual participant by computing the committee directly.
+        let participant = {
+            use pharos_stf::phase0::accessors::get_beacon_committee;
+            let committee = get_beacon_committee::<MinimalEthSpec>(&genesis_state, Slot(0), 0);
+            let bit_idx = att.aggregation_bits.iter().position(|b| b).unwrap();
+            committee[bit_idx].0
+        };
+        // Pre-populate the seen cache with the actual participant's (index, epoch).
+        host.seen_attestation_validators
+            .write()
+            .put((participant, Epoch(0)), ());
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Ignore("att: duplicate validator/epoch".into()),
+        );
+    }
+
+    // ── (h) RAT8: att_rejects_invalid_signature ──────────────────────────────
+
+    #[test]
+    fn att_rejects_invalid_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        // flip_sig=true → bad signature.
+        let att = make_signed_att(genesis_root, &genesis_state, true);
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Reject("att: invalid signature".into()),
+        );
+    }
+
+    // ── (i) RAT9: att_ignores_unseen_voted_block ─────────────────────────────
+
+    #[test]
+    fn att_ignores_unseen_voted_block() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        // Use a beacon_block_root that is NOT in the fork-choice store.
+        let unknown_root = Root::from_array([0xab; 32]);
+        // Build an attestation with the correct target root for the unknown block root.
+        let data = AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(0),
+            beacon_block_root: unknown_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(0),
+                root: unknown_root,
+            },
+        };
+        let domain = att_get_domain::<MinimalEthSpec>(
+            &genesis_state,
+            DOMAIN_BEACON_ATTESTER,
+            Some(Epoch(0)),
+        );
+        let signing_root = att_signing_root(&data, domain);
+        let sig = att_test_sign(signing_root.as_ref());
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let att2 = pharos_types::phase0::Attestation {
+            aggregation_bits: bits,
+            data,
+            signature: sig,
+        };
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att2),
+            GossipVerdict::Ignore("att: voted block unseen".into()),
+        );
+    }
+
+    // ── (j) RAT10: att_rejects_invalid_voted_block ───────────────────────────
+
+    #[test]
+    fn att_rejects_invalid_voted_block() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        // Insert a block root into `fc.blocks` but NOT into `fc.block_states`.
+        // This simulates a block that has been seen but failed validation.
+        let orphan_root = Root::from_array([0xcd; 32]);
+        {
+            let mut fc = host.fork_choice.write();
+            fc.blocks.insert(orphan_root, {
+                pharos_types::state::BeaconBlock::Phase0(MinimalBeaconBlock {
+                    slot: Slot(0),
+                    ..Default::default()
+                })
+            });
+            // Do NOT insert into block_states.
+        }
+
+        let data = AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(0),
+            beacon_block_root: orphan_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(0),
+                root: orphan_root,
+            },
+        };
+        let domain = att_get_domain::<MinimalEthSpec>(
+            &genesis_state,
+            DOMAIN_BEACON_ATTESTER,
+            Some(Epoch(0)),
+        );
+        let signing_root = att_signing_root(&data, domain);
+        let sig = att_test_sign(signing_root.as_ref());
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let att = pharos_types::phase0::Attestation {
+            aggregation_bits: bits,
+            data,
+            signature: sig,
+        };
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Reject("att: voted block invalid".into()),
+        );
+    }
+
+    // ── (k) RAT11: att_rejects_target_not_ancestor ──────────────────────────
+
+    #[test]
+    fn att_rejects_target_not_ancestor() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        // target.root points somewhere that is NOT an ancestor of genesis_root.
+        let wrong_target = Root::from_array([0xef; 32]);
+        let data = AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(0),
+            beacon_block_root: genesis_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(0),
+                root: wrong_target,
+            },
+        };
+        let domain = att_get_domain::<MinimalEthSpec>(
+            &genesis_state,
+            DOMAIN_BEACON_ATTESTER,
+            Some(Epoch(0)),
+        );
+        let signing_root = att_signing_root(&data, domain);
+        let sig = att_test_sign(signing_root.as_ref());
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let att = pharos_types::phase0::Attestation {
+            aggregation_bits: bits,
+            data,
+            signature: sig,
+        };
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Reject("att: target not ancestor".into()),
+        );
+    }
+
+    // ── (l) RAT12: att_ignores_finalized_not_ancestor ───────────────────────
+
+    #[test]
+    fn att_ignores_finalized_not_ancestor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        // Override the finalized checkpoint to point at a root that is NOT
+        // an ancestor of genesis_root.
+        let fake_finalized = Root::from_array([0x77; 32]);
+        {
+            let mut fc = host.fork_choice.write();
+            fc.finalized_checkpoint = Checkpoint {
+                epoch: Epoch(0),
+                root: fake_finalized,
+            };
+        }
+
+        let att = make_signed_att(genesis_root, &genesis_state, false);
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Ignore("att: finalized not ancestor".into()),
+        );
+    }
+
+    // ── (m) happy path: att_accepts_happy_path ───────────────────────────────
+
+    #[test]
+    fn att_accepts_happy_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        let att = make_signed_att(genesis_root, &genesis_state, false);
+
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Accept,
+        );
+
+        // Second call with same validator/epoch must be deduplicated (RAT7).
+        assert_eq!(
+            host.validate_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Ignore("att: duplicate validator/epoch".into()),
         );
     }
 }
