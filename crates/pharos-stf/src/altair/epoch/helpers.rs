@@ -4,6 +4,7 @@
 //! `get_block_root` accessors but operate directly on the concrete altair
 //! `BeaconState` fields without the `BeaconStateView` abstraction.
 
+use pharos_ssz::SszSequence;
 use pharos_types::{EthSpec, altair::BeaconState, phase0::Epoch};
 
 use crate::error::StateTransitionError;
@@ -107,7 +108,11 @@ pub(super) fn get_block_root_for_epoch<
         return Err(StateTransitionError::SlotOutOfRange);
     }
     let idx = (slot.0 % E::SLOTS_PER_HISTORICAL_ROOT) as usize;
-    Ok(state.block_roots.as_slice()[idx])
+    state
+        .block_roots
+        .get(idx)
+        .copied()
+        .ok_or(StateTransitionError::SlotOutOfRange)
 }
 
 /// `get_randao_mix` for an epoch in an altair `BeaconState`.
@@ -137,5 +142,5 @@ pub(super) fn get_randao_mix_altair<
     epoch: Epoch,
 ) -> pharos_utils::Hash256 {
     let idx = (epoch.0 % E::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
-    state.randao_mixes.as_slice()[idx]
+    state.randao_mixes.get(idx).copied().unwrap_or_default()
 }

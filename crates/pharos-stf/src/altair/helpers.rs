@@ -192,7 +192,11 @@ fn get_block_root_at_slot_altair<
         return Err(StateTransitionError::SlotOutOfRange);
     }
     let idx = (slot.0 % E::SLOTS_PER_HISTORICAL_ROOT) as usize;
-    Ok(state.block_roots.as_slice()[idx])
+    state
+        .block_roots
+        .get(idx)
+        .copied()
+        .ok_or(StateTransitionError::SlotOutOfRange)
 }
 
 fn get_block_root_altair<
@@ -287,7 +291,6 @@ where
 
     state
         .validators
-        .as_slice()
         .iter()
         .enumerate()
         .filter_map(|(i, v)| {
@@ -397,7 +400,6 @@ where
 {
     let increments = state
         .validators
-        .as_slice()
         .get(index.0 as usize)
         .map(|v| v.effective_balance.0 / E::EFFECTIVE_BALANCE_INCREMENT)
         .unwrap_or(0);
@@ -466,7 +468,6 @@ where
 
     state
         .validators
-        .as_slice()
         .iter()
         .enumerate()
         .filter_map(|(i, v)| {
@@ -566,7 +567,6 @@ pub(crate) fn get_total_balance_altair<
         .map(|i| {
             state
                 .validators
-                .as_slice()
                 .get(i.0 as usize)
                 .map(|v| v.effective_balance.0)
                 .unwrap_or(0)
@@ -600,7 +600,6 @@ pub(crate) fn get_total_active_balance_altair<
     let current_epoch = compute_epoch_at_slot(state.slot, E::SLOTS_PER_EPOCH);
     let active: Vec<ValidatorIndex> = state
         .validators
-        .as_slice()
         .iter()
         .enumerate()
         .filter_map(|(i, v)| {
@@ -847,7 +846,6 @@ where
         if !matching_set.contains(&index.0) {
             let effective_balance = state
                 .validators
-                .as_slice()
                 .get(index.0 as usize)
                 .map(|v| v.effective_balance.0)
                 .unwrap_or(0);
@@ -911,7 +909,6 @@ where
 
     let active_indices: Vec<ValidatorIndex> = state
         .validators
-        .as_slice()
         .iter()
         .enumerate()
         .filter_map(|(i, v)| {
@@ -961,7 +958,6 @@ where
         };
         let effective_balance = state
             .validators
-            .as_slice()
             .get(candidate_index.0 as usize)
             .map(|v| v.effective_balance.0)
             .unwrap_or(0);
@@ -1029,7 +1025,6 @@ where
         .map(|idx| {
             state
                 .validators
-                .as_slice()
                 .get(idx.0 as usize)
                 .map(|v| v.pubkey)
                 .unwrap_or_default()
@@ -1083,7 +1078,7 @@ pub(crate) fn get_seed_altair_pub<
         .wrapping_sub(E::MIN_SEED_LOOKAHEAD)
         .wrapping_sub(1);
     let mix_idx = (mix_epoch_raw % E::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
-    let mix = state.randao_mixes.as_slice()[mix_idx];
+    let mix = state.randao_mixes.get(mix_idx).copied().unwrap_or_default();
     let epoch_bytes = uint_to_bytes(epoch.0);
     let mut input = [0u8; 4 + 8 + 32];
     input[..4].copy_from_slice(&domain_type);
@@ -1154,7 +1149,6 @@ where
     let (effective_balance, current_withdrawable_epoch) = {
         let v = state
             .validators
-            .as_slice()
             .get(slashed_index.0 as usize)
             .ok_or(StateTransitionError::SlotOutOfRange)?;
         (v.effective_balance, v.withdrawable_epoch)
@@ -1169,7 +1163,6 @@ where
     {
         let mut v = state
             .validators
-            .as_slice()
             .get(slashed_index.0 as usize)
             .ok_or(StateTransitionError::SlotOutOfRange)?
             .clone();
@@ -1382,7 +1375,6 @@ pub fn get_proposer_index_altair<
 
     let active_indices: Vec<ValidatorIndex> = state
         .validators
-        .as_slice()
         .iter()
         .enumerate()
         .filter_map(|(i, v)| {
@@ -1406,7 +1398,6 @@ pub fn get_proposer_index_altair<
             pharos_utils::hash::hash(&hash_input).as_slice()[(i % 32) as usize] as u64;
         let effective_balance = state
             .validators
-            .as_slice()
             .get(candidate.0 as usize)
             .map(|v| v.effective_balance.0)
             .unwrap_or(0);
@@ -1443,13 +1434,14 @@ pub(crate) fn initiate_validator_exit_altair_pub<
     index: ValidatorIndex,
 ) -> Result<(), StateTransitionError> {
     {
-        let v = state
+        let exit_epoch_val = state
             .validators
-            .as_slice()
             .get(index.0 as usize)
-            .ok_or(StateTransitionError::SlotOutOfRange)?;
-        if v.exit_epoch.0 != FAR_FUTURE_EPOCH {
-            return Ok(());
+            .map(|v| v.exit_epoch.0);
+        match exit_epoch_val {
+            None => return Err(StateTransitionError::SlotOutOfRange),
+            Some(ep) if ep != FAR_FUTURE_EPOCH => return Ok(()),
+            _ => {}
         }
     }
 
@@ -1460,7 +1452,6 @@ pub(crate) fn initiate_validator_exit_altair_pub<
     let exit_queue_epoch = {
         let max_existing = state
             .validators
-            .as_slice()
             .iter()
             .filter(|v| v.exit_epoch.0 != FAR_FUTURE_EPOCH)
             .map(|v| v.exit_epoch.0)
@@ -1473,7 +1464,6 @@ pub(crate) fn initiate_validator_exit_altair_pub<
     let churn_limit = {
         let active_count = state
             .validators
-            .as_slice()
             .iter()
             .filter(|v| is_active_validator(v, current_epoch.0))
             .count() as u64;
@@ -1482,7 +1472,6 @@ pub(crate) fn initiate_validator_exit_altair_pub<
 
     let exit_queue_churn = state
         .validators
-        .as_slice()
         .iter()
         .filter(|v| v.exit_epoch == exit_queue_epoch)
         .count() as u64;
@@ -1501,7 +1490,6 @@ pub(crate) fn initiate_validator_exit_altair_pub<
 
     let mut v = state
         .validators
-        .as_slice()
         .get(index.0 as usize)
         .ok_or(StateTransitionError::SlotOutOfRange)?
         .clone();

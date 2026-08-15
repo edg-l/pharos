@@ -2,7 +2,7 @@
 //!
 //! Per `specs/bellatrix/beacon-chain.md:380-416`.
 
-use pharos_ssz::TreeHash;
+use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
     EthSpec,
     bellatrix::{BeaconBlockBody, BeaconState, ExecutionPayloadHeader},
@@ -112,7 +112,7 @@ where
     let current_epoch = compute_epoch_at_slot(state.slot, E::SLOTS_PER_EPOCH);
     let expected_randao = {
         let idx = (current_epoch.0 % E::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
-        state.randao_mixes.as_slice()[idx]
+        state.randao_mixes.get(idx).copied().unwrap_or_default()
     };
     if payload.prev_randao != expected_randao {
         return Err(StateTransitionError::InvalidExecutionPayload(

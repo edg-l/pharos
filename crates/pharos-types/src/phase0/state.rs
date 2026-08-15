@@ -2,7 +2,7 @@
 //!
 //! Defined in `specs/phase0/beacon-chain.md:566-588`.
 
-use pharos_ssz::{Bitvector, Decode, Encode, SszList, SszVector, TreeHash};
+use pharos_ssz::{Bitvector, Decode, Encode, SszError, SszList, SszVector, TreeHash};
 use pharos_utils::Hash256;
 
 use crate::phase0::misc::{Checkpoint, Eth1Data, Fork, PendingAttestation, Validator};
@@ -31,7 +31,7 @@ use crate::phase0::primitives::{Gwei, Root, Slot};
 /// 7. `MAX_PENDING_ATTESTATIONS` — derived: `MAX_ATTESTATIONS * SLOTS_PER_EPOCH`
 /// 8. `JUSTIFICATION_BITS_LENGTH` — `specs/phase0/beacon-chain.md:195`
 /// 9. `MAX_VALIDATORS_PER_COMMITTEE` — `presets/*/phase0.yaml:10`
-#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq)]
+#[derive(Encode, TreeHash, Clone, Debug, PartialEq, Eq)]
 pub struct BeaconState<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
@@ -137,22 +137,254 @@ where
             slot: Slot::default(),
             fork: Fork::default(),
             latest_block_header: BeaconBlockHeader::default(),
-            block_roots: SszVector::default(),
-            state_roots: SszVector::default(),
-            historical_roots: SszList::default(),
+            block_roots: SszVector::from_vec_tree(vec![
+                Root::default();
+                SLOTS_PER_HISTORICAL_ROOT as usize
+            ])
+            .expect("default block_roots tree init"),
+            state_roots: SszVector::from_vec_tree(vec![
+                Root::default();
+                SLOTS_PER_HISTORICAL_ROOT as usize
+            ])
+            .expect("default state_roots tree init"),
+            historical_roots: SszList::empty_tree(),
             eth1_data: Eth1Data::default(),
             eth1_data_votes: SszList::default(),
             eth1_deposit_index: 0,
-            validators: SszList::default(),
+            validators: SszList::empty_tree(),
             balances: SszList::default(),
-            randao_mixes: SszVector::default(),
+            randao_mixes: SszVector::from_vec_tree(vec![
+                Hash256::default();
+                EPOCHS_PER_HISTORICAL_VECTOR as usize
+            ])
+            .expect("default randao_mixes tree init"),
             slashings: SszVector::default(),
-            previous_epoch_attestations: SszList::default(),
-            current_epoch_attestations: SszList::default(),
+            previous_epoch_attestations: SszList::empty_tree(),
+            current_epoch_attestations: SszList::empty_tree(),
             justification_bits: Bitvector::default(),
             previous_justified_checkpoint: Checkpoint::default(),
             current_justified_checkpoint: Checkpoint::default(),
             finalized_checkpoint: Checkpoint::default(),
         }
+    }
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const MAX_PENDING_ATTESTATIONS: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+>
+    BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        MAX_PENDING_ATTESTATIONS,
+        JUSTIFICATION_BITS_LENGTH,
+        MAX_VALIDATORS_PER_COMMITTEE,
+    >
+where
+    Root: Default + Clone,
+    Hash256: Default + Clone,
+{
+    /// Convert all tree-set fields from Naive to Tree backend.
+    ///
+    /// Called at the end of `Decode::from_ssz_bytes` so that SSZ-decoded states
+    /// land on the tree backend for all seven tree-set fields.
+    pub fn into_tree_backend(mut self) -> Result<Self, SszError> {
+        self.block_roots = self.block_roots.into_tree()?;
+        self.state_roots = self.state_roots.into_tree()?;
+        self.historical_roots = self.historical_roots.into_tree()?;
+        self.validators = self.validators.into_tree()?;
+        self.randao_mixes = self.randao_mixes.into_tree()?;
+        self.previous_epoch_attestations = self.previous_epoch_attestations.into_tree()?;
+        self.current_epoch_attestations = self.current_epoch_attestations.into_tree()?;
+        Ok(self)
+    }
+}
+
+// ── Manual Decode impl ────────────────────────────────────────────────────────
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const MAX_PENDING_ATTESTATIONS: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+> Decode
+    for BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        MAX_PENDING_ATTESTATIONS,
+        JUSTIFICATION_BITS_LENGTH,
+        MAX_VALIDATORS_PER_COMMITTEE,
+    >
+where
+    Root: Default + Clone,
+    Hash256: Default + Clone,
+{
+    const IS_FIXED_SIZE: bool = false;
+
+    fn ssz_fixed_len() -> usize {
+        pharos_ssz::BYTES_PER_LENGTH_OFFSET
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, SszError> {
+        use pharos_ssz::SszDecoder;
+        let mut decoder = SszDecoder::new(bytes);
+        decoder.register_type::<u64>()?; // genesis_time
+        decoder.register_type::<Root>()?; // genesis_validators_root
+        decoder.register_type::<Slot>()?; // slot
+        decoder.register_type::<Fork>()?; // fork
+        decoder.register_type::<BeaconBlockHeader>()?; // latest_block_header
+        decoder.register_type::<SszVector<Root, SLOTS_PER_HISTORICAL_ROOT>>()?; // block_roots
+        decoder.register_type::<SszVector<Root, SLOTS_PER_HISTORICAL_ROOT>>()?; // state_roots
+        decoder
+            .register_anonymous_variable_length_item::<SszList<Root, HISTORICAL_ROOTS_LIMIT>>()?; // historical_roots
+        decoder.register_type::<Eth1Data>()?; // eth1_data
+        decoder
+            .register_anonymous_variable_length_item::<SszList<Eth1Data, ETH1_DATA_VOTES_LIMIT>>(
+            )?; // eth1_data_votes
+        decoder.register_type::<u64>()?; // eth1_deposit_index
+        decoder.register_anonymous_variable_length_item::<SszList<Validator, VALIDATOR_REGISTRY_LIMIT>>()?; // validators
+        decoder
+            .register_anonymous_variable_length_item::<SszList<Gwei, VALIDATOR_REGISTRY_LIMIT>>()?; // balances
+        decoder.register_type::<SszVector<Hash256, EPOCHS_PER_HISTORICAL_VECTOR>>()?; // randao_mixes
+        decoder.register_type::<SszVector<Gwei, EPOCHS_PER_SLASHINGS_VECTOR>>()?; // slashings
+        decoder.register_anonymous_variable_length_item::<SszList<PendingAttestation<MAX_VALIDATORS_PER_COMMITTEE>, MAX_PENDING_ATTESTATIONS>>()?; // previous_epoch_attestations
+        decoder.register_anonymous_variable_length_item::<SszList<PendingAttestation<MAX_VALIDATORS_PER_COMMITTEE>, MAX_PENDING_ATTESTATIONS>>()?; // current_epoch_attestations
+        decoder.register_type::<Bitvector<JUSTIFICATION_BITS_LENGTH>>()?; // justification_bits
+        decoder.register_type::<Checkpoint>()?; // previous_justified_checkpoint
+        decoder.register_type::<Checkpoint>()?; // current_justified_checkpoint
+        decoder.register_type::<Checkpoint>()?; // finalized_checkpoint
+        let genesis_time: u64 = decoder.decode_next::<u64>()?;
+        let genesis_validators_root: Root = decoder.decode_next::<Root>()?;
+        let slot: Slot = decoder.decode_next::<Slot>()?;
+        let fork: Fork = decoder.decode_next::<Fork>()?;
+        let latest_block_header: BeaconBlockHeader = decoder.decode_next::<BeaconBlockHeader>()?;
+        let block_roots: SszVector<Root, SLOTS_PER_HISTORICAL_ROOT> =
+            decoder.decode_next::<SszVector<Root, SLOTS_PER_HISTORICAL_ROOT>>()?;
+        let state_roots: SszVector<Root, SLOTS_PER_HISTORICAL_ROOT> =
+            decoder.decode_next::<SszVector<Root, SLOTS_PER_HISTORICAL_ROOT>>()?;
+        let historical_roots: SszList<Root, HISTORICAL_ROOTS_LIMIT> =
+            decoder.decode_next::<SszList<Root, HISTORICAL_ROOTS_LIMIT>>()?;
+        let eth1_data: Eth1Data = decoder.decode_next::<Eth1Data>()?;
+        let eth1_data_votes: SszList<Eth1Data, ETH1_DATA_VOTES_LIMIT> =
+            decoder.decode_next::<SszList<Eth1Data, ETH1_DATA_VOTES_LIMIT>>()?;
+        let eth1_deposit_index: u64 = decoder.decode_next::<u64>()?;
+        let validators: SszList<Validator, VALIDATOR_REGISTRY_LIMIT> =
+            decoder.decode_next::<SszList<Validator, VALIDATOR_REGISTRY_LIMIT>>()?;
+        let balances: SszList<Gwei, VALIDATOR_REGISTRY_LIMIT> =
+            decoder.decode_next::<SszList<Gwei, VALIDATOR_REGISTRY_LIMIT>>()?;
+        let randao_mixes: SszVector<Hash256, EPOCHS_PER_HISTORICAL_VECTOR> =
+            decoder.decode_next::<SszVector<Hash256, EPOCHS_PER_HISTORICAL_VECTOR>>()?;
+        let slashings: SszVector<Gwei, EPOCHS_PER_SLASHINGS_VECTOR> =
+            decoder.decode_next::<SszVector<Gwei, EPOCHS_PER_SLASHINGS_VECTOR>>()?;
+        let previous_epoch_attestations: SszList<
+            PendingAttestation<MAX_VALIDATORS_PER_COMMITTEE>,
+            MAX_PENDING_ATTESTATIONS,
+        > =
+            decoder.decode_next::<SszList<
+                PendingAttestation<MAX_VALIDATORS_PER_COMMITTEE>,
+                MAX_PENDING_ATTESTATIONS,
+            >>()?;
+        let current_epoch_attestations: SszList<
+            PendingAttestation<MAX_VALIDATORS_PER_COMMITTEE>,
+            MAX_PENDING_ATTESTATIONS,
+        > =
+            decoder.decode_next::<SszList<
+                PendingAttestation<MAX_VALIDATORS_PER_COMMITTEE>,
+                MAX_PENDING_ATTESTATIONS,
+            >>()?;
+        let justification_bits: Bitvector<JUSTIFICATION_BITS_LENGTH> =
+            decoder.decode_next::<Bitvector<JUSTIFICATION_BITS_LENGTH>>()?;
+        let previous_justified_checkpoint: Checkpoint = decoder.decode_next::<Checkpoint>()?;
+        let current_justified_checkpoint: Checkpoint = decoder.decode_next::<Checkpoint>()?;
+        let finalized_checkpoint: Checkpoint = decoder.decode_next::<Checkpoint>()?;
+        decoder.finish()?;
+        Self {
+            genesis_time,
+            genesis_validators_root,
+            slot,
+            fork,
+            latest_block_header,
+            block_roots,
+            state_roots,
+            historical_roots,
+            eth1_data,
+            eth1_data_votes,
+            eth1_deposit_index,
+            validators,
+            balances,
+            randao_mixes,
+            slashings,
+            previous_epoch_attestations,
+            current_epoch_attestations,
+            justification_bits,
+            previous_justified_checkpoint,
+            current_justified_checkpoint,
+            finalized_checkpoint,
+        }
+        .into_tree_backend()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::phase0::MinimalBeaconState;
+
+    fn state() -> MinimalBeaconState {
+        MinimalBeaconState::default()
+    }
+
+    #[test]
+    fn validators_field_uses_tree_backend() {
+        assert!(state().validators.backend_is_tree());
+    }
+
+    #[test]
+    fn historical_roots_field_uses_tree_backend() {
+        assert!(state().historical_roots.backend_is_tree());
+    }
+
+    #[test]
+    fn state_roots_field_uses_tree_backend() {
+        assert!(state().state_roots.backend_is_tree());
+    }
+
+    #[test]
+    fn block_roots_field_uses_tree_backend() {
+        assert!(state().block_roots.backend_is_tree());
+    }
+
+    #[test]
+    fn randao_mixes_field_uses_tree_backend() {
+        assert!(state().randao_mixes.backend_is_tree());
+    }
+
+    #[test]
+    fn previous_epoch_attestations_field_uses_tree_backend() {
+        assert!(state().previous_epoch_attestations.backend_is_tree());
+    }
+
+    #[test]
+    fn current_epoch_attestations_field_uses_tree_backend() {
+        assert!(state().current_epoch_attestations.backend_is_tree());
     }
 }

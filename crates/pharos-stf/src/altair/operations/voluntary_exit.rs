@@ -6,6 +6,7 @@
 //!
 //! Per `specs/phase0/beacon-chain.md:2114-2130` (unchanged in Altair).
 
+use pharos_ssz::SszSequence;
 use pharos_types::{EthSpec, altair::BeaconState, phase0::SignedVoluntaryExit};
 
 use crate::altair::helpers::initiate_validator_exit_altair_pub;
@@ -58,7 +59,6 @@ where
     let exit = &signed_exit.message;
     let validator = state
         .validators
-        .as_slice()
         .get(exit.validator_index.0 as usize)
         .ok_or(StateTransitionError::InvalidVoluntaryExit {
             reason: VoluntaryExitInvalidReason::ValidatorNotActive,

@@ -7,6 +7,7 @@
 //!
 //! Per `specs/bellatrix/beacon-chain.md:253-276` (modified `slash_validator`).
 
+use pharos_ssz::SszSequence;
 use pharos_types::{EthSpec, bellatrix::BeaconState, phase0::ProposerSlashing};
 
 use crate::bellatrix::helpers::slash_validator_bellatrix;
@@ -93,7 +94,6 @@ where
     let proposer_idx = header_1.proposer_index;
     let proposer = state
         .validators
-        .as_slice()
         .get(proposer_idx.0 as usize)
         .ok_or(StateTransitionError::InvalidProposerSlashing {
             reason: ProposerSlashingInvalidReason::ValidatorNotSlashable,

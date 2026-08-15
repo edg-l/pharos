@@ -83,7 +83,6 @@ pub(crate) fn get_total_active_balance_bellatrix<
     let current_epoch = compute_epoch_at_slot(state.slot, E::SLOTS_PER_EPOCH);
     let sum: u64 = state
         .validators
-        .as_slice()
         .iter()
         .filter(|v| is_active_validator(v, current_epoch.0))
         .map(|v| v.effective_balance.0)
@@ -415,13 +414,14 @@ pub(crate) fn initiate_validator_exit_bellatrix<
     use crate::phase0::helpers::FAR_FUTURE_EPOCH;
 
     {
-        let v = state
+        let exit_epoch_val = state
             .validators
-            .as_slice()
             .get(index.0 as usize)
-            .ok_or(crate::error::StateTransitionError::SlotOutOfRange)?;
-        if v.exit_epoch.0 != FAR_FUTURE_EPOCH {
-            return Ok(());
+            .map(|v| v.exit_epoch.0);
+        match exit_epoch_val {
+            None => return Err(crate::error::StateTransitionError::SlotOutOfRange),
+            Some(ep) if ep != FAR_FUTURE_EPOCH => return Ok(()),
+            _ => {}
         }
     }
 
@@ -432,7 +432,6 @@ pub(crate) fn initiate_validator_exit_bellatrix<
     let exit_queue_epoch = {
         let max_existing = state
             .validators
-            .as_slice()
             .iter()
             .filter(|v| v.exit_epoch.0 != FAR_FUTURE_EPOCH)
             .map(|v| v.exit_epoch.0)
@@ -445,7 +444,6 @@ pub(crate) fn initiate_validator_exit_bellatrix<
     let churn_limit = {
         let active_count = state
             .validators
-            .as_slice()
             .iter()
             .filter(|v| is_active_validator(v, current_epoch.0))
             .count() as u64;
@@ -454,7 +452,6 @@ pub(crate) fn initiate_validator_exit_bellatrix<
 
     let exit_queue_churn = state
         .validators
-        .as_slice()
         .iter()
         .filter(|v| v.exit_epoch == exit_queue_epoch)
         .count() as u64;
@@ -472,7 +469,6 @@ pub(crate) fn initiate_validator_exit_bellatrix<
 
     let mut v = state
         .validators
-        .as_slice()
         .get(index.0 as usize)
         .ok_or(crate::error::StateTransitionError::SlotOutOfRange)?
         .clone();
@@ -563,7 +559,6 @@ where
     let (effective_balance, current_withdrawable_epoch) = {
         let v = state
             .validators
-            .as_slice()
             .get(slashed_index.0 as usize)
             .ok_or(crate::error::StateTransitionError::SlotOutOfRange)?;
         (v.effective_balance, v.withdrawable_epoch)
@@ -578,7 +573,6 @@ where
     {
         let mut v = state
             .validators
-            .as_slice()
             .get(slashed_index.0 as usize)
             .ok_or(crate::error::StateTransitionError::SlotOutOfRange)?
             .clone();
@@ -787,7 +781,6 @@ where
         if !matching_set.contains(&index.0) {
             let effective_balance = state
                 .validators
-                .as_slice()
                 .get(index.0 as usize)
                 .map(|v| v.effective_balance.0)
                 .unwrap_or(0);

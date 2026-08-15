@@ -204,7 +204,7 @@ impl<
             BeaconState::Bellatrix(s) => s.latest_block_header(),
         }
     }
-    fn validators(&self) -> &[Validator] {
+    fn validators(&self) -> Vec<Validator> {
         match self {
             BeaconState::Phase0(s) => s.validators(),
             BeaconState::Altair(s) => s.validators(),
@@ -218,21 +218,21 @@ impl<
             BeaconState::Bellatrix(s) => s.balances(),
         }
     }
-    fn block_roots(&self) -> &[Root] {
+    fn block_roots(&self) -> Vec<Root> {
         match self {
             BeaconState::Phase0(s) => s.block_roots(),
             BeaconState::Altair(s) => s.block_roots(),
             BeaconState::Bellatrix(s) => s.block_roots(),
         }
     }
-    fn state_roots(&self) -> &[Root] {
+    fn state_roots(&self) -> Vec<Root> {
         match self {
             BeaconState::Phase0(s) => s.state_roots(),
             BeaconState::Altair(s) => s.state_roots(),
             BeaconState::Bellatrix(s) => s.state_roots(),
         }
     }
-    fn randao_mixes(&self) -> &[Hash256] {
+    fn randao_mixes(&self) -> Vec<Hash256> {
         match self {
             BeaconState::Phase0(s) => s.randao_mixes(),
             BeaconState::Altair(s) => s.randao_mixes(),

@@ -115,17 +115,15 @@ fn compute_historical_batch_root_altair<
         SYNC_COMMITTEE_SIZE,
     >,
 ) -> Root {
-    let block_roots_slice = state.block_roots.as_slice();
-    let state_roots_slice = state.state_roots.as_slice();
+    let block_roots_vec: Vec<Root> = state.block_roots.to_vec();
+    let state_roots_vec: Vec<Root> = state.state_roots.to_vec();
 
     match E::SLOTS_PER_HISTORICAL_ROOT {
         8192 => {
             let block_roots: SszVector<Root, 8192> =
-                SszVector::from_vec(block_roots_slice.to_vec())
-                    .expect("block_roots length matches");
+                SszVector::from_vec(block_roots_vec).expect("block_roots length matches");
             let state_roots: SszVector<Root, 8192> =
-                SszVector::from_vec(state_roots_slice.to_vec())
-                    .expect("state_roots length matches");
+                SszVector::from_vec(state_roots_vec).expect("state_roots length matches");
             HistoricalBatch::<8192> {
                 block_roots,
                 state_roots,
@@ -133,10 +131,10 @@ fn compute_historical_batch_root_altair<
             .tree_hash_root()
         }
         64 => {
-            let block_roots: SszVector<Root, 64> = SszVector::from_vec(block_roots_slice.to_vec())
-                .expect("block_roots length matches");
-            let state_roots: SszVector<Root, 64> = SszVector::from_vec(state_roots_slice.to_vec())
-                .expect("state_roots length matches");
+            let block_roots: SszVector<Root, 64> =
+                SszVector::from_vec(block_roots_vec).expect("block_roots length matches");
+            let state_roots: SszVector<Root, 64> =
+                SszVector::from_vec(state_roots_vec).expect("state_roots length matches");
             HistoricalBatch::<64> {
                 block_roots,
                 state_roots,

@@ -180,7 +180,6 @@ where
             .map(|vi| {
                 state
                     .validators
-                    .as_slice()
                     .get(vi.0 as usize)
                     .map(|v| v.pubkey)
                     .unwrap_or_default()
@@ -364,7 +363,6 @@ pub(crate) fn get_committee_count_per_slot_altair<
     use crate::phase0::predicates::is_active_validator;
     let active_count = state
         .validators
-        .as_slice()
         .iter()
         .filter(|v| is_active_validator(v, epoch.0))
         .count() as u64;
@@ -414,7 +412,6 @@ pub(crate) fn get_beacon_committee_altair<
     use crate::phase0::predicates::is_active_validator;
     let active: Vec<ValidatorIndex> = state
         .validators
-        .as_slice()
         .iter()
         .enumerate()
         .filter_map(|(i, v)| {

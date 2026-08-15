@@ -300,7 +300,6 @@ where
         let proposer_index = block.proposer_index();
         let proposer_pubkey = state
             .validators
-            .as_slice()
             .get(proposer_index.0 as usize)
             .ok_or(StateTransitionError::InvalidBlockSignature)?
             .pubkey;

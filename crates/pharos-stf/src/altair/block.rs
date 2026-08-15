@@ -467,7 +467,6 @@ where
     // Proposer must not be slashed.
     let proposer = state
         .validators
-        .as_slice()
         .get(block.proposer_index.0 as usize)
         .ok_or(StateTransitionError::InvalidBlockHeader {
             reason: BlockHeaderInvalidReason::ProposerSlashed,
@@ -578,7 +577,6 @@ where
     if verify_signatures {
         let proposer = state
             .validators
-            .as_slice()
             .get(
                 crate::altair::helpers::get_proposer_index_altair::<
                     SLOTS_PER_HISTORICAL_ROOT,
@@ -626,7 +624,7 @@ where
     // Mix in the RANDAO reveal hash.
     let reveal_root = pharos_utils::hash::hash(body.randao_reveal.as_slice());
     let mix_idx = (epoch.0 % E::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
-    let cur_mix = state.randao_mixes.as_slice()[mix_idx];
+    let cur_mix = state.randao_mixes.get(mix_idx).copied().unwrap_or_default();
     let new_mix = xor(&cur_mix, &reveal_root);
     state.randao_mixes = state
         .randao_mixes

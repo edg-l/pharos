@@ -1,5 +1,6 @@
 //! `process_sync_aggregate` per `specs/altair/beacon-chain.md:574-635`.
 
+use pharos_ssz::SszSequence;
 use pharos_types::{
     EthSpec,
     altair::{BeaconState, SyncAggregate},
@@ -112,7 +113,11 @@ where
                     return Err(StateTransitionError::SlotOutOfRange);
                 }
                 let idx = (previous_slot.0 % E::SLOTS_PER_HISTORICAL_ROOT) as usize;
-                state.block_roots.as_slice()[idx]
+                state
+                    .block_roots
+                    .get(idx)
+                    .copied()
+                    .ok_or(StateTransitionError::SlotOutOfRange)?
             };
 
             let epoch = compute_epoch_at_slot(previous_slot, E::SLOTS_PER_EPOCH);
@@ -192,7 +197,6 @@ where
     // Per spec invariant every sync committee pubkey MUST appear in state.validators.
     let pubkey_to_index: std::collections::HashMap<BLSPubkey, ValidatorIndex> = state
         .validators
-        .as_slice()
         .iter()
         .enumerate()
         .map(|(i, v)| (v.pubkey, ValidatorIndex(i as u64)))

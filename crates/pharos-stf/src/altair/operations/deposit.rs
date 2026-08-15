@@ -128,11 +128,7 @@ fn apply_deposit_altair<
     signature: &pharos_utils::BLSSignature,
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError> {
-    let existing_index = state
-        .validators
-        .as_slice()
-        .iter()
-        .position(|v| &v.pubkey == pubkey);
+    let existing_index = state.validators.iter().position(|v| &v.pubkey == pubkey);
 
     match existing_index {
         Some(idx) => {

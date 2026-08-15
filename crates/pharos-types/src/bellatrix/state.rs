@@ -6,7 +6,7 @@
 //! - `latest_execution_payload_header: ExecutionPayloadHeader` added
 //!   (`[New in Bellatrix]`).
 
-use pharos_ssz::{Bitvector, Decode, Encode, SszList, SszVector, TreeHash};
+use pharos_ssz::{Bitvector, Decode, Encode, SszError, SszList, SszSequence, SszVector, TreeHash};
 use pharos_utils::Hash256;
 
 use crate::altair::constants::ParticipationFlags;
@@ -32,7 +32,7 @@ use crate::views::{BeaconStateView, ForkVariant};
 /// 8. `SYNC_COMMITTEE_SIZE` — `presets/*/altair.yaml:15`
 /// 9. `BYTES_PER_LOGS_BLOOM` — `presets/*/bellatrix.yaml`
 /// 10. `MAX_EXTRA_DATA_BYTES` — `presets/*/bellatrix.yaml`
-#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq)]
+#[derive(Encode, TreeHash, Clone, Debug, PartialEq, Eq)]
 pub struct BeaconState<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
@@ -149,15 +149,27 @@ where
             slot: Slot::default(),
             fork: Fork::default(),
             latest_block_header: BeaconBlockHeader::default(),
-            block_roots: SszVector::default(),
-            state_roots: SszVector::default(),
-            historical_roots: SszList::default(),
+            block_roots: SszVector::from_vec_tree(vec![
+                Root::default();
+                SLOTS_PER_HISTORICAL_ROOT as usize
+            ])
+            .expect("default block_roots tree init"),
+            state_roots: SszVector::from_vec_tree(vec![
+                Root::default();
+                SLOTS_PER_HISTORICAL_ROOT as usize
+            ])
+            .expect("default state_roots tree init"),
+            historical_roots: SszList::empty_tree(),
             eth1_data: Eth1Data::default(),
             eth1_data_votes: SszList::default(),
             eth1_deposit_index: 0,
-            validators: SszList::default(),
+            validators: SszList::empty_tree(),
             balances: SszList::default(),
-            randao_mixes: SszVector::default(),
+            randao_mixes: SszVector::from_vec_tree(vec![
+                Hash256::default();
+                EPOCHS_PER_HISTORICAL_VECTOR as usize
+            ])
+            .expect("default randao_mixes tree init"),
             slashings: SszVector::default(),
             previous_epoch_participation: SszList::default(),
             current_epoch_participation: SszList::default(),
@@ -170,6 +182,189 @@ where
             next_sync_committee: SyncCommittee::default(),
             latest_execution_payload_header: ExecutionPayloadHeader::default(),
         }
+    }
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+>
+    BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    Root: Default + Clone,
+    Hash256: Default + Clone,
+{
+    /// Convert all tree-set fields from Naive to Tree backend.
+    pub fn into_tree_backend(mut self) -> Result<Self, SszError> {
+        self.block_roots = self.block_roots.into_tree()?;
+        self.state_roots = self.state_roots.into_tree()?;
+        self.historical_roots = self.historical_roots.into_tree()?;
+        self.validators = self.validators.into_tree()?;
+        self.randao_mixes = self.randao_mixes.into_tree()?;
+        Ok(self)
+    }
+}
+
+// ── Manual Decode impl ────────────────────────────────────────────────────────
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+> Decode
+    for BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    Root: Default + Clone,
+    Hash256: Default + Clone,
+{
+    const IS_FIXED_SIZE: bool = false;
+
+    fn ssz_fixed_len() -> usize {
+        pharos_ssz::BYTES_PER_LENGTH_OFFSET
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, SszError> {
+        use pharos_ssz::SszDecoder;
+        let mut decoder = SszDecoder::new(bytes);
+        decoder.register_type::<u64>()?;
+        decoder.register_type::<Root>()?;
+        decoder.register_type::<Slot>()?;
+        decoder.register_type::<Fork>()?;
+        decoder.register_type::<BeaconBlockHeader>()?;
+        decoder.register_type::<SszVector<Root, SLOTS_PER_HISTORICAL_ROOT>>()?;
+        decoder.register_type::<SszVector<Root, SLOTS_PER_HISTORICAL_ROOT>>()?;
+        decoder
+            .register_anonymous_variable_length_item::<SszList<Root, HISTORICAL_ROOTS_LIMIT>>()?;
+        decoder.register_type::<Eth1Data>()?;
+        decoder
+            .register_anonymous_variable_length_item::<SszList<Eth1Data, ETH1_DATA_VOTES_LIMIT>>(
+            )?;
+        decoder.register_type::<u64>()?;
+        decoder.register_anonymous_variable_length_item::<SszList<Validator, VALIDATOR_REGISTRY_LIMIT>>()?;
+        decoder
+            .register_anonymous_variable_length_item::<SszList<Gwei, VALIDATOR_REGISTRY_LIMIT>>()?;
+        decoder.register_type::<SszVector<Hash256, EPOCHS_PER_HISTORICAL_VECTOR>>()?;
+        decoder.register_type::<SszVector<Gwei, EPOCHS_PER_SLASHINGS_VECTOR>>()?;
+        decoder.register_anonymous_variable_length_item::<SszList<ParticipationFlags, VALIDATOR_REGISTRY_LIMIT>>()?;
+        decoder.register_anonymous_variable_length_item::<SszList<ParticipationFlags, VALIDATOR_REGISTRY_LIMIT>>()?;
+        decoder.register_type::<Bitvector<JUSTIFICATION_BITS_LENGTH>>()?;
+        decoder.register_type::<Checkpoint>()?;
+        decoder.register_type::<Checkpoint>()?;
+        decoder.register_type::<Checkpoint>()?;
+        decoder
+            .register_anonymous_variable_length_item::<SszList<u64, VALIDATOR_REGISTRY_LIMIT>>()?;
+        decoder.register_type::<SyncCommittee<SYNC_COMMITTEE_SIZE>>()?;
+        decoder.register_type::<SyncCommittee<SYNC_COMMITTEE_SIZE>>()?;
+        decoder.register_anonymous_variable_length_item::<ExecutionPayloadHeader<BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>>()?;
+        let genesis_time: u64 = decoder.decode_next::<u64>()?;
+        let genesis_validators_root: Root = decoder.decode_next::<Root>()?;
+        let slot: Slot = decoder.decode_next::<Slot>()?;
+        let fork: Fork = decoder.decode_next::<Fork>()?;
+        let latest_block_header: BeaconBlockHeader = decoder.decode_next::<BeaconBlockHeader>()?;
+        let block_roots: SszVector<Root, SLOTS_PER_HISTORICAL_ROOT> =
+            decoder.decode_next::<SszVector<Root, SLOTS_PER_HISTORICAL_ROOT>>()?;
+        let state_roots: SszVector<Root, SLOTS_PER_HISTORICAL_ROOT> =
+            decoder.decode_next::<SszVector<Root, SLOTS_PER_HISTORICAL_ROOT>>()?;
+        let historical_roots: SszList<Root, HISTORICAL_ROOTS_LIMIT> =
+            decoder.decode_next::<SszList<Root, HISTORICAL_ROOTS_LIMIT>>()?;
+        let eth1_data: Eth1Data = decoder.decode_next::<Eth1Data>()?;
+        let eth1_data_votes: SszList<Eth1Data, ETH1_DATA_VOTES_LIMIT> =
+            decoder.decode_next::<SszList<Eth1Data, ETH1_DATA_VOTES_LIMIT>>()?;
+        let eth1_deposit_index: u64 = decoder.decode_next::<u64>()?;
+        let validators: SszList<Validator, VALIDATOR_REGISTRY_LIMIT> =
+            decoder.decode_next::<SszList<Validator, VALIDATOR_REGISTRY_LIMIT>>()?;
+        let balances: SszList<Gwei, VALIDATOR_REGISTRY_LIMIT> =
+            decoder.decode_next::<SszList<Gwei, VALIDATOR_REGISTRY_LIMIT>>()?;
+        let randao_mixes: SszVector<Hash256, EPOCHS_PER_HISTORICAL_VECTOR> =
+            decoder.decode_next::<SszVector<Hash256, EPOCHS_PER_HISTORICAL_VECTOR>>()?;
+        let slashings: SszVector<Gwei, EPOCHS_PER_SLASHINGS_VECTOR> =
+            decoder.decode_next::<SszVector<Gwei, EPOCHS_PER_SLASHINGS_VECTOR>>()?;
+        let previous_epoch_participation: SszList<ParticipationFlags, VALIDATOR_REGISTRY_LIMIT> =
+            decoder.decode_next::<SszList<ParticipationFlags, VALIDATOR_REGISTRY_LIMIT>>()?;
+        let current_epoch_participation: SszList<ParticipationFlags, VALIDATOR_REGISTRY_LIMIT> =
+            decoder.decode_next::<SszList<ParticipationFlags, VALIDATOR_REGISTRY_LIMIT>>()?;
+        let justification_bits: Bitvector<JUSTIFICATION_BITS_LENGTH> =
+            decoder.decode_next::<Bitvector<JUSTIFICATION_BITS_LENGTH>>()?;
+        let previous_justified_checkpoint: Checkpoint = decoder.decode_next::<Checkpoint>()?;
+        let current_justified_checkpoint: Checkpoint = decoder.decode_next::<Checkpoint>()?;
+        let finalized_checkpoint: Checkpoint = decoder.decode_next::<Checkpoint>()?;
+        let inactivity_scores: SszList<u64, VALIDATOR_REGISTRY_LIMIT> =
+            decoder.decode_next::<SszList<u64, VALIDATOR_REGISTRY_LIMIT>>()?;
+        let current_sync_committee: SyncCommittee<SYNC_COMMITTEE_SIZE> =
+            decoder.decode_next::<SyncCommittee<SYNC_COMMITTEE_SIZE>>()?;
+        let next_sync_committee: SyncCommittee<SYNC_COMMITTEE_SIZE> =
+            decoder.decode_next::<SyncCommittee<SYNC_COMMITTEE_SIZE>>()?;
+        let latest_execution_payload_header: ExecutionPayloadHeader<
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+        > = decoder
+            .decode_next::<ExecutionPayloadHeader<BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>>()?;
+        decoder.finish()?;
+        Self {
+            genesis_time,
+            genesis_validators_root,
+            slot,
+            fork,
+            latest_block_header,
+            block_roots,
+            state_roots,
+            historical_roots,
+            eth1_data,
+            eth1_data_votes,
+            eth1_deposit_index,
+            validators,
+            balances,
+            randao_mixes,
+            slashings,
+            previous_epoch_participation,
+            current_epoch_participation,
+            justification_bits,
+            previous_justified_checkpoint,
+            current_justified_checkpoint,
+            finalized_checkpoint,
+            inactivity_scores,
+            current_sync_committee,
+            next_sync_committee,
+            latest_execution_payload_header,
+        }
+        .into_tree_backend()
     }
 }
 
@@ -219,20 +414,20 @@ impl<
     fn latest_block_header(&self) -> &BeaconBlockHeader {
         &self.latest_block_header
     }
-    fn validators(&self) -> &[Validator] {
-        self.validators.as_slice()
+    fn validators(&self) -> Vec<Validator> {
+        self.validators.iter().cloned().collect()
     }
     fn balances(&self) -> &[Gwei] {
         self.balances.as_slice()
     }
-    fn block_roots(&self) -> &[Root] {
-        self.block_roots.as_slice()
+    fn block_roots(&self) -> Vec<Root> {
+        self.block_roots.iter().cloned().collect()
     }
-    fn state_roots(&self) -> &[Root] {
-        self.state_roots.as_slice()
+    fn state_roots(&self) -> Vec<Root> {
+        self.state_roots.iter().cloned().collect()
     }
-    fn randao_mixes(&self) -> &[Hash256] {
-        self.randao_mixes.as_slice()
+    fn randao_mixes(&self) -> Vec<Hash256> {
+        self.randao_mixes.iter().cloned().collect()
     }
     fn slashings(&self) -> &[Gwei] {
         self.slashings.as_slice()
@@ -323,5 +518,34 @@ mod tests {
     #[test]
     fn beacon_state_minimal_roundtrip() {
         roundtrip(super::MinimalBeaconState::default());
+    }
+
+    fn state() -> super::MinimalBeaconState {
+        super::MinimalBeaconState::default()
+    }
+
+    #[test]
+    fn validators_field_uses_tree_backend() {
+        assert!(state().validators.backend_is_tree());
+    }
+
+    #[test]
+    fn historical_roots_field_uses_tree_backend() {
+        assert!(state().historical_roots.backend_is_tree());
+    }
+
+    #[test]
+    fn state_roots_field_uses_tree_backend() {
+        assert!(state().state_roots.backend_is_tree());
+    }
+
+    #[test]
+    fn block_roots_field_uses_tree_backend() {
+        assert!(state().block_roots.backend_is_tree());
+    }
+
+    #[test]
+    fn randao_mixes_field_uses_tree_backend() {
+        assert!(state().randao_mixes.backend_is_tree());
     }
 }

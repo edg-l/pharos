@@ -70,10 +70,10 @@ pub trait BeaconStateWrite: BeaconStateView {
     fn clear_current_epoch_attestations(&mut self);
     /// Clear `eth1_data_votes`.
     fn clear_eth1_data_votes(&mut self);
-    /// Read `previous_epoch_attestations` as a slice.
-    fn previous_epoch_attestations(&self) -> &[PendingAttestation<2048>];
-    /// Read `current_epoch_attestations` as a slice.
-    fn current_epoch_attestations(&self) -> &[PendingAttestation<2048>];
+    /// Read `previous_epoch_attestations` as an owned vec.
+    fn previous_epoch_attestations(&self) -> Vec<PendingAttestation<2048>>;
+    /// Read `current_epoch_attestations` as an owned vec.
+    fn current_epoch_attestations(&self) -> Vec<PendingAttestation<2048>>;
     /// Read `justification_bits` as a concrete `Bitvector<4>` (both presets use 4 bits).
     fn justification_bits(&self) -> Bitvector<4>;
     /// Read `historical_roots` length.
@@ -272,25 +272,27 @@ where
         &mut self,
         atts: Vec<PendingAttestation<2048>>,
     ) -> Result<(), StateTransitionError> {
-        self.previous_epoch_attestations =
-            pharos_ssz::SszList::from_vec(atts).map_err(StateTransitionError::Ssz)?;
+        self.previous_epoch_attestations = pharos_ssz::SszList::from_vec(atts)
+            .map_err(StateTransitionError::Ssz)?
+            .into_tree()
+            .map_err(StateTransitionError::Ssz)?;
         Ok(())
     }
 
     fn clear_current_epoch_attestations(&mut self) {
-        self.current_epoch_attestations = pharos_ssz::SszList::default();
+        self.current_epoch_attestations = pharos_ssz::SszList::empty_tree();
     }
 
     fn clear_eth1_data_votes(&mut self) {
         self.eth1_data_votes = pharos_ssz::SszList::default();
     }
 
-    fn previous_epoch_attestations(&self) -> &[PendingAttestation<2048>] {
-        self.previous_epoch_attestations.as_slice()
+    fn previous_epoch_attestations(&self) -> Vec<PendingAttestation<2048>> {
+        self.previous_epoch_attestations.iter().cloned().collect()
     }
 
-    fn current_epoch_attestations(&self) -> &[PendingAttestation<2048>] {
-        self.current_epoch_attestations.as_slice()
+    fn current_epoch_attestations(&self) -> Vec<PendingAttestation<2048>> {
+        self.current_epoch_attestations.iter().cloned().collect()
     }
 
     // JUSTIFICATION_BITS_LENGTH = 4 in both mainnet and minimal presets.
@@ -676,7 +678,7 @@ where
         }
     }
 
-    fn previous_epoch_attestations(&self) -> &[PendingAttestation<2048>] {
+    fn previous_epoch_attestations(&self) -> Vec<PendingAttestation<2048>> {
         match self {
             ForkBeaconState::Phase0(s) => s.previous_epoch_attestations(),
             ForkBeaconState::Altair(_) => {
@@ -688,7 +690,7 @@ where
         }
     }
 
-    fn current_epoch_attestations(&self) -> &[PendingAttestation<2048>] {
+    fn current_epoch_attestations(&self) -> Vec<PendingAttestation<2048>> {
         match self {
             ForkBeaconState::Phase0(s) => s.current_epoch_attestations(),
             ForkBeaconState::Altair(_) => {

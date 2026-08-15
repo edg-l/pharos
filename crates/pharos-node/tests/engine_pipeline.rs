@@ -34,7 +34,7 @@ use pharos_engine::{EngineClient, JwtSecret, spawn_engine_actor};
 use pharos_fork_choice::{get_forkchoice_store, get_head};
 use pharos_network::network::NetworkEvent;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
-use pharos_ssz::{Encode, TreeHash};
+use pharos_ssz::{Encode, SszSequence, TreeHash};
 use pharos_stf::{NullExecutionEngine, state_transition};
 use pharos_types::bellatrix::{
     MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalSignedBeaconBlock,
@@ -266,7 +266,7 @@ fn build_chain(
             };
             let epoch = slot.0 / MinimalEthSpec::SLOTS_PER_EPOCH;
             let idx = (epoch % MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
-            let randao = s.randao_mixes.as_slice()[idx];
+            let randao = s.randao_mixes.get(idx).copied().unwrap_or_default();
             let ts = s.genesis_time + slot.0 * runtime_cfg.seconds_per_slot;
             (randao, ts)
         };

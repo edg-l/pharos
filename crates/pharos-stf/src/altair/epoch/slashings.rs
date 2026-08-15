@@ -90,7 +90,7 @@ where
     // Collect slashable (index, effective_balance) pairs.
     let slashable: Vec<(usize, u64)> = (0..n)
         .filter_map(|i| {
-            let v = state.validators.as_slice().get(i)?;
+            let v = state.validators.get(i)?;
             if v.slashed && slashing_epoch_mid == v.withdrawable_epoch.0 {
                 Some((i, v.effective_balance.0))
             } else {

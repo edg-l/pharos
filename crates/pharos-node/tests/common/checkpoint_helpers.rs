@@ -125,7 +125,7 @@ pub fn build_anchor_bellatrix(
             state_root: Root::default(), // zeroed per spec (process_block_header)
             body_root: anchor_body_root,
         },
-        validators: SszList::with_push(&SszList::default(), validator).unwrap(),
+        validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
             Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
@@ -223,7 +223,7 @@ pub fn build_backfill_chain(
             };
             let epoch = slot.0 / MinimalEthSpec::SLOTS_PER_EPOCH;
             let idx = (epoch % MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
-            let randao = s.randao_mixes.as_slice()[idx];
+            let randao = s.randao_mixes.get(idx).copied().unwrap_or_default();
             let ts = s.genesis_time + slot.0 * runtime_cfg.seconds_per_slot;
             (randao, ts)
         };

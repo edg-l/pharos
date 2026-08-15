@@ -504,6 +504,21 @@ impl<T, const N: u64> SszList<T, N> {
     pub fn backend_is_tree(&self) -> bool {
         matches!(self.backend, Backend::Tree(_))
     }
+
+    /// Convert a Naive-backed list to tree-backed.
+    ///
+    /// If already tree-backed, returns `Ok(self)` unchanged.
+    /// Returns `SszError` if the element type does not admit the tree backend
+    /// (multi-per-chunk packed basics).
+    pub fn into_tree(self) -> Result<Self, SszError>
+    where
+        T: Clone + TreeHash,
+    {
+        match self.backend {
+            Backend::Tree(_) => Ok(self),
+            Backend::Naive(v) => Self::from_vec_tree(v),
+        }
+    }
 }
 
 impl<T, const N: u64> Default for SszList<T, N> {
@@ -741,6 +756,21 @@ impl<T, const N: u64> SszVector<T, N> {
                      use iter() or to_vec() instead"
                 )
             }
+        }
+    }
+
+    /// Convert a Naive-backed vector to tree-backed.
+    ///
+    /// If already tree-backed, returns `Ok(self)` unchanged.
+    /// Returns `SszError` if the element type does not admit the tree backend
+    /// (multi-per-chunk packed basics).
+    pub fn into_tree(self) -> Result<Self, SszError>
+    where
+        T: Clone + TreeHash,
+    {
+        match self.backend {
+            Backend::Tree(_) => Ok(self),
+            Backend::Naive(v) => Self::from_vec_tree(v),
         }
     }
 }

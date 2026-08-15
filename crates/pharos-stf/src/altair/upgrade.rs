@@ -162,7 +162,7 @@ where
 
     // Translate previous_epoch_attestations into participation flags.
     // spec: fork.md:104-114 (`translate_participation`)
-    for attestation in pre.previous_epoch_attestations.as_slice() {
+    for attestation in pre.previous_epoch_attestations.iter() {
         let data = &attestation.data;
         let inclusion_delay = attestation.inclusion_delay.0;
 

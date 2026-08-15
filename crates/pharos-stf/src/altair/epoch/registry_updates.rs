@@ -79,7 +79,6 @@ where
     for index in 0..n {
         let v = state
             .validators
-            .as_slice()
             .get(index)
             .ok_or(EpochProcessingError::ValidatorIndexOutOfRange { index })?
             .clone();
@@ -114,10 +113,7 @@ where
     let finalized_epoch = state.finalized_checkpoint.epoch;
     let mut activation_queue: Vec<usize> = (0..state.validators.len())
         .filter(|&i| {
-            is_eligible_for_activation(
-                finalized_epoch,
-                state.validators.as_slice().get(i).expect("in range"),
-            )
+            is_eligible_for_activation(finalized_epoch, state.validators.get(i).expect("in range"))
         })
         .collect();
 
@@ -125,7 +121,6 @@ where
         (
             state
                 .validators
-                .as_slice()
                 .get(i)
                 .expect("in range")
                 .activation_eligibility_epoch,
@@ -136,7 +131,6 @@ where
     // churn_limit via a BeaconStateView-free path.
     let active_count = state
         .validators
-        .as_slice()
         .iter()
         .filter(|v| is_active_validator(v, current_epoch.0))
         .count() as u64;
@@ -146,7 +140,6 @@ where
     for &index in activation_queue.iter().take(churn_limit) {
         let mut v = state
             .validators
-            .as_slice()
             .get(index)
             .ok_or(EpochProcessingError::ValidatorIndexOutOfRange { index })?
             .clone();

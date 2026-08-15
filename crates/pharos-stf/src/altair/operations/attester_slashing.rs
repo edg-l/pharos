@@ -6,6 +6,7 @@
 //!
 //! Per `specs/altair/beacon-chain.md:459-487` (modified `slash_validator`).
 
+use pharos_ssz::SszSequence;
 use pharos_types::{
     EthSpec,
     altair::BeaconState,
@@ -127,7 +128,6 @@ where
     for index in &intersection {
         let is_slashable = state
             .validators
-            .as_slice()
             .get(index.0 as usize)
             .map(|v| is_slashable_validator(v, epoch.0))
             .unwrap_or(false);
@@ -201,13 +201,7 @@ fn is_valid_indexed_attestation_altair<
 
     let pubkeys: Vec<pharos_utils::BLSPubkey> = indices
         .iter()
-        .filter_map(|i| {
-            state
-                .validators
-                .as_slice()
-                .get(i.0 as usize)
-                .map(|v| v.pubkey)
-        })
+        .filter_map(|i| state.validators.get(i.0 as usize).map(|v| v.pubkey))
         .collect();
 
     if pubkeys.len() != indices.len() {

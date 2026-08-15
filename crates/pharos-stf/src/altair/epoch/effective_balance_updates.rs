@@ -71,7 +71,6 @@ where
                 .0;
             let eff_bal = state
                 .validators
-                .as_slice()
                 .get(i)
                 .map(|v| v.effective_balance.0)
                 .unwrap_or(0);
@@ -98,7 +97,6 @@ where
         if let Some(new_eff) = maybe_new {
             let mut v = state
                 .validators
-                .as_slice()
                 .get(i)
                 .ok_or(EpochProcessingError::ValidatorIndexOutOfRange { index: i })?
                 .clone();

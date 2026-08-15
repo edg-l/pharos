@@ -6,6 +6,7 @@
 //!
 //! Per `specs/altair/beacon-chain.md:459-487` (modified `slash_validator`).
 
+use pharos_ssz::SszSequence;
 use pharos_types::{EthSpec, altair::BeaconState, phase0::ProposerSlashing};
 
 use crate::altair::helpers::slash_validator;
@@ -84,7 +85,6 @@ where
     let proposer_idx = header_1.proposer_index;
     let proposer = state
         .validators
-        .as_slice()
         .get(proposer_idx.0 as usize)
         .ok_or(StateTransitionError::InvalidProposerSlashing {
             reason: ProposerSlashingInvalidReason::ValidatorNotSlashable,

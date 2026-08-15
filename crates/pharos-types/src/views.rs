@@ -32,6 +32,7 @@ use crate::phase0::{
     BLSSignature, BeaconBlockHeader, Checkpoint, Eth1Data, Fork, ProposerSlashing, Root,
     SignedVoluntaryExit, Slot, Validator, ValidatorIndex,
 };
+use pharos_ssz::SszSequence;
 use pharos_utils::{Bytes32, Gwei, Hash256};
 
 // ── ForkVariant ───────────────────────────────────────────────────────────────
@@ -116,11 +117,11 @@ pub trait BeaconStateView {
     fn slot(&self) -> Slot;
     fn fork(&self) -> &Fork;
     fn latest_block_header(&self) -> &BeaconBlockHeader;
-    fn validators(&self) -> &[Validator];
+    fn validators(&self) -> Vec<Validator>;
     fn balances(&self) -> &[Gwei];
-    fn block_roots(&self) -> &[Root];
-    fn state_roots(&self) -> &[Root];
-    fn randao_mixes(&self) -> &[Hash256];
+    fn block_roots(&self) -> Vec<Root>;
+    fn state_roots(&self) -> Vec<Root>;
+    fn randao_mixes(&self) -> Vec<Hash256>;
     fn slashings(&self) -> &[Gwei];
     fn eth1_data(&self) -> &Eth1Data;
     fn previous_justified_checkpoint(&self) -> &Checkpoint;
@@ -265,20 +266,20 @@ impl<
     fn latest_block_header(&self) -> &BeaconBlockHeader {
         &self.latest_block_header
     }
-    fn validators(&self) -> &[Validator] {
-        self.validators.as_slice()
+    fn validators(&self) -> Vec<Validator> {
+        self.validators.iter().cloned().collect()
     }
     fn balances(&self) -> &[Gwei] {
         self.balances.as_slice()
     }
-    fn block_roots(&self) -> &[Root] {
-        self.block_roots.as_slice()
+    fn block_roots(&self) -> Vec<Root> {
+        self.block_roots.iter().cloned().collect()
     }
-    fn state_roots(&self) -> &[Root] {
-        self.state_roots.as_slice()
+    fn state_roots(&self) -> Vec<Root> {
+        self.state_roots.iter().cloned().collect()
     }
-    fn randao_mixes(&self) -> &[Hash256] {
-        self.randao_mixes.as_slice()
+    fn randao_mixes(&self) -> Vec<Hash256> {
+        self.randao_mixes.iter().cloned().collect()
     }
     fn slashings(&self) -> &[Gwei] {
         self.slashings.as_slice()

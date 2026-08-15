@@ -74,8 +74,8 @@ where
     E::BeaconState: BeaconStateWrite,
 {
     {
-        let validator = state
-            .validators()
+        let vs = state.validators();
+        let validator = vs
             .get(index.0 as usize)
             .ok_or(StateTransitionError::SlotOutOfRange)?;
         if validator.exit_epoch.0 != FAR_FUTURE_EPOCH {
@@ -121,11 +121,12 @@ where
         .ok_or(StateTransitionError::SlotOutOfRange)?;
     let withdrawable_epoch = Epoch(withdrawable_epoch_raw);
 
-    let mut validator = state
-        .validators()
-        .get(index.0 as usize)
-        .ok_or(StateTransitionError::SlotOutOfRange)?
-        .clone();
+    let mut validator = {
+        let vs = state.validators();
+        vs.get(index.0 as usize)
+            .ok_or(StateTransitionError::SlotOutOfRange)?
+            .clone()
+    };
     validator.exit_epoch = final_exit_epoch;
     validator.withdrawable_epoch = withdrawable_epoch;
     state.set_validator(index.0 as usize, validator)?;
@@ -147,8 +148,8 @@ where
     initiate_validator_exit::<E>(state, slashed_index)?;
 
     let (effective_balance, current_withdrawable_epoch) = {
-        let v = state
-            .validators()
+        let vs = state.validators();
+        let v = vs
             .get(slashed_index.0 as usize)
             .ok_or(StateTransitionError::SlotOutOfRange)?;
         (v.effective_balance, v.withdrawable_epoch)
