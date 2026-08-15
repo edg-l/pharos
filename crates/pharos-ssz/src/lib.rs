@@ -39,3 +39,31 @@ pub use union::SszUnion;
 
 // Re-export the derive macros so users only need `pharos_ssz::Encode` etc.
 pub use pharos_ssz_derive::{Decode, Encode, TreeHash};
+// Re-export rayon so derive-emitted code resolves `::pharos_ssz::rayon::join`
+// without requiring each consumer crate to add a direct rayon dependency.
+pub use ::rayon;
+
+/// Compile-fail guard: `derive(TreeHash)` on a struct whose fields are not
+/// all `Send` must fail to compile, because the parallel emission (≥4 fields)
+/// uses `rayon::join` closures that require `Send`. Match ONLY on the stable
+/// error code `E0277` and substring `Send`/`Sync`, not the full sentence
+/// (rustc's message text is not stable across toolchain versions). Hidden
+/// from user-facing docs via `cfg(doctest)`.
+///
+/// ```compile_fail,E0277
+/// use pharos_ssz::TreeHash;
+/// use std::rc::Rc;
+///
+/// #[derive(TreeHash)]
+/// struct NonSendFour {
+///     a: u64,
+///     b: u64,
+///     c: u64,
+///     d: Rc<u64>,  // !Send
+/// }
+///
+/// let s = NonSendFour { a: 1, b: 2, c: 3, d: Rc::new(4) };
+/// let _ = s.tree_hash_root();  // closure capturing `&Rc<u64>` is !Send
+/// ```
+#[cfg(doctest)]
+pub struct NonSendDeriveTreeHashCompileFail;

@@ -32,6 +32,9 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, parse_macro_input};
 
+/// Structs with at least this many SSZ fields use `rayon::join` in `derive(TreeHash)`.
+const PAR_TREE_HASH_FIELD_THRESHOLD: usize = 4;
+
 // ── helper: extract named fields ──────────────────────────────────────────────
 
 struct NamedField {
@@ -374,6 +377,126 @@ fn derive_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
+// ── TreeHash helpers ─────────────────────────────────────────────────────────
+
+/// Emit a balanced binary `::pharos_ssz::rayon::join` tree over `exprs`.
+///
+/// Each expression in `exprs` is wrapped in a closure that evaluates it and
+/// returns a `::pharos_utils::Hash256`. The function returns a `TokenStream2`
+/// that, when emitted, binds a pattern of `r0, r1, ..., rN` names and
+/// finally evaluates to `&[r0, r1, ..., rN]` as a `&[::pharos_utils::Hash256]`.
+///
+/// Invariants:
+/// - `exprs.len() >= 1`.
+/// - For 1 expression, no `rayon::join` is emitted (closure only).
+/// - For non-power-of-two counts, left half = ceil(N/2), right = floor(N/2).
+///
+/// The returned `TokenStream2` is a *block expression* that evaluates to
+/// `[::pharos_utils::Hash256; N]` by binding intermediate let-patterns and
+/// collecting into a final array.
+fn build_balanced_join_tree(field_root_exprs: &[TokenStream2]) -> TokenStream2 {
+    // Callers guarantee n >= PAR_TREE_HASH_FIELD_THRESHOLD (= 4).
+    let n = field_root_exprs.len();
+
+    // Assign each expression a variable name r0, r1, ...
+    let var_names: Vec<proc_macro2::Ident> = (0..n)
+        .map(|i| proc_macro2::Ident::new(&format!("__r{i}"), proc_macro2::Span::call_site()))
+        .collect();
+
+    // Build nested rayon::join pattern + binding block.
+    let join_expr = build_join_expr(field_root_exprs, &var_names);
+
+    // Collect the variables into the final array.
+    let vars = &var_names;
+    quote! {
+        {
+            #join_expr
+            [#(#vars),*]
+        }
+    }
+}
+
+/// Recursively build nested `rayon::join` calls over slice `[lo, hi)` (index into
+/// the original `exprs` / `names` slices).
+///
+/// Returns a `TokenStream2` that, when emitted as a statement, binds all
+/// variables `names[lo..hi]` to their computed values.
+fn build_join_expr(exprs: &[TokenStream2], names: &[proc_macro2::Ident]) -> TokenStream2 {
+    let n = exprs.len();
+    match n {
+        0 => unreachable!("build_join_expr called with empty slice"),
+        1 => {
+            let name = &names[0];
+            let expr = &exprs[0];
+            quote! { let #name = #expr; }
+        }
+        _ => {
+            // Left half = ceil(n/2), right half = floor(n/2).
+            let mid = n.div_ceil(2);
+            let (left_exprs, right_exprs) = exprs.split_at(mid);
+            let (left_names, right_names) = names.split_at(mid);
+
+            // Build sub-patterns: wrap each half in a tuple if > 1 element.
+            let left_pat = join_pattern(left_names);
+            let right_pat = join_pattern(right_names);
+
+            // Closures for each half.
+            let left_closure = build_join_closure(left_exprs, left_names);
+            let right_closure = build_join_closure(right_exprs, right_names);
+
+            quote! {
+                let (#left_pat, #right_pat) = ::pharos_ssz::rayon::join(
+                    #left_closure,
+                    #right_closure,
+                );
+            }
+        }
+    }
+}
+
+/// Build a closure `|| { ... expr or nested join ... }` for a slice.
+fn build_join_closure(exprs: &[TokenStream2], names: &[proc_macro2::Ident]) -> TokenStream2 {
+    let n = exprs.len();
+    match n {
+        0 => unreachable!(),
+        1 => {
+            let expr = &exprs[0];
+            quote! { || #expr }
+        }
+        _ => {
+            let mid = n.div_ceil(2);
+            let (left_exprs, right_exprs) = exprs.split_at(mid);
+            let (left_names, right_names) = names.split_at(mid);
+
+            let left_pat = join_pattern(left_names);
+            let right_pat = join_pattern(right_names);
+
+            let left_closure = build_join_closure(left_exprs, left_names);
+            let right_closure = build_join_closure(right_exprs, right_names);
+
+            quote! {
+                || {
+                    let (#left_pat, #right_pat) = ::pharos_ssz::rayon::join(
+                        #left_closure,
+                        #right_closure,
+                    );
+                    (#(#names),*)
+                }
+            }
+        }
+    }
+}
+
+/// Build a destructuring pattern from `names`.
+/// 1 name → `name`, N names → `(n0, n1, ..., nN)`.
+fn join_pattern(names: &[proc_macro2::Ident]) -> TokenStream2 {
+    match names.len() {
+        0 => unreachable!(),
+        1 => quote! { #(#names)* },
+        _ => quote! { (#(#names),*) },
+    }
+}
+
 // ── #[derive(TreeHash)] ───────────────────────────────────────────────────────
 
 /// Derive macro for `::pharos_ssz::TreeHash`.
@@ -416,7 +539,16 @@ fn derive_tree_hash_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote! {
             ::pharos_ssz::merkleize(&[])
         }
+    } else if field_root_exprs.len() >= PAR_TREE_HASH_FIELD_THRESHOLD {
+        // Parallel path: build a balanced rayon::join tree to compute field
+        // roots in parallel, then merkleize the resulting array.
+        let join_tree = build_balanced_join_tree(&field_root_exprs);
+        quote! {
+            let roots = #join_tree;
+            ::pharos_ssz::merkleize(&roots)
+        }
     } else {
+        // Serial path for small structs (< PAR_TREE_HASH_FIELD_THRESHOLD fields).
         quote! {
             let roots: &[::pharos_utils::Hash256] = &[
                 #(#field_root_exprs),*
