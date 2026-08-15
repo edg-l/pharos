@@ -508,10 +508,12 @@ async fn engine_pipeline_drives_bellatrix_chain() {
             network: dummy_net,
             notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
             lookup_tx: tokio::sync::mpsc::channel(1).0,
+            reinject_tx: tokio::sync::mpsc::channel(1).0,
         };
         tokio::spawn(async move {
             if let Err(e) = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
                 event_rx,
+                tokio::sync::mpsc::channel(1).1,
                 host_clone,
                 fc_clone,
                 exec_engine,

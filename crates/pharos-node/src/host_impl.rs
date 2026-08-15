@@ -313,6 +313,29 @@ impl<E: EthSpec> HostImpl<E> {
     /// full `due_ms` (no clock-disparity shaving) so the message stays inside
     /// the receiver's window even under modest clock skew. Returns
     /// `Duration::ZERO` when the window has already opened.
+    /// Wall-clock delay until `slot` begins (its slot-start time). Returns
+    /// `Duration::ZERO` if that slot has already started.
+    ///
+    /// Used by the block-import path to honour the fork-choice rule that a
+    /// future block's "consideration must be delayed until they are in the
+    /// past" (`fork-choice.md` on_block): instead of dropping a block that
+    /// arrived a hair before its slot (clock skew within
+    /// `MAXIMUM_GOSSIP_CLOCK_DISPARITY`), we re-inject it once its slot opens.
+    pub fn wait_until_slot_start(&self, slot: u64) -> Duration {
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis(),
+            Err(_) => return Duration::ZERO,
+        };
+        let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
+        let slot_ms = u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
+        let slot_start_ms = genesis_ms + u128::from(slot) * slot_ms;
+        if now_ms >= slot_start_ms {
+            Duration::ZERO
+        } else {
+            Duration::from_millis((slot_start_ms - now_ms) as u64)
+        }
+    }
+
     pub fn lc_publish_wait(&self, signature_slot: u64) -> Duration {
         let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(d) => d.as_millis(),
@@ -1579,6 +1602,32 @@ mod tests {
         let expected = sig_slot * 12 + 4; // 1204 s
         let secs = host.lc_publish_wait(sig_slot).as_secs();
         // A few seconds of slack between the genesis stamp and the clock read.
+        assert!(
+            secs >= expected - 3 && secs <= expected,
+            "wait {secs}s not within [{}, {expected}]s",
+            expected - 3
+        );
+    }
+
+    /// A slot already started → no wait. A slot still ahead → wait ≈
+    /// `slot * SECONDS_PER_SLOT` past genesis (the slot-start time, with no
+    /// `get_sync_message_due_ms` fraction added — unlike `lc_publish_wait`).
+    #[test]
+    fn wait_until_slot_start_past_and_future() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+        // genesis_time = 0 (default): slot 0 began decades ago → no wait.
+        assert_eq!(host.wait_until_slot_start(0), Duration::ZERO);
+
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        host.fork_choice.write().genesis_time = now_secs;
+        // seconds_per_slot = 12 → slot 50 starts 600 s out (no due fraction).
+        let slot = 50u64;
+        let expected = slot * 12; // 600 s
+        let secs = host.wait_until_slot_start(slot).as_secs();
         assert!(
             secs >= expected - 3 && secs <= expected,
             "wait {secs}s not within [{}, {expected}]s",

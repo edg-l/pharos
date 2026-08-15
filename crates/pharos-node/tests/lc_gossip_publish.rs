@@ -303,6 +303,7 @@ async fn snapshots_written_after_altair_block() {
         network: net_sender,
         notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
         lookup_tx: tokio::sync::mpsc::channel(1).0,
+        reinject_tx: tokio::sync::mpsc::channel(1).0,
     };
 
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(4);
@@ -312,6 +313,7 @@ async fn snapshots_written_after_altair_block() {
     tokio::spawn(async move {
         let _ = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
             event_rx,
+            tokio::sync::mpsc::channel(1).1,
             host_clone,
             fc_clone,
             exec_engine,
@@ -387,6 +389,7 @@ async fn publish_called_after_head_change() {
         network: net_sender,
         notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
         lookup_tx: tokio::sync::mpsc::channel(1).0,
+        reinject_tx: tokio::sync::mpsc::channel(1).0,
     };
 
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(4);
@@ -396,6 +399,7 @@ async fn publish_called_after_head_change() {
     tokio::spawn(async move {
         let _ = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
             event_rx,
+            tokio::sync::mpsc::channel(1).1,
             host_clone,
             fc_clone,
             exec_engine,
@@ -638,6 +642,7 @@ async fn no_publish_for_phase0_block() {
         network: net_sender,
         notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
         lookup_tx: tokio::sync::mpsc::channel(1).0,
+        reinject_tx: tokio::sync::mpsc::channel(1).0,
     };
 
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(4);
@@ -647,6 +652,7 @@ async fn no_publish_for_phase0_block() {
     tokio::spawn(async move {
         let _ = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
             event_rx,
+            tokio::sync::mpsc::channel(1).1,
             host_clone,
             fc_clone,
             exec_engine,

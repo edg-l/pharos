@@ -243,6 +243,7 @@ async fn orphan_defers_and_backfill_heals() {
         network: net_sender,
         notify_backfill: notify_backfill.clone(),
         lookup_tx: tokio::sync::mpsc::channel(1).0,
+        reinject_tx: tokio::sync::mpsc::channel(1).0,
     };
 
     // The unknown parent root is NOT in fc_store.

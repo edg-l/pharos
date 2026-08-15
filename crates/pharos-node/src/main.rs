@@ -24,7 +24,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::info;
 
 use pharos_node::ExecutionEngineHandle;
-use pharos_node::block_ingestion::{IngestionEgress, run_block_ingestion_loop};
+use pharos_node::block_ingestion::{IngestionEgress, ReinjectBlock, run_block_ingestion_loop};
 use pharos_node::checkpoint_sync::{apply_anchor, fetch_checkpoint};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::engine_keepalive::{hex_to_u256, run_transition_config_keepalive, u256_to_hex};
@@ -612,6 +612,11 @@ async fn main() -> anyhow::Result<()> {
         let (lookup_tx, lookup_rx) = mpsc::channel::<LookupRequest>(256);
         let pending = Arc::new(PendingBlocks::default());
 
+        // Re-inject channel: future gossip blocks held until their slot opens
+        // are replayed back into the ingestion loop (fork-choice "delay future
+        // blocks until they are in the past").
+        let (reinject_tx, reinject_rx) = mpsc::channel::<ReinjectBlock>(64);
+
         // Take the network event receiver and spawn the block-ingestion loop.
         let event_rx = handle.take_event_receiver();
         {
@@ -627,10 +632,12 @@ async fn main() -> anyhow::Result<()> {
                 network: handle.command_sender(),
                 notify_backfill: notify_backfill.clone(),
                 lookup_tx: lookup_tx.clone(),
+                reinject_tx: reinject_tx.clone(),
             };
             tokio::spawn(async move {
                 if let Err(e) = run_block_ingestion_loop::<MainnetEthSpec, ExecutionEngineHandle>(
                     event_rx,
+                    reinject_rx,
                     h,
                     fc,
                     exec_engine_clone,

@@ -95,7 +95,24 @@ pub struct IngestionEgress<E: EthSpec> {
     /// Forwards unknown-parent orphans and parent-imported signals to the
     /// lookup loop.  Not generic over `E` — `LookupRequest` carries raw bytes.
     pub lookup_tx: mpsc::Sender<LookupRequest>,
+    /// Re-injects a gossip block `(topic, data)` back into the ingestion loop
+    /// after a delay.  Used to honour the fork-choice "delay future blocks
+    /// until they are in the past" rule: a block that arrived a hair before its
+    /// slot (clock skew within `MAXIMUM_GOSSIP_CLOCK_DISPARITY`) is held and
+    /// replayed at slot start instead of being dropped. Cloned into the lookup
+    /// loop so its direct-import path can defer future blocks the same way.
+    pub reinject_tx: mpsc::Sender<ReinjectBlock>,
 }
+
+/// A gossip block re-queued for a later import attempt: `(topic, raw SSZ)`.
+pub type ReinjectBlock = (GossipTopic, Vec<u8>);
+
+/// Sanity cap on how far ahead a re-injected future block may be held. The
+/// gossip validator already IGNOREs blocks more than
+/// `MAXIMUM_GOSSIP_CLOCK_DISPARITY` into the future, so a legitimately
+/// importable block is at most a slot away; anything beyond this is dropped
+/// (and logged) rather than parked indefinitely.
+const MAX_FUTURE_BLOCK_HOLD: std::time::Duration = std::time::Duration::from_secs(24);
 
 // ── run_block_ingestion_loop ──────────────────────────────────────────────────
 
@@ -121,6 +138,7 @@ pub struct IngestionEgress<E: EthSpec> {
 #[allow(clippy::too_many_arguments)]
 pub async fn run_block_ingestion_loop<E, EE>(
     mut event_rx: mpsc::Receiver<NetworkEvent>,
+    mut reinject_rx: mpsc::Receiver<ReinjectBlock>,
     host: Arc<HostImpl<E>>,
     fc_store: Arc<RwLock<FcStore<E>>>,
     execution_engine: Arc<EE>,
@@ -164,22 +182,29 @@ where
 {
     let cfg = pharos_types::config::RuntimeConfig::default();
 
-    while let Some(event) = event_rx.recv().await {
-        // Forward unknown-parent gossip blocks to the lookup loop.
-        if let NetworkEvent::UnknownParentBlock { topic, peer, data } = event {
-            let _ = egress
-                .lookup_tx
-                .try_send(LookupRequest::UnknownParent { topic, peer, data });
-            continue;
-        }
-
-        let (topic, data) = match event {
-            NetworkEvent::GossipMessage { topic, data, .. }
-                if topic.kind == GossipTopicKind::BeaconBlock =>
-            {
-                (topic, data)
+    loop {
+        // Pull the next block to import from either the network (fresh gossip)
+        // or the re-inject channel (a future block whose slot has now opened).
+        let (topic, data) = tokio::select! {
+            ev = event_rx.recv() => {
+                let Some(event) = ev else { break }; // network task closed → exit
+                // Forward unknown-parent gossip blocks to the lookup loop.
+                if let NetworkEvent::UnknownParentBlock { topic, peer, data } = event {
+                    let _ = egress
+                        .lookup_tx
+                        .try_send(LookupRequest::UnknownParent { topic, peer, data });
+                    continue;
+                }
+                match event {
+                    NetworkEvent::GossipMessage { topic, data, .. }
+                        if topic.kind == GossipTopicKind::BeaconBlock =>
+                    {
+                        (topic, data)
+                    }
+                    _ => continue,
+                }
             }
-            _ => continue,
+            Some(reinjected) = reinject_rx.recv() => reinjected,
         };
         debug!(?topic, "block_ingestion: received gossip block");
 
@@ -209,6 +234,18 @@ where
             Err(crate::import::ImportError::MissingParentState) => {
                 debug!(%parent_root, "block_ingestion: missing parent; deferring to backfill");
                 egress.notify_backfill.notify_one();
+                continue;
+            }
+            // Future block: per fork-choice.md its consideration "must be delayed
+            // until they are in the past" — re-inject at slot start rather than
+            // drop. Reachable only for blocks that arrived within
+            // MAXIMUM_GOSSIP_CLOCK_DISPARITY before their slot (the gossip
+            // validator already IGNOREs anything further ahead).
+            Err(crate::import::ImportError::ForkChoice(
+                pharos_fork_choice::ForkChoiceError::FutureSlot { block_slot, .. },
+            )) => {
+                let wait = host.wait_until_slot_start(block_slot.0);
+                hold_future_block(&egress.reinject_tx, wait, block_slot.0, topic, data);
                 continue;
             }
             Err(e) => {
@@ -301,6 +338,48 @@ where
     }
 
     Ok(())
+}
+
+// ── hold_future_block ──────────────────────────────────────────────────────────
+
+/// Re-inject a future gossip block once its slot starts, instead of dropping it.
+///
+/// Implements the fork-choice rule that a future block's "consideration must be
+/// delayed until they are in the past" (`fork-choice.md` on_block). Spawns a
+/// task that sleeps `wait` (the time until the block's slot opens, from
+/// `HostImpl::wait_until_slot_start`), then re-sends `(topic, data)` on the
+/// ingestion re-inject channel for another import attempt. If the block is
+/// implausibly far ahead (`wait > MAX_FUTURE_BLOCK_HOLD` — the gossip validator
+/// should already have IGNOREd it) it is dropped with a warning rather than
+/// parked, so the holding mechanism can't be abused to pin memory.
+///
+/// `wait` is passed in (not computed here) so this stays host-free and unit-
+/// testable; the caller computes it via `HostImpl::wait_until_slot_start`.
+fn hold_future_block(
+    reinject_tx: &mpsc::Sender<ReinjectBlock>,
+    wait: std::time::Duration,
+    block_slot: u64,
+    topic: GossipTopic,
+    data: Vec<u8>,
+) {
+    if wait > MAX_FUTURE_BLOCK_HOLD {
+        warn!(
+            block_slot,
+            ?wait,
+            "block_ingestion: future block too far ahead; dropping"
+        );
+        return;
+    }
+    debug!(
+        block_slot,
+        ?wait,
+        "block_ingestion: holding future block; replay at slot start"
+    );
+    let tx = reinject_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(wait).await;
+        let _ = tx.send((topic, data)).await;
+    });
 }
 
 // ── dispatch_update_light_client_snapshots ────────────────────────────────────
@@ -542,5 +621,58 @@ where
     } else {
         // Unreachable for any valid EthSpec implementation.
         Vec::new()
+    }
+}
+
+// ── tests ──────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_FUTURE_BLOCK_HOLD, ReinjectBlock, hold_future_block};
+    use pharos_network::topics::{GossipTopic, GossipTopicKind};
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    fn beacon_block_topic() -> GossipTopic {
+        GossipTopic {
+            fork_digest: Default::default(),
+            kind: GossipTopicKind::BeaconBlock,
+        }
+    }
+
+    /// A future block due soon is re-injected (not dropped) once its wait elapses.
+    #[tokio::test]
+    async fn hold_future_block_replays_when_due() {
+        let (tx, mut rx) = mpsc::channel::<ReinjectBlock>(4);
+        let data = vec![1u8, 2, 3, 4];
+        hold_future_block(
+            &tx,
+            Duration::from_millis(50),
+            7,
+            beacon_block_topic(),
+            data.clone(),
+        );
+
+        let got = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("reinject should fire before timeout")
+            .expect("reinject channel should yield the held block");
+        assert_eq!(got.0.kind, GossipTopicKind::BeaconBlock);
+        assert_eq!(got.1, data, "replayed bytes must be the original block");
+    }
+
+    /// A block implausibly far in the future is dropped, never re-injected.
+    #[tokio::test]
+    async fn hold_future_block_drops_when_too_far() {
+        let (tx, mut rx) = mpsc::channel::<ReinjectBlock>(4);
+        let wait = MAX_FUTURE_BLOCK_HOLD + Duration::from_secs(5);
+        hold_future_block(&tx, wait, 999_999, beacon_block_topic(), vec![9u8]);
+
+        // Nothing should arrive — the block was dropped, not parked.
+        let r = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
+        assert!(
+            r.is_err(),
+            "no block should be re-injected for a far-future hold"
+        );
     }
 }
