@@ -777,7 +777,10 @@ where
         };
 
         // Step 2 — RAT1: committee index must be within range.
-        let committee_count = get_committee_count_per_slot::<E>(&head_state, att.data.target.epoch);
+        // Compute committee count for the attestation's slot-epoch, not its
+        // target epoch: RAT4 below enforces equality, but RAT1 runs first.
+        let att_epoch = compute_epoch_at_slot(att.data.slot, E::SLOTS_PER_EPOCH);
+        let committee_count = get_committee_count_per_slot::<E>(&head_state, att_epoch);
         if att.data.index.0 >= committee_count {
             return GossipVerdict::Reject("att: committee index out of range".into());
         }

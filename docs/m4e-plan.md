@@ -554,7 +554,7 @@ Confirm: `ATTESTATION_PROPAGATION_SLOT_RANGE` /
 workspace dep wired into `pharos-node`; the two new DOMAIN constants
 exist; the gossip dispatch path is verified as `spawn_blocking`-
 wrapped (or wrapped in Task 0.6); the "Spec rule inventory" sub-
-section is in this plan with `RB1..RB10`, `RAG1..RAG12`, `RAT1..RAT10`
+section is in this plan with `RB1..RB10`, `RAG1..RAG16`, `RAT1..RAT12`
 ids; `docs/decisions.md` has twelve new `### D-*` stubs all marked
 Draft. List each stub. Do not proceed until all are done. **Commit
 boundary:** `chore(m4e): phase 0 spec freeze + scaffolding`.
@@ -934,21 +934,20 @@ phases bounded to ≤ 7 tasks.
     9. **[IGNORE] "block being voted for has been seen" (line 989, RAT9).**
        `let fc = self.fork_choice.read();`
        `if !fc.blocks.contains_key(&att.data.beacon_block_root) { return Ignore("att: voted block unseen"); }`
-    10. **[REJECT] "block being voted for passes validation" (RAT-extra).**
+    10. **[REJECT] "block being voted for passes validation" (line 994, RAT10).**
         `if !fc.block_states.contains_key(&att.data.beacon_block_root) { return Reject("att: voted block invalid"); }`
-        (Spec line 995.)
-    11. **[REJECT] "target block is ancestor of LMD vote block" (line 999, RAT10).**
+    11. **[REJECT] "target block is ancestor of LMD vote block" (line 999, RAT11).**
         `let target_cp = get_checkpoint_block::<E>(&fc, att.data.beacon_block_root, att.data.target.epoch);`
         `if target_cp != Some(att.data.target.root) { return Reject("att: target not ancestor"); }`
-    12. **[IGNORE] "finalized checkpoint is an ancestor of the block" (line 1004, RAT-extra2).**
+    12. **[IGNORE] "finalized checkpoint is an ancestor of the block" (line 1005, RAT12).**
         `let final_cp = get_checkpoint_block::<E>(&fc, att.data.beacon_block_root, fc.finalized_checkpoint.epoch);`
         `if final_cp != Some(fc.finalized_checkpoint.root) { return Ignore("att: finalized not ancestor"); }`
     13. **Insert into seen cache.** `self.seen_attestation_validators.write().put((participant, att.data.target.epoch), ());` Return `Accept`.
   Replace doc comment with paragraph citing
   `specs/phase0/p2p-interface.md:929-1013` and the relevant ADRs.
 - [ ] Task 2.5: Add 13 `#[test]` functions in
-  `crates/pharos-node/src/host_impl.rs` `mod tests`, one per RAT1-
-  RAT10 plus RAT-extra1/2 plus happy-path:
+  `crates/pharos-node/src/host_impl.rs` `mod tests`, one per
+  RAT1-RAT12 plus happy-path:
   (a) `att_rejects_committee_index_out_of_range` (RAT1)
   (b) `att_rejects_wrong_subnet` (RAT2)
   (c) `att_ignores_slot_out_of_range` (RAT3)
@@ -958,9 +957,9 @@ phases bounded to ≤ 7 tasks.
   (g) `att_ignores_duplicate_validator_epoch` (RAT7)
   (h) `att_rejects_invalid_signature` (RAT8)
   (i) `att_ignores_unseen_voted_block` (RAT9)
-  (j) `att_rejects_invalid_voted_block` (RAT-extra1)
-  (k) `att_rejects_target_not_ancestor` (RAT10)
-  (l) `att_ignores_finalized_not_ancestor` (RAT-extra2)
+  (j) `att_rejects_invalid_voted_block` (RAT10)
+  (k) `att_rejects_target_not_ancestor` (RAT11)
+  (l) `att_ignores_finalized_not_ancestor` (RAT12)
   (m) `att_accepts_happy_path`
 - [ ] Task 2.6: `make check && make lint && make test` (capture to
   `target/test-logs/m4e-phase2.log`). 13 new tests + 14 from Phase
@@ -1093,15 +1092,15 @@ and the `is_aggregator` predicate. Splits cleanly into ≤ 7 tasks.
     12. **[REJECT] "aggregate signature valid" (line 706, RAG12).**
         `let indexed = get_indexed_attestation::<E>(&head_state, agg);`
         `if !is_valid_indexed_attestation::<E>(&head_state, &indexed, true) { return Reject("agg: invalid aggregate signature"); }`
-    13. **[IGNORE] "block being voted for has been seen" (line 710).**
+    13. **[IGNORE] "block being voted for has been seen" (line 711, RAG13).**
         `let fc = self.fork_choice.read();`
         `if !fc.blocks.contains_key(&agg.data.beacon_block_root) { return Ignore("agg: voted block unseen"); }`
-    14. **[REJECT] "voted block passes validation" (line 715).**
+    14. **[REJECT] "voted block passes validation" (line 715, RAG14).**
         `if !fc.block_states.contains_key(&agg.data.beacon_block_root) { return Reject("agg: voted block invalid"); }`
-    15. **[REJECT] "target block is ancestor of LMD vote block" (line 719).**
+    15. **[REJECT] "target block is ancestor of LMD vote block" (line 719, RAG15).**
         `let cp = get_checkpoint_block::<E>(&fc, agg.data.beacon_block_root, target_epoch);`
         `if cp != Some(agg.data.target.root) { return Reject("agg: target not ancestor"); }`
-    16. **[IGNORE] "finalized checkpoint ancestor of block" (line 726).**
+    16. **[IGNORE] "finalized checkpoint ancestor of block" (line 726, RAG16).**
         `let fcp = get_checkpoint_block::<E>(&fc, agg.data.beacon_block_root, fc.finalized_checkpoint.epoch);`
         `if fcp != Some(fc.finalized_checkpoint.root) { return Ignore("agg: finalized not ancestor"); }`
     17. **Insert into seen caches.** Drop `fc` read. Then:
@@ -1114,10 +1113,9 @@ and the `is_aggregator` predicate. Splits cleanly into ≤ 7 tasks.
         each `(i, b)` in `agg.aggregation_bits.iter().enumerate()`
         where `b` is true, call `stored.set(i, true)`. Return
         `Accept`.
-- [ ] Task 3.5: Add 16 `#[test]` functions in
+- [ ] Task 3.5: Add 17 `#[test]` functions in
   `crates/pharos-node/src/host_impl.rs` `mod tests`, one per
-  RAG1-RAG12 plus RAG-extras 13/14/15/16 (collapsed where the
-  branch is structurally identical to an attestation test):
+  RAG1-RAG16 plus happy-path:
   (a) `agg_rejects_committee_index_out_of_range` (RAG1)
   (b) `agg_ignores_slot_out_of_range` (RAG2)
   (c) `agg_rejects_target_epoch_mismatch` (RAG3)
@@ -1132,15 +1130,16 @@ and the `is_aggregator` predicate. Splits cleanly into ≤ 7 tasks.
   (j) `agg_rejects_invalid_selection_proof` (RAG10)
   (k) `agg_rejects_invalid_aggregator_signature` (RAG11)
   (l) `agg_rejects_invalid_aggregate_signature` (RAG12)
-  (m) `agg_ignores_unseen_voted_block` (line 710 IGNORE)
-  (n) `agg_rejects_target_not_ancestor` (line 719 REJECT)
-  (o) `agg_accepts_happy_path`
-  (p) `agg_rejects_when_aggregate_data_beacon_block_root_is_in_invalid_roots`
-      (spec line 715 REJECT — voted block is in fork-choice
-      `Invalid` payload-status set or otherwise fails validation,
-      analogous to Task 2.5(j)'s `att_rejects_invalid_voted_block`)
+  (m) `agg_ignores_unseen_voted_block` (RAG13)
+  (n) `agg_rejects_voted_block_invalid` (RAG14 — voted block in
+      fork-choice but not in block_states, analogous to Task 2.5(j))
+  (o) `agg_rejects_target_not_ancestor` (RAG15)
+  (p) `agg_ignores_finalized_not_ancestor` (RAG16 — fabricate a
+      finalized checkpoint not on the aggregate's chain, assert
+      `Ignore("agg: finalized not ancestor")`)
+  (q) `agg_accepts_happy_path`
 - [ ] Task 3.6: `make check && make lint && make test` (capture to
-  `target/test-logs/m4e-phase3.log`). All 16 new + 13 + 14 = 43
+  `target/test-logs/m4e-phase3.log`). All 17 new + 13 + 14 = 44
   new tests green.
 
 **Checkpoint: Verify Phase 3 complete.** Review Tasks 3.1-3.6.
@@ -1148,7 +1147,7 @@ Confirm: trait signature changed to `SignedAggregateAndProof<2048>`;
 all 5 mock impls updated; `seen_aggregators` + `seen_aggregate_data`
 on `HostImpl<E>`; `is_aggregator` exists in
 `pharos-stf/src/phase0/predicates.rs`; `validate_aggregate_and_proof`
-implements all 17 steps; 16 new tests green. **Commit boundary:**
+implements all 17 steps; 17 new tests green. **Commit boundary:**
 `feat(node): real beacon_aggregate_and_proof gossip validation per
 phase0 p2p-interface`.
 
@@ -1325,7 +1324,7 @@ milestone — bump v0.7.0`.
     accepts `SignedAggregateAndProof<2048>`; all mock impls
     updated; `seen_aggregators` + `seen_aggregate_data` on
     `HostImpl<E>`; `is_aggregator` in `pharos-stf`;
-    `validate_aggregate_and_proof` implements all 17 steps; 16 new
+    `validate_aggregate_and_proof` implements all 17 steps; 17 new
     tests.
   - Phase 4: `gossip_validators_e2e.rs` + `gossip_verdict_strings.rs`
     exist and pass.
