@@ -194,7 +194,6 @@ pub async fn get_headers<E: EthSpec>(
     };
     let chain = Arc::clone(&state.chain);
     let result = tokio::task::spawn_blocking(move || {
-        let is_optimistic = chain.is_optimistic();
         let finalized_cp = chain.finalized_checkpoint();
 
         // If slot query: look up blocks at that slot.
@@ -203,6 +202,9 @@ pub async fn get_headers<E: EthSpec>(
             let slot = Slot(slot_num);
             match chain.block_root_for_slot(slot) {
                 None => {
+                    // No block at this slot; head-level optimism as fallback
+                    // (empty data array — the optimism flag is advisory).
+                    let is_optimistic = chain.is_optimistic();
                     return Ok::<_, ApiError>(HeadersResponse {
                         execution_optimistic: is_optimistic,
                         finalized: false,
@@ -210,6 +212,8 @@ pub async fn get_headers<E: EthSpec>(
                     });
                 }
                 Some(root) => {
+                    // Per-root derivation: response is about THIS specific block.
+                    let is_optimistic = chain.is_optimistic_for_root(root);
                     let item = build_header_item(chain.as_ref(), root, is_optimistic)?;
                     let fin = slot.epoch(E::SLOTS_PER_EPOCH) <= finalized_cp.epoch;
                     return Ok(HeadersResponse {
@@ -224,6 +228,7 @@ pub async fn get_headers<E: EthSpec>(
         // If parent_root query: not currently indexed; return empty list.
         // (Full ancestor-walk index is M11 scope.)
         if q.parent_root.is_some() {
+            let is_optimistic = chain.is_optimistic();
             return Ok(HeadersResponse {
                 execution_optimistic: is_optimistic,
                 finalized: false,
@@ -231,8 +236,9 @@ pub async fn get_headers<E: EthSpec>(
             });
         }
 
-        // Default: head block.
+        // Default: head block — per-root derivation.
         let head_root = chain.head_root();
+        let is_optimistic = chain.is_optimistic_for_root(head_root);
         let item = build_header_item(chain.as_ref(), head_root, is_optimistic)?;
         let head_slot = item.header.message.slot;
         let fin =

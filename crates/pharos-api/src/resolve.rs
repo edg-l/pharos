@@ -54,23 +54,24 @@ pub fn resolve_state_id<E: EthSpec>(
     chain: &dyn ChainStateApi<E>,
     state_id: &str,
 ) -> Result<ResolvedId, ApiError> {
-    let is_optimistic = chain.is_optimistic();
     let finalized_cp = chain.finalized_checkpoint();
-
     let spe = E::SLOTS_PER_EPOCH;
+
     match state_id {
         "head" => {
+            // Head-level optimism is correct: the response IS about the head.
             let block_root = chain.head_root();
             let slot = chain.current_slot();
             let finalized = is_finalized(slot, &finalized_cp, spe);
             Ok(ResolvedId {
                 block_root,
                 slot,
-                execution_optimistic: is_optimistic,
+                execution_optimistic: chain.is_optimistic_for_root(block_root),
                 finalized,
             })
         }
         "genesis" => {
+            // Genesis is always finalized and non-optimistic; no EL payload.
             let genesis_root = chain.genesis_block_root();
             Ok(ResolvedId {
                 block_root: genesis_root,
@@ -80,6 +81,10 @@ pub fn resolve_state_id<E: EthSpec>(
             })
         }
         "finalized" => {
+            // Finalized blocks are by definition non-optimistic: the EL must
+            // have confirmed them Valid before finalization. The derivation
+            // `is_optimistic` returns false naturally for them (Valid != NotValidated),
+            // but hardcoding false is an explicit invariant assertion.
             let cp = chain.finalized_checkpoint();
             Ok(ResolvedId {
                 block_root: cp.root,
@@ -89,13 +94,14 @@ pub fn resolve_state_id<E: EthSpec>(
             })
         }
         "justified" => {
+            // Use per-root derivation: response is about the justified checkpoint block.
             let cp = chain.justified_checkpoint();
             let slot = cp.epoch.start_slot(spe);
             let fin = is_finalized(slot, &finalized_cp, spe);
             Ok(ResolvedId {
                 block_root: cp.root,
                 slot,
-                execution_optimistic: is_optimistic,
+                execution_optimistic: chain.is_optimistic_for_root(cp.root),
                 finalized: fin,
             })
         }
@@ -119,10 +125,11 @@ pub fn resolve_state_id<E: EthSpec>(
                 .ok_or_else(|| ApiError::NotFound(format!("state not found for root {id}")))?;
             let slot = header.slot;
             let fin = is_finalized(slot, &finalized_cp, spe);
+            // Per-root derivation: response is about THIS specific block.
             Ok(ResolvedId {
                 block_root,
                 slot,
-                execution_optimistic: is_optimistic,
+                execution_optimistic: chain.is_optimistic_for_root(block_root),
                 finalized: fin,
             })
         }
@@ -137,10 +144,11 @@ pub fn resolve_state_id<E: EthSpec>(
                 .block_root_for_slot(slot)
                 .ok_or_else(|| ApiError::NotFound(format!("no block at slot {slot_num}")))?;
             let fin = is_finalized(slot, &finalized_cp, spe);
+            // Per-root derivation: response is about THIS specific block.
             Ok(ResolvedId {
                 block_root,
                 slot,
-                execution_optimistic: is_optimistic,
+                execution_optimistic: chain.is_optimistic_for_root(block_root),
                 finalized: fin,
             })
         }
@@ -252,6 +260,9 @@ mod tests {
             Arc::new(RuntimeConfig::default())
         }
         fn is_optimistic(&self) -> bool {
+            false
+        }
+        fn is_optimistic_for_root(&self, _root: pharos_types::phase0::Root) -> bool {
             false
         }
         fn is_syncing(&self) -> bool {

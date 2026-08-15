@@ -5,6 +5,7 @@
 pub mod error;
 pub mod get_head;
 pub mod handlers;
+pub mod optimistic;
 pub mod pow_block;
 pub mod store;
 
@@ -14,6 +15,9 @@ pub use handlers::{
     compute_pulled_up_tip, on_attestation, on_attester_slashing, on_block, on_tick,
     on_tick_per_slot, should_override_forkchoice_update, update_checkpoints,
     update_unrealized_checkpoints,
+};
+pub use optimistic::{
+    SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY, is_optimistic, is_optimistic_candidate_block,
 };
 pub use pharos_types::PayloadStatus;
 pub use pow_block::{

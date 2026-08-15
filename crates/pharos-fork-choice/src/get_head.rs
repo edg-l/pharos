@@ -270,6 +270,14 @@ where
     // whose execution payload has been marked `Invalid` by the EL. The
     // descendants are also unreachable from this root, but recursion via
     // each parent already filters them out, so we only need the local check.
+    //
+    // GUARD — MUST NOT filter `NotValidated` (only `Some(Invalid)`):
+    // Optimistically imported blocks remain in the viable tree while their
+    // payload status is `NotValidated`. A re-org between two `NotValidated`
+    // tips MUST resolve via normal LMD-GHOST weight, not by pruning either
+    // tip from the tree. Per `consensus-specs/sync/optimistic.md` "Re-Orgs":
+    // "The consensus engine MUST support any chain reorganisation which does
+    // not affect the justified checkpoint."  `D-reorg-notvalidated-by-weight`.
     if matches!(
         store.payload_statuses.get(&block_root),
         Some(PayloadStatus::Invalid)

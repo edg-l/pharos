@@ -343,6 +343,34 @@ where
                     tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
                     break;
                 }
+                Err(crate::import::ImportError::NotOptimisticCandidate {
+                    block_slot,
+                    current_slot,
+                }) => {
+                    // An execution block near the tip whose parent is not yet an
+                    // execution block.  Wait proportionally to how many slots remain
+                    // until the block ages past SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY,
+                    // so we do not busy-loop (5 s retries for ~26 min) on a
+                    // merge-transition block within SAFE_SLOTS of the wall clock.
+                    let slots_until_safe = (block_slot
+                        + pharos_fork_choice::SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY)
+                        .saturating_sub(current_slot);
+                    let wait = std::cmp::max(
+                        BACKFILL_RETRY_DELAY,
+                        Duration::from_secs(slots_until_safe.saturating_mul(seconds_per_slot)),
+                    );
+                    warn!(
+                        block_slot,
+                        current_slot,
+                        wait_secs = wait.as_secs(),
+                        "backfill: not an optimistic candidate; waiting for clock to advance past SAFE_SLOTS"
+                    );
+                    if *shutdown_rx.borrow() {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(wait).await;
+                    break;
+                }
             };
 
             host.on_head_change(outcome.head_change.clone());

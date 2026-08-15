@@ -451,6 +451,18 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
     /// Whether the head block has not yet been validated by the EL.
     fn is_optimistic(&self) -> bool;
 
+    /// Whether the block at `root` is optimistically imported.
+    ///
+    /// Returns `is_optimistic(&fc, root)` — i.e. `true` iff the block is an
+    /// execution block AND `payload_statuses[root] != Valid`.  Used by per-root
+    /// API responses (`block-by-id`, `state-by-id`) so `execution_optimistic`
+    /// reflects THAT block's optimism, not always the head's.
+    ///
+    /// Per `consensus-specs/sync/optimistic.md` "Ethereum Beacon APIs":
+    /// "`execution_optimistic` must be `True` whenever the request references
+    /// optimistic blocks".
+    fn is_optimistic_for_root(&self, root: Root) -> bool;
+
     /// Whether the node is still syncing (sync_distance > 0).
     fn is_syncing(&self) -> bool;
 
@@ -693,14 +705,19 @@ where
     }
 
     fn is_optimistic(&self) -> bool {
-        // A block is optimistic when its payload status is NotValidated.
-        use pharos_types::PayloadStatus;
+        // Canonical derivation: execution block AND payload_statuses[head] != Valid.
+        // Per `consensus-specs/sync/optimistic.md` "Helpers" `is_optimistic` +
+        // `is_execution_block` definitions and the M8 single-source-of-truth.
         let fc = self.fork_choice.read();
         let head = pharos_fork_choice::get_head(&fc);
-        matches!(
-            fc.payload_statuses.get(&head),
-            Some(PayloadStatus::NotValidated)
-        )
+        pharos_fork_choice::is_optimistic(&fc, head)
+    }
+
+    fn is_optimistic_for_root(&self, root: Root) -> bool {
+        // Per-root derivation for API responses about a specific block.
+        // Per `consensus-specs/sync/optimistic.md` "Ethereum Beacon APIs".
+        let fc = self.fork_choice.read();
+        pharos_fork_choice::is_optimistic(&fc, root)
     }
 
     fn is_syncing(&self) -> bool {
@@ -1011,7 +1028,7 @@ where
     }
 
     fn fork_choice_heads(&self) -> Result<JsonValue, ApiError> {
-        use pharos_types::{PayloadStatus, views::BeaconBlockView};
+        use pharos_types::views::BeaconBlockView;
 
         let fc = self.fork_choice.read();
 
@@ -1020,13 +1037,7 @@ where
             fc.blocks.values().map(|b| b.parent_root()).collect();
 
         // Leaf nodes = blocks whose own root is NOT a parent of any other block.
-        let is_optimistic_head = |root: &Root| {
-            matches!(
-                fc.payload_statuses.get(root),
-                Some(PayloadStatus::NotValidated)
-            )
-        };
-
+        // Per-root derivation: each head gets its own is_optimistic check.
         let heads: Vec<serde_json::Value> = fc
             .blocks
             .iter()
@@ -1035,7 +1046,7 @@ where
                 serde_json::json!({
                     "root": format!("0x{}", hex::encode(root.as_slice())),
                     "slot": block.slot().0.to_string(),
-                    "execution_optimistic": is_optimistic_head(root),
+                    "execution_optimistic": pharos_fork_choice::is_optimistic(&fc, *root),
                 })
             })
             .collect();

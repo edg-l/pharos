@@ -122,6 +122,10 @@ impl ChainStateApi<MainnetEthSpec> for MockChain {
         false
     }
 
+    fn is_optimistic_for_root(&self, _root: Root) -> bool {
+        false
+    }
+
     fn is_syncing(&self) -> bool {
         false
     }
@@ -241,6 +245,10 @@ impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
     }
 
     fn is_optimistic(&self) -> bool {
+        self.optimistic
+    }
+
+    fn is_optimistic_for_root(&self, _root: Root) -> bool {
         self.optimistic
     }
 

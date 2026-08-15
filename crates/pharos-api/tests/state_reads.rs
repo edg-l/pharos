@@ -147,6 +147,9 @@ impl ChainStateApi<MainnetEthSpec> for StateMock {
     fn is_optimistic(&self) -> bool {
         false
     }
+    fn is_optimistic_for_root(&self, _root: Root) -> bool {
+        false
+    }
     fn is_syncing(&self) -> bool {
         false
     }

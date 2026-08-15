@@ -16,7 +16,10 @@ use thiserror::Error;
 use tracing::warn;
 
 use pharos_fork_choice::Store as FcStore;
-use pharos_fork_choice::{PowBlockProvider, get_head, on_block, on_tick_per_slot};
+use pharos_fork_choice::{
+    PowBlockProvider, get_current_slot, get_head, is_optimistic_candidate_block, on_block,
+    on_tick_per_slot,
+};
 use pharos_stf::{ExecutionEngine, StateTransitionError, state_transition};
 use pharos_storage::{BlockTransition, RocksStore, StateSummary, StorageError, Store as DbStore};
 use pharos_types::config::RuntimeConfig;
@@ -61,6 +64,19 @@ pub enum ImportError {
     /// caller) rather than panicking the whole node on the hot import path.
     #[error("fork-choice head {root} not in block store (invariant violation)")]
     HeadMissing { root: Root },
+
+    /// Execution block rejected: not yet an optimistic-import candidate and EL
+    /// validation is unavailable (SYNCING).  Caller should retry or defer.
+    ///
+    /// Per `D-optimistic-candidate-gates-import` and
+    /// `consensus-specs/sync/optimistic.md` `is_optimistic_candidate_block`:
+    /// a non-candidate execution block MUST NOT be imported optimistically;
+    /// without a VALID verdict it must be rejected outright.
+    #[error(
+        "block slot {block_slot} not an optimistic candidate (current_slot={current_slot}); \
+         parent execution status unknown — rejecting non-VALID execution block"
+    )]
+    NotOptimisticCandidate { block_slot: u64, current_slot: u64 },
 }
 
 // ── ImportOutcome ─────────────────────────────────────────────────────────────
@@ -109,6 +125,28 @@ fn signed_block_is_execution_enabled<E: EthSpec>(b: &E::SignedBeaconBlock) -> bo
             .is_some_and(|h| h != [0u8; 32])
     } else {
         false
+    }
+}
+
+/// Return the `slot` field of any fork variant of `SignedBeaconBlock`.
+///
+/// Covers phase0 / altair / bellatrix / capella in one place so callers do not
+/// duplicate the four-arm match.  The wildcard arm is unreachable because `E`
+/// has exactly these four variants in the current schema.
+pub(crate) fn signed_block_slot<E: EthSpec>(
+    b: &E::SignedBeaconBlock,
+) -> pharos_types::phase0::primitives::Slot {
+    use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
+    if let Some(inner) = E::unwrap_phase0_signed_block(b) {
+        inner.message().slot()
+    } else if let Some(inner) = E::unwrap_altair_signed_block(b) {
+        inner.message().slot()
+    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(b) {
+        inner.message().slot()
+    } else if let Some(inner) = E::unwrap_capella_signed_block(b) {
+        inner.message().slot()
+    } else {
+        unreachable!("unknown fork variant in SignedBeaconBlock")
     }
 }
 
@@ -193,11 +231,62 @@ where
         }
     };
 
-    // (b) Capture fork variant of the post-state BEFORE consuming pre_state.
-    // We need the post-state fork variant for the caller (LC gating), but
-    // we can derive it from the pre-state since single-block transitions never
-    // change fork variant in normal operation (upgrades are at epoch boundaries,
-    // not mid-chain). However, to be accurate we compute it after STF below.
+    // (b) Optimistic-candidate gate.
+    //
+    // Per `D-optimistic-candidate-gates-import` and
+    // `consensus-specs/sync/optimistic.md` `is_optimistic_candidate_block`:
+    // an execution block that is NOT a candidate MUST NOT be imported
+    // optimistically.  Without a VALID verdict from the EL we have no way to
+    // fully validate it, so we reject it here (before the STF).
+    //
+    // "Not a candidate" is a non-starter only when:
+    //   - the block carries a live execution payload (post-merge), AND
+    //   - its parent is NOT an execution block (merge-transition scenario), AND
+    //   - `block_slot + SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY > current_slot`
+    //     (i.e. the block is near the tip, not far enough behind to be safe).
+    //
+    // On a live Capella devnet EVERY block's parent is an execution block, so
+    // this gate is unconditionally satisfied for all normal tip-following.  It
+    // only fires for attempted optimistic imports of merge-transition blocks
+    // that are newer than SAFE_SLOTS, which is exactly the fork-choice-
+    // poisoning scenario the spec protects against.
+    //
+    // If the EL already returned VALID the block is non-optimistic: `state_transition`
+    // -> `verify_and_notify_new_payload` enforces VALID as a precondition for the
+    // `FixedExecutionEngine` (conformance mock).  On the live path
+    // `new_payload_wire` returns true for SYNCING/ACCEPTED (Phase 1 relaxation),
+    // so the gate is the right place to tighten for non-candidate blocks.
+    // SPEC GAP (closed in M8 Phase 3): this gate rejects non-candidate execution
+    // blocks even when the EL would return VALID. Per specs/sync/optimistic.md the
+    // candidate gate permits MAY-optimistic import only; a fully-validated (VALID)
+    // non-candidate block MUST still import. Inert on capella+ devnets (every block's
+    // parent is execution-enabled => always a candidate). Phase 3 threads PayloadStatus
+    // out of verify_and_notify_new_payload and moves this gate after the EL verdict
+    // (reject only on NOT_VALIDATED && not-candidate).
+    //
+    // Future blocks (block_slot > current_slot) are NOT evaluated here: they have not
+    // yet reached their slot so `is_optimistic_candidate_block` is meaningless for them.
+    // They proceed past this gate and on_block applies the future-slot hold path.
+    if signed_block_is_execution_enabled::<E>(signed_block) {
+        let block_slot: u64 = signed_block_slot::<E>(signed_block).0;
+
+        let (current_slot, candidate) = {
+            let store_read = fc_store.read();
+            let cs = get_current_slot::<E>(&store_read).0;
+            let cand = is_optimistic_candidate_block::<E>(&store_read, cs, parent_root, block_slot);
+            (cs, cand)
+        };
+
+        // Future blocks (block_slot > current_slot) bypass this gate and are
+        // handled by on_block's future-slot hold path; the candidate gate
+        // applies only to blocks eligible for import now (block_slot <= current_slot).
+        if block_slot <= current_slot && !candidate {
+            return Err(ImportError::NotOptimisticCandidate {
+                block_slot,
+                current_slot,
+            });
+        }
+    }
 
     // (c) Run state transition in spawn_blocking (CPU-bound; M3a invariant).
     let signed_block_clone = signed_block.clone();
@@ -350,23 +439,21 @@ where
         // `E::SignedBeaconBlock` is a fork-enum: use per-fork helpers rather than
         // the trait-dispatch `.message()` which panics for the enum variant.
         let block_parent_root = parent_root; // already computed above via extract_parent_root
-        // Derive slot and state_root by unwrapping to the concrete fork variant.
-        // `state_root` is the STF-verified field from the block (cheaper than
-        // re-merkleizing the post-state).
-        let (block_slot, block_state_root) = {
+        // Derive slot and state_root from the block.  `state_root` is the
+        // STF-verified field (cheaper than re-merkleizing the post-state).
+        // `signed_block_slot` covers all forks in one place; `state_root` still
+        // needs a per-fork unwrap since no single-accessor covers all variants.
+        let block_slot = signed_block_slot::<E>(signed_block);
+        let block_state_root = {
             use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
             if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
-                let msg = inner.message();
-                (msg.slot(), msg.state_root())
+                inner.message().state_root()
             } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
-                let msg = inner.message();
-                (msg.slot(), msg.state_root())
+                inner.message().state_root()
             } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed_block) {
-                let msg = inner.message();
-                (msg.slot(), msg.state_root())
+                inner.message().state_root()
             } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
-                let msg = inner.message();
-                (msg.slot(), msg.state_root())
+                inner.message().state_root()
             } else {
                 unreachable!("unknown fork variant in SignedBeaconBlock")
             }
