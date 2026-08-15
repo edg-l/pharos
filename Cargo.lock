@@ -2408,6 +2408,7 @@ dependencies = [
 name = "pharos-network"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "discv5",
  "futures",
  "libp2p",

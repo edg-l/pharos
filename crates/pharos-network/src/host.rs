@@ -115,3 +115,20 @@ pub trait GossipValidator<E: EthSpec>: Send + Sync + 'static {
     /// `MAX_VALIDATORS_PER_COMMITTEE = 2048` for both mainnet and minimal.
     fn validate_attester_slashing(&self, slashing: &AttesterSlashing<2048>) -> GossipVerdict;
 }
+
+// ── Host ──────────────────────────────────────────────────────────────────────
+
+/// Combined host trait: a single bound for `ForkContext + BlockProvider<E> + GossipValidator<E>`.
+///
+/// `Network<E, H, S>` takes a single `Arc<H>` rather than three separate arcs.
+/// The blanket impl monomorphises once per concrete `(T, E)` pair (in practice
+/// `(HostImpl, MainnetEthSpec)` plus the test mock); no dynamic dispatch is
+/// introduced.
+pub trait Host<E: EthSpec>: ForkContext + BlockProvider<E> + GossipValidator<E> {}
+
+impl<T, E> Host<E> for T
+where
+    T: ForkContext + BlockProvider<E> + GossipValidator<E>,
+    E: EthSpec,
+{
+}

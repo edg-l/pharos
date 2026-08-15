@@ -21,8 +21,15 @@ use crate::error::NetworkError;
 
 /// Configuration for `DiscoveryService::start`.
 pub struct DiscoveryConfig {
-    /// UDP socket address for discv5 to listen on.
+    /// UDP socket address for discv5 to listen on. The IP and port are also
+    /// advertised in the local ENR as the `ip` / `udp` fields.
     pub listen_addr: SocketAddr,
+    /// TCP port advertised in the local ENR (the libp2p TCP listen port).
+    /// Peers use this to dial the node's libp2p stack.
+    pub tcp_port: u16,
+    /// Optional QUIC UDP port advertised in the local ENR under the `quic`
+    /// key (IPv4). `None` means the node does not accept QUIC connections.
+    pub quic_port: Option<u16>,
     /// Bootstrap ENRs added to the routing table on startup.
     pub bootnodes: Vec<Enr>,
     /// Local signing key used to build and sign the local ENR.
@@ -74,15 +81,16 @@ impl DiscoveryService {
         };
         let port = cfg.listen_addr.port();
 
-        // Build local ENR with no pre-set IP/port; discv5 will update the ENR
-        // after it observes its external address via PONG replies.
+        // Build the local ENR with IP, UDP (discv5), TCP (libp2p), and optional
+        // QUIC UDP port populated, so peers discovering us can dial both
+        // libp2p transports. IPv6 / quic6 are not populated in this phase.
         let local_enr = build_local_enr(
             &cfg.local_key,
-            None, // ip4
-            None, // udp4
-            None, // tcp4
-            None, // quic_port
-            None, // quic6_port
+            Some(ip),
+            Some(port),
+            Some(cfg.tcp_port),
+            cfg.quic_port,
+            None,
             cfg.fork_id.clone(),
             cfg.attnets,
         )?;
@@ -210,6 +218,8 @@ mod tests {
 
         let cfg = DiscoveryConfig {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
+            tcp_port: 9000,
+            quic_port: None,
             bootnodes: Vec::new(),
             local_key: key,
             fork_id,
