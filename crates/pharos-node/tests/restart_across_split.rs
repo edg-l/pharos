@@ -259,7 +259,7 @@ fn build_chain(
             message: draft,
             signature: BLSSignature::from_array([0u8; 96]),
         });
-        let post_draft = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_draft, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
             state.clone(),
             &draft_signed,
             &null_engine,
@@ -287,7 +287,7 @@ fn build_chain(
             message: final_block,
             signature: real_sig,
         });
-        let post_final = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_final, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
             state.clone(),
             &fork_signed,
             &null_engine,

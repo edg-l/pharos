@@ -339,7 +339,7 @@ fn build_chain(
             signature: BLSSignature::from_array([0u8; 96]),
         });
 
-        let post_state_draft = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_state_draft, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
             state.clone(),
             &draft_signed,
             &null_engine,
@@ -369,7 +369,7 @@ fn build_chain(
         // Step 3: run STF again with the correct state_root to get the final post-state.
         // The post-state is identical to post_state_draft since validate_result=false
         // means state_root is never read by the STF computation.
-        let post_state = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_state, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
             state.clone(),
             &fork_signed,
             &null_engine,

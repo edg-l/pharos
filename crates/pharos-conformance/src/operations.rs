@@ -2608,7 +2608,7 @@ fn run_bellatrix_execution_payload_case_mainnet(case_dir: &Path, case_name: &str
         FixedExecutionEngine,
     >(&mut pre, &body, &engine, &E::default_runtime_config());
     cmp_bellatrix_result(
-        result,
+        result.map(|_| ()),
         E::bellatrix_into_state(pre).as_ssz_bytes(),
         post_inner.map(|s| s.as_ssz_bytes()),
         case_name,
@@ -2699,7 +2699,7 @@ fn run_bellatrix_execution_payload_case_minimal(case_dir: &Path, case_name: &str
         FixedExecutionEngine,
     >(&mut pre, &body, &engine, &E::default_runtime_config());
     cmp_bellatrix_result(
-        result,
+        result.map(|_| ()),
         E::bellatrix_into_state(pre).as_ssz_bytes(),
         post_inner.map(|s| s.as_ssz_bytes()),
         case_name,
@@ -3859,7 +3859,7 @@ fn run_capella_execution_payload_case_mainnet(case_dir: &Path, case_name: &str) 
         FixedExecutionEngine,
     >(&mut pre, &body, &engine, &E::default_runtime_config());
     cmp_capella_result(
-        result,
+        result.map(|_| ()),
         E::capella_into_state(pre).as_ssz_bytes(),
         post_inner.map(|s| s.as_ssz_bytes()),
         case_name,
@@ -3950,7 +3950,7 @@ fn run_capella_execution_payload_case_minimal(case_dir: &Path, case_name: &str) 
         FixedExecutionEngine,
     >(&mut pre, &body, &engine, &E::default_runtime_config());
     cmp_capella_result(
-        result,
+        result.map(|_| ()),
         E::capella_into_state(pre).as_ssz_bytes(),
         post_inner.map(|s| s.as_ssz_bytes()),
         case_name,

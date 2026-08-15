@@ -320,7 +320,7 @@ impl<E: EthSpec> StateRegenService<E> {
                 };
 
                 // `validate_result = false` — skip BLS + state-root check for replay.
-                state = state_transition::<E, NullExecutionEngine>(
+                let (new_state, _) = state_transition::<E, NullExecutionEngine>(
                     state,
                     &signed_block,
                     &null_engine,
@@ -328,6 +328,7 @@ impl<E: EthSpec> StateRegenService<E> {
                     &self.runtime_cfg,
                 )
                 .map_err(RegenError::Stf)?;
+                state = new_state;
                 current_slot = Slot(current_slot.0 + 1);
             } else {
                 // No block at this slot: batch-advance empty slots via process_slots_fork.

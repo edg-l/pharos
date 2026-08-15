@@ -76,6 +76,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 false,
                 &cfg,
             )
+            .map(|(s, _)| s)
             .expect("phase0 state_transition failed in bench")
         })
     });
@@ -101,6 +102,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 false,
                 &cfg,
             )
+            .map(|(s, _)| s)
             .expect("altair state_transition failed in bench")
         })
     });
@@ -126,6 +128,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 false,
                 &cfg,
             )
+            .map(|(s, _)| s)
             .expect("bellatrix state_transition failed in bench")
         })
     });

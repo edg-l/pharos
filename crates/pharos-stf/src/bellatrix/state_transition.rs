@@ -15,7 +15,7 @@ use pharos_utils::BLSPubkey;
 
 use crate::bellatrix::block::process_block;
 use crate::bellatrix::epoch::process_epoch;
-use crate::bellatrix::execution_engine::ExecutionEngine;
+use crate::bellatrix::execution_engine::{ExecutionEngine, PayloadVerificationStatus};
 use crate::error::{EpochProcessingError, StateTransitionError};
 use crate::phase0::helpers::DOMAIN_BEACON_PROPOSER;
 
@@ -251,18 +251,21 @@ pub fn state_transition<
     validate_result: bool,
     runtime_cfg: &RuntimeConfig,
 ) -> Result<
-    BeaconState<
-        SLOTS_PER_HISTORICAL_ROOT,
-        HISTORICAL_ROOTS_LIMIT,
-        ETH1_DATA_VOTES_LIMIT,
-        VALIDATOR_REGISTRY_LIMIT,
-        EPOCHS_PER_HISTORICAL_VECTOR,
-        EPOCHS_PER_SLASHINGS_VECTOR,
-        JUSTIFICATION_BITS_LENGTH,
-        SYNC_COMMITTEE_SIZE,
-        BYTES_PER_LOGS_BLOOM,
-        MAX_EXTRA_DATA_BYTES,
-    >,
+    (
+        BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+        >,
+        Option<PayloadVerificationStatus>,
+    ),
     StateTransitionError,
 >
 where
@@ -430,7 +433,7 @@ where
     }
 
     // Step 3: process block.
-    process_block::<
+    let payload_status = process_block::<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS,
         MAX_ATTESTATIONS,
@@ -469,7 +472,7 @@ where
         }
     }
 
-    Ok(state)
+    Ok((state, payload_status))
 }
 
 // ── BellatrixDispatch trait ───────────────────────────────────────────────────
@@ -480,14 +483,15 @@ where
 /// fork-dispatch in `lib.rs::state_transition` so that code generic over
 /// `E: EthSpec` can invoke the bellatrix STF without knowing concrete const params.
 pub trait BellatrixDispatch<E: EthSpec, EE: ExecutionEngine>: Sized {
-    /// Apply `signed_block` to `self` and return the updated state.
+    /// Apply `signed_block` to `self` and return the updated state plus the
+    /// `PayloadVerificationStatus` from the EL (`None` for pre-merge blocks).
     fn apply_signed_block(
         self,
         signed_block: &E::BellatrixSignedBeaconBlock,
         execution_engine: &EE,
         validate_result: bool,
         runtime_cfg: &RuntimeConfig,
-    ) -> Result<Self, StateTransitionError>;
+    ) -> Result<(Self, Option<PayloadVerificationStatus>), StateTransitionError>;
 }
 
 impl<
@@ -633,7 +637,7 @@ where
         execution_engine: &EE,
         validate_result: bool,
         runtime_cfg: &RuntimeConfig,
-    ) -> Result<Self, StateTransitionError> {
+    ) -> Result<(Self, Option<PayloadVerificationStatus>), StateTransitionError> {
         state_transition::<
             MAX_PROPOSER_SLASHINGS,
             MAX_ATTESTER_SLASHINGS,

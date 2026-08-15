@@ -13,7 +13,7 @@ use pharos_types::{
 };
 use pharos_utils::BLSPubkey;
 
-use crate::bellatrix::execution_engine::ExecutionEngine;
+use crate::bellatrix::execution_engine::{ExecutionEngine, PayloadVerificationStatus};
 use crate::capella::block::process_block;
 use crate::capella::epoch::process_epoch;
 use crate::error::{EpochProcessingError, StateTransitionError};
@@ -257,18 +257,21 @@ pub fn state_transition<
     validate_result: bool,
     runtime_cfg: &RuntimeConfig,
 ) -> Result<
-    BeaconState<
-        SLOTS_PER_HISTORICAL_ROOT,
-        HISTORICAL_ROOTS_LIMIT,
-        ETH1_DATA_VOTES_LIMIT,
-        VALIDATOR_REGISTRY_LIMIT,
-        EPOCHS_PER_HISTORICAL_VECTOR,
-        EPOCHS_PER_SLASHINGS_VECTOR,
-        JUSTIFICATION_BITS_LENGTH,
-        SYNC_COMMITTEE_SIZE,
-        BYTES_PER_LOGS_BLOOM,
-        MAX_EXTRA_DATA_BYTES,
-    >,
+    (
+        BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+        >,
+        Option<PayloadVerificationStatus>,
+    ),
     StateTransitionError,
 >
 where
@@ -452,7 +455,7 @@ where
     }
 
     // Step 3: process block.
-    process_block::<
+    let payload_status = process_block::<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS,
         MAX_ATTESTATIONS,
@@ -493,7 +496,7 @@ where
         }
     }
 
-    Ok(state)
+    Ok((state, payload_status))
 }
 
 // ── CapellaDispatch trait ─────────────────────────────────────────────────────
@@ -509,7 +512,7 @@ pub trait CapellaDispatch<E: EthSpec, EE: ExecutionEngine>: Sized {
         execution_engine: &EE,
         validate_result: bool,
         runtime_cfg: &RuntimeConfig,
-    ) -> Result<Self, StateTransitionError>;
+    ) -> Result<(Self, Option<PayloadVerificationStatus>), StateTransitionError>;
 }
 
 impl<
@@ -674,7 +677,7 @@ where
         execution_engine: &EE,
         validate_result: bool,
         runtime_cfg: &RuntimeConfig,
-    ) -> Result<Self, StateTransitionError> {
+    ) -> Result<(Self, Option<PayloadVerificationStatus>), StateTransitionError> {
         state_transition::<
             MAX_PROPOSER_SLASHINGS,
             MAX_ATTESTER_SLASHINGS,

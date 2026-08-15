@@ -27,6 +27,7 @@ use crate::altair::block::{
     process_block_header_altair, process_eth1_data_altair, process_randao_altair,
 };
 use crate::altair::operations::process_sync_aggregate;
+use crate::bellatrix::execution_engine::PayloadVerificationStatus;
 use crate::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
 use crate::capella::operations::{
     process_execution_payload, process_operations_capella, process_withdrawals,
@@ -92,7 +93,7 @@ pub fn process_block<
     execution_engine: &EE,
     verify_signatures: bool,
     runtime_cfg: &RuntimeConfig,
-) -> Result<(), StateTransitionError>
+) -> Result<Option<PayloadVerificationStatus>, StateTransitionError>
 where
     E: EthSpec<
             AltairBeaconState = AltairBeaconState<
@@ -220,7 +221,8 @@ where
     >(state, &block.body.execution_payload)?;
 
     // Step 3: process_execution_payload — [Modified in Capella] (no merge guard).
-    process_execution_payload::<
+    // Always execution-enabled in Capella, so always returns Some(status).
+    let payload_status = Some(process_execution_payload::<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS,
         MAX_ATTESTATIONS,
@@ -244,7 +246,7 @@ where
         JUSTIFICATION_BITS_LENGTH,
         E,
         EE,
-    >(state, &block.body, execution_engine, runtime_cfg)?;
+    >(state, &block.body, execution_engine, runtime_cfg)?);
 
     // Step 4: process_randao — operates on altair projection.
     // Sync latest state changes (latest_block_header, latest_execution_payload_header
@@ -339,7 +341,7 @@ where
     // Final sync: copy all altair-mutated fields back to capella state.
     update_capella_from_altair(state, altair_state);
 
-    Ok(())
+    Ok(payload_status)
 }
 
 // ── Projection helper ─────────────────────────────────────────────────────────

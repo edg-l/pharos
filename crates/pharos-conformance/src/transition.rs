@@ -551,7 +551,7 @@ where
                 false,
                 cfg,
             ) {
-                Ok(s) => current = s,
+                Ok((s, _)) => current = s,
                 Err(e) => {
                     return CaseResult::Fail(format!("{case_name}: block {i} (altair): {e}"));
                 }
@@ -569,7 +569,7 @@ where
                 false,
                 cfg,
             ) {
-                Ok(s) => current = s,
+                Ok((s, _)) => current = s,
                 Err(e) => {
                     return CaseResult::Fail(format!("{case_name}: block {i} (bellatrix): {e}"));
                 }
@@ -723,7 +723,7 @@ where
                 false,
                 &pharos_types::config::RuntimeConfig::default(),
             ) {
-                Ok(s) => current = s,
+                Ok((s, _)) => current = s,
                 Err(e) => {
                     return CaseResult::Fail(format!("{case_name}: block {i} (phase0): {e}"));
                 }
@@ -741,7 +741,7 @@ where
                 false,
                 &pharos_types::config::RuntimeConfig::default(),
             ) {
-                Ok(s) => current = s,
+                Ok((s, _)) => current = s,
                 Err(e) => {
                     return CaseResult::Fail(format!("{case_name}: block {i} (altair): {e}"));
                 }
@@ -1039,7 +1039,7 @@ where
                 false,
                 cfg,
             ) {
-                Ok(s) => current = s,
+                Ok((s, _)) => current = s,
                 Err(e) => {
                     return CaseResult::Fail(format!("{case_name}: block {i} (bellatrix): {e}"));
                 }
@@ -1056,7 +1056,7 @@ where
                 false,
                 cfg,
             ) {
-                Ok(s) => current = s,
+                Ok((s, _)) => current = s,
                 Err(e) => {
                     return CaseResult::Fail(format!("{case_name}: block {i} (capella): {e}"));
                 }

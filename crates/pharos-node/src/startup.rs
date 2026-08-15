@@ -225,7 +225,7 @@ where
                 },
             };
 
-            state = state_transition::<E, NullExecutionEngine>(
+            let (new_state, _) = state_transition::<E, NullExecutionEngine>(
                 state,
                 &signed_block,
                 &null_engine,
@@ -236,6 +236,7 @@ where
                 warn!(slot = current_slot.0, error = %e, "inline_replay_to: state_transition failed");
                 StorageError::KeyNotFound
             })?;
+            state = new_state;
             current_slot = Slot(current_slot.0 + 1);
         } else {
             // Empty slot — advance via process_slots_fork.

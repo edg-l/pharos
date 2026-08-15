@@ -64,7 +64,7 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
         >,
-    ) -> bool {
+    ) -> pharos_stf::PayloadVerificationStatus {
         let wire = payload_to_wire_generic(payload);
         self.new_payload_wire(NewPayloadWire::V1(wire))
     }
@@ -90,7 +90,7 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
             MAX_EXTRA_DATA_BYTES,
             MAX_WITHDRAWALS_PER_PAYLOAD,
         >,
-    ) -> bool {
+    ) -> pharos_stf::PayloadVerificationStatus {
         let wire: ExecutionPayloadV2 = payload.clone().into();
         self.new_payload_wire(NewPayloadWire::V2(wire))
     }
@@ -98,12 +98,13 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
 
 impl ExecutionEngineHandle {
     /// Shared helper: send a `NewPayloadWire` request to the engine actor and
-    /// interpret the response as a validity boolean for the STF.
+    /// map the EL response to `PayloadVerificationStatus`.
     ///
-    /// Per `specs/sync/optimistic.md` "How to optimistically import blocks" —
-    /// `verify_and_notify_new_payload` returns `True` when the EL status is
-    /// `NOT_VALIDATED` (SYNCING / ACCEPTED) or `VALID`; returns `False` only on
-    /// `INVALIDATED` (INVALID / INVALID_BLOCK_HASH).
+    /// Per `specs/sync/optimistic.md` "How to optimistically import blocks":
+    /// - `VALID`                   → `Valid`
+    /// - `SYNCING` / `ACCEPTED`    → `NotValidated` (NOT_VALIDATED)
+    /// - `INVALID` / `INVALID_BLOCK_HASH` → `Invalid` (INVALIDATED)
+    /// - engine error              → `Invalid` (MUST NOT import on EL error)
     ///
     /// Both `notify_new_payload` and `notify_new_payload_capella` on
     /// `ExecutionEngineHandle` inherit this behaviour via this shared helper.
@@ -112,8 +113,9 @@ impl ExecutionEngineHandle {
     /// `pharos-stf`) is intentionally NOT changed — `execution_valid: false`
     /// fixtures must still drive STF rejection on the conformance path.
     ///
-    /// Per `D-engine-edge-stf-relaxation` (M8 Phase 1).
-    fn new_payload_wire(&self, wire: NewPayloadWire) -> bool {
+    /// Per `D-engine-edge-stf-relaxation` (M8 Phase 1), `D-payload-verification-status` (M8 Phase 3b).
+    fn new_payload_wire(&self, wire: NewPayloadWire) -> pharos_stf::PayloadVerificationStatus {
+        use pharos_stf::PayloadVerificationStatus;
         let version = match &wire {
             NewPayloadWire::V1(_) => NewPayloadVersion::V1,
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
@@ -121,22 +123,22 @@ impl ExecutionEngineHandle {
         match self.engine.new_payload_blocking(version, wire) {
             Ok(status) => {
                 use pharos_engine::types::PayloadStatusStatus;
-                // Return false ONLY for INVALID / INVALID_BLOCK_HASH.
-                // VALID / SYNCING / ACCEPTED all return true so the STF proceeds
-                // and the block is imported optimistically when the EL is still
-                // syncing. The async engine driver later overwrites the in-memory
-                // payload_status with the authoritative result.
-                !matches!(
-                    status.status,
-                    PayloadStatusStatus::Invalid | PayloadStatusStatus::InvalidBlockHash
-                )
+                match status.status {
+                    PayloadStatusStatus::Valid => PayloadVerificationStatus::Valid,
+                    PayloadStatusStatus::Syncing | PayloadStatusStatus::Accepted => {
+                        PayloadVerificationStatus::NotValidated
+                    }
+                    PayloadStatusStatus::Invalid | PayloadStatusStatus::InvalidBlockHash => {
+                        PayloadVerificationStatus::Invalid
+                    }
+                }
             }
             Err(e) => {
                 // Per `specs/sync/optimistic.md` "Execution Engine Errors":
                 // a CL MUST NOT optimistically import a block if the EL returns
-                // an error for engine_newPayload. Return false to reject.
+                // an error for engine_newPayload.
                 tracing::warn!(error = %e, "ExecutionEngineHandle::new_payload_wire: engine error");
-                false
+                PayloadVerificationStatus::Invalid
             }
         }
     }
@@ -622,12 +624,39 @@ pub async fn run_engine_driver_loop<E: EthSpec>(
 
                 match np_result {
                     Err(join_err) => {
+                        // ASYNC DRIVER PATH: a tokio join error is a transient runtime
+                        // failure, NOT a protocol INVALID verdict.  Mapping to `Invalid`
+                        // here would permanently evict a possibly-valid block from fork
+                        // choice on a thread-pool blip.  We leave the block `NotValidated`
+                        // (optimistic) so the next newPayload/FCU call retries when the
+                        // thread pool recovers.
+                        //
+                        // Contrast with the SYNC path (`new_payload_wire`, STF-time):
+                        // an engine error there maps to `Invalid` (MUST NOT import per
+                        // `consensus-specs/sync/optimistic.md` "Execution Engine Errors"),
+                        // because the block has NOT yet been imported into fork choice.
+                        // Here the block is already imported; marking it Invalid would be
+                        // an irreversible, unjustified eviction.
                         error!(error = %join_err, "new_payload: join error");
                         store
                             .write()
                             .mark_payload_status(req.block_root, PayloadStatus::NotValidated);
                     }
                     Ok(Err(engine_err)) => {
+                        // ASYNC DRIVER PATH: a transient EL RPC error is NOT a protocol
+                        // INVALID verdict.  The block is already imported; downgrading to
+                        // `Invalid` on a connection blip would permanently evict it from
+                        // fork choice.  Leave it `NotValidated` so the driver retries on
+                        // the next newPayload/FCU when the EL reconnects.
+                        //
+                        // Sync-path divergence: `new_payload_wire` returns `Invalid` on
+                        // engine error so the block is never imported (spec "MUST NOT
+                        // import on EL error").  That conservative behaviour is correct at
+                        // STF time because the block can be re-fetched; it is wrong here
+                        // because the block is already in fork choice and re-fetching it
+                        // would re-run the same `newPayload` call.
+                        // Per `consensus-specs/sync/optimistic.md` "Execution Engine
+                        // Errors" (deliberate sync-vs-async distinction).
                         warn!(error = %engine_err, "new_payload: engine error");
                         store
                             .write()

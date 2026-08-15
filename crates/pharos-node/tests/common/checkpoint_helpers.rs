@@ -305,7 +305,7 @@ pub fn build_backfill_chain(
             signature: BLSSignature::from_array([0u8; 96]),
         });
 
-        let post_state_draft = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_state_draft, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
             state.clone(),
             &draft_signed,
             &null_engine,
@@ -343,7 +343,7 @@ pub fn build_backfill_chain(
         });
 
         // Step 3: final STF pass with correct state_root.
-        let post_state = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_state, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
             state.clone(),
             &fork_signed,
             &null_engine,

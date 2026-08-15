@@ -16,18 +16,22 @@ use pharos_types::{
     },
 };
 
-use crate::bellatrix::execution_engine::ExecutionEngine;
+use crate::bellatrix::execution_engine::{ExecutionEngine, PayloadVerificationStatus};
 use crate::error::StateTransitionError;
 use crate::phase0::accessors::compute_epoch_at_slot;
 
 /// `process_execution_payload` per `specs/capella/beacon-chain.md`.
+///
+/// Returns `PayloadVerificationStatus` from the EL on success, or `Err` if a
+/// pre-check or EL `Invalid` verdict rejects the payload.
 ///
 /// Checks (in order):
 /// - spec: parent_hash == `state.latest_execution_payload_header.block_hash`
 ///   (no merge-transition-complete guard — always enforced in Capella).
 /// - spec: `payload.prev_randao == get_randao_mix(state, get_current_epoch(state))`.
 /// - spec: `payload.timestamp == compute_time_at_slot(state, state.slot)`.
-/// - spec: `execution_engine.verify_and_notify_new_payload(...)`.
+/// - spec: `execution_engine.notify_new_payload_capella(...)`:
+///   `Invalid` → `Err(InvalidExecutionPayload)`; `Valid`/`NotValidated` → returned to caller.
 /// - Cache `latest_execution_payload_header` with `withdrawals_root`.
 pub fn process_execution_payload<
     const MAX_PROPOSER_SLASHINGS: u64,
@@ -84,7 +88,7 @@ pub fn process_execution_payload<
     >,
     execution_engine: &EE,
     runtime_cfg: &pharos_types::config::RuntimeConfig,
-) -> Result<(), StateTransitionError>
+) -> Result<PayloadVerificationStatus, StateTransitionError>
 where
     E: EthSpec<
         CapellaBeaconState = BeaconState<
@@ -135,8 +139,9 @@ where
     // Call notify_new_payload_capella so the EL receives the full Capella payload
     // including withdrawals (engine_newPayloadV2). The default fallback strips
     // withdrawals for implementations that have not been upgraded to V2.
-    let valid = execution_engine.notify_new_payload_capella(payload);
-    if !valid {
+    // `Invalid` → reject; `Valid`/`NotValidated` → proceed and return the status.
+    let el_status = execution_engine.notify_new_payload_capella(payload);
+    if el_status == PayloadVerificationStatus::Invalid {
         return Err(StateTransitionError::InvalidExecutionPayload(
             "execution engine rejected payload",
         ));
@@ -164,5 +169,5 @@ where
         withdrawals_root,
     };
 
-    Ok(())
+    Ok(el_status)
 }

@@ -666,7 +666,7 @@ mod tests {
                 message: draft,
                 signature: BLSSignature::from_array([0u8; 96]),
             });
-            let post_draft = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+            let (post_draft, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
                 state.clone(),
                 &draft_signed,
                 &null_engine,
@@ -696,7 +696,7 @@ mod tests {
                 message: final_block,
                 signature: real_sig,
             });
-            let post_final = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+            let (post_final, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
                 state.clone(),
                 &fork_signed,
                 &null_engine,
@@ -1071,7 +1071,7 @@ mod tests {
                 let s = fc.read();
                 s.block_states.get(&anchor_root).cloned().unwrap()
             };
-            let post_a = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+            let (post_a, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
                 pre_state,
                 &signed_a,
                 &NullExecutionEngine,

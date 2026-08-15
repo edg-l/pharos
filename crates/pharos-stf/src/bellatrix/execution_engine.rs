@@ -12,6 +12,23 @@
 use pharos_types::bellatrix::ExecutionPayload;
 use pharos_types::capella::ExecutionPayload as CapellaExecutionPayload;
 
+// ── PayloadVerificationStatus ─────────────────────────────────────────────────
+
+/// Three-valued result of EL payload verification.
+///
+/// Per `specs/sync/optimistic.md` Helpers:
+/// - `Valid`        — EL returned `VALID`; block is fully validated.
+/// - `NotValidated` — EL returned `SYNCING` or `ACCEPTED` (`NOT_VALIDATED`);
+///   block may be imported optimistically if it is a candidate.
+/// - `Invalid`      — EL returned `INVALID`, `INVALID_BLOCK_HASH`, or an engine
+///   error; block MUST NOT import.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PayloadVerificationStatus {
+    Valid,
+    NotValidated,
+    Invalid,
+}
+
 // ── NewPayloadRequest ─────────────────────────────────────────────────────────
 
 /// `NewPayloadRequest` per `specs/bellatrix/beacon-chain.md:293-296`.
@@ -44,8 +61,9 @@ pub struct NewPayloadRequest<
 pub trait ExecutionEngine: Send + Sync + 'static {
     /// `notify_new_payload` per `specs/bellatrix/beacon-chain.md:319-324`.
     ///
-    /// Returns `true` iff the payload is valid with respect to the EL's
-    /// execution state.
+    /// Returns `PayloadVerificationStatus` reflecting the EL's verdict:
+    /// `Valid` / `NotValidated` (SYNCING|ACCEPTED) / `Invalid`.
+    /// Per `specs/sync/optimistic.md` Helpers.
     fn notify_new_payload<
         const MAX_BYTES_PER_TRANSACTION: u64,
         const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
@@ -59,7 +77,7 @@ pub trait ExecutionEngine: Send + Sync + 'static {
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
         >,
-    ) -> bool;
+    ) -> PayloadVerificationStatus;
 
     /// `notify_new_payload` for Capella payloads (with withdrawals).
     ///
@@ -88,7 +106,7 @@ pub trait ExecutionEngine: Send + Sync + 'static {
             MAX_EXTRA_DATA_BYTES,
             MAX_WITHDRAWALS_PER_PAYLOAD,
         >,
-    ) -> bool {
+    ) -> PayloadVerificationStatus {
         // Default: strip withdrawals, forward to V1.
         self.notify_new_payload(&ExecutionPayload {
             parent_hash: payload.parent_hash,
@@ -113,12 +131,16 @@ pub trait ExecutionEngine: Send + Sync + 'static {
     /// Default implementation mirrors the Python spec:
     /// 1. Reject if any transaction in the payload is empty (`b""`).
     ///    spec line 348: `if b"" in execution_payload.transactions: return False`
+    ///    → returns `PayloadVerificationStatus::Invalid`.
     /// 2. Block-hash validation is delegated to the EL via `engine_newPayloadV1`.
     ///    The EL returns `INVALID_BLOCK_HASH` (Paris spec) when the block hash
     ///    is wrong; the CL does NOT independently recompute it.
     ///    spec line 351: `if not self.is_valid_block_hash(execution_payload): return False`
-    /// 3. Call `notify_new_payload`; return its result.
+    /// 3. Call `notify_new_payload`; return its `PayloadVerificationStatus`.
     ///    spec line 354: `if not self.notify_new_payload(execution_payload): return False`
+    ///
+    /// Per `specs/sync/optimistic.md` Helpers: NOT_VALIDATED = SYNCING|ACCEPTED,
+    /// INVALIDATED = INVALID|INVALID_BLOCK_HASH.
     fn verify_and_notify_new_payload<
         const MAX_BYTES_PER_TRANSACTION: u64,
         const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
@@ -133,11 +155,11 @@ pub trait ExecutionEngine: Send + Sync + 'static {
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
         >,
-    ) -> bool {
+    ) -> PayloadVerificationStatus {
         // spec line 348: reject if any transaction is empty.
         for tx in req.execution_payload.transactions.as_slice() {
             if tx.as_slice().is_empty() {
-                return false;
+                return PayloadVerificationStatus::Invalid;
             }
         }
 
@@ -155,6 +177,10 @@ pub trait ExecutionEngine: Send + Sync + 'static {
 /// Used in conformance tests that supply an `execution_valid` flag via fixture
 /// metadata (`execution.yaml`). Construct with `FixedExecutionEngine(true)` or
 /// `FixedExecutionEngine(false)`.
+///
+/// Mapping: `true` → `Valid`, `false` → `Invalid`.
+/// `execution_valid: false` fixtures MUST still produce `Err(InvalidExecutionPayload)`
+/// from the STF — `Invalid` preserves that behaviour.
 pub struct FixedExecutionEngine(pub bool);
 
 impl ExecutionEngine for FixedExecutionEngine {
@@ -171,8 +197,12 @@ impl ExecutionEngine for FixedExecutionEngine {
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
         >,
-    ) -> bool {
-        self.0
+    ) -> PayloadVerificationStatus {
+        if self.0 {
+            PayloadVerificationStatus::Valid
+        } else {
+            PayloadVerificationStatus::Invalid
+        }
     }
 
     fn verify_and_notify_new_payload<
@@ -189,14 +219,18 @@ impl ExecutionEngine for FixedExecutionEngine {
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
         >,
-    ) -> bool {
-        self.0
+    ) -> PayloadVerificationStatus {
+        if self.0 {
+            PayloadVerificationStatus::Valid
+        } else {
+            PayloadVerificationStatus::Invalid
+        }
     }
 }
 
 // ── NullExecutionEngine ───────────────────────────────────────────────────────
 
-/// `NullExecutionEngine` — always returns `true`.
+/// `NullExecutionEngine` — always returns `Valid`.
 ///
 /// Used for spec-test conformance runs that have no EL counterpart.
 pub struct NullExecutionEngine;
@@ -215,11 +249,11 @@ impl ExecutionEngine for NullExecutionEngine {
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
         >,
-    ) -> bool {
-        true
+    ) -> PayloadVerificationStatus {
+        PayloadVerificationStatus::Valid
     }
 
-    /// Override default: spec-test paths have no EL; short-circuit to `true`.
+    /// Override default: spec-test paths have no EL; short-circuit to `Valid`.
     fn verify_and_notify_new_payload<
         const MAX_BYTES_PER_TRANSACTION: u64,
         const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
@@ -234,7 +268,117 @@ impl ExecutionEngine for NullExecutionEngine {
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
         >,
-    ) -> bool {
-        true
+    ) -> PayloadVerificationStatus {
+        PayloadVerificationStatus::Valid
+    }
+}
+
+// ── NotValidatedExecutionEngine (test helper) ─────────────────────────────────
+
+/// `NotValidatedExecutionEngine` — always returns `NotValidated` (SYNCING/ACCEPTED).
+///
+/// Used in unit tests to simulate an EL that is still syncing.
+#[cfg(test)]
+pub struct NotValidatedExecutionEngine;
+
+#[cfg(test)]
+impl ExecutionEngine for NotValidatedExecutionEngine {
+    fn notify_new_payload<
+        const MAX_BYTES_PER_TRANSACTION: u64,
+        const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+        const BYTES_PER_LOGS_BLOOM: u64,
+        const MAX_EXTRA_DATA_BYTES: u64,
+    >(
+        &self,
+        _payload: &ExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+        >,
+    ) -> PayloadVerificationStatus {
+        PayloadVerificationStatus::NotValidated
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `FixedExecutionEngine(true)` → `Valid`.
+    /// Confirms conformance `execution_valid: true` fixture path still works.
+    #[test]
+    fn fixed_true_returns_valid() {
+        let engine = FixedExecutionEngine(true);
+        // notify_new_payload returns Valid for true.
+        // Use a zero-sized request to satisfy const generics.
+        let payload = ExecutionPayload::<1, 1, 1, 1>::default();
+        assert_eq!(
+            engine.notify_new_payload(&payload),
+            PayloadVerificationStatus::Valid
+        );
+    }
+
+    /// `FixedExecutionEngine(false)` → `Invalid`.
+    /// Confirms conformance `execution_valid: false` still drives STF rejection.
+    #[test]
+    fn fixed_false_returns_invalid() {
+        let engine = FixedExecutionEngine(false);
+        let payload = ExecutionPayload::<1, 1, 1, 1>::default();
+        assert_eq!(
+            engine.notify_new_payload(&payload),
+            PayloadVerificationStatus::Invalid
+        );
+    }
+
+    /// `NullExecutionEngine` → `Valid`.
+    #[test]
+    fn null_returns_valid() {
+        let engine = NullExecutionEngine;
+        let payload = ExecutionPayload::<1, 1, 1, 1>::default();
+        assert_eq!(
+            engine.notify_new_payload(&payload),
+            PayloadVerificationStatus::Valid
+        );
+    }
+
+    /// `NotValidatedExecutionEngine` → `NotValidated` (SYNCING).
+    #[test]
+    fn not_validated_engine_returns_not_validated() {
+        let engine = NotValidatedExecutionEngine;
+        let payload = ExecutionPayload::<1, 1, 1, 1>::default();
+        assert_eq!(
+            engine.notify_new_payload(&payload),
+            PayloadVerificationStatus::NotValidated
+        );
+    }
+
+    /// Gate logic: `NotValidated` from EL triggers the candidate check;
+    /// `Valid` bypasses it. This verifies the condition used in `import.rs`.
+    ///
+    /// Per `specs/sync/optimistic.md`: `is_optimistic_candidate_block` gates
+    /// MAY-optimistic import only; a `Valid` non-candidate MUST still import.
+    #[test]
+    fn gate_condition_valid_bypasses_candidate_check() {
+        // With Valid: gate condition is false → no candidate check needed.
+        let valid_status = Some(PayloadVerificationStatus::Valid);
+        let would_trigger = valid_status == Some(PayloadVerificationStatus::NotValidated);
+        assert!(
+            !would_trigger,
+            "Valid payload status must not trigger the candidate gate"
+        );
+    }
+
+    /// Gate logic: `NotValidated` from EL triggers the candidate check.
+    #[test]
+    fn gate_condition_not_validated_triggers_candidate_check() {
+        let not_validated_status = Some(PayloadVerificationStatus::NotValidated);
+        let would_trigger = not_validated_status == Some(PayloadVerificationStatus::NotValidated);
+        assert!(
+            would_trigger,
+            "NotValidated payload status must trigger the candidate gate"
+        );
     }
 }

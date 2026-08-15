@@ -26,7 +26,9 @@ pub use altair::light_client_dispatch::{
     AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds,
 };
 pub use altair::state_transition::{AltairDispatch, AltairJaFDispatch, AltairProcessSlotsDispatch};
-pub use bellatrix::execution_engine::{ExecutionEngine, FixedExecutionEngine, NullExecutionEngine};
+pub use bellatrix::execution_engine::{
+    ExecutionEngine, FixedExecutionEngine, NullExecutionEngine, PayloadVerificationStatus,
+};
 pub use bellatrix::state_transition::{BellatrixDispatch, BellatrixProcessSlotsDispatch};
 pub use capella::state_transition::{
     CapellaDispatch, CapellaJaFDispatch, CapellaProcessSlotsDispatch,
@@ -385,13 +387,18 @@ where
 ///
 /// `execution_engine` is used for Bellatrix and Capella arms; phase0 and altair
 /// arms ignore it. Pass `&NullExecutionEngine` for non-EL contexts (spec tests).
+/// `state_transition` return type: post-state + optional EL verdict.
+///
+/// `payload_status` is `None` for pre-merge forks (phase0/altair), `Some`
+/// for bellatrix/capella. The status is the direct EL verdict from
+/// `verify_and_notify_new_payload` / `notify_new_payload_capella`.
 pub fn state_transition<E: EthSpec, EE: ExecutionEngine>(
     mut state: E::BeaconState,
     signed_block: &E::SignedBeaconBlock,
     execution_engine: &EE,
     validate_result: bool,
     runtime_cfg: &RuntimeConfig,
-) -> Result<E::BeaconState, StateTransitionError>
+) -> Result<(E::BeaconState, Option<PayloadVerificationStatus>), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite + TreeHash,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
@@ -446,9 +453,10 @@ where
             let altair_inner =
                 E::into_altair_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
             // Apply the altair state transition via the `AltairDispatch` blanket impl.
+            // Phase0/Altair have no execution payload → payload_status = None.
             let updated = altair_inner.apply_signed_block(altair_signed, validate_result)?;
             // Wrap the result back into the fork-enum.
-            return Ok(E::altair_into_state(updated));
+            return Ok((E::altair_into_state(updated), None));
         }
         ForkVariant::Bellatrix => {
             // Unwrap fork-enum state and block to their inner bellatrix types.
@@ -457,7 +465,7 @@ where
             let bellatrix_inner =
                 E::into_bellatrix_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
             // Apply the bellatrix state transition via the `BellatrixDispatch` blanket impl.
-            let updated = bellatrix_inner.apply_signed_block(
+            let (updated, payload_status) = bellatrix_inner.apply_signed_block(
                 bellatrix_signed,
                 execution_engine,
                 validate_result,
@@ -466,7 +474,7 @@ where
             // Wrap the result back into the fork-enum + invalidate the root cache.
             let mut wrapped = E::bellatrix_into_state(updated);
             wrapped.invalidate_root_cache();
-            return Ok(wrapped);
+            return Ok((wrapped, payload_status));
         }
         ForkVariant::Capella => {
             // Unwrap fork-enum state and block to their inner capella types.
@@ -475,7 +483,7 @@ where
             let capella_inner =
                 E::into_capella_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
             // Apply the capella state transition via the `CapellaDispatch` blanket impl.
-            let updated = capella_inner.apply_signed_block(
+            let (updated, payload_status) = capella_inner.apply_signed_block(
                 capella_signed,
                 execution_engine,
                 validate_result,
@@ -484,14 +492,15 @@ where
             // Wrap the result back into the fork-enum + invalidate the root cache.
             let mut wrapped = E::capella_into_state(updated);
             wrapped.invalidate_root_cache();
-            return Ok(wrapped);
+            return Ok((wrapped, payload_status));
         }
     }
     // STF mutated `state` (phase0 + altair arms operate on `&mut state`); reset
     // the cached top-level root so the next `cached_tree_hash_root` call
     // recomputes from the post-STF state.
+    // Phase0 has no execution payload → payload_status = None.
     state.invalidate_root_cache();
-    Ok(state)
+    Ok((state, None))
 }
 
 /// Phase0 inner state transition.
@@ -1127,7 +1136,7 @@ mod fork_upgrade_tests {
                      — the D-live-fork-upgrade-trigger fix is not working"
                 );
             }
-            Ok(post_state) => {
+            Ok((post_state, _payload_status)) => {
                 assert_eq!(
                     post_state.fork_variant(),
                     ForkVariant::Capella,

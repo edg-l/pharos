@@ -832,7 +832,7 @@ mod tests {
             ..RuntimeConfig::default()
         };
         let signed_a = make_signed_block(1, anchor_root);
-        let post_a = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_a, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
             genesis_state_clone,
             &signed_a,
             &NullExecutionEngine,

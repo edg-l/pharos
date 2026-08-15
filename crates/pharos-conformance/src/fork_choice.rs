@@ -532,7 +532,7 @@ where
                         &cfg,
                     );
                     let (post_state, attestations) = match post_state_result {
-                        Ok(ps) => {
+                        Ok((ps, _)) => {
                             let atts: Vec<Attestation<2048>> =
                                 if let Some(inner) = E::unwrap_altair_signed_block(&altair_inner) {
                                     inner.message().body().attestations().to_vec()
@@ -612,7 +612,7 @@ where
                         &cfg,
                     );
                     let post_state = match post_state_result {
-                        Ok(ps) => ps,
+                        Ok((ps, _)) => ps,
                         Err(e) => {
                             if valid {
                                 return CaseResult::Fail(format!(
@@ -877,7 +877,7 @@ where
                         &cfg,
                     );
                     let (post_state, attestations) = match post_state_result {
-                        Ok(ps) => {
+                        Ok((ps, _)) => {
                             let atts: Vec<Attestation<2048>> =
                                 if let Some(inner) = E::unwrap_bellatrix_signed_block(&bel_inner) {
                                     inner.message().body().attestations().to_vec()
@@ -948,7 +948,7 @@ where
                         &cfg,
                     );
                     let (post_state, attestations) = match post_state_result {
-                        Ok(ps) => {
+                        Ok((ps, _)) => {
                             let atts: Vec<Attestation<2048>> =
                                 if let Some(inner) = E::unwrap_altair_signed_block(&altair_inner) {
                                     inner.message().body().attestations().to_vec()
@@ -1026,7 +1026,7 @@ where
                         &cfg,
                     );
                     let post_state = match post_state_result {
-                        Ok(ps) => ps,
+                        Ok((ps, _)) => ps,
                         Err(e) => {
                             if valid {
                                 return CaseResult::Fail(format!(
@@ -1765,7 +1765,7 @@ where
                         &cfg,
                     );
                     let (post_state, attestations) = match post_state_result {
-                        Ok(ps) => {
+                        Ok((ps, _)) => {
                             let atts: Vec<Attestation<2048>> =
                                 capella_inner.message().body().attestations().to_vec();
                             (ps, atts)
@@ -1832,7 +1832,7 @@ where
                         &cfg,
                     );
                     let (post_state, attestations) = match post_state_result {
-                        Ok(ps) => {
+                        Ok((ps, _)) => {
                             let atts: Vec<Attestation<2048>> = if let Some(inner) =
                                 E::unwrap_bellatrix_signed_block(&bellatrix_inner)
                             {
@@ -1904,7 +1904,7 @@ where
                         &cfg,
                     );
                     let (post_state, attestations) = match post_state_result {
-                        Ok(ps) => {
+                        Ok((ps, _)) => {
                             let atts: Vec<Attestation<2048>> =
                                 if let Some(inner) = E::unwrap_altair_signed_block(&altair_inner) {
                                     inner.message().body().attestations().to_vec()
@@ -1983,7 +1983,7 @@ where
                         &cfg,
                     );
                     let post_state = match post_state_result {
-                        Ok(ps) => ps,
+                        Ok((ps, _)) => ps,
                         Err(e) => {
                             if valid {
                                 return CaseResult::Fail(format!(

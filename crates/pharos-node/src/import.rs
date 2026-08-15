@@ -20,7 +20,9 @@ use pharos_fork_choice::{
     PowBlockProvider, get_current_slot, get_head, is_optimistic_candidate_block, on_block,
     on_tick_per_slot,
 };
-use pharos_stf::{ExecutionEngine, StateTransitionError, state_transition};
+use pharos_stf::{
+    ExecutionEngine, PayloadVerificationStatus, StateTransitionError, state_transition,
+};
 use pharos_storage::{BlockTransition, RocksStore, StateSummary, StorageError, Store as DbStore};
 use pharos_types::config::RuntimeConfig;
 use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _, ForkVariant};
@@ -231,68 +233,11 @@ where
         }
     };
 
-    // (b) Optimistic-candidate gate.
-    //
-    // Per `D-optimistic-candidate-gates-import` and
-    // `consensus-specs/sync/optimistic.md` `is_optimistic_candidate_block`:
-    // an execution block that is NOT a candidate MUST NOT be imported
-    // optimistically.  Without a VALID verdict from the EL we have no way to
-    // fully validate it, so we reject it here (before the STF).
-    //
-    // "Not a candidate" is a non-starter only when:
-    //   - the block carries a live execution payload (post-merge), AND
-    //   - its parent is NOT an execution block (merge-transition scenario), AND
-    //   - `block_slot + SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY > current_slot`
-    //     (i.e. the block is near the tip, not far enough behind to be safe).
-    //
-    // On a live Capella devnet EVERY block's parent is an execution block, so
-    // this gate is unconditionally satisfied for all normal tip-following.  It
-    // only fires for attempted optimistic imports of merge-transition blocks
-    // that are newer than SAFE_SLOTS, which is exactly the fork-choice-
-    // poisoning scenario the spec protects against.
-    //
-    // If the EL already returned VALID the block is non-optimistic: `state_transition`
-    // -> `verify_and_notify_new_payload` enforces VALID as a precondition for the
-    // `FixedExecutionEngine` (conformance mock).  On the live path
-    // `new_payload_wire` returns true for SYNCING/ACCEPTED (Phase 1 relaxation),
-    // so the gate is the right place to tighten for non-candidate blocks.
-    // SPEC GAP (closed in M8 Phase 3): this gate rejects non-candidate execution
-    // blocks even when the EL would return VALID. Per specs/sync/optimistic.md the
-    // candidate gate permits MAY-optimistic import only; a fully-validated (VALID)
-    // non-candidate block MUST still import. Inert on capella+ devnets (every block's
-    // parent is execution-enabled => always a candidate). Phase 3 threads PayloadStatus
-    // out of verify_and_notify_new_payload and moves this gate after the EL verdict
-    // (reject only on NOT_VALIDATED && not-candidate).
-    //
-    // Future blocks (block_slot > current_slot) are NOT evaluated here: they have not
-    // yet reached their slot so `is_optimistic_candidate_block` is meaningless for them.
-    // They proceed past this gate and on_block applies the future-slot hold path.
-    if signed_block_is_execution_enabled::<E>(signed_block) {
-        let block_slot: u64 = signed_block_slot::<E>(signed_block).0;
-
-        let (current_slot, candidate) = {
-            let store_read = fc_store.read();
-            let cs = get_current_slot::<E>(&store_read).0;
-            let cand = is_optimistic_candidate_block::<E>(&store_read, cs, parent_root, block_slot);
-            (cs, cand)
-        };
-
-        // Future blocks (block_slot > current_slot) bypass this gate and are
-        // handled by on_block's future-slot hold path; the candidate gate
-        // applies only to blocks eligible for import now (block_slot <= current_slot).
-        if block_slot <= current_slot && !candidate {
-            return Err(ImportError::NotOptimisticCandidate {
-                block_slot,
-                current_slot,
-            });
-        }
-    }
-
-    // (c) Run state transition in spawn_blocking (CPU-bound; M3a invariant).
+    // (b) Run state transition in spawn_blocking (CPU-bound; M3a invariant).
     let signed_block_clone = signed_block.clone();
     let ee = Arc::clone(execution_engine);
     let cfg_clone = cfg.clone();
-    let post_result = tokio::task::spawn_blocking(move || {
+    let stf_result = tokio::task::spawn_blocking(move || {
         state_transition::<E, EE>(
             pre_state,
             &signed_block_clone,
@@ -303,7 +248,44 @@ where
     })
     .await?;
 
-    let post_state = post_result.map_err(ImportError::StateTransition)?;
+    let (post_state, payload_status) = stf_result.map_err(ImportError::StateTransition)?;
+
+    // (c) Optimistic-candidate gate — AFTER the STF so the real EL verdict is known.
+    //
+    // Per `specs/sync/optimistic.md` `is_optimistic_candidate_block`: the gate
+    // permits MAY-optimistic import only. A block with EL verdict `Valid` MUST
+    // still import regardless of candidacy. Only a `NotValidated` (SYNCING/ACCEPTED)
+    // non-candidate block is rejected here.
+    //
+    // Sequence:
+    // - `Valid`         → always import (no gate needed).
+    // - `None` (pre-merge) → always import.
+    // - `NotValidated` + candidate → import optimistically.
+    // - `NotValidated` + NOT candidate + block_slot <= current_slot → REJECT.
+    // - `NotValidated` + block_slot > current_slot → bypass (future-block hold path).
+    // - `Invalid` → already rejected by the STF (InvalidExecutionPayload).
+    //
+    // Per `D-optimistic-candidate-gates-import` (M8 Phase 3b).
+    if payload_status == Some(PayloadVerificationStatus::NotValidated) {
+        let block_slot: u64 = signed_block_slot::<E>(signed_block).0;
+
+        let (current_slot, candidate) = {
+            let store_read = fc_store.read();
+            let cs = get_current_slot::<E>(&store_read).0;
+            let cand = is_optimistic_candidate_block::<E>(&store_read, cs, parent_root, block_slot);
+            (cs, cand)
+        };
+
+        // Future blocks (block_slot > current_slot) bypass this gate: they have
+        // not yet reached their slot so candidacy is meaningless. on_block handles
+        // them via the future-slot hold path.
+        if block_slot <= current_slot && !candidate {
+            return Err(ImportError::NotOptimisticCandidate {
+                block_slot,
+                current_slot,
+            });
+        }
+    }
 
     // Capture fork variant now that we have the post-state.
     let fork_variant = post_state.fork_variant();
@@ -571,4 +553,547 @@ where
         fork_variant,
         post_state: post_state_for_return,
     })
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    //! Gate integration tests for `import_block`.
+    //!
+    //! These tests exercise the optimistic-candidate gate at the `import_block`
+    //! seam — the lowest synchronous decision point where a real
+    //! `PayloadVerificationStatus` from the EE flows into the gate logic.
+    //!
+    //! Scenario: Bellatrix genesis anchor (zeroed `block_hash`, NOT execution-
+    //! enabled) + a Bellatrix block at slot 1 with a non-zero `block_hash`
+    //! (execution-enabled).  With `fc_store.time = 6` (6-second minimal-preset
+    //! slots, `genesis_time = 0`) the store's `current_slot = 1`, so:
+    //!   - Branch 1 of `is_optimistic_candidate_block`: parent block_hash == 0 →
+    //!     NOT execution-enabled → false
+    //!   - Branch 2: `block_slot + 128 = 129 > current_slot = 1` → false
+    //! → block is NOT an optimistic candidate.
+    //!
+    //! Test (a): EE returns `NotValidated` (SYNCING) → gate fires →
+    //!   `Err(ImportError::NotOptimisticCandidate)`.
+    //! Test (b): EE returns `Valid` → gate does not fire (status ≠ NotValidated) →
+    //!   import succeeds with `Ok(ImportOutcome)`.
+    //!
+    //! Per `D-optimistic-candidate-gates-import` (M8 Phase 3b).
+
+    use std::sync::Arc;
+
+    use parking_lot::RwLock;
+    use pharos_fork_choice::get_forkchoice_store;
+    use pharos_ssz::{SszList, SszSequence as _, SszVector, TreeHash};
+    use pharos_stf::bellatrix::execution_engine::NewPayloadRequest;
+    use pharos_stf::{ExecutionEngine, NullExecutionEngine, PayloadVerificationStatus};
+    use pharos_storage::{RocksStore, RocksStoreConfig};
+    use pharos_types::altair::MinimalSyncCommittee;
+    use pharos_types::bellatrix::{
+        MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
+        execution_payload::MinimalExecutionPayload,
+    };
+    use pharos_types::phase0::misc::{Fork, Validator};
+    use pharos_types::phase0::operations::BeaconBlockHeader;
+    use pharos_types::phase0::primitives::{Epoch, Gwei, Root, Slot, ValidatorIndex, Version};
+    use pharos_types::state::{
+        MinimalBeaconState as ForkMinimalBeaconState, SignedBeaconBlock as ForkSignedBeaconBlock,
+    };
+    use pharos_types::{EthSpec, MinimalEthSpec};
+    use pharos_utils::{BLSPubkey, BLSSignature, Hash256};
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::engine_driver::NewPayloadRequest as EngineNewPayloadRequest;
+
+    // ── Terminal hash used in both tests ──────────────────────────────────────
+
+    const TERMINAL_HASH: [u8; 32] = [0xAA_u8; 32];
+
+    // ── Mock EEs ──────────────────────────────────────────────────────────────
+
+    /// Always returns `NotValidated` (SYNCING/ACCEPTED).
+    struct SyncingEE;
+
+    impl ExecutionEngine for SyncingEE {
+        fn notify_new_payload<
+            const MAX_BYTES_PER_TRANSACTION: u64,
+            const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+            const BYTES_PER_LOGS_BLOOM: u64,
+            const MAX_EXTRA_DATA_BYTES: u64,
+        >(
+            &self,
+            _payload: &pharos_types::bellatrix::ExecutionPayload<
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+        ) -> PayloadVerificationStatus {
+            PayloadVerificationStatus::NotValidated
+        }
+
+        fn verify_and_notify_new_payload<
+            const MAX_BYTES_PER_TRANSACTION: u64,
+            const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+            const BYTES_PER_LOGS_BLOOM: u64,
+            const MAX_EXTRA_DATA_BYTES: u64,
+        >(
+            &self,
+            _req: NewPayloadRequest<
+                '_,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+        ) -> PayloadVerificationStatus {
+            PayloadVerificationStatus::NotValidated
+        }
+    }
+
+    /// Always returns `Valid`.
+    struct ValidEE;
+
+    impl ExecutionEngine for ValidEE {
+        fn notify_new_payload<
+            const MAX_BYTES_PER_TRANSACTION: u64,
+            const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+            const BYTES_PER_LOGS_BLOOM: u64,
+            const MAX_EXTRA_DATA_BYTES: u64,
+        >(
+            &self,
+            _payload: &pharos_types::bellatrix::ExecutionPayload<
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+        ) -> PayloadVerificationStatus {
+            PayloadVerificationStatus::Valid
+        }
+
+        fn verify_and_notify_new_payload<
+            const MAX_BYTES_PER_TRANSACTION: u64,
+            const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+            const BYTES_PER_LOGS_BLOOM: u64,
+            const MAX_EXTRA_DATA_BYTES: u64,
+        >(
+            &self,
+            _req: NewPayloadRequest<
+                '_,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+        ) -> PayloadVerificationStatus {
+            PayloadVerificationStatus::Valid
+        }
+    }
+
+    // ── Fixture builder ───────────────────────────────────────────────────────
+
+    /// Minimal BLS pubkey: deterministically derived but non-zero.
+    fn test_pubkey() -> BLSPubkey {
+        use blst::min_pk::SecretKey;
+        BLSPubkey::from_array(
+            SecretKey::key_gen(&[1u8; 32], &[])
+                .unwrap()
+                .sk_to_pk()
+                .compress(),
+        )
+    }
+
+    /// Build a Bellatrix anchor state at slot 0 (`genesis_time = 0`) with a
+    /// zeroed `block_hash` (NOT execution-enabled), plus the matching signed
+    /// anchor block.
+    fn build_anchor() -> (
+        ForkMinimalBeaconState,
+        ForkSignedBeaconBlock<
+            16,
+            2,
+            128,
+            16,
+            16,
+            2048,
+            33,
+            32,
+            1_073_741_824,
+            1_048_576,
+            256,
+            32,
+            4,
+            16,
+        >,
+    ) {
+        let anchor_body = MinimalBeaconBlockBody::default();
+        let anchor_body_root: Root = anchor_body.tree_hash_root();
+
+        let validator = Validator {
+            pubkey: test_pubkey(),
+            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            activation_epoch: Epoch(0),
+            exit_epoch: Epoch(u64::MAX),
+            withdrawable_epoch: Epoch(u64::MAX),
+            slashed: false,
+            ..Validator::default()
+        };
+
+        let sync_committee = MinimalSyncCommittee {
+            pubkeys: SszVector::from_vec(vec![
+                test_pubkey();
+                MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+            ])
+            .unwrap(),
+            aggregate_pubkey: test_pubkey(),
+        };
+
+        let state_inner = MinimalBeaconState {
+            genesis_time: 0,
+            slot: Slot(0),
+            fork: Fork {
+                previous_version: Version::from_array([0x01, 0x00, 0x00, 0x01]),
+                current_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+                epoch: Epoch(0),
+            },
+            latest_block_header: BeaconBlockHeader {
+                slot: Slot(0),
+                proposer_index: ValidatorIndex(0),
+                parent_root: Root::default(),
+                state_root: Root::default(),
+                body_root: anchor_body_root,
+            },
+            validators: SszList::empty_tree().with_push(validator).unwrap(),
+            balances: SszList::with_push(
+                &SszList::default(),
+                Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            )
+            .unwrap(),
+            previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
+            current_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
+            inactivity_scores: SszList::with_push(&SszList::default(), 0u64).unwrap(),
+            current_sync_committee: sync_committee.clone(),
+            next_sync_committee: sync_committee,
+            ..MinimalBeaconState::default()
+        };
+
+        let fork_state = ForkMinimalBeaconState::Bellatrix(state_inner.clone());
+        let state_root: Root = fork_state.tree_hash_root();
+
+        let anchor_block_inner = MinimalBeaconBlock {
+            slot: Slot(0),
+            proposer_index: ValidatorIndex(0),
+            parent_root: Root::default(),
+            state_root,
+            body: anchor_body,
+        };
+        // Anchor block root (tree_hash_root of the inner block).
+        let signed_anchor: ForkSignedBeaconBlock<
+            16,
+            2,
+            128,
+            16,
+            16,
+            2048,
+            33,
+            32,
+            1_073_741_824,
+            1_048_576,
+            256,
+            32,
+            4,
+            16,
+        > = ForkSignedBeaconBlock::Bellatrix(MinimalSignedBeaconBlock {
+            message: anchor_block_inner,
+            signature: BLSSignature::from_array([0u8; 96]),
+        });
+
+        (fork_state, signed_anchor)
+    }
+
+    /// Build a Bellatrix execution block at `slot = 1` whose parent is the
+    /// anchor (zeroed block_hash, NOT execution-enabled).
+    ///
+    /// The block carries a non-zero `block_hash` so it IS execution-enabled.
+    /// Its `payload.parent_hash = TERMINAL_HASH` so the fork-choice merge-
+    /// transition guard (TERMINAL_BLOCK_HASH override mode) passes.
+    ///
+    /// Returns `(signed_block, anchor_root)`.
+    fn build_execution_block<EE: ExecutionEngine + 'static>(
+        genesis_state: ForkMinimalBeaconState,
+        anchor_root: Root,
+        ee: &EE,
+    ) -> ForkSignedBeaconBlock<
+        16,
+        2,
+        128,
+        16,
+        16,
+        2048,
+        33,
+        32,
+        1_073_741_824,
+        1_048_576,
+        256,
+        32,
+        4,
+        16,
+    > {
+        use pharos_stf::state_transition;
+
+        let runtime_cfg = pharos_types::config::RuntimeConfig {
+            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            bellatrix_fork_epoch: 0, // Bellatrix from genesis
+            altair_fork_epoch: 0,    // Altair from genesis
+            ..Default::default()
+        };
+
+        // `timestamp` must equal `genesis_time + slot * seconds_per_slot` per spec line 394.
+        // With genesis_time = 0, slot = 1, seconds_per_slot = 6: timestamp = 6.
+        // `prev_randao` must equal `randao_mixes[epoch % EPOCHS_PER_HISTORICAL_VECTOR]`.
+        // The default anchor state has all-zero randao_mixes, so prev_randao = default.
+        let payload = MinimalExecutionPayload {
+            parent_hash: Hash256::from_array(TERMINAL_HASH),
+            block_number: 1,
+            gas_limit: 0x1c9c380,
+            timestamp: 6, // genesis_time=0 + slot=1 * seconds_per_slot=6
+            block_hash: Hash256::from_array([0x01u8; 32]),
+            ..Default::default()
+        };
+
+        // Step 1: draft pass (state_root = default) to get post-state.
+        let draft = MinimalBeaconBlock {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(0),
+            parent_root: anchor_root,
+            state_root: Root::default(),
+            body: MinimalBeaconBlockBody {
+                execution_payload: payload.clone(),
+                ..Default::default()
+            },
+        };
+        let draft_signed: ForkSignedBeaconBlock<
+            16,
+            2,
+            128,
+            16,
+            16,
+            2048,
+            33,
+            32,
+            1_073_741_824,
+            1_048_576,
+            256,
+            32,
+            4,
+            16,
+        > = ForkSignedBeaconBlock::Bellatrix(MinimalSignedBeaconBlock {
+            message: draft,
+            signature: BLSSignature::from_array([0u8; 96]),
+        });
+
+        let (post_state, _) = state_transition::<MinimalEthSpec, EE>(
+            genesis_state,
+            &draft_signed,
+            ee,
+            false,
+            &runtime_cfg,
+        )
+        .expect("draft STF must succeed");
+
+        let state_root: Root = post_state.tree_hash_root();
+
+        // Step 2: final block with correct state_root.
+        let final_block = MinimalBeaconBlock {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(0),
+            parent_root: anchor_root,
+            state_root,
+            body: MinimalBeaconBlockBody {
+                execution_payload: payload,
+                ..Default::default()
+            },
+        };
+        ForkSignedBeaconBlock::Bellatrix(MinimalSignedBeaconBlock {
+            message: final_block,
+            signature: BLSSignature::from_array([0u8; 96]),
+        })
+    }
+
+    // ── Shared test scaffolding ───────────────────────────────────────────────
+
+    /// Scaffold shared by both gate tests:
+    /// - RocksStore at a tempdir
+    /// - fc_store with Bellatrix anchor (zeroed block_hash, NOT execution-enabled)
+    /// - `fc_store.time = 6` → `current_slot = 1` (MinimalEthSpec: 6-second slots)
+    /// - Terminal-block-hash override so the merge-transition guard passes
+    fn build_scaffold(
+        tmpdir: &tempfile::TempDir,
+    ) -> (
+        Arc<RwLock<pharos_fork_choice::Store<MinimalEthSpec>>>,
+        Root,
+        Arc<RocksStore>,
+    ) {
+        let store = Arc::new(
+            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+                path: tmpdir.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("RocksStore::open"),
+        );
+
+        let (genesis_state, signed_anchor) = build_anchor();
+        let anchor_root: Root = match &signed_anchor {
+            ForkSignedBeaconBlock::Bellatrix(inner) => inner.message.tree_hash_root(),
+            _ => unreachable!("anchor is always Bellatrix"),
+        };
+        let anchor_block = match signed_anchor {
+            ForkSignedBeaconBlock::Bellatrix(inner) => {
+                pharos_types::state::MinimalBeaconBlock::Bellatrix(inner.message)
+            }
+            _ => unreachable!("anchor is always Bellatrix"),
+        };
+
+        let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+
+        // Set time so current_slot = 1 (MinimalEthSpec SLOT_DURATION_MS = 6000):
+        // slot = (time - genesis_time) * 1000 / SLOT_DURATION_MS = 6 * 1000 / 6000 = 1.
+        // The candidate gate at import_block step (c) reads this BEFORE on_block
+        // advances the clock to wall-now, so the gate sees current_slot = 1.
+        fc.time = 6;
+
+        // Terminal-block-hash override: validate_merge_block checks
+        // payload.parent_hash == fc.terminal_block_hash.
+        fc.set_terminal_config(
+            pharos_utils::Uint256::default(),
+            Hash256::from_array(TERMINAL_HASH),
+            0,
+        );
+
+        (Arc::new(RwLock::new(fc)), anchor_root, store)
+    }
+
+    // ── Test (a) ──────────────────────────────────────────────────────────────
+
+    /// Non-candidate execution block + EL returns SYNCING → gate fires →
+    /// `Err(ImportError::NotOptimisticCandidate)`.
+    ///
+    /// Verifies: when `payload_status == NotValidated` and the block is NOT an
+    /// optimistic candidate (parent not execution-enabled + block within 128
+    /// slots of current), `import_block` rejects it without importing.
+    ///
+    /// Per `D-optimistic-candidate-gates-import` (M8 Phase 3b).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn non_candidate_syncing_el_rejects_with_not_optimistic_candidate() {
+        let tmpdir = tempfile::tempdir().unwrap();
+
+        let (fc_store, anchor_root, rocks_store) = build_scaffold(&tmpdir);
+
+        let (genesis_state, _) = build_anchor();
+        // The STF uses NullExecutionEngine so the block's state_root is computed correctly.
+        // The gate verdict comes from SyncingEE passed to import_block.
+        let block = build_execution_block(genesis_state, anchor_root, &NullExecutionEngine);
+
+        let runtime_cfg = pharos_types::config::RuntimeConfig {
+            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            bellatrix_fork_epoch: 0,
+            altair_fork_epoch: 0,
+            ..Default::default()
+        };
+
+        let (payload_tx, _payload_rx) =
+            mpsc::channel::<EngineNewPayloadRequest<MinimalEthSpec>>(16);
+        let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
+
+        let result =
+            import_block::<MinimalEthSpec, SyncingEE, pharos_fork_choice::NoopPowBlockProvider>(
+                &block,
+                &fc_store,
+                &Arc::new(SyncingEE),
+                &pow_provider,
+                &payload_tx,
+                false, // validate_result: false — no BLS in test blocks
+                &runtime_cfg,
+                &rocks_store,
+            )
+            .await;
+
+        match result {
+            Err(ImportError::NotOptimisticCandidate {
+                block_slot,
+                current_slot,
+            }) => {
+                assert_eq!(block_slot, 1, "block_slot must be 1");
+                assert_eq!(current_slot, 1, "current_slot must be 1 at gate check time");
+            }
+            Err(e) => panic!("expected NotOptimisticCandidate error, got different Err: {e}"),
+            Ok(_) => panic!("expected Err(NotOptimisticCandidate), got Ok (import succeeded)"),
+        }
+    }
+
+    // ── Test (b) ──────────────────────────────────────────────────────────────
+
+    /// Non-candidate execution block + EL returns VALID → gate not entered →
+    /// import succeeds.
+    ///
+    /// Verifies: `import_block` gate only fires when `payload_status ==
+    /// NotValidated`.  A `Valid` verdict from the EL bypasses the candidate
+    /// check entirely, so even a non-candidate block imports successfully.
+    ///
+    /// Per `D-optimistic-candidate-gates-import` (M8 Phase 3b).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn non_candidate_valid_el_imports_successfully() {
+        let tmpdir = tempfile::tempdir().unwrap();
+
+        let (fc_store, anchor_root, rocks_store) = build_scaffold(&tmpdir);
+
+        let (genesis_state, _) = build_anchor();
+        let block = build_execution_block(genesis_state, anchor_root, &NullExecutionEngine);
+
+        let runtime_cfg = pharos_types::config::RuntimeConfig {
+            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            bellatrix_fork_epoch: 0,
+            altair_fork_epoch: 0,
+            ..Default::default()
+        };
+
+        let (payload_tx, _payload_rx) =
+            mpsc::channel::<EngineNewPayloadRequest<MinimalEthSpec>>(16);
+        let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
+
+        let result =
+            import_block::<MinimalEthSpec, ValidEE, pharos_fork_choice::NoopPowBlockProvider>(
+                &block,
+                &fc_store,
+                &Arc::new(ValidEE),
+                &pow_provider,
+                &payload_tx,
+                false, // validate_result: false
+                &runtime_cfg,
+                &rocks_store,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "non-candidate block with EL=VALID must import successfully; got Err: {}",
+            result
+                .as_ref()
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        );
+        let outcome = result.unwrap();
+        assert_eq!(outcome.block_root, {
+            match &block {
+                ForkSignedBeaconBlock::Bellatrix(inner) => inner.message.tree_hash_root(),
+                _ => unreachable!(),
+            }
+        });
+    }
 }

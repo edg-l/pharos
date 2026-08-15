@@ -27,6 +27,7 @@ use crate::altair::block::{
     process_block_header_altair, process_eth1_data_altair, process_randao_altair,
 };
 use crate::altair::operations::process_sync_aggregate;
+use crate::bellatrix::execution_engine::PayloadVerificationStatus;
 use crate::bellatrix::helpers::{bellatrix_state_to_altair, update_bellatrix_from_altair};
 use crate::bellatrix::operations::{
     is_execution_enabled, process_execution_payload, process_operations_bellatrix,
@@ -101,7 +102,7 @@ pub fn process_block<
     execution_engine: &EE,
     verify_signatures: bool,
     runtime_cfg: &RuntimeConfig,
-) -> Result<(), StateTransitionError>
+) -> Result<Option<PayloadVerificationStatus>, StateTransitionError>
 where
     E: EthSpec<
             AltairBeaconState = AltairBeaconState<
@@ -226,7 +227,9 @@ where
     // `process_execution_payload` checks `payload.prev_randao` against the
     // randao mix from the PREVIOUS block (i.e. the current state before
     // `process_randao` mixes in the new reveal).
-    if is_execution_enabled::<
+    //
+    // Returns `Some(status)` when execution is enabled; `None` for pre-merge blocks.
+    let payload_status = if is_execution_enabled::<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS,
         MAX_ATTESTATIONS,
@@ -248,7 +251,7 @@ where
         MAX_EXTRA_DATA_BYTES,
     >(state, &block.body)
     {
-        process_execution_payload::<
+        Some(process_execution_payload::<
             MAX_PROPOSER_SLASHINGS,
             MAX_ATTESTER_SLASHINGS,
             MAX_ATTESTATIONS,
@@ -270,8 +273,10 @@ where
             MAX_EXTRA_DATA_BYTES,
             E,
             EE,
-        >(state, &block.body, execution_engine, runtime_cfg)?;
-    }
+        >(state, &block.body, execution_engine, runtime_cfg)?)
+    } else {
+        None
+    };
 
     // Step 3: process_randao — spec line 372.
     // Runs AFTER process_execution_payload (see spec note line 362-364).
@@ -370,7 +375,7 @@ where
     // back into the bellatrix state.
     update_bellatrix_from_altair(state, altair_state);
 
-    Ok(())
+    Ok(payload_status)
 }
 
 // ── Projection helper ─────────────────────────────────────────────────────────

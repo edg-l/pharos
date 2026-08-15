@@ -8,18 +8,24 @@ use pharos_types::{
     bellatrix::{BeaconBlockBody, BeaconState, ExecutionPayloadHeader},
 };
 
-use crate::bellatrix::execution_engine::{ExecutionEngine, NewPayloadRequest};
+use crate::bellatrix::execution_engine::{
+    ExecutionEngine, NewPayloadRequest, PayloadVerificationStatus,
+};
 use crate::error::StateTransitionError;
 use crate::phase0::accessors::compute_epoch_at_slot;
 
 /// `process_execution_payload` per `specs/bellatrix/beacon-chain.md:380-416`.
+///
+/// Returns `PayloadVerificationStatus` from the EL on success, or `Err` if a
+/// pre-check or EL `Invalid` verdict rejects the payload.
 ///
 /// Checks:
 /// - spec line 389-390: parent-hash must match `state.latest_execution_payload_header.block_hash`
 ///   when the merge transition is complete (i.e. the header is non-default).
 /// - spec line 392: `payload.prev_randao == get_randao_mix(state, get_current_epoch(state))`.
 /// - spec line 394: `payload.timestamp == compute_time_at_slot(state, state.slot)`.
-/// - spec line 396-398: `execution_engine.verify_and_notify_new_payload` must return `true`.
+/// - spec line 396-398: `execution_engine.verify_and_notify_new_payload`:
+///   `Invalid` → `Err(InvalidExecutionPayload)`; `Valid`/`NotValidated` → returned to caller.
 /// - spec line 400-415: cache `latest_execution_payload_header` with `transactions_root` computed
 ///   via `hash_tree_root(payload.transactions)`.
 pub fn process_execution_payload<
@@ -73,7 +79,7 @@ pub fn process_execution_payload<
     >,
     execution_engine: &EE,
     runtime_cfg: &pharos_types::config::RuntimeConfig,
-) -> Result<(), StateTransitionError>
+) -> Result<PayloadVerificationStatus, StateTransitionError>
 where
     E: EthSpec<
         BellatrixBeaconState = BeaconState<
@@ -131,10 +137,11 @@ where
     }
 
     // spec lines 396-398: `assert execution_engine.verify_and_notify_new_payload(NewPayloadRequest(...))`
-    let valid = execution_engine.verify_and_notify_new_payload(NewPayloadRequest {
+    // `Invalid` → reject; `Valid`/`NotValidated` → proceed and return the status.
+    let el_status = execution_engine.verify_and_notify_new_payload(NewPayloadRequest {
         execution_payload: payload,
     });
-    if !valid {
+    if el_status == PayloadVerificationStatus::Invalid {
         return Err(StateTransitionError::InvalidExecutionPayload(
             "execution engine rejected payload",
         ));
@@ -161,7 +168,7 @@ where
         transactions_root,
     };
 
-    Ok(())
+    Ok(el_status)
 }
 
 /// `is_execution_enabled` per `specs/bellatrix/beacon-chain.md:216-217`.

@@ -176,7 +176,7 @@ where
             validate_result,
             &pharos_types::config::RuntimeConfig::default(),
         ) {
-            Ok(new_state) => current = Some(new_state),
+            Ok((new_state, _)) => current = Some(new_state),
             Err(e) => {
                 block_error = Some(format!("{e}"));
                 break;
@@ -332,7 +332,7 @@ where
             validate_result,
             &pharos_types::config::RuntimeConfig::default(),
         ) {
-            Ok(new_state) => current = Some(new_state),
+            Ok((new_state, _)) => current = Some(new_state),
             Err(e) => {
                 block_error = Some(format!("{e}"));
                 break;
@@ -489,7 +489,7 @@ where
             validate_result,
             &E::default_runtime_config(),
         ) {
-            Ok(new_state) => current = Some(new_state),
+            Ok((new_state, _)) => current = Some(new_state),
             Err(e) => {
                 block_error = Some(format!("{e}"));
                 break;
@@ -659,7 +659,7 @@ where
             validate_result,
             &E::default_runtime_config(),
         ) {
-            Ok(new_state) => current = Some(new_state),
+            Ok((new_state, _)) => current = Some(new_state),
             Err(e) => {
                 block_error = Some(format!("{e}"));
                 break;
