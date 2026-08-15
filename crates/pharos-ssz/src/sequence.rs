@@ -501,9 +501,6 @@ impl<T, const N: u64> SszList<T, N> {
     }
 
     /// Whether the underlying storage uses the tree backend.
-    ///
-    /// Only available in test builds; used for diagnostics.
-    #[cfg(test)]
     pub fn backend_is_tree(&self) -> bool {
         matches!(self.backend, Backend::Tree(_))
     }
@@ -680,6 +677,11 @@ pub struct SszVector<T, const N: u64> {
 }
 
 impl<T, const N: u64> SszVector<T, N> {
+    /// Whether the underlying storage uses the tree backend.
+    pub fn backend_is_tree(&self) -> bool {
+        matches!(self.backend, Backend::Tree(_))
+    }
+
     /// Construct a vector from a `Vec<T>` (Naive backend).
     ///
     /// Returns `SszError::VectorLengthMismatch` if `v.len() != N`.
