@@ -39,6 +39,10 @@ numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
   - D-validator-cache-clone-resets D-cached-root-wrapper D-no-tree-backend-on-decode
   - D-state-view-borrowing-accessors D-treehash-rayon-strategy
   - D-conformance-parallelism-dropped
+- [M4c — LC gossip validation + broadcasting + criterion bench baseline](#m4c-decisions)
+  - D-lc-gossip-validation-full-node-arm D-lc-snapshot-trait-on-host
+  - D-lc-gossip-clock-window D-lc-broadcast-from-ingestion
+  - D-lc-snapshot-write-trigger D-bench-location-per-crate D-bench-history-format
 
 ## M1 — Phase 0 STF + fork choice
 
@@ -1543,3 +1547,32 @@ inside each category) is preserved. See also: `mem_98f64695` (rayon nested
 par_iter pitfall pattern, global memory). Recorded for posterity; not enforced
 in code (the rejected refactor never landed).
 
+## M4c decisions
+
+### D-lc-gossip-validation-full-node-arm — Full-node IGNORE rule for LC gossip: exact local match
+
+**Status**: Draft. **Date**: 2026-05-27.
+
+### D-lc-snapshot-trait-on-host — `LightClientSnapshot` trait injected via `Host` for gossip validator access
+
+**Status**: Draft. **Date**: 2026-05-27.
+
+### D-lc-gossip-clock-window — Clock-window check for LC gossip: `get_sync_message_due_ms` basis-points deadline
+
+**Status**: Draft. **Date**: 2026-05-27.
+
+### D-lc-broadcast-from-ingestion — LC gossip broadcast triggered from the block-ingestion path
+
+**Status**: Draft. **Date**: 2026-05-27.
+
+### D-lc-snapshot-write-trigger — When to update the cached LC snapshot used by the validator
+
+**Status**: Draft. **Date**: 2026-05-27.
+
+### D-bench-location-per-crate — Criterion bench binaries live under each crate's `benches/` directory
+
+**Status**: Draft. **Date**: 2026-05-27.
+
+### D-bench-history-format — Criterion baseline storage format and retention policy
+
+**Status**: Draft. **Date**: 2026-05-27.
