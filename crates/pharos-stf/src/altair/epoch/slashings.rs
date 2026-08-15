@@ -9,10 +9,8 @@ use pharos_ssz::SszSequence;
 use pharos_types::{EthSpec, altair::BeaconState, phase0::ValidatorIndex};
 use pharos_utils::Gwei;
 
+use crate::altair::helpers::{decrease_balance_altair, get_total_active_balance_altair};
 use crate::error::EpochProcessingError;
-use crate::altair::helpers::{
-    decrease_balance_altair, get_total_active_balance_altair,
-};
 
 use super::helpers::get_current_epoch_altair;
 

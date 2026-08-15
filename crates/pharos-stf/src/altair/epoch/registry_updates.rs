@@ -8,6 +8,7 @@
 use pharos_ssz::SszSequence;
 use pharos_types::{EthSpec, altair::BeaconState, phase0::ValidatorIndex};
 
+use crate::altair::helpers::initiate_validator_exit_altair_pub;
 use crate::error::EpochProcessingError;
 use crate::phase0::{
     accessors::compute_activation_exit_epoch,
@@ -15,7 +16,6 @@ use crate::phase0::{
         is_active_validator, is_eligible_for_activation, is_eligible_for_activation_queue,
     },
 };
-use crate::altair::helpers::initiate_validator_exit_altair_pub;
 
 use super::helpers::get_current_epoch_altair;
 
@@ -86,8 +86,7 @@ where
 
         if is_eligible_for_activation_queue::<E>(&v) {
             let mut updated = v.clone();
-            updated.activation_eligibility_epoch =
-                pharos_types::phase0::Epoch(current_epoch.0 + 1);
+            updated.activation_eligibility_epoch = pharos_types::phase0::Epoch(current_epoch.0 + 1);
             state.validators = state
                 .validators
                 .with_set(index, updated)
@@ -141,8 +140,8 @@ where
         .iter()
         .filter(|v| is_active_validator(v, current_epoch.0))
         .count() as u64;
-    let churn_limit = (active_count / E::CHURN_LIMIT_QUOTIENT)
-        .max(E::MIN_PER_EPOCH_CHURN_LIMIT) as usize;
+    let churn_limit =
+        (active_count / E::CHURN_LIMIT_QUOTIENT).max(E::MIN_PER_EPOCH_CHURN_LIMIT) as usize;
 
     for &index in activation_queue.iter().take(churn_limit) {
         let mut v = state

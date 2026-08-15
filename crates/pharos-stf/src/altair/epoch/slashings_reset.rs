@@ -63,8 +63,7 @@ where
         SYNC_COMMITTEE_SIZE,
         E,
     >(state)
-    .0
-        + 1;
+    .0 + 1;
     let idx = (next_epoch % E::EPOCHS_PER_SLASHINGS_VECTOR) as usize;
     state.slashings = state
         .slashings

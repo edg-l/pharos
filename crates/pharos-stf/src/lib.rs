@@ -95,8 +95,8 @@ where
             // Unwrap fork-enum state and block to their inner altair types.
             let altair_signed = E::unwrap_altair_signed_block(signed_block)
                 .ok_or(StateTransitionError::UnsupportedFork)?;
-            let altair_inner = E::into_altair_state(state)
-                .ok_or(StateTransitionError::UnsupportedFork)?;
+            let altair_inner =
+                E::into_altair_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
             // Apply the altair state transition via the `AltairDispatch` blanket impl.
             let updated = altair_inner.apply_signed_block(altair_signed, validate_result)?;
             // Wrap the result back into the fork-enum.

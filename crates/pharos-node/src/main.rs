@@ -28,7 +28,7 @@ use pharos_node::startup::rehydrate_fork_choice_store;
 
 /// Pharos Ethereum consensus-layer beacon node.
 #[derive(Parser, Debug)]
-#[command(name = "pharos", version)]
+#[command(name = "pharos", version, long_version = pharos_utils::version::LONG_VERSION)]
 struct Args {
     /// TCP listen multiaddr for libp2p (e.g. /ip4/127.0.0.1/tcp/9000).
     #[arg(long, default_value = "/ip4/127.0.0.1/tcp/9000")]

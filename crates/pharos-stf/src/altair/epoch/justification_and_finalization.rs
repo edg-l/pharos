@@ -18,8 +18,7 @@ use super::helpers::{
     get_block_root_for_epoch, get_current_epoch_altair, get_previous_epoch_altair,
 };
 use crate::altair::helpers::{
-    get_total_active_balance_altair, get_total_balance_altair,
-    get_unslashed_participating_indices,
+    get_total_active_balance_altair, get_total_balance_altair, get_unslashed_participating_indices,
 };
 
 /// `process_justification_and_finalization` per

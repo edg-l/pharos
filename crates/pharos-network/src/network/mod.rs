@@ -1311,7 +1311,8 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             )
         };
 
-        let identify_cfg = identify::Config::new("/pharos/0.1.0".into(), public_key.clone());
+        let identify_cfg = identify::Config::new("pharos/libp2p".into(), public_key.clone())
+            .with_agent_version(pharos_utils::version::AGENT_STRING.to_string());
         let identify = identify::Behaviour::new(identify_cfg);
         let ping = ping::Behaviour::new(ping::Config::default());
 

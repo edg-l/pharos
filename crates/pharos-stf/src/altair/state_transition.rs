@@ -8,15 +8,15 @@
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
     EthSpec,
-    altair::{BeaconState, BeaconBlock, SignedBeaconBlock},
+    altair::{BeaconBlock, BeaconState, SignedBeaconBlock},
     phase0::Slot,
     views::{BeaconBlockView, SignedBeaconBlockView},
 };
 use pharos_utils::BLSPubkey;
 
-use crate::error::{EpochProcessingError, StateTransitionError};
-use crate::altair::epoch::process_epoch;
 use crate::altair::block::process_block;
+use crate::altair::epoch::process_epoch;
+use crate::error::{EpochProcessingError, StateTransitionError};
 use crate::phase0::helpers::DOMAIN_BEACON_PROPOSER;
 
 // ── process_slots (altair) ────────────────────────────────────────────────────
@@ -394,7 +394,8 @@ fn get_domain_altair<
 ) -> pharos_utils::Hash256 {
     use crate::phase0::accessors::{compute_domain, compute_epoch_at_slot};
 
-    let epoch = message_epoch.unwrap_or_else(|| compute_epoch_at_slot(state.slot, E::SLOTS_PER_EPOCH));
+    let epoch =
+        message_epoch.unwrap_or_else(|| compute_epoch_at_slot(state.slot, E::SLOTS_PER_EPOCH));
     let fork_version = if epoch < state.fork.epoch {
         state.fork.previous_version.into_inner()
     } else {

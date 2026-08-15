@@ -69,7 +69,11 @@ pub(super) fn get_previous_epoch_altair<
         SYNC_COMMITTEE_SIZE,
         E,
     >(state);
-    if current.0 == 0 { Epoch(0) } else { Epoch(current.0 - 1) }
+    if current.0 == 0 {
+        Epoch(0)
+    } else {
+        Epoch(current.0 - 1)
+    }
 }
 
 /// `get_block_root` for an epoch in an altair `BeaconState`.

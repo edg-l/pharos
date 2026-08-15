@@ -5,7 +5,11 @@
 //! spec: specs/phase0/beacon-chain.md:1854-1865 (unchanged in Altair)
 
 use pharos_ssz::{SszSequence, SszVector, TreeHash};
-use pharos_types::{EthSpec, altair::BeaconState, phase0::{HistoricalBatch, Root}};
+use pharos_types::{
+    EthSpec,
+    altair::BeaconState,
+    phase0::{HistoricalBatch, Root},
+};
 
 use crate::error::EpochProcessingError;
 
@@ -62,8 +66,7 @@ where
         SYNC_COMMITTEE_SIZE,
         E,
     >(state)
-    .0
-        + 1;
+    .0 + 1;
     let epochs_per_period = E::SLOTS_PER_HISTORICAL_ROOT / E::SLOTS_PER_EPOCH;
     if next_epoch % epochs_per_period == 0 {
         let historical_root = compute_historical_batch_root_altair::<
@@ -130,12 +133,10 @@ fn compute_historical_batch_root_altair<
             .tree_hash_root()
         }
         64 => {
-            let block_roots: SszVector<Root, 64> =
-                SszVector::from_vec(block_roots_slice.to_vec())
-                    .expect("block_roots length matches");
-            let state_roots: SszVector<Root, 64> =
-                SszVector::from_vec(state_roots_slice.to_vec())
-                    .expect("state_roots length matches");
+            let block_roots: SszVector<Root, 64> = SszVector::from_vec(block_roots_slice.to_vec())
+                .expect("block_roots length matches");
+            let state_roots: SszVector<Root, 64> = SszVector::from_vec(state_roots_slice.to_vec())
+                .expect("state_roots length matches");
             HistoricalBatch::<64> {
                 block_roots,
                 state_roots,

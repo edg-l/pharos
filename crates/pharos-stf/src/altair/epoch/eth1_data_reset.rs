@@ -61,8 +61,7 @@ where
         SYNC_COMMITTEE_SIZE,
         E,
     >(state)
-    .0
-        + 1;
+    .0 + 1;
     if next_epoch % E::EPOCHS_PER_ETH1_VOTING_PERIOD == 0 {
         state.eth1_data_votes = pharos_ssz::SszList::default();
     }

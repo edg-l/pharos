@@ -16,8 +16,8 @@ use crate::phase0::helpers::GENESIS_EPOCH;
 
 use super::helpers::get_current_epoch_altair;
 use crate::altair::helpers::{
-    get_flag_index_deltas, get_inactivity_penalty_deltas, increase_balance_altair,
-    decrease_balance_altair,
+    decrease_balance_altair, get_flag_index_deltas, get_inactivity_penalty_deltas,
+    increase_balance_altair,
 };
 
 /// `process_rewards_and_penalties` per `specs/altair/beacon-chain.md:719-739`.
@@ -142,7 +142,11 @@ where
                 EPOCHS_PER_SLASHINGS_VECTOR,
                 JUSTIFICATION_BITS_LENGTH,
                 SYNC_COMMITTEE_SIZE,
-            >(state, pharos_types::phase0::ValidatorIndex(i as u64), total_rewards[i]);
+            >(
+                state,
+                pharos_types::phase0::ValidatorIndex(i as u64),
+                total_rewards[i],
+            );
         }
         if total_penalties[i].0 > 0 {
             decrease_balance_altair::<
@@ -154,7 +158,11 @@ where
                 EPOCHS_PER_SLASHINGS_VECTOR,
                 JUSTIFICATION_BITS_LENGTH,
                 SYNC_COMMITTEE_SIZE,
-            >(state, pharos_types::phase0::ValidatorIndex(i as u64), total_penalties[i]);
+            >(
+                state,
+                pharos_types::phase0::ValidatorIndex(i as u64),
+                total_penalties[i],
+            );
         }
     }
 
