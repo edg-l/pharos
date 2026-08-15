@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use parking_lot::RwLock;
 
 use pharos_network::host::GossipValidator;
@@ -77,8 +77,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     let host = make_bench_host(&dir);
 
     // Write the initial snapshot so step 1 (snapshot lookup) succeeds.
-    // The snapshot is overwritten each iteration to match the incoming msg,
-    // ensuring step 4 (tree_hash equality) also passes.
+    // The snapshot is overwritten in the per-iter setup phase (outside the
+    // measured closure) to match the incoming msg, ensuring step 4
+    // (tree_hash equality) also passes.
     let initial = make_finality_update(1);
     <RocksStore as StoreTrait<E>>::put_light_client_finality_update(&*host.store_arc(), &initial)
         .expect("put_light_client_finality_update failed in bench setup");
@@ -88,18 +89,24 @@ fn criterion_benchmark(c: &mut Criterion) {
     // non-monotonic-slot return.
     let mut slot_counter: u64 = 1;
 
+    // `iter_batched` keeps the RocksDB write in the (unmeasured) setup
+    // phase. Measuring put + validate together would let the storage
+    // write dominate and mask the validator cost we actually care about.
     c.bench_function("gossip_validation/lc_finality_update", |b| {
-        b.iter(|| {
-            slot_counter += 1;
-            let msg = make_finality_update(slot_counter);
-            // Update the store snapshot to match the new slot so steps 1 and 4 pass.
-            <RocksStore as StoreTrait<E>>::put_light_client_finality_update(
-                &*host.store_arc(),
-                &msg,
-            )
-            .expect("put_light_client_finality_update failed in bench iter");
-            host.validate_light_client_finality_update(&msg)
-        })
+        b.iter_batched(
+            || {
+                slot_counter += 1;
+                let msg = make_finality_update(slot_counter);
+                <RocksStore as StoreTrait<E>>::put_light_client_finality_update(
+                    &*host.store_arc(),
+                    &msg,
+                )
+                .expect("put_light_client_finality_update failed in bench setup");
+                msg
+            },
+            |msg| host.validate_light_client_finality_update(&msg),
+            BatchSize::SmallInput,
+        )
     });
 }
 

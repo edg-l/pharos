@@ -45,19 +45,27 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     // ── bellatrix_cold ────────────────────────────────────────────────────────
-    // Mutates one validator's `effective_balance` per iteration to defeat the
-    // cached root, exercising the full rehash path (unhappy path). The mutation
-    // is via `SszSequence::with_set` which returns a new state with the
-    // modified validator and a dirty cache.
+    // Measures the per-block "small mutation + rehash" path on a `Backend::Tree`
+    // state. The base state is flipped to the tree backend once at setup so
+    // the per-iter `with_set` on `validators` does an O(log n) path-copy
+    // rather than the full `Vec` clone the naive backend would force.
+    //
+    // Per-iteration: `Clone` the inner state (the `CachedRoot` wrapper resets
+    // on Clone per `D-validator-cache-clone-resets`, so the next
+    // `cached_tree_hash_root()` call computes from scratch — that is the
+    // "cold cache" the bench name promises), mutate validator 0 via
+    // `with_set`, then call `cached_tree_hash_root()` to walk the tree and
+    // populate the freshly-empty cache.
     let bellatrix_inner_base: <E as EthSpec>::BellatrixBeaconState =
         bench_helpers::load_pre_state("bellatrix", "empty_block_transition");
+    let bellatrix_inner_tree = bellatrix_inner_base
+        .into_tree_backend()
+        .expect("flip bellatrix state validators+vectors to Tree backend");
 
     c.bench_function("tree_hash_beacon_state/bellatrix_cold", |b| {
         let mut counter: u64 = 0;
         b.iter(|| {
-            // Clone inner state, mutate validator 0's effective_balance to
-            // defeat the tree_hash cache, then re-wrap and hash.
-            let mut inner = bellatrix_inner_base.clone();
+            let mut inner = bellatrix_inner_tree.clone();
             if let Some(v) = inner.validators.get(0).cloned() {
                 let mut modified = v;
                 modified.effective_balance.0 = modified.effective_balance.0.wrapping_add(counter);
@@ -67,8 +75,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                     .with_set(0, modified)
                     .expect("with_set index 0 out of range");
             }
-            let state = E::bellatrix_into_state(inner);
-            state.tree_hash_root()
+            inner.cached_tree_hash_root()
         })
     });
 }
