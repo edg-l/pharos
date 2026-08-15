@@ -243,6 +243,32 @@ row counts are byte-identical to v0.5.0 (only the date line moved). ADRs added t
 `0.5.0` → `0.6.0`. Phase 6 wrap-up + audits in `docs/m4c-plan.md`. Deferred: bench
 regression check in CI (M4d), real `validate_beacon_block` gossip validator (M5).
 
+## M4e status
+
+Closed. Three gossip-validator bodies (`validate_beacon_block`,
+`validate_attestation`, `validate_aggregate_and_proof`) on `HostImpl<E>` in
+`crates/pharos-node/src/host_impl.rs` now implement all spec rules from
+`specs/phase0/p2p-interface.md` (12-step block pipeline, 13-step attestation
+pipeline, 17-step aggregate pipeline). Gossip dispatch in
+`crates/pharos-network/src/network/mod.rs:535` wrapped in `tokio::task::spawn_blocking`
+so synchronous BLS verifies do not stall the tokio executor. 44 new unit tests
+in `host_impl.rs` (14 block / 13 att / 17 agg) plus two integration tests:
+`gossip_validators_e2e.rs` (full-path happy-path for all three topics) and
+`gossip_verdict_strings.rs` (49-string round-trip audit: 14 block / 15 att /
+20 agg). Criterion bench baseline recorded at SHA `821f5ef` on PERF_HOST (AMD
+Ryzen 5 5600); numbers in `docs/perf/m4-perf.md`. `docs/conformance.md` row
+counts byte-identical to v0.6.0 (only the date line moved; M4e is
+network-layer-only and the conformance runner does not exercise gossip
+validators). ADRs added to `docs/decisions.md` (M4e section):
+`D-seen-cache-shape`, `D-proposer-cache`, `D-committee-cache`,
+`D-verdict-strings-spec-keyed`, `D-bls-on-hot-path`, `D-invalid-roots-cache`,
+`D-future-slot-disparity`, `D-domain-types-additions`, `D-is-aggregator-location`,
+`D-cache-key-on-head`, `D-seen-cache-after-accept`, `D-no-tokio-from-validator`.
+Deferred: `validate_voluntary_exit`, `validate_proposer_slashing`,
+`validate_attester_slashing` validators (M4f or M5); batched BLS verification
+(M11). Workspace version bumped `0.6.0` → `0.7.0`. Phase 6 wrap-up + audits
+in `docs/m4e-plan.md`.
+
 ## Reference repos (cloned in `~/dev/`)
 
 - `consensus-specs/` — Python specs + reference tests (test fixtures live

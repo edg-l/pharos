@@ -3022,7 +3022,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pharos-api"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "pharos-fork-choice",
  "pharos-stf",
@@ -3033,7 +3033,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-conformance"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "axum",
  "hex",
@@ -3055,7 +3055,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-engine"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "axum",
  "jsonwebtoken",
@@ -3072,7 +3072,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-fork-choice"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "pharos-ssz",
  "pharos-stf",
@@ -3083,7 +3083,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-network"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3107,7 +3107,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-node"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3144,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-ssz"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "criterion",
  "pharos-ssz-derive",
@@ -3159,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-ssz-derive"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "pharos-ssz",
  "pharos-utils",
@@ -3170,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-stf"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "criterion",
  "pharos-ssz",
@@ -3184,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-storage"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "pharos-ssz",
  "pharos-types",
@@ -3196,7 +3196,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-types"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "pharos-ssz",
  "pharos-ssz-derive",
@@ -3207,7 +3207,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-utils"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "blst",
  "hex",
@@ -3218,7 +3218,7 @@ dependencies = [
 
 [[package]]
 name = "pharos-validator"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "pharos-ssz",
  "pharos-types",

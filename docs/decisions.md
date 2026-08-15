@@ -1712,48 +1712,341 @@ target in `Makefile`.
 
 ### D-seen-cache-shape
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+Three in-memory `parking_lot::RwLock`-wrapped `lru::LruCache` instances on
+`HostImpl<E>` track gossip-dedup state for the three gossip-validator methods:
+`seen_block_proposers: LruCache<(Slot, ValidatorIndex), ()>` (capacity 4096),
+`seen_attestation_validators: LruCache<(ValidatorIndex, Epoch), ()>` (capacity
+131072), and `seen_aggregators: LruCache<(ValidatorIndex, Epoch), ()>` (capacity
+8192). A fourth cache, `seen_aggregate_data: LruCache<Root, Bitlist<2048>>`
+(capacity 2048), stores the OR of all previously-seen aggregation bitlists per
+`data_root` to implement the RAG6 weakened-superset IGNORE rule.
+
+Capacity sizing rationale: 4096 block-proposer entries covers ~128 slots of
+mainnet validator-set depth with reorg tolerance. 131072 attestation-validator
+entries covers a full epoch of mainnet attestations under load (~1M active
+validators × 2 recent epochs, LRU-evicted). 8192 aggregator entries covers the
+last quarter-epoch of mainnet target aggregators (16/committee × 64 committees ×
+32 slots ≈ 32k/epoch; 8192 means only the freshest quarter fits, which is
+sufficient — cache miss on an evicted entry degrades to re-validation, never to
+incorrect Accept). 2048 aggregate-data entries covers ~32 committees × 64 slots
+of recent data roots. Total peak memory ≈ 4 MB, well under the 50 MB ad-hoc
+budget set by `D-peer-info-shape`.
+
+Rejected alternatives: (a) RocksDB column family — adds write amplification and
+requires its own eviction policy, with no persistence benefit (the cache is
+purely a per-process gossip-dedup signal; reloading from disk after a restart
+yields no advantage because the in-flight gossip view is lost on restart anyway);
+(b) unbounded `HashSet` — grows without bound under spam.
+
+Enforced in: `crates/pharos-node/src/host_impl.rs:107-139` (field declarations),
+`crates/pharos-node/src/host_impl.rs:191-199` (construction with capacities).
 
 ### D-proposer-cache
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+`proposer_cache: RwLock<LruCache<(Slot, Root), u64>>` on `HostImpl<E>`, capacity
+1024, caches `(block.slot, block.parent_root) → expected_proposer_index`. On
+cache miss the validator clones the parent state from
+`fork_choice.block_states.get(&parent_root)`, advances it to `block.slot` via
+`pharos_stf::process_slots_fork`, then calls `get_beacon_proposer_index` on the
+advanced state. The cache inserts the result. The key is `(slot, parent_root)` so
+that entries evict naturally when the parent root changes under a reorg —
+different siblings sharing the same slot but different parent roots get distinct
+entries.
+
+Rationale: proposer shuffling is computed by RANDAO from the epoch's beacon
+state. For a given `(slot, parent_root)` the proposer is deterministic; caching
+avoids re-running `process_slots_fork` on every block-gossip arrival for the
+same slot. Lighthouse uses an equivalent `ProposerCache` keyed identically.
+Rejected: keying by `(epoch, parent_root)` — proposer-shuffling changes per
+RANDAO reveal on each slot within an epoch, so per-slot is the minimal stable
+key.
+
+Enforced in: `crates/pharos-node/src/host_impl.rs:114` (field declaration),
+`crates/pharos-node/src/host_impl.rs:192` (capacity 1024 at construction),
+`crates/pharos-node/src/host_impl.rs:386-431` (`lookup_or_compute_expected_proposer`
+implementation).
 
 ### D-committee-cache
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+`committee_cache: RwLock<LruCache<(Slot, CommitteeIndex, Root), Vec<ValidatorIndex>>>`
+on `HostImpl<E>`, capacity 4096, caches `(slot, index, head_root) →
+committee_members`. On cache miss the validator clones the head state from
+`fork_choice.block_states.get(&head_root)`, advances it to `slot` via
+`process_slots_fork` (no-op when already past that slot), then calls
+`get_beacon_committee`. The `head_root` component of the key implements
+`D-cache-key-on-head`: entries for a stale head are never reused after a reorg.
+
+Capacity 4096 covers ~64 slots × 64 committees/slot with reorg tolerance. A
+cache miss degrades to one `process_slots_fork` call; on a warm mainnet node
+the fork-choice state is already at the right slot so the no-op fast path
+dominates.
+
+Rejected alternatives: (a) keying by `target.epoch` alone — would Accept
+attestations for the wrong fork during reorgs where two chains share an epoch
+boundary; (b) no cache at all — would run `get_beacon_committee` on every
+attestation, hitting the full shuffling computation every call.
+
+Enforced in: `crates/pharos-node/src/host_impl.rs:129` (field declaration),
+`crates/pharos-node/src/host_impl.rs:197` (capacity 4096 at construction),
+`crates/pharos-node/src/host_impl.rs:319-374` (`lookup_or_compute_committee`
+implementation).
 
 ### D-verdict-strings-spec-keyed
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+Every `GossipVerdict::Ignore(s)` and `GossipVerdict::Reject(s)` string in the
+three validator bodies uses a static `&str`-to-`String` literal with an
+`"block: "`, `"att: "`, or `"agg: "` namespace prefix. The suffix matches the
+lowercase spec tag from the relevant `Raises GossipIgnore("…")` /
+`Raises GossipReject("…")` line in `specs/phase0/p2p-interface.md` wherever
+spec wording exists, or a brief spec-rule-keyed description where the spec does
+not provide an explicit string. 49 strings total: 14 block, 15 att, 20 agg.
+
+Rationale: log greppability by topic without parsing the full message. Each
+string is a static literal compiled into the binary; no `format!` allocation
+occurs on the hot path. The exhaustive list enables the round-trip test to catch
+silent renames or additions.
+
+The gossip_verdict_strings integration test (`crates/pharos-node/tests/
+gossip_verdict_strings.rs`) `include_str!`s the `host_impl.rs` source at build
+time and asserts (a) every known string appears in the source, and (b) every
+`"block: "` / `"att: "` / `"agg: "` prefixed string in the source also appears
+in the hard-coded list. This creates a two-sided audit: the test fails if a
+string is added to the source without updating the list, and also if a string
+is removed from the source while the list still references it.
+
+Enforced in: `crates/pharos-node/src/host_impl.rs:585-1131` (validator bodies,
+all 49 verdict strings), `crates/pharos-node/tests/gossip_verdict_strings.rs:21-106`
+(hard-coded EXPECTED list and round-trip assertions).
 
 ### D-bls-on-hot-path
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+The three BLS signature verifies run synchronously inside the validator body:
+`pharos_utils::bls::verify` for the proposer signature in
+`validate_beacon_block`; `pharos_utils::bls::fast_aggregate_verify` for the
+aggregate signature in both `validate_attestation` (via `is_valid_indexed_attestation`)
+and `validate_aggregate_and_proof` (three BLS calls: selection proof, aggregator
+signature, aggregate signature). None of these call `.await` or spawn tasks.
+
+The gossip dispatch loop at `crates/pharos-network/src/network/mod.rs:535` wraps
+the entire `dispatch_gossip_message` call in `tokio::task::spawn_blocking` so
+that the synchronous BLS verifies do not stall the tokio executor. Mainnet
+`bls::verify` is ~1 ms; `fast_aggregate_verify` for a full committee (~2048
+indices) is ~2-3 ms; aggregate of 64 committees ~50 ms worst case. Batched
+verification is M11 work; in M4e single-pubkey verify is the bottleneck and the
+`spawn_blocking` wrapper is sufficient.
+
+Rejected alternatives: (a) async BLS signature queue with a dedicated worker
+pool — adds first-byte latency and substantial complexity without changing
+steady-state throughput; (b) skip BLS on gossip — not permissible per spec
+REJECT rule.
+
+Enforced in: `crates/pharos-network/src/network/mod.rs:535` (spawn_blocking
+wrap), `crates/pharos-node/src/host_impl.rs:734` (proposer BLS verify in
+`validate_beacon_block`), `crates/pharos-node/src/host_impl.rs:858-860`
+(`is_valid_indexed_attestation` BLS call in `validate_attestation`),
+`crates/pharos-node/src/host_impl.rs:940-941` (BLS imports in
+`validate_aggregate_and_proof`).
 
 ### D-invalid-roots-cache
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+`invalid_block_roots: RwLock<LruCache<Root, ()>>` on `HostImpl<E>`, capacity
+256, records block roots that triggered any REJECT in `validate_beacon_block`.
+On every subsequent call to `validate_beacon_block`, step 1 consults this cache:
+if the incoming block's `parent_root` is present, the block is immediately
+REJECTed without running any other check (spec rule "block's parent passes
+validation"). Capacity 256 covers the expected REJECT storm from a single bad
+subtree while remaining negligible in memory.
+
+Rationale: gossipsub penalises senders of REJECTed messages; propagating the
+REJECT quickly to all children of a known-bad block is important for peer
+scoring. Making the cache process-local avoids RocksDB write amplification for
+every invalid block seen. It mirrors the existing fork-choice `payload_statuses`
+`Invalid`-root set (`D-payload-status-store`) but at the gossip-validator layer
+rather than the execution-layer layer.
+
+Rejected alternatives: (a) extending `payload_statuses` — that map is keyed on
+execution-layer validity (post-`engine_newPayloadV1`) not gossip-layer validity;
+reusing it would conflate the two failure modes; (b) no cache — each child of a
+known-bad block would run through the full 11-step pipeline before REJECTing,
+wasting CPU and delaying peer scoring.
+
+Enforced in: `crates/pharos-node/src/host_impl.rs:118` (field declaration),
+`crates/pharos-node/src/host_impl.rs:193` (capacity 256 at construction),
+`crates/pharos-node/src/host_impl.rs:610-618` (step 1 parent-root cache
+lookup), `crates/pharos-node/src/host_impl.rs:680-741` (cache write on REJECT
+at steps 8-11).
 
 ### D-future-slot-disparity
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+All three validators apply a symmetric `MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS = 500`
+ms clock-tolerance envelope on both edges of the propagation window. For the
+block validator (step 2, RB1): a block is NOT ignored if
+`now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS >= slot_time_ms` — i.e., blocks
+arriving up to 500 ms before their nominal slot start are accepted. For the
+attestation and aggregate validators (slot-range check): the window `[start_ms -
+500, end_ms + 500]` is used on both sides, matching the spec formulation at
+`specs/phase0/p2p-interface.md:298-334`. `ATTESTATION_PROPAGATION_SLOT_RANGE =
+32` defines the attestation window width (`32` slots ≈ 6.4 minutes on mainnet),
+added as a `pub const` to `crates/pharos-types/src/phase0/primitives.rs:63`.
+
+The constant `MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS = 500` was already present from
+M4c (`crates/pharos-types/src/phase0/primitives.rs:51`). `genesis_time` lives on
+the fork-choice `Store` rather than on `BeaconState`, so the slot-time formula
+`genesis_time * 1000 + slot * SECONDS_PER_SLOT * 1000` reads from
+`self.fork_choice.read().genesis_time` and `self.runtime_cfg.seconds_per_slot`.
+
+Rejected alternatives: (a) asymmetric window (wider on one edge) — would accept
+future blocks while still rejecting past blocks, creating a peer-scoring
+asymmetry; spec requires symmetric 500 ms on both edges.
+
+Enforced in: `crates/pharos-node/src/host_impl.rs:782-822` (attestation slot
+range check with both-edge disparity), `crates/pharos-node/src/host_impl.rs:944-975`
+(aggregate slot range check), `crates/pharos-node/src/host_impl.rs:620-632`
+(block future-slot check), `crates/pharos-types/src/phase0/primitives.rs:61-63`
+(`ATTESTATION_PROPAGATION_SLOT_RANGE` const).
 
 ### D-domain-types-additions
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+`DOMAIN_SELECTION_PROOF = [0x05, 0x00, 0x00, 0x00]` and
+`DOMAIN_AGGREGATE_AND_PROOF = [0x06, 0x00, 0x00, 0x00]` are added as `pub
+const [u8; 4]` to `crates/pharos-stf/src/phase0/helpers.rs` alongside the
+existing `DOMAIN_BEACON_PROPOSER` constant. Values are per
+`specs/phase0/beacon-chain.md:214-215`. Both are 4-byte `DomainType` arrays
+matching the existing constant shape in that file.
+
+These two domain types are required by `validate_aggregate_and_proof`: the
+selection-proof signature (step 10, RAG10) is signed over `(slot, DOMAIN_SELECTION_PROOF)`,
+and the aggregator signature (step 11, RAG11) is signed over
+`(AggregateAndProof, DOMAIN_AGGREGATE_AND_PROOF)`.
+
+Rejected alternatives: (a) placing them in `pharos-types/src/phase0/primitives.rs`
+alongside `MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS` — domain types belong with the
+other domain constants in `pharos-stf` helpers because they are STF-layer
+concepts, not wire-layer primitives; (b) inline literals in the validator body
+— harder to audit against spec.
+
+Enforced in: `crates/pharos-stf/src/phase0/helpers.rs:89-96` (`DOMAIN_SELECTION_PROOF`
+and `DOMAIN_AGGREGATE_AND_PROOF` declarations), `crates/pharos-node/src/host_impl.rs:940`
+(import and use in `validate_aggregate_and_proof`).
 
 ### D-is-aggregator-location
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+`is_aggregator(committee_len: usize, slot_signature: &BLSSignature) -> bool` is
+implemented as a `pub fn` in `crates/pharos-stf/src/phase0/predicates.rs`,
+adjacent to the existing `is_valid_indexed_attestation`. The predicate computes
+`modulo = max(1, committee_len / TARGET_AGGREGATORS_PER_COMMITTEE)`, hashes the
+signature bytes via `pharos_utils::hash::hash(slot_signature.as_ref())`, reads
+a `u64` from the first 8 bytes of the hash (little-endian), and returns `n %
+modulo == 0`. Spec reference: `specs/phase0/validator.md:139-147`.
+
+Rationale: `is_aggregator` is a pure predicate over committee data with no
+state dependency; it belongs next to `is_valid_indexed_attestation` (existing
+at `predicates.rs:56`) rather than as a method on `HostImpl` (which would make
+it test-awkward and prevent STF reuse) or in `pharos-types` (which contains
+types, not predicates).
+
+Rejected alternatives: (a) inline in the `validate_aggregate_and_proof` body
+— duplicates the spec rule, harder to unit-test independently; (b) in
+`pharos-utils` — that crate is generic infrastructure, not spec predicates.
+
+Enforced in: `crates/pharos-stf/src/phase0/predicates.rs:110-118`
+(`is_aggregator` function declaration and implementation), `crates/pharos-node/src/host_impl.rs:941`
+(import and use at step 8 in `validate_aggregate_and_proof`).
 
 ### D-cache-key-on-head
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+Both the proposer cache and the committee cache include the LMD-GHOST head root
+at validation time as part of their cache key, rather than keying only on the
+message-derived roots. For `proposer_cache` the key is `(slot, parent_root)`:
+`parent_root` is message-derived and is itself a proxy for the head because the
+block's parent must be on the canonical chain for the block to be valid. For
+`committee_cache` the key is `(slot, committee_index, head_root)` where
+`head_root` is read via `pharos_fork_choice::get_head(&*fc)` at validation time.
+On a reorg the head root changes, so cache entries from the pre-reorg chain
+occupy different key slots and are never served to the post-reorg chain. LRU
+eviction eventually reclaims the stale entries.
+
+Rationale: keying on message-derived data alone (e.g. `(slot, data.beacon_block_root)`)
+would serve stale committee membership from a fork that has been reorganised away.
+The `head_root` component adds exactly one `RwLock::read` acquisition per cache
+miss, which is negligible compared to the `process_slots_fork` call it replaces.
+
+Rejected alternatives: (a) invalidating the cache on every reorg notification —
+requires a pub invalidation method on `HostImpl`, adds coupling to the
+block-ingestion loop, and forces synchronisation; (b) keying by epoch alone —
+committee membership is stable within an epoch on the same chain, but not across
+forks at the same epoch boundary.
+
+Enforced in: `crates/pharos-node/src/host_impl.rs:344-349` (`committee_cache`
+key construction with `head_root`), `crates/pharos-node/src/host_impl.rs:404`
+(`proposer_cache` key `(slot, parent_root)`).
 
 ### D-seen-cache-after-accept
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+All three seen-caches (`seen_block_proposers`, `seen_attestation_validators`,
+`seen_aggregators`, `seen_aggregate_data`) are written only when all validation
+steps have passed, i.e. immediately before returning `GossipVerdict::Accept`.
+They are never written on IGNORE or REJECT. This ensures that a malformed or
+invalid message cannot poison the cache and cause a subsequent valid message
+with the same key to be silently dropped.
+
+Rationale: if a cache write were performed on first sight (before validation),
+an attacker could send a malformed message with a valid `(proposer, slot)` or
+`(validator, epoch)` key to preemptively block acceptance of the honest
+message. The "insert on Accept" pattern is used by Lighthouse for the same
+reason. The cost is that the full validation pipeline runs twice if two
+messages with the same key arrive in rapid succession, but this is acceptable
+because (a) it is rare on a well-connected network and (b) correctness is more
+important than deduplication efficiency.
+
+Enforced in: `crates/pharos-node/src/host_impl.rs:748-752` (block: step 12
+cache write after all checks), `crates/pharos-node/src/host_impl.rs:898-902`
+(attestation: step 14 cache write after all checks), `crates/pharos-node/src/host_impl.rs:1110-1130`
+(aggregate: step 17 cache writes after all checks).
 
 ### D-no-tokio-from-validator
 
-**Status**: Draft. **Date**: 2026-05-28.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+The three validator methods (`validate_beacon_block`, `validate_attestation`,
+`validate_aggregate_and_proof`) are synchronous, take `&self`, and do not
+spawn tokio tasks, call `.await`, or otherwise interact with the async runtime.
+All I/O inside the validator bodies is synchronous: `parking_lot::RwLock`
+acquisitions, `lru::LruCache` reads/writes, and `pharos_utils::bls` calls.
+This is a consequence of `D-gossip-validator-sync` (M3a), which established
+that the `GossipValidator<E>` trait methods are sync.
+
+The gossip dispatch loop at `crates/pharos-network/src/network/mod.rs:535`
+wraps the entire dispatch in `tokio::task::spawn_blocking`, which is the
+correct boundary: the async runtime calls `spawn_blocking`, and the blocking
+work (including BLS verify) runs on a thread-pool thread. No tokio constructs
+are needed inside the validator body itself.
+
+Negative enforcement: `rg 'tokio::spawn' crates/pharos-node/src/host_impl.rs`
+returns empty, confirming no `tokio::spawn` call is present in the file.
+
+Enforced in: `crates/pharos-node/src/host_impl.rs:585-1131` (entire
+GossipValidator impl block — no `.await`, no `tokio::spawn`), `crates/pharos-network/src/network/mod.rs:535`
+(the spawn_blocking boundary that makes sync validators safe to call from async context).
