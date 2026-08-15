@@ -73,6 +73,7 @@ where
     E::BeaconState: BeaconStateWrite + Clone,
     E::AltairBeaconState: pharos_stf::AltairJaFDispatch<E>,
     E::BellatrixBeaconState: pharos_stf::BellatrixJaFDispatch<E>,
+    E::CapellaBeaconState: pharos_stf::CapellaJaFDispatch<E>,
     E::BeaconBlock: BeaconBlockView,
     E::Phase0BeaconBlockBody:
         BeaconBlockBodyView<Attestation = pharos_types::phase0::Attestation<2048>>,
@@ -177,8 +178,12 @@ fn update_proposer_boost_root<E: EthSpec>(store: &mut Store<E>, root: Root)
 where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateWrite + Clone,
-    E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
-    E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+    E::AltairBeaconState:
+        pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState:
+        pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
+    E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use crate::get_head::get_head;
@@ -196,7 +201,11 @@ where
             None => return,
         };
         let slot = get_current_slot(store);
-        if head_state.slot() < slot && process_slots_fork::<E>(&mut head_state, slot).is_err() {
+        let fork_epochs = store.fork_epochs();
+        let runtime_cfg = store.runtime_cfg.clone();
+        if head_state.slot() < slot
+            && process_slots_fork::<E>(&mut head_state, slot, fork_epochs, &runtime_cfg).is_err()
+        {
             return;
         }
 
@@ -246,11 +255,16 @@ pub fn on_block<E: EthSpec, P: PowBlockProvider>(
 where
     E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
     E::BeaconState: BeaconStateWrite + Clone,
-    E::AltairBeaconState:
-        pharos_stf::AltairJaFDispatch<E> + pharos_stf::AltairProcessSlotsDispatch<E>,
+    E::AltairBeaconState: pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>,
     E::BellatrixBeaconState: pharos_stf::BellatrixJaFDispatch<E>
         + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
         + pharos_ssz::TreeHash,
+    E::CapellaBeaconState:
+        pharos_stf::CapellaJaFDispatch<E> + pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
     E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
@@ -498,8 +512,12 @@ pub fn store_target_checkpoint_state<E: EthSpec>(
 ) -> Result<(), ForkChoiceError>
 where
     E::BeaconState: BeaconStateWrite + Clone,
-    E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
-    E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+    E::AltairBeaconState:
+        pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState:
+        pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
+    E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
@@ -515,7 +533,9 @@ where
 
     let target_slot = compute_start_slot_at_epoch(target.epoch, E::SLOTS_PER_EPOCH);
     if base_state.slot() < target_slot {
-        process_slots_fork::<E>(&mut base_state, target_slot)?;
+        let fork_epochs = store.fork_epochs();
+        let runtime_cfg = store.runtime_cfg.clone();
+        process_slots_fork::<E>(&mut base_state, target_slot, fork_epochs, &runtime_cfg)?;
     }
     store.checkpoint_states.insert(target.clone(), base_state);
 
@@ -565,8 +585,12 @@ pub fn on_attestation<E: EthSpec>(
 where
     E::BeaconBlock: BeaconBlockView,
     E::BeaconState: BeaconStateWrite + Clone,
-    E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
-    E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+    E::AltairBeaconState:
+        pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState:
+        pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
+    E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use pharos_stf::phase0::accessors::get_attesting_indices;

@@ -464,6 +464,7 @@ where
         + pharos_stf::AltairProcessSlotsDispatch<E>,
     E::BellatrixBeaconState:
         pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
     E::BeaconState:
         pharos_stf::phase0::BeaconStateWrite + pharos_ssz::TreeHash + pharos_ssz::Encode,
     E::Phase0BeaconBlock: pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
@@ -640,6 +641,7 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
     E::BellatrixBeaconState:
         pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
     E::BeaconState:
         pharos_stf::phase0::BeaconStateWrite + pharos_ssz::TreeHash + pharos_ssz::Encode,
     F: Fn(

@@ -374,8 +374,12 @@ impl<E: EthSpec> HostImpl<E> {
     fn head_state_at_slot(&self, slot: pharos_types::phase0::Slot) -> Option<E::BeaconState>
     where
         E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
-        E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
-        E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+        E::AltairBeaconState:
+            pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
+        E::BellatrixBeaconState:
+            pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
+        E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>,
+        E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
         E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
                 Attestation = pharos_types::phase0::Attestation<2048>,
             >,
@@ -383,9 +387,9 @@ impl<E: EthSpec> HostImpl<E> {
         use pharos_stf::process_slots_fork;
         use pharos_types::BeaconStateView as _;
 
-        let head_root = {
+        let (head_root, fork_epochs) = {
             let fc = self.fork_choice.read();
-            pharos_fork_choice::get_head(&*fc)
+            (pharos_fork_choice::get_head(&*fc), fc.fork_epochs())
         };
         let mut state = self
             .fork_choice
@@ -394,7 +398,7 @@ impl<E: EthSpec> HostImpl<E> {
             .get(&head_root)?
             .clone();
         if state.slot() < slot {
-            process_slots_fork::<E>(&mut state, slot).ok()?;
+            process_slots_fork::<E>(&mut state, slot, fork_epochs, &self.runtime_cfg).ok()?;
         }
         Some(state)
     }
@@ -414,8 +418,12 @@ impl<E: EthSpec> HostImpl<E> {
     ) -> Option<Vec<u64>>
     where
         E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
-        E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
-        E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+        E::AltairBeaconState:
+            pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
+        E::BellatrixBeaconState:
+            pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
+        E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>,
+        E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
         E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
                 Attestation = pharos_types::phase0::Attestation<2048>,
             >,
@@ -424,9 +432,9 @@ impl<E: EthSpec> HostImpl<E> {
         use pharos_stf::process_slots_fork;
         use pharos_types::BeaconStateView as _;
 
-        let head_root = {
+        let (head_root, fork_epochs) = {
             let fc = self.fork_choice.read();
-            pharos_fork_choice::get_head(&*fc)
+            (pharos_fork_choice::get_head(&*fc), fc.fork_epochs())
         };
 
         let cache_key = (slot, index, head_root);
@@ -444,7 +452,7 @@ impl<E: EthSpec> HostImpl<E> {
             .get(&head_root)?
             .clone();
         if state.slot() < slot {
-            process_slots_fork::<E>(&mut state, slot).ok()?;
+            process_slots_fork::<E>(&mut state, slot, fork_epochs, &self.runtime_cfg).ok()?;
         }
         let committee: Vec<u64> = get_beacon_committee::<E>(&state, slot, index)
             .iter()
@@ -473,8 +481,12 @@ impl<E: EthSpec> HostImpl<E> {
     ) -> Option<(u64, E::BeaconState)>
     where
         E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
-        E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
-        E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+        E::AltairBeaconState:
+            pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
+        E::BellatrixBeaconState:
+            pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
+        E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>,
+        E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
         E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
                 Attestation = pharos_types::phase0::Attestation<2048>,
             >,
@@ -482,6 +494,8 @@ impl<E: EthSpec> HostImpl<E> {
         use pharos_stf::phase0::accessors::get_beacon_proposer_index;
         use pharos_stf::process_slots_fork;
         use pharos_types::BeaconStateView as _;
+
+        let fork_epochs = self.fork_choice.read().fork_epochs();
 
         // Fast path: check cache (peek preserves LRU order on the read path).
         if let Some(&idx) = self.proposer_cache.read().peek(&(slot, parent_root)) {
@@ -493,7 +507,8 @@ impl<E: EthSpec> HostImpl<E> {
                 .get(&parent_root)?
                 .clone();
             if parent_state.slot() < slot {
-                process_slots_fork::<E>(&mut parent_state, slot).ok()?;
+                process_slots_fork::<E>(&mut parent_state, slot, fork_epochs, &self.runtime_cfg)
+                    .ok()?;
             }
             return Some((idx, parent_state));
         }
@@ -506,7 +521,8 @@ impl<E: EthSpec> HostImpl<E> {
             .get(&parent_root)?
             .clone();
         if parent_state.slot() < slot {
-            process_slots_fork::<E>(&mut parent_state, slot).ok()?;
+            process_slots_fork::<E>(&mut parent_state, slot, fork_epochs, &self.runtime_cfg)
+                .ok()?;
         }
         let idx = get_beacon_proposer_index::<E>(&parent_state).0;
         self.proposer_cache.write().put((slot, parent_root), idx);
@@ -650,8 +666,12 @@ impl<E: EthSpec> BlockProvider<E> for HostImpl<E> {
 impl<E: EthSpec> GossipValidator<E> for HostImpl<E>
 where
     E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
-    E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
-    E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+    E::AltairBeaconState:
+        pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState:
+        pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
+    E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
             Attestation = pharos_types::phase0::Attestation<2048>,
         >,
@@ -1025,6 +1045,7 @@ where
         E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
         E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
         E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+        E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>,
         E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
                 Attestation = pharos_types::phase0::Attestation<2048>,
             >,

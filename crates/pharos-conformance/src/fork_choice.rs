@@ -114,12 +114,17 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
         + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
         + Decode,
     E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::BellatrixJaFDispatch<E>
         + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
         + pharos_ssz::TreeHash,
-    E::Phase0BeaconState: Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
@@ -174,13 +179,18 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
         + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
         + Decode,
     E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::BellatrixJaFDispatch<E>
         + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
         + pharos_ssz::TreeHash
         + Decode,
-    E::Phase0BeaconState: Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
@@ -242,13 +252,18 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
         + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
         + Decode,
     E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::BellatrixJaFDispatch<E>
         + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
         + pharos_ssz::TreeHash
         + Decode,
-    E::Phase0BeaconState: Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
@@ -323,12 +338,17 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
         + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
         + Decode,
     E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::BellatrixJaFDispatch<E>
         + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
         + pharos_ssz::TreeHash,
-    E::Phase0BeaconState: Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
@@ -399,12 +419,17 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
         + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
         + Decode,
     E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::BellatrixJaFDispatch<E>
         + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
         + pharos_ssz::TreeHash,
-    E::Phase0BeaconState: Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
@@ -706,13 +731,18 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
         + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
         + Decode,
     E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::BellatrixJaFDispatch<E>
         + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
         + pharos_ssz::TreeHash
         + Decode,
-    E::Phase0BeaconState: Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<

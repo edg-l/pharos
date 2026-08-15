@@ -349,6 +349,14 @@ async fn main() -> anyhow::Result<()> {
         runtime_cfg.terminal_block_hash,
         runtime_cfg.terminal_block_hash_activation_epoch,
     );
+    // Wire fork epoch schedule so `process_slots_fork` triggers live upgrades
+    // (per `D-live-fork-upgrade-trigger`).
+    fc_store_mut.set_fork_epochs(
+        runtime_cfg.altair_fork_epoch,
+        runtime_cfg.bellatrix_fork_epoch,
+        runtime_cfg.capella_fork_epoch,
+    );
+    fc_store_mut.runtime_cfg = runtime_cfg.clone();
 
     let fork_choice = Arc::new(RwLock::new(fc_store_mut));
 

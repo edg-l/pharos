@@ -223,7 +223,13 @@ pub fn build_backfill_chain(
 
         // Advance a clone to `slot` to read randao_mix and expected timestamp.
         let mut pre_state_advanced = state.clone();
-        process_slots_fork::<MinimalEthSpec>(&mut pre_state_advanced, slot).unwrap_or_else(|e| {
+        process_slots_fork::<MinimalEthSpec>(
+            &mut pre_state_advanced,
+            slot,
+            pharos_stf::ForkEpochs::never(),
+            &runtime_cfg,
+        )
+        .unwrap_or_else(|e| {
             panic!(
                 "build_backfill_chain: process_slots_fork failed at slot {}: {e}",
                 slot.0

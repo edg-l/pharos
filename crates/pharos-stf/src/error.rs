@@ -65,6 +65,15 @@ pub enum StateTransitionError {
     /// `specs/bellatrix/beacon-chain.md:383-398`.
     #[error("invalid execution payload: {0}")]
     InvalidExecutionPayload(&'static str),
+
+    /// `process_withdrawals` consensus check per
+    /// `specs/capella/beacon-chain.md`: `assert payload.withdrawals == expected.withdrawals`.
+    #[error("withdrawals in execution payload do not match expected withdrawals")]
+    WithdrawalsMismatch,
+
+    /// `process_bls_to_execution_change` rejection.
+    #[error("invalid BLS-to-execution change: {0}")]
+    InvalidBlsToExecutionChange(&'static str),
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]

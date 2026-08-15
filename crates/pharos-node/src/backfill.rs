@@ -134,11 +134,17 @@ where
         + Clone,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
-        + pharos_stf::AltairProcessSlotsDispatch<E>,
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>,
     E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, EE>
         + pharos_stf::BellatrixJaFDispatch<E>
         + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
         + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, EE>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock:
         pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
     E::Phase0SignedBeaconBlock:
@@ -501,8 +507,13 @@ mod tests {
             let slot = Slot(i);
 
             let mut pre_state_advanced = state.clone();
-            process_slots_fork::<MinimalEthSpec>(&mut pre_state_advanced, slot)
-                .unwrap_or_else(|e| panic!("process_slots failed at slot {i}: {e}"));
+            process_slots_fork::<MinimalEthSpec>(
+                &mut pre_state_advanced,
+                slot,
+                pharos_stf::ForkEpochs::never(),
+                &runtime_cfg,
+            )
+            .unwrap_or_else(|e| panic!("process_slots failed at slot {i}: {e}"));
 
             let (prev_randao, expected_timestamp) = {
                 let s = match &pre_state_advanced {

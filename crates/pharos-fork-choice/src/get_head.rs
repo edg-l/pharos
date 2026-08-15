@@ -602,6 +602,10 @@ mod tests {
             terminal_total_difficulty: Uint256::ZERO,
             terminal_block_hash: Hash256::default(),
             terminal_block_hash_activation_epoch: u64::MAX,
+            altair_fork_epoch: u64::MAX,
+            bellatrix_fork_epoch: u64::MAX,
+            capella_fork_epoch: u64::MAX,
+            runtime_cfg: pharos_types::config::RuntimeConfig::default(),
         }
     }
 

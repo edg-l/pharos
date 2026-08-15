@@ -362,7 +362,13 @@ fn gossip_e2e_dispatch_all_three_topics() {
     // Advance genesis state to slot 1 to determine the expected proposer.
     let expected_proposer = {
         let mut state = genesis_state.clone();
-        process_slots_fork::<MinimalEthSpec>(&mut state, Slot(1)).expect("process_slots to slot 1");
+        process_slots_fork::<MinimalEthSpec>(
+            &mut state,
+            Slot(1),
+            pharos_stf::ForkEpochs::never(),
+            &pharos_types::config::RuntimeConfig::default(),
+        )
+        .expect("process_slots to slot 1");
         get_beacon_proposer_index::<MinimalEthSpec>(&state).0
     };
 

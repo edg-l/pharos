@@ -171,6 +171,13 @@ where
         terminal_total_difficulty: Uint256::ZERO,
         terminal_block_hash: Hash256::default(),
         terminal_block_hash_activation_epoch: u64::MAX,
+        // Fork epoch schedule and runtime config default to "never upgrade".
+        // main.rs sets these via `Store::set_fork_epochs` + direct assignment
+        // after loading the `RuntimeConfig`.
+        altair_fork_epoch: u64::MAX,
+        bellatrix_fork_epoch: u64::MAX,
+        capella_fork_epoch: u64::MAX,
+        runtime_cfg: pharos_types::config::RuntimeConfig::default(),
     })
 }
 

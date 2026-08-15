@@ -155,7 +155,21 @@ Depends: Phase 1.
 - 2.9a `crates/pharos-stf/src/error.rs`: add `WithdrawalsMismatch`.
 - 2.9b `crates/pharos-stf/src/lib.rs`: `ForkVariant::Capella` arm in `state_transition`
   and `process_slots_fork`; `CapellaProcessSlotsDispatch` trait (mirror Bellatrix);
-  `upgrade_to_capella` trigger at fork epoch boundary.
+  live fork-upgrade trigger in `process_slots_fork` for ALL forks (phase0→altair→
+  bellatrix→capella). Mechanism: `ForkEpochs` struct carries per-network fork epoch
+  numbers (sourced from `Store.runtime_cfg` on the live path, `ForkEpochs::never()`
+  for single-fork test/bench helpers). `Phase0UpgradeDispatch<E>` /
+  `AltairUpgradeDispatch<E>` / `BellatrixUpgradeDispatch<E>` dispatch traits (blanket
+  impls on concrete inner state types) delegate to the existing concrete `upgrade_to_*`
+  free functions. The advance-then-upgrade loop in `process_slots_fork` advances the
+  current fork to the boundary slot first (so `process_epoch` for the last pre-fork
+  epoch runs), then applies the upgrade, then continues. A multi-fork jump (e.g.
+  phase0 state advanced past altair + bellatrix + capella in one call) upgrades
+  through each fork in order. Fork epochs stored in `Store` (`altair_fork_epoch`,
+  `bellatrix_fork_epoch`, `capella_fork_epoch`, `runtime_cfg`) mirror the terminal-
+  config precedent; `get_forkchoice_store` defaults all to `u64::MAX` (conformance
+  fork_choice tests stay byte-identical); `get_forkchoice_store_with_config` sets
+  real values. ADR: `D-live-fork-upgrade-trigger` in `docs/decisions.md`.
 - 2.9c `crates/pharos-stf/src/capella/{mod.rs,state_transition.rs}` + `pub mod capella;`.
 - Checkpoint: `cargo check -p pharos-stf && cargo test -p pharos-stf`.
 - Commit: `feat(m6): capella STF — withdrawals, bls_to_exec_change, historical_summaries, upgrade`

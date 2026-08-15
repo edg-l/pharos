@@ -2495,6 +2495,46 @@ are STF-verified (per M4c `D-bellatrix-lc-header-uses-state-root` precedent).
 voluntary_exit 1 IGNORE + 6 REJECT; proposer_slashing 1 IGNORE + 6 REJECT;
 attester_slashing 1 IGNORE + 6 REJECT. Seen-caches extended per `D-seen-cache-shape` (M4e).
 
+### D-live-fork-upgrade-trigger — Live fork-upgrade trigger in `process_slots_fork`
+
+**Status**: Accepted. **Date**: 2026-05-29.
+
+**Gap**: `upgrade_to_altair`, `upgrade_to_bellatrix`, and `upgrade_to_capella` were
+called only from the conformance transition runner — never in the live STF path. A
+running node could not cross a fork boundary.
+
+**Fix location**: `process_slots_fork` in `crates/pharos-stf/src/lib.rs`. The function
+takes a new `fork_epochs: ForkEpochs` argument (carrying `altair`, `bellatrix`, `capella`
+epoch numbers) and a `runtime_cfg: &RuntimeConfig`. While advancing to `target_slot`, it
+detects fork boundaries and applies the irregular upgrade in-place before continuing.
+
+**Spec ordering**: `process_slots` advances to the boundary slot first (so `process_epoch`
+for the last pre-fork epoch runs), THEN the upgrade is applied. The strict `current_slot <
+boundary` guard enforces this.
+
+**Fork epochs in Store**: `Store<E>` gains three fork epoch fields plus a `runtime_cfg:
+RuntimeConfig` clone, mirroring the terminal-config precedent (`D-engine-head-driver`).
+`get_forkchoice_store` defaults all epochs to `u64::MAX` (FAR_FUTURE_EPOCH — no upgrade
+ever fires). Conformance `fork_choice` tests use this default; behaviour is byte-identical.
+`get_forkchoice_store_with_config` wires real per-network values. `main.rs` calls
+`set_fork_epochs` + assigns `runtime_cfg` after store construction.
+
+**Upgrade-dispatch traits**: `Phase0UpgradeDispatch<E>`, `AltairUpgradeDispatch<E>`,
+`BellatrixUpgradeDispatch<E>` — blanket impls on the concrete inner state types, each
+delegating to the existing const-generic free function. Parallel pattern to
+`*ProcessSlotsDispatch`. Added to the where-clauses of every function that calls
+`process_slots_fork` on the live path.
+
+**Single-fork callers**: test helpers and benches that construct single-fork chains pass
+`ForkEpochs::never()`, preserving byte-identical behaviour.
+
+**Multi-fork advance**: a phase0 state advanced past multiple fork boundaries in one
+`process_slots_fork` call crosses each boundary in order (e.g. phase0 → altair →
+bellatrix → capella on checkpoint catch-up).
+
+**Distinct-epoch assumption**: coincident non-genesis fork epochs are not supported (real
+networks use distinct epochs). The `current_slot < boundary` guard is intentional.
+
 ### D-bls-to-exec-seen-cache — seen-cache key for bls_to_execution_change gossip
 
 **Status**: Proposed. **Date**: 2026-05-29.

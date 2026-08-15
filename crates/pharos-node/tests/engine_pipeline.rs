@@ -258,8 +258,13 @@ fn build_chain(
 
         // Advance a clone to `slot` to read the updated randao_mix and timestamp.
         let mut pre_state_advanced = state.clone();
-        process_slots_fork::<MinimalEthSpec>(&mut pre_state_advanced, slot)
-            .unwrap_or_else(|e| panic!("build_chain: process_slots_fork failed at slot {i}: {e}"));
+        process_slots_fork::<MinimalEthSpec>(
+            &mut pre_state_advanced,
+            slot,
+            pharos_stf::ForkEpochs::never(),
+            &runtime_cfg,
+        )
+        .unwrap_or_else(|e| panic!("build_chain: process_slots_fork failed at slot {i}: {e}"));
 
         // Read randao_mix and timestamp from the advanced state.
         let (prev_randao, expected_timestamp) = {

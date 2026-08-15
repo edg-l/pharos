@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use pharos_ssz::TreeHash;
 use pharos_types::{
     BeaconStateView, EthSpec, PayloadStatus,
+    config::RuntimeConfig,
     phase0::{Checkpoint, Epoch, Root, ValidatorIndex},
     views::BeaconBlockView,
 };
@@ -130,6 +131,33 @@ pub struct Store<E: EthSpec> {
     ///
     /// Only consulted when `terminal_block_hash != zero`.
     pub terminal_block_hash_activation_epoch: u64,
+
+    // ── Fork schedule epochs ──────────────────────────────────────────────────
+    /// `ALTAIR_FORK_EPOCH` — epoch at which phase0 upgrades to Altair.
+    ///
+    /// Defaults to `u64::MAX` (never) in `get_forkchoice_store`. The node sets
+    /// the real value via `Store::set_fork_epochs` after construction.
+    pub altair_fork_epoch: u64,
+
+    /// `BELLATRIX_FORK_EPOCH` — epoch at which Altair upgrades to Bellatrix.
+    ///
+    /// Same default/override policy as `altair_fork_epoch`.
+    pub bellatrix_fork_epoch: u64,
+
+    /// `CAPELLA_FORK_EPOCH` — epoch at which Bellatrix upgrades to Capella.
+    ///
+    /// Same default/override policy as `altair_fork_epoch`.
+    pub capella_fork_epoch: u64,
+
+    // ── Runtime configuration ─────────────────────────────────────────────────
+    /// Full runtime configuration snapshot.
+    ///
+    /// Stored in the `Store` so that fork-choice handlers can call
+    /// `process_slots_fork` (which needs fork versions for the upgrade
+    /// dispatch) without threading `RuntimeConfig` through every function.
+    /// Defaults to `RuntimeConfig::default()` (mainnet) in `get_forkchoice_store`;
+    /// the node assigns the real network config after construction.
+    pub runtime_cfg: RuntimeConfig,
 }
 
 impl<E: EthSpec> Store<E> {
@@ -153,6 +181,34 @@ impl<E: EthSpec> Store<E> {
         self.terminal_block_hash = terminal_block_hash;
         self.terminal_block_hash_activation_epoch = terminal_block_hash_activation_epoch;
     }
+
+    /// Override the fork epoch schedule in this store.
+    ///
+    /// Called at node startup to wire real per-network fork epochs into the
+    /// store so that `process_slots_fork` triggers live upgrades. Mirrors the
+    /// `set_terminal_config` precedent.
+    pub fn set_fork_epochs(
+        &mut self,
+        altair_fork_epoch: u64,
+        bellatrix_fork_epoch: u64,
+        capella_fork_epoch: u64,
+    ) {
+        self.altair_fork_epoch = altair_fork_epoch;
+        self.bellatrix_fork_epoch = bellatrix_fork_epoch;
+        self.capella_fork_epoch = capella_fork_epoch;
+    }
+
+    /// Return a `ForkEpochs` snapshot of the current fork epoch schedule.
+    ///
+    /// Used to thread fork epochs into `process_slots_fork` from fork-choice
+    /// handlers without borrowing the full store.
+    pub fn fork_epochs(&self) -> pharos_stf::ForkEpochs {
+        pharos_stf::ForkEpochs {
+            altair: self.altair_fork_epoch,
+            bellatrix: self.bellatrix_fork_epoch,
+            capella: self.capella_fork_epoch,
+        }
+    }
 }
 
 // ── get_forkchoice_store ──────────────────────────────────────────────────────
@@ -166,8 +222,8 @@ impl<E: EthSpec> Store<E> {
 ///
 /// Terminal-block constants (`terminal_total_difficulty`, `terminal_block_hash`,
 /// `terminal_block_hash_activation_epoch`) default to zero / default-hash.
-/// Production callers override these via `Store::set_terminal_config` after
-/// construction, or supply a `RuntimeConfig` via `get_forkchoice_store_with_config`.
+/// Production callers override these via `Store::set_terminal_config` and
+/// `Store::set_fork_epochs` after construction (see `main.rs`).
 pub fn get_forkchoice_store<E: EthSpec>(
     anchor_state: E::BeaconState,
     anchor_block: E::BeaconBlock,
@@ -236,6 +292,17 @@ where
         terminal_total_difficulty: Uint256::ZERO,
         terminal_block_hash: Hash256::default(),
         terminal_block_hash_activation_epoch: u64::MAX,
+        // Fork epoch schedule defaults to u64::MAX (never upgrade).
+        // Conformance fork_choice tests use this default — fork epochs stay
+        // at u64::MAX so no upgrade ever fires, preserving byte-identical
+        // behaviour. Production callers wire real epochs via
+        // `Store::set_fork_epochs`.
+        altair_fork_epoch: u64::MAX,
+        bellatrix_fork_epoch: u64::MAX,
+        capella_fork_epoch: u64::MAX,
+        // RuntimeConfig defaults to mainnet; the node assigns the real config
+        // after construction.
+        runtime_cfg: RuntimeConfig::default(),
     };
 
     // Update the current slot based on the anchor state time.

@@ -68,6 +68,7 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
     E::BellatrixBeaconState:
         pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -130,6 +131,7 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
     E::BellatrixBeaconState:
         pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
     E::Phase0BeaconState: pharos_ssz::Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -209,6 +211,7 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E> + pharos_ssz::Decode,
     E::BellatrixBeaconState:
         pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
     E::AltairSignedBeaconBlock: pharos_ssz::Decode,
     E::Phase0BeaconState: pharos_ssz::Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
@@ -271,6 +274,7 @@ where
     E::AltairBeaconState: pharos_stf::AltairDispatch<E> + pharos_ssz::Decode,
     E::BellatrixBeaconState:
         pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
     E::AltairSignedBeaconBlock: pharos_ssz::Decode,
     E::Phase0BeaconState: pharos_ssz::Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
@@ -352,6 +356,7 @@ where
     E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_ssz::TreeHash
         + pharos_ssz::Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
@@ -414,6 +419,7 @@ where
     E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_ssz::TreeHash
         + pharos_ssz::Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
     E::Phase0BeaconState: pharos_ssz::Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,

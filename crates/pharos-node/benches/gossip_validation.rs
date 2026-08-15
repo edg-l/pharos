@@ -445,7 +445,13 @@ fn bench_beacon_block(c: &mut Criterion) {
         .map(|s| {
             let slot = Slot(s);
             let mut state = genesis_state.clone();
-            process_slots_fork::<E>(&mut state, slot).expect("process_slots");
+            process_slots_fork::<E>(
+                &mut state,
+                slot,
+                pharos_stf::ForkEpochs::never(),
+                &pharos_types::config::RuntimeConfig::default(),
+            )
+            .expect("process_slots");
             let idx = get_beacon_proposer_index::<E>(&state).0;
             (slot, idx)
         })
