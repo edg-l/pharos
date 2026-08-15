@@ -47,8 +47,8 @@ use pharos_types::phase0::primitives::{
     Root, Version,
 };
 use pharos_types::phase0::{
-    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
-    SignedVoluntaryExit, Slot,
+    Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
+    SignedAggregateAndProof, SignedVoluntaryExit, Slot,
 };
 use pharos_types::views::{LightClientFinalityUpdateView, LightClientOptimisticUpdateView};
 use pharos_utils::Epoch;
@@ -127,6 +127,16 @@ pub struct HostImpl<E: EthSpec> {
     /// (D-cache-key-on-head).
     /// Capacity: 4096 entries.
     committee_cache: RwLock<LruCache<(Slot, u64, Root), Vec<u64>>>,
+    /// Tracks `(aggregator_index, target_epoch)` pairs that have already produced
+    /// an accepted aggregate; gates the RAG7 duplicate-aggregator IGNORE rule per
+    /// `specs/phase0/p2p-interface.md:679`.
+    /// Capacity: 8192 entries (D-seen-cache-after-accept).
+    seen_aggregators: RwLock<LruCache<(u64, Epoch), ()>>,
+    /// Per data_root, stores the OR of all previously-seen aggregation bitlists.
+    /// Used to implement the RAG6 weakened-superset IGNORE rule: IGNORE iff every
+    /// set bit in the incoming bitlist is already set in the stored bitlist.
+    /// Capacity: 2048 entries.
+    seen_aggregate_data: RwLock<LruCache<Root, pharos_ssz::Bitlist<2048>>>,
     _phantom: PhantomData<E>,
 }
 
@@ -185,6 +195,8 @@ impl<E: EthSpec> HostImpl<E> {
                 NonZeroUsize::new(131072).unwrap(),
             )),
             committee_cache: RwLock::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
+            seen_aggregators: RwLock::new(LruCache::new(NonZeroUsize::new(8192).unwrap())),
+            seen_aggregate_data: RwLock::new(LruCache::new(NonZeroUsize::new(2048).unwrap())),
             _phantom: PhantomData,
         }
     }
@@ -890,8 +902,231 @@ where
         GossipVerdict::Accept
     }
 
-    /// TODO(M4): Validate aggregate proof, selection proof, signature.
-    fn validate_aggregate_and_proof(&self, _msg: &AggregateAndProof<2048>) -> GossipVerdict {
+    /// Validate a gossip `beacon_aggregate_and_proof` per
+    /// `specs/phase0/p2p-interface.md:629-737` (rules RAG1-RAG16).
+    ///
+    /// Step order:
+    ///   1.  RAG1  — committee index within range (REJECT).
+    ///   2.  RAG2  — aggregate slot within propagation range (IGNORE).
+    ///   3.  RAG3  — target epoch matches slot epoch (REJECT).
+    ///   4.  RAG4  — aggregation bits length matches committee size (REJECT).
+    ///   5.  RAG5  — aggregate has at least one participant (REJECT).
+    ///   6.  RAG6  — weakened superset check: bits not fully covered (IGNORE).
+    ///   7.  RAG7  — first valid aggregate from this aggregator this epoch (IGNORE).
+    ///   8.  RAG8  — selection proof selects validator as aggregator (REJECT).
+    ///   9.  RAG9  — aggregator index is within committee (REJECT).
+    ///  10.  RAG10 — selection-proof signature is valid (REJECT).
+    ///  11.  RAG11 — aggregator signature over AggregateAndProof is valid (REJECT).
+    ///  12.  RAG12 — aggregate signature valid (via indexed attestation) (REJECT).
+    ///  13.  RAG13 — voted block has been seen (IGNORE).
+    ///  14.  RAG14 — voted block passes validation (REJECT).
+    ///  15.  RAG15 — target block is an ancestor of the LMD vote block (REJECT).
+    ///  16.  RAG16 — finalized checkpoint is an ancestor of the block (IGNORE).
+    ///  17.  Insert into seen caches; return Accept.
+    fn validate_aggregate_and_proof(&self, saap: &SignedAggregateAndProof<2048>) -> GossipVerdict
+    where
+        E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
+        E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
+        E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+        E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
+                Attestation = pharos_types::phase0::Attestation<2048>,
+            >,
+    {
+        use pharos_ssz::TreeHash as _;
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_signing_root, get_attesting_indices,
+            get_committee_count_per_slot, get_domain, get_indexed_attestation,
+        };
+        use pharos_stf::phase0::helpers::{DOMAIN_AGGREGATE_AND_PROOF, DOMAIN_SELECTION_PROOF};
+        use pharos_stf::phase0::predicates::{is_aggregator, is_valid_indexed_attestation};
+        use pharos_types::BeaconStateView as _;
+        use pharos_types::phase0::primitives::{
+            ATTESTATION_PROPAGATION_SLOT_RANGE, MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS,
+        };
+
+        let agg = &saap.message.aggregate;
+
+        // Step 1 — RAG1: committee index must be within range.
+        // Use compute_epoch_at_slot on agg.data.slot (not target epoch) per Phase 2 follow-up.
+        let head_state = match self.head_state_at_slot(agg.data.slot) {
+            Some(s) => s,
+            None => return GossipVerdict::Ignore("agg: head state unavailable".into()),
+        };
+        let att_epoch = compute_epoch_at_slot(agg.data.slot, E::SLOTS_PER_EPOCH);
+        let committee_count = get_committee_count_per_slot::<E>(&head_state, att_epoch);
+        if agg.data.index.0 >= committee_count {
+            return GossipVerdict::Reject("agg: committee index out of range".into());
+        }
+
+        // Step 2 — RAG2: aggregate slot must be within propagation range.
+        let now_ms = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as u64,
+            Err(_) => return GossipVerdict::Ignore("agg: clock unavailable".into()),
+        };
+        let genesis_time_s = self.fork_choice.read().genesis_time;
+        let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
+        let agg_slot = agg.data.slot.0;
+        let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
+        let start_time_ms = genesis_time_s * 1000 + agg_slot * seconds_per_slot * 1000;
+        let end_time_ms = genesis_time_s * 1000 + (agg_slot + range + 1) * seconds_per_slot * 1000;
+        if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < start_time_ms
+            || end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms
+        {
+            return GossipVerdict::Ignore("agg: slot not in propagation range".into());
+        }
+
+        // Step 3 — RAG3: target epoch must match slot epoch.
+        if agg.data.target.epoch != compute_epoch_at_slot(agg.data.slot, E::SLOTS_PER_EPOCH) {
+            return GossipVerdict::Reject("agg: target epoch mismatch".into());
+        }
+
+        // Step 4 — RAG4: aggregation bits length must match committee size.
+        let committee = match self.lookup_or_compute_committee(agg.data.slot, agg.data.index.0) {
+            Some(c) => c,
+            None => return GossipVerdict::Ignore("agg: committee unavailable".into()),
+        };
+        if agg.aggregation_bits.len() != committee.len() {
+            return GossipVerdict::Reject("agg: agg bits length mismatch".into());
+        }
+
+        // Step 5 — RAG5: aggregate must have at least one participant.
+        let attesting_indices =
+            get_attesting_indices::<E>(&head_state, &agg.data, &agg.aggregation_bits);
+        if attesting_indices.is_empty() {
+            return GossipVerdict::Reject("agg: no participants".into());
+        }
+
+        // Step 6 — RAG6: weakened-superset check.
+        // IGNORE iff every set bit in incoming is already set in the stored OR-bitlist.
+        let data_root = agg.data.tree_hash_root();
+        {
+            let read = self.seen_aggregate_data.read();
+            if let Some(stored) = read.peek(&data_root) {
+                let mut covered = true;
+                for (i, b) in agg.aggregation_bits.iter().enumerate() {
+                    if b && !stored.get(i).unwrap_or(false) {
+                        covered = false;
+                        break;
+                    }
+                }
+                if covered {
+                    return GossipVerdict::Ignore("agg: superset seen".into());
+                }
+            }
+        }
+
+        // Step 7 — RAG7: first valid aggregate from this aggregator this epoch.
+        let aggregator_index = saap.message.aggregator_index.0;
+        let target_epoch = agg.data.target.epoch;
+        if self
+            .seen_aggregators
+            .read()
+            .peek(&(aggregator_index, target_epoch))
+            .is_some()
+        {
+            return GossipVerdict::Ignore("agg: duplicate aggregator/epoch".into());
+        }
+
+        // Step 8 — RAG8: selection proof must select validator as aggregator.
+        if !is_aggregator(committee.len(), &saap.message.selection_proof) {
+            return GossipVerdict::Reject("agg: not selected as aggregator".into());
+        }
+
+        // Step 9 — RAG9: aggregator index must be within committee.
+        if !committee.contains(&aggregator_index) {
+            return GossipVerdict::Reject("agg: aggregator not in committee".into());
+        }
+
+        // Step 10 — RAG10: selection-proof signature must be valid.
+        let aggregator_pubkey = match head_state.validator(aggregator_index as usize) {
+            Some(v) => v.pubkey,
+            None => return GossipVerdict::Reject("agg: aggregator index out of range".into()),
+        };
+        let domain_sel = get_domain::<E>(&head_state, DOMAIN_SELECTION_PROOF, Some(target_epoch));
+        let signing_root_sel = compute_signing_root(&agg.data.slot, domain_sel);
+        match pharos_utils::bls::verify(
+            &aggregator_pubkey,
+            signing_root_sel.as_ref(),
+            &saap.message.selection_proof,
+        ) {
+            Ok(true) => {}
+            _ => return GossipVerdict::Reject("agg: invalid selection proof signature".into()),
+        }
+
+        // Step 11 — RAG11: aggregator signature over AggregateAndProof must be valid.
+        let domain_aap =
+            get_domain::<E>(&head_state, DOMAIN_AGGREGATE_AND_PROOF, Some(target_epoch));
+        let signing_root_aap = compute_signing_root(&saap.message, domain_aap);
+        match pharos_utils::bls::verify(
+            &aggregator_pubkey,
+            signing_root_aap.as_ref(),
+            &saap.signature,
+        ) {
+            Ok(true) => {}
+            _ => return GossipVerdict::Reject("agg: invalid aggregator signature".into()),
+        }
+
+        // Step 12 — RAG12: aggregate signature must be valid.
+        let indexed = get_indexed_attestation::<E>(&head_state, agg);
+        if !is_valid_indexed_attestation::<E>(&head_state, &indexed, true) {
+            return GossipVerdict::Reject("agg: invalid aggregate signature".into());
+        }
+
+        // Steps 13-16 require the fork-choice lock; acquire once.
+        {
+            let fc = self.fork_choice.read();
+
+            // Step 13 — RAG13: voted block must have been seen.
+            if !fc.blocks.contains_key(&agg.data.beacon_block_root) {
+                return GossipVerdict::Ignore("agg: voted block unseen".into());
+            }
+
+            // Step 14 — RAG14: voted block must pass validation.
+            if !fc.block_states.contains_key(&agg.data.beacon_block_root) {
+                return GossipVerdict::Reject("agg: voted block invalid".into());
+            }
+
+            // Step 15 — RAG15: target block must be an ancestor of the LMD vote block.
+            let target_cp = pharos_fork_choice::get_checkpoint_block::<E>(
+                &*fc,
+                agg.data.beacon_block_root,
+                target_epoch,
+            );
+            if target_cp != agg.data.target.root {
+                return GossipVerdict::Reject("agg: target not ancestor".into());
+            }
+
+            // Step 16 — RAG16: finalized checkpoint must be an ancestor of the block.
+            let final_cp = pharos_fork_choice::get_checkpoint_block::<E>(
+                &*fc,
+                agg.data.beacon_block_root,
+                fc.finalized_checkpoint.epoch,
+            );
+            if final_cp != fc.finalized_checkpoint.root {
+                return GossipVerdict::Ignore("agg: finalized not ancestor".into());
+            }
+        }
+
+        // Step 17 — Insert into seen caches and accept.
+        self.seen_aggregators
+            .write()
+            .put((aggregator_index, target_epoch), ());
+        {
+            let mut write = self.seen_aggregate_data.write();
+            let stored = write.get_or_insert_mut(data_root, || {
+                let mut bl = pharos_ssz::Bitlist::<2048>::with_capacity(committee.len());
+                for _ in 0..committee.len() {
+                    // push(false) initialises bit_len to committee.len()
+                    let _ = bl.push(false);
+                }
+                bl
+            });
+            for (i, b) in agg.aggregation_bits.iter().enumerate() {
+                if b {
+                    stored.set(i, true);
+                }
+            }
+        }
         GossipVerdict::Accept
     }
 
@@ -2779,6 +3014,737 @@ mod tests {
         assert_eq!(
             host.validate_attestation(att_expected_subnet(), &att),
             GossipVerdict::Ignore("att: duplicate validator/epoch".into()),
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Aggregate-and-proof validation tests (Task 3.5 a–q, RAG1–RAG16 + happy)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    use pharos_stf::phase0::accessors::get_beacon_committee;
+    use pharos_stf::phase0::helpers::{DOMAIN_AGGREGATE_AND_PROOF, DOMAIN_SELECTION_PROOF};
+    use pharos_types::phase0::primitives::ValidatorIndex;
+    use pharos_types::phase0::{AggregateAndProof, SignedAggregateAndProof};
+
+    /// Build the slot-based signing root for the selection proof.
+    fn sel_signing_root(state: &ForkMinimalState, slot: Slot) -> Root {
+        let domain =
+            att_get_domain::<MinimalEthSpec>(state, DOMAIN_SELECTION_PROOF, Some(Epoch(0)));
+        att_signing_root(&slot, domain)
+    }
+
+    /// Build the signing root for the aggregator signature over AggregateAndProof.
+    fn aap_signing_root(state: &ForkMinimalState, aap: &AggregateAndProof<2048>) -> Root {
+        let domain =
+            att_get_domain::<MinimalEthSpec>(state, DOMAIN_AGGREGATE_AND_PROOF, Some(Epoch(0)));
+        att_signing_root(aap, domain)
+    }
+
+    /// Build a valid SignedAggregateAndProof for the given parameters.
+    ///
+    /// - `beacon_block_root`: root that goes into the attestation data.
+    /// - `head_state`: state used for domain computation.
+    /// - `aggregator_index`: index of the aggregating validator (all use `att_test_sk`).
+    /// - `flip_sel`: if true, corrupt the selection proof.
+    /// - `flip_agg_sig`: if true, corrupt the aggregator signature.
+    /// - `flip_agg_att_sig`: if true, corrupt the aggregate attestation signature.
+    fn make_signed_aap(
+        beacon_block_root: Root,
+        head_state: &ForkMinimalState,
+        aggregator_index: u64,
+        flip_sel: bool,
+        flip_agg_sig: bool,
+        flip_agg_att_sig: bool,
+    ) -> SignedAggregateAndProof<2048> {
+        use pharos_ssz::Bitlist;
+
+        let data = AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(0),
+            beacon_block_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(0),
+                root: beacon_block_root,
+            },
+        };
+
+        // Build aggregation bits with all committee members attesting.
+        // Committee at slot=0,index=0 has 1 member for our 8-validator state.
+        let committee_len = {
+            let c = get_beacon_committee::<MinimalEthSpec>(head_state, Slot(0), 0);
+            c.len()
+        };
+        let mut bits = Bitlist::<2048>::new();
+        for _ in 0..committee_len {
+            bits.push(true).unwrap();
+        }
+
+        // Sign the aggregate over attestation data (DOMAIN_BEACON_ATTESTER).
+        let att_domain =
+            att_get_domain::<MinimalEthSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
+        let att_signing = att_signing_root(&data, att_domain);
+        let mut att_sig_bytes: [u8; 96] = att_test_sign(att_signing.as_ref()).into();
+        if flip_agg_att_sig {
+            att_sig_bytes[0] ^= 0xff;
+        }
+
+        let agg_and_proof = AggregateAndProof {
+            aggregator_index: ValidatorIndex(aggregator_index),
+            aggregate: pharos_types::phase0::Attestation {
+                aggregation_bits: bits,
+                data,
+                signature: BLSSignature::from_array(att_sig_bytes),
+            },
+            selection_proof: {
+                // Selection proof: sign(slot=0) with DOMAIN_SELECTION_PROOF.
+                let sr = sel_signing_root(head_state, Slot(0));
+                let mut bytes: [u8; 96] = att_test_sign(sr.as_ref()).into();
+                if flip_sel {
+                    bytes[0] ^= 0xff;
+                }
+                BLSSignature::from_array(bytes)
+            },
+        };
+
+        // Aggregator signature: sign(AggregateAndProof) with DOMAIN_AGGREGATE_AND_PROOF.
+        let aap_sr = aap_signing_root(head_state, &agg_and_proof);
+        let mut aap_sig_bytes: [u8; 96] = att_test_sign(aap_sr.as_ref()).into();
+        if flip_agg_sig {
+            aap_sig_bytes[0] ^= 0xff;
+        }
+
+        SignedAggregateAndProof {
+            message: agg_and_proof,
+            signature: BLSSignature::from_array(aap_sig_bytes),
+        }
+    }
+
+    /// Compute the actual aggregator index for slot=0, committee=0 in a
+    /// 8-validator state (first member of the committee).
+    fn agg_test_aggregator_index(head_state: &ForkMinimalState) -> u64 {
+        let c = get_beacon_committee::<MinimalEthSpec>(head_state, Slot(0), 0);
+        c[0].0
+    }
+
+    // ── (a) RAG1: agg_rejects_committee_index_out_of_range ──────────────────
+
+    #[test]
+    fn agg_rejects_committee_index_out_of_range() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        // committee_index=9999 is way out of range.
+        let data = AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(9999),
+            beacon_block_root: genesis_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(0),
+                root: genesis_root,
+            },
+        };
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let agg_and_proof = AggregateAndProof {
+            aggregator_index: ValidatorIndex(0),
+            aggregate: pharos_types::phase0::Attestation {
+                aggregation_bits: bits,
+                data,
+                signature: BLSSignature::from_array([0u8; 96]),
+            },
+            selection_proof: BLSSignature::from_array([0u8; 96]),
+        };
+        let saap = SignedAggregateAndProof {
+            message: agg_and_proof,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        let _ = genesis_state;
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: committee index out of range".into()),
+        );
+    }
+
+    // ── (b) RAG2: agg_ignores_slot_out_of_range ─────────────────────────────
+
+    #[test]
+    fn agg_ignores_slot_out_of_range() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, _) = make_att_test_host(&dir, 0);
+
+        // Override genesis_time to 0 so slot=0 is out of propagation window.
+        host.fork_choice.write().genesis_time = 0;
+
+        let data = AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(0),
+            beacon_block_root: genesis_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(0),
+                root: genesis_root,
+            },
+        };
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let saap = SignedAggregateAndProof {
+            message: AggregateAndProof {
+                aggregator_index: ValidatorIndex(0),
+                aggregate: pharos_types::phase0::Attestation {
+                    aggregation_bits: bits,
+                    data,
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Ignore("agg: slot not in propagation range".into()),
+        );
+    }
+
+    // ── (c) RAG3: agg_rejects_target_epoch_mismatch ─────────────────────────
+
+    #[test]
+    fn agg_rejects_target_epoch_mismatch() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, _) = make_att_test_host(&dir, 0);
+
+        // slot=0 → epoch=0, but target.epoch=1 → mismatch.
+        let data = AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(0),
+            beacon_block_root: genesis_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(1),
+                root: genesis_root,
+            },
+        };
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let saap = SignedAggregateAndProof {
+            message: AggregateAndProof {
+                aggregator_index: ValidatorIndex(0),
+                aggregate: pharos_types::phase0::Attestation {
+                    aggregation_bits: bits,
+                    data,
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: target epoch mismatch".into()),
+        );
+    }
+
+    // ── (d) RAG4: agg_rejects_agg_bits_length_mismatch ──────────────────────
+
+    #[test]
+    fn agg_rejects_agg_bits_length_mismatch() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, _) = make_att_test_host(&dir, 0);
+
+        // Committee size = 1 for our test setup, but we push 6 bits.
+        let data = make_att_data(genesis_root);
+        let mut bits = Bitlist::<2048>::new();
+        for _ in 0..6 {
+            bits.push(false).unwrap();
+        }
+        bits.set(5, true);
+        let saap = SignedAggregateAndProof {
+            message: AggregateAndProof {
+                aggregator_index: ValidatorIndex(0),
+                aggregate: pharos_types::phase0::Attestation {
+                    aggregation_bits: bits,
+                    data,
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: agg bits length mismatch".into()),
+        );
+    }
+
+    // ── (e) RAG5: agg_rejects_no_participants ───────────────────────────────
+
+    #[test]
+    fn agg_rejects_no_participants() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, _) = make_att_test_host(&dir, 0);
+
+        // Zero bits set → no participants.
+        let data = make_att_data(genesis_root);
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(false).unwrap(); // committee size=1, bit=false → no participants
+        let saap = SignedAggregateAndProof {
+            message: AggregateAndProof {
+                aggregator_index: ValidatorIndex(0),
+                aggregate: pharos_types::phase0::Attestation {
+                    aggregation_bits: bits,
+                    data,
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: no participants".into()),
+        );
+    }
+
+    // ── (f) RAG6: agg_ignores_seen_superset ─────────────────────────────────
+
+    #[test]
+    fn agg_ignores_seen_superset() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        // First call: accept to populate seen_aggregate_data.
+        let saap = make_signed_aap(
+            genesis_root,
+            &genesis_state,
+            aggregator_index,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Accept,
+        );
+
+        // Second call: same aggregate data but different aggregator_index.
+        // RAG6 fires before RAG7 in the pipeline, so this hits RAG6 (superset seen)
+        // because bit[0]=true is already stored for this data_root.
+        let saap_same = make_signed_aap(
+            genesis_root,
+            &genesis_state,
+            aggregator_index + 1,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap_same),
+            GossipVerdict::Ignore("agg: superset seen".into()),
+        );
+    }
+
+    // ── (g) RAG7: agg_ignores_duplicate_aggregator_epoch ────────────────────
+
+    #[test]
+    fn agg_ignores_duplicate_aggregator_epoch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        // Pre-populate the seen_aggregators cache.
+        host.seen_aggregators
+            .write()
+            .put((aggregator_index, Epoch(0)), ());
+
+        let saap = make_signed_aap(
+            genesis_root,
+            &genesis_state,
+            aggregator_index,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Ignore("agg: duplicate aggregator/epoch".into()),
+        );
+    }
+
+    // ── (h) RAG8: agg_rejects_not_aggregator ────────────────────────────────
+
+    #[test]
+    fn agg_rejects_not_aggregator() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        // Use a selection proof that sha256-hashes to n%1 != 0.
+        // With committee_len=1, modulo=1, so n%1==0 always → can never reject RAG8.
+        // We need committee_len > 16 to get modulo > 1.
+        // Our test state has 1-member committee, so RAG8 cannot fire with our setup.
+        // Instead: build a custom attestation with mismatched committee index that
+        // has a larger committee... but that requires restructuring the state.
+        //
+        // Workaround: use a selection proof with [0x01]*96 bytes.
+        // sha256([0x01]*96)[0..8] LE = 15010667366611956363, %2 = 1 → not aggregator for clen=32.
+        // We can't easily get clen=32 in test. Instead, since clen=1 → modulo=1 → always aggregator,
+        // we patch the committee in the cache to fake clen=32 by pre-populating with a larger vec.
+        //
+        // Pre-populate committee_cache with 32 members so modulo=max(1,32/16)=2.
+        let fake_committee: Vec<u64> = (0u64..32).collect();
+        let head_root = {
+            let fc = host.fork_choice.read();
+            pharos_fork_choice::get_head(&*fc)
+        };
+        host.committee_cache
+            .write()
+            .put((Slot(0), 0, head_root), fake_committee.clone());
+
+        let data = make_att_data(genesis_root);
+        // Build bitlist of length 32 with first bit set.
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        for _ in 1..32 {
+            bits.push(false).unwrap();
+        }
+
+        // selection_proof = [0x01]*96 → sha256 n%2=1 → not aggregator.
+        let agg_and_proof = AggregateAndProof {
+            aggregator_index: ValidatorIndex(aggregator_index),
+            aggregate: pharos_types::phase0::Attestation {
+                aggregation_bits: bits,
+                data,
+                signature: BLSSignature::from_array([0u8; 96]),
+            },
+            selection_proof: BLSSignature::from_array([0x01u8; 96]),
+        };
+        let saap = SignedAggregateAndProof {
+            message: agg_and_proof,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: not selected as aggregator".into()),
+        );
+    }
+
+    // ── (i) RAG9: agg_rejects_aggregator_not_in_committee ───────────────────
+
+    #[test]
+    fn agg_rejects_aggregator_not_in_committee() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        let data = make_att_data(genesis_root);
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        // Use aggregator_index=99 which is NOT in the committee (and not in state validators).
+        let saap = SignedAggregateAndProof {
+            message: AggregateAndProof {
+                aggregator_index: ValidatorIndex(99),
+                aggregate: pharos_types::phase0::Attestation {
+                    aggregation_bits: bits,
+                    data,
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                // selection_proof with [0x00]*96 → n%1=0 → is_aggregator=true (clen=1, modulo=1).
+                selection_proof: BLSSignature::from_array([0x00u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        let _ = genesis_state;
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: aggregator not in committee".into()),
+        );
+    }
+
+    // ── (j) RAG10: agg_rejects_invalid_selection_proof ──────────────────────
+
+    #[test]
+    fn agg_rejects_invalid_selection_proof() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        // flip_sel=true → bad selection proof.
+        let saap = make_signed_aap(
+            genesis_root,
+            &genesis_state,
+            aggregator_index,
+            true,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: invalid selection proof signature".into()),
+        );
+    }
+
+    // ── (k) RAG11: agg_rejects_invalid_aggregator_signature ─────────────────
+
+    #[test]
+    fn agg_rejects_invalid_aggregator_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        // flip_agg_sig=true → bad outer signature.
+        let saap = make_signed_aap(
+            genesis_root,
+            &genesis_state,
+            aggregator_index,
+            false,
+            true,
+            false,
+        );
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: invalid aggregator signature".into()),
+        );
+    }
+
+    // ── (l) RAG12: agg_rejects_invalid_aggregate_signature ──────────────────
+
+    #[test]
+    fn agg_rejects_invalid_aggregate_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        // flip_agg_att_sig=true → bad inner aggregate attestation signature.
+        let saap = make_signed_aap(
+            genesis_root,
+            &genesis_state,
+            aggregator_index,
+            false,
+            false,
+            true,
+        );
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: invalid aggregate signature".into()),
+        );
+    }
+
+    // ── (m) RAG13: agg_ignores_unseen_voted_block ────────────────────────────
+
+    #[test]
+    fn agg_ignores_unseen_voted_block() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        // Use a beacon_block_root not in the fork-choice store.
+        let unknown_root = Root::from_array([0xab; 32]);
+        let saap = make_signed_aap(
+            unknown_root,
+            &genesis_state,
+            aggregator_index,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Ignore("agg: voted block unseen".into()),
+        );
+    }
+
+    // ── (n) RAG14: agg_rejects_voted_block_invalid ───────────────────────────
+
+    #[test]
+    fn agg_rejects_voted_block_invalid() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        // Insert a block into fc.blocks but NOT into fc.block_states (failed validation).
+        let orphan_root = Root::from_array([0xcd; 32]);
+        {
+            let mut fc = host.fork_choice.write();
+            fc.blocks.insert(
+                orphan_root,
+                pharos_types::state::BeaconBlock::Phase0(MinimalBeaconBlock {
+                    slot: Slot(0),
+                    ..Default::default()
+                }),
+            );
+        }
+
+        let saap = make_signed_aap(
+            orphan_root,
+            &genesis_state,
+            aggregator_index,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: voted block invalid".into()),
+        );
+    }
+
+    // ── (o) RAG15: agg_rejects_target_not_ancestor ───────────────────────────
+
+    #[test]
+    fn agg_rejects_target_not_ancestor() {
+        use pharos_ssz::Bitlist;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        // Build an attestation with target.root != get_checkpoint_block result.
+        let wrong_target = Root::from_array([0xef; 32]);
+        let data = AttestationData {
+            slot: Slot(0),
+            index: CommitteeIndex(0),
+            beacon_block_root: genesis_root,
+            source: Checkpoint {
+                epoch: Epoch(0),
+                root: Root::default(),
+            },
+            target: Checkpoint {
+                epoch: Epoch(0),
+                root: wrong_target,
+            },
+        };
+        let mut bits = Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        // Build a valid selection proof and aggregator sig for this data.
+        let domain_sel = att_get_domain::<MinimalEthSpec>(
+            &genesis_state,
+            DOMAIN_SELECTION_PROOF,
+            Some(Epoch(0)),
+        );
+        let sr_sel = att_signing_root(&Slot(0u64), domain_sel);
+        let sel_proof = att_test_sign(sr_sel.as_ref());
+        let att_domain = att_get_domain::<MinimalEthSpec>(
+            &genesis_state,
+            DOMAIN_BEACON_ATTESTER,
+            Some(Epoch(0)),
+        );
+        let att_sr = att_signing_root(&data, att_domain);
+        let att_sig = att_test_sign(att_sr.as_ref());
+        let agg_and_proof = AggregateAndProof {
+            aggregator_index: ValidatorIndex(aggregator_index),
+            aggregate: pharos_types::phase0::Attestation {
+                aggregation_bits: bits,
+                data,
+                signature: att_sig,
+            },
+            selection_proof: sel_proof,
+        };
+        let domain_aap = att_get_domain::<MinimalEthSpec>(
+            &genesis_state,
+            DOMAIN_AGGREGATE_AND_PROOF,
+            Some(Epoch(0)),
+        );
+        let aap_sr = att_signing_root(&agg_and_proof, domain_aap);
+        let aap_sig = att_test_sign(aap_sr.as_ref());
+        let saap = SignedAggregateAndProof {
+            message: agg_and_proof,
+            signature: aap_sig,
+        };
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Reject("agg: target not ancestor".into()),
+        );
+    }
+
+    // ── (p) RAG16: agg_ignores_finalized_not_ancestor ────────────────────────
+
+    #[test]
+    fn agg_ignores_finalized_not_ancestor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        // Override finalized checkpoint to a root not on genesis's chain.
+        let fake_finalized = Root::from_array([0x77; 32]);
+        {
+            let mut fc = host.fork_choice.write();
+            fc.finalized_checkpoint = Checkpoint {
+                epoch: Epoch(0),
+                root: fake_finalized,
+            };
+        }
+
+        let saap = make_signed_aap(
+            genesis_root,
+            &genesis_state,
+            aggregator_index,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Ignore("agg: finalized not ancestor".into()),
+        );
+    }
+
+    // ── (q) happy path: agg_accepts_happy_path ───────────────────────────────
+
+    #[test]
+    fn agg_accepts_happy_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator_index = agg_test_aggregator_index(&genesis_state);
+
+        let saap = make_signed_aap(
+            genesis_root,
+            &genesis_state,
+            aggregator_index,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_aggregate_and_proof(&saap),
+            GossipVerdict::Accept,
+        );
+
+        // Verify seen_aggregators was populated.
+        assert!(
+            host.seen_aggregators
+                .read()
+                .peek(&(aggregator_index, Epoch(0)))
+                .is_some(),
+            "seen_aggregators must be populated after Accept"
+        );
+
+        // Second call with same data/bits must deduplicate (RAG6 or RAG7).
+        // RAG6 (superset-seen) fires before RAG7 because seen_aggregate_data
+        // is populated on Accept; either Ignore is correct deduplication.
+        let second = host.validate_aggregate_and_proof(&saap);
+        assert!(
+            matches!(second, GossipVerdict::Ignore(_)),
+            "second call must Ignore (either RAG6 or RAG7 dedup), got {:?}",
+            second,
         );
     }
 }

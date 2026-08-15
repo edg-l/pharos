@@ -111,7 +111,7 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
         }
         GossipTopicKind::BeaconAggregateAndProof => {
             match SignedAggregateAndProof::<2048>::from_ssz_bytes(ssz_bytes) {
-                Ok(saap) => host.validate_aggregate_and_proof(&saap.message),
+                Ok(saap) => host.validate_aggregate_and_proof(&saap),
                 Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
             }
         }
@@ -175,8 +175,8 @@ mod tests {
     use pharos_types::MainnetEthSpec;
     use pharos_types::phase0::primitives::ForkDigest;
     use pharos_types::phase0::{
-        AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
-        Root, SignedVoluntaryExit, Slot,
+        Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing, Root,
+        SignedAggregateAndProof, SignedVoluntaryExit, Slot,
     };
     use pharos_utils::{Bytes4, Epoch};
 
@@ -246,7 +246,10 @@ mod tests {
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
-        fn validate_aggregate_and_proof(&self, _msg: &AggregateAndProof<2048>) -> GossipVerdict {
+        fn validate_aggregate_and_proof(
+            &self,
+            _msg: &SignedAggregateAndProof<2048>,
+        ) -> GossipVerdict {
             GossipVerdict::Accept
         }
         fn validate_voluntary_exit(&self, _exit: &SignedVoluntaryExit) -> GossipVerdict {

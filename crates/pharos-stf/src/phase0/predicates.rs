@@ -7,8 +7,10 @@ use crate::phase0::{
 };
 use pharos_types::{
     BeaconStateView, EthSpec,
+    phase0::primitives::TARGET_AGGREGATORS_PER_COMMITTEE,
     phase0::{AttestationData, Epoch, IndexedAttestation, Validator},
 };
+use pharos_utils::BLSSignature;
 
 /// Check if a validator is active at `epoch`.
 ///
@@ -99,9 +101,25 @@ pub fn is_valid_indexed_attestation<E: EthSpec>(
     .unwrap_or(false)
 }
 
+/// Check whether a validator is selected as an aggregator for their committee.
+///
+/// Per `specs/phase0/validator.md:139-147` (is_aggregator).
+///
+/// The modulo is `max(1, committee_len / TARGET_AGGREGATORS_PER_COMMITTEE)`.
+/// A validator is selected iff `bytes_to_uint64(hash(slot_signature)[0:8]) % modulo == 0`.
+pub fn is_aggregator(committee_len: usize, slot_signature: &BLSSignature) -> bool {
+    let modulo = std::cmp::max(
+        1usize,
+        committee_len / TARGET_AGGREGATORS_PER_COMMITTEE as usize,
+    );
+    let h = pharos_utils::hash::hash(slot_signature.as_ref());
+    let n = u64::from_le_bytes(h.as_slice()[0..8].try_into().unwrap());
+    n % (modulo as u64) == 0
+}
+
 #[cfg(test)]
 mod tests {
-    use pharos_utils::{BLSPubkey, Bytes32, CommitteeIndex, Epoch, Gwei};
+    use pharos_utils::{BLSPubkey, BLSSignature, Bytes32, CommitteeIndex, Epoch, Gwei};
 
     use super::*;
     use crate::phase0::helpers::FAR_FUTURE_EPOCH;
@@ -225,5 +243,41 @@ mod tests {
         assert!(is_slashable_attestation_data(&d1, &d2));
         // Reverse: not a surround
         assert!(!is_slashable_attestation_data(&d2, &d1));
+    }
+
+    /// Pre-computed test vectors for `is_aggregator`.
+    ///
+    /// The "signatures" here are fixed 96-byte patterns; they are not
+    /// cryptographically valid BLS signatures. `is_aggregator` only hashes
+    /// the raw bytes, so no BLS operations are needed at test time.
+    ///
+    /// Vectors computed offline with Python:
+    ///   sha256([0x00]*96)[:8] = 2ea9ab9198d16380 → n_le=9251468512758311214
+    ///   sha256([0x01]*96)[:8] = 8b3274a4709a50d0 → n_le=15010667366611956363
+    ///   sha256([0x02]*96)[:8] = 18a2c0a60a7d9340 → n_le=6463443705522100576
+    #[test]
+    fn is_aggregator_known_vectors() {
+        // Vector 1: committee_len=16 → modulo=max(1, 16/16)=1 → always true.
+        let sig_zeros = BLSSignature::from_array([0x00u8; 96]);
+        assert!(
+            is_aggregator(16, &sig_zeros),
+            "committee_len=16, modulo=1, must be true for any sig"
+        );
+
+        // Vector 2: committee_len=32 → modulo=max(1, 32/16)=2.
+        // [0x01]*96 → n_le=15010667366611956363, n_le%2=1 → false.
+        let sig_ones = BLSSignature::from_array([0x01u8; 96]);
+        assert!(
+            !is_aggregator(32, &sig_ones),
+            "committee_len=32, modulo=2, [0x01]*96 hash n%2=1 → false"
+        );
+
+        // Vector 3: committee_len=256 → modulo=max(1, 256/16)=16.
+        // [0x02]*96 → n_le=6463443705522100576, n_le%16=0 → true.
+        let sig_twos = BLSSignature::from_array([0x02u8; 96]);
+        assert!(
+            is_aggregator(256, &sig_twos),
+            "committee_len=256, modulo=16, [0x02]*96 hash n%16=0 → true"
+        );
     }
 }

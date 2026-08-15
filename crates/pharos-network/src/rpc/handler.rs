@@ -242,8 +242,8 @@ mod tests {
     use pharos_types::altair::MetaData as AltairMetaData;
     use pharos_types::phase0::primitives::{ForkDigest, Root};
     use pharos_types::phase0::{
-        AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
-        SignedVoluntaryExit, Slot,
+        Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
+        SignedAggregateAndProof, SignedVoluntaryExit, Slot,
     };
     use pharos_utils::{Bytes4, Epoch};
 
@@ -324,7 +324,10 @@ mod tests {
         fn validate_attestation(&self, _s: SubnetId, _a: &Attestation<2048>) -> GossipVerdict {
             GossipVerdict::Accept
         }
-        fn validate_aggregate_and_proof(&self, _m: &AggregateAndProof<2048>) -> GossipVerdict {
+        fn validate_aggregate_and_proof(
+            &self,
+            _m: &SignedAggregateAndProof<2048>,
+        ) -> GossipVerdict {
             GossipVerdict::Accept
         }
         fn validate_voluntary_exit(&self, _e: &SignedVoluntaryExit) -> GossipVerdict {

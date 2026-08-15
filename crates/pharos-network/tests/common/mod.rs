@@ -22,8 +22,8 @@ use pharos_types::MainnetEthSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
-    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
-    Root, SignedVoluntaryExit, Slot,
+    Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing, Root,
+    SignedAggregateAndProof, SignedVoluntaryExit, Slot,
 };
 use pharos_utils::{Bytes4, Epoch};
 
@@ -299,7 +299,7 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
         GossipVerdict::Accept
     }
 
-    fn validate_aggregate_and_proof(&self, _msg: &AggregateAndProof<2048>) -> GossipVerdict {
+    fn validate_aggregate_and_proof(&self, _msg: &SignedAggregateAndProof<2048>) -> GossipVerdict {
         GossipVerdict::Accept
     }
 

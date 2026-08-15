@@ -14,8 +14,8 @@ use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
-    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
-    Root, SignedVoluntaryExit, Slot,
+    Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing, Root,
+    SignedAggregateAndProof, SignedVoluntaryExit, Slot,
 };
 
 use crate::types::{Fork, SubnetId};
@@ -128,8 +128,12 @@ pub trait GossipValidator<E: EthSpec>: Send + Sync + 'static {
 
     /// Validate a `beacon_aggregate_and_proof` message.
     ///
+    /// Receives the full `SignedAggregateAndProof` so that validators can check
+    /// both the selection proof (on `message.selection_proof`) and the outer
+    /// aggregator signature (on `signature`).
+    ///
     /// `MAX_VALIDATORS_PER_COMMITTEE = 2048` for both mainnet and minimal.
-    fn validate_aggregate_and_proof(&self, msg: &AggregateAndProof<2048>) -> GossipVerdict;
+    fn validate_aggregate_and_proof(&self, msg: &SignedAggregateAndProof<2048>) -> GossipVerdict;
 
     /// Validate a `voluntary_exit` message.
     fn validate_voluntary_exit(&self, exit: &SignedVoluntaryExit) -> GossipVerdict;
@@ -339,7 +343,7 @@ where
         (**self).validate_attestation(subnet, att)
     }
 
-    fn validate_aggregate_and_proof(&self, msg: &AggregateAndProof<2048>) -> GossipVerdict {
+    fn validate_aggregate_and_proof(&self, msg: &SignedAggregateAndProof<2048>) -> GossipVerdict {
         (**self).validate_aggregate_and_proof(msg)
     }
 
