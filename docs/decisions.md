@@ -2743,3 +2743,131 @@ cache holds `peer_id`, `enr`, `listen_addrs`, `discovery_addrs`, and
 `NetworkHandle::metadata_ref()` accessor exposes the live metadata `ArcSwap`
 clone so the `node/identity` handler can read the current metadata sequence
 number without a stale snapshot.
+
+## M-Storage
+
+**Status of this section**: PROPOSED (to be finalized at the M-Storage
+wrap-up phase after the restart-recovery + replay-correctness gates).
+Plan: `docs/storage-plan.md`. Motivation: an M7 code review found the live
+import path (`crates/pharos-node/src/import.rs:import_block`) persists nothing
+to RocksDB — only startup and checkpoint-sync write to disk — so blocks
+imported after startup are invisible to `GET /eth/v2/beacon/blocks/{id}` and
+do not survive a restart.
+
+### D-persist-in-import-core — persist at the tail of `import_block`, after the lock drops
+
+**Status**: Proposed.
+
+The unconditional block + slot-index + `state-summary` + fork-choice-snapshot
+write lives at the tail of `import_block`, the single convergence point for the
+ingestion, backfill, and lookup producers. It is issued in a SEPARATE
+`spawn_blocking` worker that runs AFTER the `on_block` closure returns (so the
+fork-choice WRITE guard is already dropped) and takes only a `fc.read()` guard
+to snapshot the cursors — mirroring the LC-snapshot precedent at
+`block_ingestion.rs:277-298`. The DB write is NEVER inside the `on_block`
+closure: a per-slot disk write under the write lock would stall every
+fork-choice reader (`get_head`, gossip validators, the Beacon API, the SSE
+adapter). The persist worker is `.await`-ed before the `HeadChange` is returned,
+so a head is never published referencing an unpersisted block, yet no await is
+added to the `on_block` critical section. The per-import batch ALWAYS includes
+`forkchoice = Some(snapshot)`; without it a restart after live imports would
+rehydrate from the stale checkpoint-sync snapshot and rewind the
+head/justified/finalized cursors.
+
+### D-epoch-boundary-state-cadence — store a full state only at epoch boundaries
+
+**Status**: Proposed.
+
+Store a full post-state only when `slot % SLOTS_PER_EPOCH == 0` (plus a single
+`head_state_root` metadata pointer row); intermediate states are reconstructed
+by replay. Bounds the per-epoch state-write cost to one SSZ encode rather than
+one per slot. The dominant cost is the validator-registry encode (tens of MB at
+mainnet scale); pinning it to epoch boundaries keeps the per-slot write budget
+to small rows only.
+
+### D-replay-on-read — regenerate intermediate states by load-nearest + replay
+
+**Status**: Proposed.
+
+An arbitrary historical state is served by loading the nearest stored
+epoch-boundary state (or cold restore point) at-or-below the target and
+replaying persisted blocks forward via `process_slots_fork` / `state_transition`
+(the existing STF primitives). Cold reads cost at most `restore-point-interval`
+block applies. This is the universal CL approach (Lighthouse/Prysm/Teku) and
+avoids storing a state per slot.
+
+### D-freezer-in-rocksdb — cold region is a CF set in the same RocksDB instance
+
+**Status**: Proposed.
+
+The cold/freezer region is a dedicated set of column families in the SAME
+RocksDB instance (`cold-blocks`, `cold-states` keyed by restore-point slot,
+`restore-points` index), not a separate file or flat-file format. Migration at
+finalization is a single atomic `WriteBatch` per step (copy-then-delete folded
+into one batch), reusing the existing `BlockTransition` atomic-write convention
+(`D-rocksdb`).
+
+### D-restore-point-interval — configurable coarse cold-state cadence
+
+**Status**: Proposed.
+
+Cold states are kept at a configurable restore-point cadence (a coarse multiple
+of `SLOTS_PER_EPOCH`, default every N epochs via `--restore-point-interval-epochs`),
+not at every finalized epoch boundary, trading replay length for cold-state
+count. At mainnet scale a `BeaconState` SSZ-encodes to ~50–200 MB, so the
+interval directly sets cold-DB growth (see `docs/storage-plan.md` write-budget
+appendix).
+
+### D-prune-behind-finalized — delete hot data below the finalized slot after migration
+
+**Status**: Proposed.
+
+After cold migration, hot blocks/states strictly below the finalized slot are
+deleted (the finalized boundary becomes the new hot anchor); orphaned
+(non-canonical, pre-finalization) blocks/states are pruned in the same pass.
+Orphan detection uses the authoritative persisted `slot_to_block_root` index (a
+root is canonical iff `slot_to_block_root[slot] == root`), NOT the in-memory
+`get_ancestor` walk, which is unreliable once blocks are evicted from the
+in-memory map. `latest_messages` and the other per-block fork-choice maps are
+pruned alongside `block_states` eviction.
+
+### D-schema-v3-migration — bump SCHEMA_VERSION 2→3, no in-place migration
+
+**Status**: Proposed.
+
+Bump `SCHEMA_VERSION` 2→3; opening a v2 DB returns `SchemaMismatch` and the
+operator resyncs from checkpoint — the same policy as the v1→v2 bump. No
+in-place data migration: the live node had no post-startup block/state
+persistence to preserve, so there is nothing to migrate. All schema-v3 CFs
+(including the Phase-3 cold CFs) are declared at first boot because RocksDB
+requires every CF at `open()` time.
+
+### D-state-diffs-deferred — full-SSZ per stored state; on-disk diffs out of scope
+
+**Status**: Proposed.
+
+On-disk state diffs (Lighthouse `hdiff`-style hierarchical layers) are
+explicitly out of scope for this milestone; each stored state is full SSZ.
+Structural sharing (the tree-backed `SszList`/`SszVector`) is exploited in RAM
+for cheap hot-state retention only. Revisit on-disk diffs as a dedicated perf
+milestone if cold-state volume warrants.
+
+### D-store-signed-block-only — persist the SignedBeaconBlock; derive header/block from it
+
+**Status**: Proposed.
+
+The canonical persisted block is the `SignedBeaconBlock` (already the `blocks`
+CF shape); the API derives both the unsigned header (with the REAL signature)
+and the full block from it. Fork-choice keeps its unsigned in-memory
+`BeaconBlock` copy unchanged. This fixes the v1 header endpoints that previously
+zeroed the signature (the signed block was dropped after import).
+
+### D-freezer-driver-off-head-watch — drive freezer/prune off the existing head watch
+
+**Status**: Proposed.
+
+The freezer/prune loop is driven by the existing
+`watch::Receiver<Option<HeadChange>>` (reading
+`fork_choice.read().finalized_checkpoint` on each head advance), mirroring the
+M7 `D-api-sse-broadcast` adapter pattern — no new channel or task-coordination
+primitive is introduced.
