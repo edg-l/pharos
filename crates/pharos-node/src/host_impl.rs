@@ -398,17 +398,24 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
 
     /// Validate a gossip `LightClientFinalityUpdate` per the full-node arm of
     /// `specs/altair/light-client/p2p-interface.md` (gossip topic
-    /// `light_client_finality_update`). Three IGNORE conditions apply:
+    /// `light_client_finality_update`). Spec-ordered IGNORE conditions:
     ///
     /// 1. No snapshot yet (LC snapshot store not yet populated).
     /// 2. `msg.finalized_header.beacon.slot` is not strictly greater than the
     ///    highest slot previously forwarded on this topic (monotonic guard).
-    /// 3. `tree_hash_root(msg) != tree_hash_root(local_snapshot)` — different
-    ///    finality update for this slot.
-    /// 4. Clock-window: `now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < due_ms`
+    /// 3. Clock-window: `now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < due_ms`
     ///    where `due_ms = slot_start_ms + slot_ms / INTERVALS_PER_SLOT`.
+    /// 4. `tree_hash_root(msg) != tree_hash_root(local_snapshot)` — different
+    ///    finality update for this slot (full-node arm).
     ///
     /// All conditions map to `[IGNORE]` (not `[REJECT]`) per the spec.
+    ///
+    /// Known deviation: the spec's monotonic rule allows forwarding a
+    /// same-slot update IF its `sync_aggregate` shows supermajority participation
+    /// and the previously forwarded one did not. We currently apply the strict
+    /// `incoming > prev` rule and drop the supermajority-upgrade case;
+    /// TODO(M4c-phase2): track previous update's supermajority bit. See
+    /// `p2p-interface.md:60-65`.
     ///
     /// See also `D-lc-gossip-validation-full-node-arm` (docs/decisions.md).
     fn validate_light_client_finality_update(
@@ -418,25 +425,22 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
         // Step 1 — snapshot lookup.
         let local = match self.light_client_finality_update() {
             Some(u) => u,
-            None => return GossipVerdict::Ignore(String::new()),
+            None => {
+                return GossipVerdict::Ignore("lc_finality: no local snapshot".into());
+            }
         };
 
         // Step 2 — monotonic forwarded-slot guard (load current high-water mark).
         let incoming = msg.finalized_header_slot();
         let mut prev = self.last_forwarded_finality_slot.load(Ordering::Relaxed);
         if incoming <= prev {
-            return GossipVerdict::Ignore(String::new());
+            return GossipVerdict::Ignore("lc_finality: non-monotonic slot".into());
         }
 
-        // Step 3 — snapshot equality.
-        if local.tree_hash_root() != msg.tree_hash_root() {
-            return GossipVerdict::Ignore(String::new());
-        }
-
-        // Step 4 — clock window.
+        // Step 3 — clock window (per spec, common condition before full-node arm).
         let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(d) => d.as_millis(),
-            Err(_) => return GossipVerdict::Ignore(String::new()),
+            Err(_) => return GossipVerdict::Ignore("lc_finality: clock unavailable".into()),
         };
         let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
         let signature_slot = msg.finality_signature_slot();
@@ -444,7 +448,12 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
         let slot_start_ms = genesis_ms + u128::from(signature_slot) * slot_ms;
         let due_ms = slot_start_ms + slot_ms / u128::from(INTERVALS_PER_SLOT);
         if now_ms + u128::from(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < due_ms {
-            return GossipVerdict::Ignore(String::new());
+            return GossipVerdict::Ignore("lc_finality: clock window not elapsed".into());
+        }
+
+        // Step 4 — snapshot equality (full-node arm).
+        if local.tree_hash_root() != msg.tree_hash_root() {
+            return GossipVerdict::Ignore("lc_finality: snapshot mismatch".into());
         }
 
         // Step 5 — commit CAS; retry loop if a concurrent thread advanced the slot.
@@ -458,7 +467,9 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
                 Ok(_) => return GossipVerdict::Accept,
                 Err(current) => {
                     if incoming <= current {
-                        return GossipVerdict::Ignore(String::new());
+                        return GossipVerdict::Ignore(
+                            "lc_finality: lost CAS race to higher slot".into(),
+                        );
                     }
                     prev = current;
                 }
@@ -473,8 +484,8 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
     /// 1. No snapshot yet.
     /// 2. `msg.attested_header.beacon.slot` is not strictly greater than the
     ///    highest slot previously forwarded on this topic.
-    /// 3. `tree_hash_root(msg) != tree_hash_root(local_snapshot)`.
-    /// 4. Clock-window: `now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < due_ms`.
+    /// 3. Clock-window: `now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < due_ms`.
+    /// 4. `tree_hash_root(msg) != tree_hash_root(local_snapshot)` (full-node arm).
     ///
     /// All conditions map to `[IGNORE]` per the spec.
     ///
@@ -486,25 +497,20 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
         // Step 1 — snapshot lookup.
         let local = match self.light_client_optimistic_update() {
             Some(u) => u,
-            None => return GossipVerdict::Ignore(String::new()),
+            None => return GossipVerdict::Ignore("lc_optimistic: no local snapshot".into()),
         };
 
         // Step 2 — monotonic forwarded-slot guard.
         let incoming = msg.optimistic_attested_slot();
         let mut prev = self.last_forwarded_optimistic_slot.load(Ordering::Relaxed);
         if incoming <= prev {
-            return GossipVerdict::Ignore(String::new());
+            return GossipVerdict::Ignore("lc_optimistic: non-monotonic slot".into());
         }
 
-        // Step 3 — snapshot equality.
-        if local.tree_hash_root() != msg.tree_hash_root() {
-            return GossipVerdict::Ignore(String::new());
-        }
-
-        // Step 4 — clock window.
+        // Step 3 — clock window (per spec, common condition before full-node arm).
         let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(d) => d.as_millis(),
-            Err(_) => return GossipVerdict::Ignore(String::new()),
+            Err(_) => return GossipVerdict::Ignore("lc_optimistic: clock unavailable".into()),
         };
         let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
         let signature_slot = msg.optimistic_signature_slot();
@@ -512,7 +518,12 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
         let slot_start_ms = genesis_ms + u128::from(signature_slot) * slot_ms;
         let due_ms = slot_start_ms + slot_ms / u128::from(INTERVALS_PER_SLOT);
         if now_ms + u128::from(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < due_ms {
-            return GossipVerdict::Ignore(String::new());
+            return GossipVerdict::Ignore("lc_optimistic: clock window not elapsed".into());
+        }
+
+        // Step 4 — snapshot equality (full-node arm).
+        if local.tree_hash_root() != msg.tree_hash_root() {
+            return GossipVerdict::Ignore("lc_optimistic: snapshot mismatch".into());
         }
 
         // Step 5 — commit CAS; retry loop if a concurrent thread advanced the slot.
@@ -526,7 +537,9 @@ impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
                 Ok(_) => return GossipVerdict::Accept,
                 Err(current) => {
                     if incoming <= current {
-                        return GossipVerdict::Ignore(String::new());
+                        return GossipVerdict::Ignore(
+                            "lc_optimistic: lost CAS race to higher slot".into(),
+                        );
                     }
                     prev = current;
                 }
