@@ -2746,7 +2746,7 @@ number without a stale snapshot.
 
 ## M-Storage
 
-**Status of this section**: PROPOSED (to be finalized at the M-Storage
+**Status of this section**: ACCEPTED (M-Storage closed 2026-06-01; Phases 0-5 landed, restart-across-split + replay + freezer-migration gates green).
 wrap-up phase after the restart-recovery + replay-correctness gates).
 Plan: `docs/storage-plan.md`. Motivation: an M7 code review found the live
 import path (`crates/pharos-node/src/import.rs:import_block`) persists nothing
@@ -2756,7 +2756,7 @@ do not survive a restart.
 
 ### D-persist-in-import-core — persist at the tail of `import_block`, after the lock drops
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 The unconditional block + slot-index + `state-summary` + fork-choice-snapshot
 write lives at the tail of `import_block`, the single convergence point for the
@@ -2776,7 +2776,7 @@ head/justified/finalized cursors.
 
 ### D-epoch-boundary-state-cadence — store a full state only at epoch boundaries
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 Store a full post-state only when `slot % SLOTS_PER_EPOCH == 0` (plus a single
 `head_state_root` metadata pointer row); intermediate states are reconstructed
@@ -2787,7 +2787,7 @@ to small rows only.
 
 ### D-replay-on-read — regenerate intermediate states by load-nearest + replay
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 An arbitrary historical state is served by loading the nearest stored
 epoch-boundary state (or cold restore point) at-or-below the target and
@@ -2798,7 +2798,7 @@ avoids storing a state per slot.
 
 ### D-freezer-in-rocksdb — cold region is a CF set in the same RocksDB instance
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 The cold/freezer region is a dedicated set of column families in the SAME
 RocksDB instance (`cold-blocks`, `cold-states` keyed by restore-point slot,
@@ -2809,7 +2809,7 @@ into one batch), reusing the existing `BlockTransition` atomic-write convention
 
 ### D-restore-point-interval — configurable coarse cold-state cadence
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 Cold states are kept at a configurable restore-point cadence (a coarse multiple
 of `SLOTS_PER_EPOCH`, default every N epochs via `--restore-point-interval-epochs`),
@@ -2820,7 +2820,7 @@ appendix).
 
 ### D-prune-behind-finalized — delete hot data below the finalized slot after migration
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 After cold migration, hot blocks/states strictly below the finalized slot are
 deleted (the finalized boundary becomes the new hot anchor); orphaned
@@ -2833,7 +2833,7 @@ pruned alongside `block_states` eviction.
 
 ### D-schema-v3-migration — bump SCHEMA_VERSION 2→3, no in-place migration
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 Bump `SCHEMA_VERSION` 2→3; opening a v2 DB returns `SchemaMismatch` and the
 operator resyncs from checkpoint — the same policy as the v1→v2 bump. No
@@ -2844,7 +2844,7 @@ requires every CF at `open()` time.
 
 ### D-state-diffs-deferred — full-SSZ per stored state; on-disk diffs out of scope
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 On-disk state diffs (Lighthouse `hdiff`-style hierarchical layers) are
 explicitly out of scope for this milestone; each stored state is full SSZ.
@@ -2854,7 +2854,7 @@ milestone if cold-state volume warrants.
 
 ### D-store-signed-block-only — persist the SignedBeaconBlock; derive header/block from it
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 The canonical persisted block is the `SignedBeaconBlock` (already the `blocks`
 CF shape); the API derives both the unsigned header (with the REAL signature)
@@ -2864,7 +2864,7 @@ zeroed the signature (the signed block was dropped after import).
 
 ### D-freezer-driver-off-head-watch — drive freezer/prune off the existing head watch
 
-**Status**: Proposed.
+**Status**: Accepted. **Date**: 2026-06-01.
 
 The freezer/prune loop is driven by the existing
 `watch::Receiver<Option<HeadChange>>` (reading
