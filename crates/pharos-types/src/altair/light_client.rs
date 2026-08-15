@@ -14,6 +14,24 @@ use crate::phase0::operations::BeaconBlockHeader;
 use crate::phase0::primitives::Slot;
 use pharos_utils::Bytes32;
 
+/// Generalized index of `finalized_checkpoint.root` within `BeaconState`.
+///
+/// `get_generalized_index(BeaconState, 'finalized_checkpoint', 'root')` = 105.
+/// Per `specs/altair/light-client/sync-protocol.md` (Constants table).
+pub const FINALIZED_ROOT_GINDEX: u64 = 105;
+
+/// Generalized index of `current_sync_committee` within `BeaconState`.
+///
+/// `get_generalized_index(BeaconState, 'current_sync_committee')` = 54.
+/// Per `specs/altair/light-client/sync-protocol.md` (Constants table).
+pub const CURRENT_SYNC_COMMITTEE_GINDEX: u64 = 54;
+
+/// Generalized index of `next_sync_committee` within `BeaconState`.
+///
+/// `get_generalized_index(BeaconState, 'next_sync_committee')` = 55.
+/// Per `specs/altair/light-client/sync-protocol.md` (Constants table).
+pub const NEXT_SYNC_COMMITTEE_GINDEX: u64 = 55;
+
 /// Branch length for `FinalityBranch`:
 /// `Vector[Bytes32, floorlog2(FINALIZED_ROOT_GINDEX)]`
 /// = `Vector[Bytes32, floorlog2(105)]` = `Vector[Bytes32, 6]`.
@@ -196,6 +214,30 @@ impl<const SYNC_COMMITTEE_SIZE: u64> Default for LightClientOptimisticUpdate<SYN
             signature_slot: Slot::default(),
         }
     }
+}
+
+// ── LightClientStore ──────────────────────────────────────────────────────────
+
+/// `LightClientStore` per `specs/altair/light-client/sync-protocol.md:157-170`.
+///
+/// Runtime store maintained by a light client; not SSZ-encoded on the wire.
+/// Generic over `SYNC_COMMITTEE_SIZE`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LightClientStore<const SYNC_COMMITTEE_SIZE: u64> {
+    /// `finalized_header: LightClientHeader`
+    pub finalized_header: LightClientHeader,
+    /// `current_sync_committee: SyncCommittee`
+    pub current_sync_committee: SyncCommittee<SYNC_COMMITTEE_SIZE>,
+    /// `next_sync_committee: SyncCommittee`
+    pub next_sync_committee: SyncCommittee<SYNC_COMMITTEE_SIZE>,
+    /// `best_valid_update: Optional[LightClientUpdate]`
+    pub best_valid_update: Option<LightClientUpdate<SYNC_COMMITTEE_SIZE>>,
+    /// `optimistic_header: LightClientHeader`
+    pub optimistic_header: LightClientHeader,
+    /// `previous_max_active_participants: uint64`
+    pub previous_max_active_participants: u64,
+    /// `current_max_active_participants: uint64`
+    pub current_max_active_participants: u64,
 }
 
 #[cfg(test)]

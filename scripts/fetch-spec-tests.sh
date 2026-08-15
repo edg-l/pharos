@@ -5,7 +5,7 @@
 #   ./scripts/fetch-spec-tests.sh
 #
 # Environment variables:
-#   SPEC_TESTS_TAG   Release tag to download (default: v1.6.1)
+#   SPEC_TESTS_TAG   Release tag to download (default: v1.7.0-alpha.8)
 #   PHAROS_SPEC_TESTS  Target directory (default: ~/.cache/pharos-spec-tests/)
 #
 # After this script completes, run:
@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-SPEC_TESTS_TAG="${SPEC_TESTS_TAG:-v1.6.1}"
+SPEC_TESTS_TAG="${SPEC_TESTS_TAG:-v1.7.0-alpha.8}"
 DEST="${PHAROS_SPEC_TESTS:-${HOME}/.cache/pharos-spec-tests}"
 
 BASE_URL="https://github.com/ethereum/consensus-specs/releases/download/${SPEC_TESTS_TAG}"

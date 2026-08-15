@@ -60,7 +60,6 @@ fn rewards_and_penalties_deterministic() {
     // Use the mainnet "almost_full_attestations" case — large validator set,
     // exercises all delta paths.
     let case_dir = root
-        .join("tests")
         .join("mainnet")
         .join("phase0")
         .join("epoch_processing")

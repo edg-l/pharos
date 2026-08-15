@@ -481,9 +481,13 @@ where
         .collect()
 }
 
-/// `is_in_inactivity_leak` per `specs/altair/beacon-chain.md`.
+/// `is_in_inactivity_leak` per `specs/phase0/beacon-chain.md:1578-1580`.
 ///
-/// True when the previous epoch's target balance is below 2/3 of total active.
+/// Inherited unchanged in Altair. True when the finality delay (previous epoch
+/// minus finalized checkpoint epoch) exceeds `MIN_EPOCHS_TO_INACTIVITY_PENALTY`.
+///
+/// `get_finality_delay(state) > MIN_EPOCHS_TO_INACTIVITY_PENALTY`
+/// where `get_finality_delay(state) = get_previous_epoch(state) - state.finalized_checkpoint.epoch`
 pub fn is_in_inactivity_leak<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
@@ -526,44 +530,10 @@ where
     } else {
         Epoch(current_epoch.0 - 1)
     };
-    let previous_target_indices = get_unslashed_participating_indices::<
-        SLOTS_PER_HISTORICAL_ROOT,
-        HISTORICAL_ROOTS_LIMIT,
-        ETH1_DATA_VOTES_LIMIT,
-        VALIDATOR_REGISTRY_LIMIT,
-        EPOCHS_PER_HISTORICAL_VECTOR,
-        EPOCHS_PER_SLASHINGS_VECTOR,
-        JUSTIFICATION_BITS_LENGTH,
-        SYNC_COMMITTEE_SIZE,
-        E,
-    >(state, TIMELY_TARGET_FLAG_INDEX, previous_epoch);
-
-    let previous_target_balance = get_total_balance_altair::<
-        SLOTS_PER_HISTORICAL_ROOT,
-        HISTORICAL_ROOTS_LIMIT,
-        ETH1_DATA_VOTES_LIMIT,
-        VALIDATOR_REGISTRY_LIMIT,
-        EPOCHS_PER_HISTORICAL_VECTOR,
-        EPOCHS_PER_SLASHINGS_VECTOR,
-        JUSTIFICATION_BITS_LENGTH,
-        SYNC_COMMITTEE_SIZE,
-        E,
-    >(state, &previous_target_indices);
-
-    let total_active = get_total_active_balance_altair::<
-        SLOTS_PER_HISTORICAL_ROOT,
-        HISTORICAL_ROOTS_LIMIT,
-        ETH1_DATA_VOTES_LIMIT,
-        VALIDATOR_REGISTRY_LIMIT,
-        EPOCHS_PER_HISTORICAL_VECTOR,
-        EPOCHS_PER_SLASHINGS_VECTOR,
-        JUSTIFICATION_BITS_LENGTH,
-        SYNC_COMMITTEE_SIZE,
-        E,
-    >(state);
-
-    // leak when previous_target_balance * 3 < total_active * 2
-    previous_target_balance.0 * 3 < total_active.0 * 2
+    let finality_delay = previous_epoch
+        .0
+        .saturating_sub(state.finalized_checkpoint.epoch.0);
+    finality_delay > E::MIN_EPOCHS_TO_INACTIVITY_PENALTY
 }
 
 // ── Altair-local balance helpers ──────────────────────────────────────────────

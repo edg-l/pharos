@@ -66,7 +66,7 @@ where
     >,
     BLSPubkey: Default + Clone,
 {
-    if target_slot <= state.slot {
+    if target_slot < state.slot {
         return Err(StateTransitionError::TargetSlotNotAfterCurrent {
             current: state.slot,
             target: target_slot,
@@ -415,6 +415,147 @@ fn compute_signing_root_altair<T: TreeHash>(
         domain,
     }
     .tree_hash_root()
+}
+
+// ── AltairJaFDispatch trait ───────────────────────────────────────────────────
+//
+// Mirrors `AltairDispatch` but for `process_justification_and_finalization`.
+// Needed by `compute_pulled_up_tip` in `pharos-fork-choice`, which must call
+// the altair version of J&F on altair states (the phase0 version panics because
+// it writes through `BeaconStateWrite` which guards against altair states).
+
+/// Dispatch trait for `process_justification_and_finalization` on altair states.
+///
+/// Implemented via blanket impl on `altair::BeaconState<...>`. Allows
+/// code generic over `E: EthSpec` to call the altair J&F routine through
+/// the opaque `E::AltairBeaconState` associated type.
+pub trait AltairJaFDispatch<E: EthSpec>: Sized {
+    /// Run `process_justification_and_finalization` on `self` (in place).
+    fn process_jaf(&mut self) -> Result<(), EpochProcessingError>;
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    E,
+> AltairJaFDispatch<E>
+    for BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >
+where
+    E: EthSpec<
+        AltairBeaconState = BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+        >,
+    >,
+{
+    fn process_jaf(&mut self) -> Result<(), EpochProcessingError> {
+        crate::altair::epoch::process_justification_and_finalization::<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            E,
+        >(self)
+    }
+}
+
+// ── AltairProcessSlotsDispatch trait ─────────────────────────────────────────
+//
+// Mirrors `AltairJaFDispatch` but for `process_slots`.
+// Needed by `update_proposer_boost_root` and `store_target_checkpoint_state`
+// in `pharos-fork-choice`, which must call the altair version of `process_slots`
+// on altair states (the phase0 version panics via `BeaconStateWrite` guards).
+
+/// Dispatch trait for `process_slots` on altair states.
+///
+/// Implemented via blanket impl on `altair::BeaconState<...>`. Allows
+/// code generic over `E: EthSpec` to call the altair `process_slots` through
+/// the opaque `E::AltairBeaconState` associated type.
+pub trait AltairProcessSlotsDispatch<E: EthSpec>: Sized {
+    /// Advance `self` to `target_slot` (altair `process_slots`).
+    fn process_slots_altair(
+        &mut self,
+        target_slot: pharos_types::phase0::Slot,
+    ) -> Result<(), StateTransitionError>;
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    E,
+> AltairProcessSlotsDispatch<E>
+    for BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >
+where
+    E: EthSpec<
+        AltairBeaconState = BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+        >,
+    >,
+    BLSPubkey: Default + Clone,
+{
+    fn process_slots_altair(
+        &mut self,
+        target_slot: pharos_types::phase0::Slot,
+    ) -> Result<(), StateTransitionError> {
+        process_slots_altair::<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            E,
+        >(self, target_slot)
+    }
 }
 
 // ── AltairDispatch trait ──────────────────────────────────────────────────────

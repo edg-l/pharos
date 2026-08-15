@@ -20,7 +20,7 @@ pub mod altair;
 pub mod error;
 pub mod phase0;
 
-pub use altair::state_transition::AltairDispatch;
+pub use altair::state_transition::{AltairDispatch, AltairJaFDispatch, AltairProcessSlotsDispatch};
 pub use phase0::block::process_block;
 pub use phase0::epoch::justification_and_finalization::process_justification_and_finalization;
 pub use phase0::epoch::process_epoch;
@@ -170,4 +170,59 @@ where
     }
 
     Ok(())
+}
+
+/// Fork-aware `process_justification_and_finalization`.
+///
+/// Dispatches to the phase0 or altair implementation depending on the fork
+/// variant of `state`.  Called from `pharos_fork_choice::compute_pulled_up_tip`
+/// which holds a fork-enum `BeaconState` that may be either variant.
+pub fn process_justification_and_finalization_fork<E: EthSpec>(
+    state: &mut E::BeaconState,
+) -> Result<(), EpochProcessingError>
+where
+    E::BeaconState: phase0::state_write::BeaconStateWrite,
+    E::AltairBeaconState: AltairJaFDispatch<E>,
+    E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+        >,
+{
+    use pharos_types::views::ForkVariant;
+    match state.fork_variant() {
+        ForkVariant::Phase0 => process_justification_and_finalization::<E>(state),
+        ForkVariant::Altair => {
+            let mut inner = E::into_altair_state(state.clone()).expect("fork_variant is Altair");
+            inner.process_jaf()?;
+            *state = E::altair_into_state(inner);
+            Ok(())
+        }
+    }
+}
+
+/// Fork-aware `process_slots`.
+///
+/// Dispatches to the phase0 or altair implementation depending on the fork
+/// variant of `state`.  Called from `pharos_fork_choice` helpers that advance
+/// an opaque fork-enum `BeaconState` by one or more slots.
+pub fn process_slots_fork<E: EthSpec>(
+    state: &mut E::BeaconState,
+    target_slot: pharos_types::phase0::Slot,
+) -> Result<(), StateTransitionError>
+where
+    E::BeaconState: phase0::state_write::BeaconStateWrite + TreeHash,
+    E::AltairBeaconState: AltairProcessSlotsDispatch<E>,
+    E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+        >,
+{
+    use pharos_types::views::ForkVariant;
+    match state.fork_variant() {
+        ForkVariant::Phase0 => process_slots::<E>(state, target_slot),
+        ForkVariant::Altair => {
+            let mut inner = E::into_altair_state(state.clone()).expect("fork_variant is Altair");
+            inner.process_slots_altair(target_slot)?;
+            *state = E::altair_into_state(inner);
+            Ok(())
+        }
+    }
 }

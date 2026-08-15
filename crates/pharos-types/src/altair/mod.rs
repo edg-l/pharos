@@ -25,12 +25,13 @@ pub use constants::{
     ParticipationFlags, TIMELY_HEAD_FLAG_INDEX, TIMELY_SOURCE_FLAG_INDEX, TIMELY_TARGET_FLAG_INDEX,
 };
 pub use light_client::{
-    LightClientBootstrap, LightClientFinalityUpdate, LightClientHeader,
-    LightClientOptimisticUpdate, LightClientUpdate,
+    CURRENT_SYNC_COMMITTEE_GINDEX, FINALIZED_ROOT_GINDEX, LightClientBootstrap,
+    LightClientFinalityUpdate, LightClientHeader, LightClientOptimisticUpdate, LightClientStore,
+    LightClientUpdate, NEXT_SYNC_COMMITTEE_GINDEX,
 };
 pub use operations::{
-    ContributionAndProof, SignedContributionAndProof, SyncAggregate, SyncCommittee,
-    SyncCommitteeContribution, SyncCommitteeMessage,
+    ContributionAndProof, SignedContributionAndProof, SyncAggregate, SyncAggregatorSelectionData,
+    SyncCommittee, SyncCommitteeContribution, SyncCommitteeMessage,
 };
 pub use state::BeaconState;
 
@@ -131,6 +132,9 @@ pub type MainnetLightClientFinalityUpdate = LightClientFinalityUpdate<512>;
 /// Mainnet altair `LightClientOptimisticUpdate`.
 pub type MainnetLightClientOptimisticUpdate = LightClientOptimisticUpdate<512>;
 
+/// Mainnet altair `LightClientStore`.
+pub type MainnetLightClientStore = LightClientStore<512>;
+
 // ── Minimal type aliases ───────────────────────────────────────────────────────
 
 /// Minimal altair `BeaconState`.
@@ -211,3 +215,6 @@ pub type MinimalLightClientFinalityUpdate = LightClientFinalityUpdate<32>;
 
 /// Minimal altair `LightClientOptimisticUpdate`.
 pub type MinimalLightClientOptimisticUpdate = LightClientOptimisticUpdate<32>;
+
+/// Minimal altair `LightClientStore`.
+pub type MinimalLightClientStore = LightClientStore<32>;

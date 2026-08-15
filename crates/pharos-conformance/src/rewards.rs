@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use pharos_ssz::{Decode, Encode};
+use pharos_ssz::{Decode, Encode, SszList};
 use pharos_stf::phase0::{
     BeaconStateWrite,
     epoch::{
@@ -29,8 +29,11 @@ use pharos_types::{
     phase0::{Attestation, Deltas},
     views::BeaconBlockBodyView,
 };
+use pharos_utils::Gwei;
 
-use crate::fixture_walker::{WalkOpts, load_phase0_state, load_ssz_snappy, walk_category};
+use crate::fixture_walker::{
+    WalkOpts, load_altair_state, load_phase0_state, load_ssz_snappy, walk_category,
+};
 use crate::fs_util::dir_name;
 
 /// Result tally for a single rewards preset run.
@@ -166,6 +169,200 @@ where
     );
 
     CaseResult::Pass
+}
+
+// ── Altair entry points ───────────────────────────────────────────────────────
+
+/// Run all altair rewards sub-categories for the mainnet preset.
+pub fn run_rewards_altair_mainnet(root: &Path) -> RewardsResult {
+    let mut total = RewardsResult::new();
+    for sub in ["basic", "leak", "random"] {
+        total.merge(run_altair_rewards_sub_mainnet(root, sub));
+    }
+    total
+}
+
+/// Run all altair rewards sub-categories for the minimal preset.
+pub fn run_rewards_altair_minimal(root: &Path) -> RewardsResult {
+    let mut total = RewardsResult::new();
+    for sub in ["basic", "leak", "random"] {
+        total.merge(run_altair_rewards_sub_minimal(root, sub));
+    }
+    total
+}
+
+fn run_altair_rewards_sub_mainnet(root: &Path, sub: &str) -> RewardsResult {
+    use pharos_stf::altair::helpers::{get_flag_index_deltas, get_inactivity_penalty_deltas};
+    use pharos_types::{MainnetEthSpec as E, altair::MainnetBeaconState};
+
+    let mut out = RewardsResult::new();
+    for (case_dir, _meta) in walk_category(
+        root,
+        "mainnet",
+        "altair",
+        "rewards",
+        Some(sub),
+        WalkOpts {
+            meta_required: false,
+            inner_dir: Some("pyspec_tests"),
+        },
+    ) {
+        let case_name = format!("altair/rewards/{sub}/mainnet/{}", dir_name(&case_dir));
+        let result = run_altair_rewards_case_mainnet::<E, MainnetBeaconState>(
+            &case_dir,
+            &case_name,
+            |s, fi| {
+                get_flag_index_deltas::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(s, fi)
+            },
+            |s| {
+                get_inactivity_penalty_deltas::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(s)
+            },
+        );
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_altair_rewards_sub_minimal(root: &Path, sub: &str) -> RewardsResult {
+    use pharos_stf::altair::helpers::{get_flag_index_deltas, get_inactivity_penalty_deltas};
+    use pharos_types::{MinimalEthSpec as E, altair::MinimalBeaconState};
+
+    let mut out = RewardsResult::new();
+    for (case_dir, _meta) in walk_category(
+        root,
+        "minimal",
+        "altair",
+        "rewards",
+        Some(sub),
+        WalkOpts {
+            meta_required: false,
+            inner_dir: Some("pyspec_tests"),
+        },
+    ) {
+        let case_name = format!("altair/rewards/{sub}/minimal/{}", dir_name(&case_dir));
+        let result = run_altair_rewards_case_mainnet::<E, MinimalBeaconState>(
+            &case_dir,
+            &case_name,
+            |s, fi| {
+                get_flag_index_deltas::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                    s, fi,
+                )
+            },
+            |s| {
+                get_inactivity_penalty_deltas::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(s)
+            },
+        );
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_altair_rewards_case_mainnet<E, S>(
+    case_dir: &Path,
+    case_name: &str,
+    get_flag_deltas: impl Fn(&S, usize) -> (Vec<Gwei>, Vec<Gwei>),
+    get_inactivity_deltas: impl Fn(&S) -> (Vec<Gwei>, Vec<Gwei>),
+) -> CaseResult
+where
+    E: EthSpec<AltairBeaconState = S>,
+    S: pharos_ssz::Decode,
+{
+    let pre = match load_altair_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let pre_inner = match E::into_altair_state(pre) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not altair state")),
+    };
+
+    macro_rules! check_flag_deltas {
+        ($flag_index:expr, $file:literal, $flag_name:literal) => {{
+            let (rewards, penalties) = get_flag_deltas(&pre_inner, $flag_index);
+            let actual = make_deltas(rewards, penalties);
+            let expected = match load_ssz_snappy::<Deltas<1_099_511_627_776u64>>(case_dir, $file) {
+                Ok(d) => d,
+                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+            };
+            if actual.as_ssz_bytes() != expected.as_ssz_bytes() {
+                return CaseResult::Fail(format!("{case_name}: {} mismatch", $flag_name));
+            }
+        }};
+    }
+
+    // SOURCE_FLAG_INDEX = 0, TARGET_FLAG_INDEX = 1, HEAD_FLAG_INDEX = 2
+    check_flag_deltas!(0, "source_deltas.ssz_snappy", "source_deltas");
+    check_flag_deltas!(1, "target_deltas.ssz_snappy", "target_deltas");
+    check_flag_deltas!(2, "head_deltas.ssz_snappy", "head_deltas");
+
+    // Inactivity penalty deltas.
+    let (rewards, penalties) = get_inactivity_deltas(&pre_inner);
+    let actual_inactivity = make_deltas(rewards, penalties);
+    let expected_inactivity = match load_ssz_snappy::<Deltas<1_099_511_627_776u64>>(
+        case_dir,
+        "inactivity_penalty_deltas.ssz_snappy",
+    ) {
+        Ok(d) => d,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    if actual_inactivity.as_ssz_bytes() != expected_inactivity.as_ssz_bytes() {
+        return CaseResult::Fail(format!("{case_name}: inactivity_penalty_deltas mismatch"));
+    }
+
+    CaseResult::Pass
+}
+
+/// Pack `(Vec<Gwei>, Vec<Gwei>)` into `Deltas<VALIDATOR_REGISTRY_LIMIT>` for comparison.
+fn make_deltas(rewards: Vec<Gwei>, penalties: Vec<Gwei>) -> Deltas<1_099_511_627_776u64> {
+    Deltas {
+        rewards: SszList::from_vec(rewards)
+            .expect("rewards vec length exceeds VALIDATOR_REGISTRY_LIMIT"),
+        penalties: SszList::from_vec(penalties)
+            .expect("penalties vec length exceeds VALIDATOR_REGISTRY_LIMIT"),
+    }
 }
 
 // ── Internal result type ──────────────────────────────────────────────────────

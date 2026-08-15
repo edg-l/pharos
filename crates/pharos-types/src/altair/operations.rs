@@ -58,6 +58,19 @@ where
     }
 }
 
+// ── SyncAggregatorSelectionData ───────────────────────────────────────────────
+
+/// `SyncAggregatorSelectionData` per `specs/altair/validator.md:134-136`.
+///
+/// Used to determine if a validator is a sync aggregator.
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct SyncAggregatorSelectionData {
+    /// `slot: Slot` — `specs/altair/validator.md:135`.
+    pub slot: Slot,
+    /// `subcommittee_index: uint64` — `specs/altair/validator.md:136`.
+    pub subcommittee_index: u64,
+}
+
 // ── SyncCommitteeMessage ──────────────────────────────────────────────────────
 
 /// `SyncCommitteeMessage` per `specs/altair/validator.md:96-101`.

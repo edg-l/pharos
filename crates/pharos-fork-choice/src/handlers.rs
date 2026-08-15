@@ -70,12 +70,13 @@ pub fn compute_pulled_up_tip<E: EthSpec>(
 ) -> Result<(), ForkChoiceError>
 where
     E::BeaconState: BeaconStateWrite + Clone,
+    E::AltairBeaconState: pharos_stf::AltairJaFDispatch<E>,
     E::BeaconBlock: BeaconBlockView,
     E::Phase0BeaconBlockBody:
         BeaconBlockBodyView<Attestation = pharos_types::phase0::Attestation<2048>>,
 {
     use pharos_stf::phase0::accessors::compute_epoch_at_slot;
-    use pharos_stf::process_justification_and_finalization;
+    use pharos_stf::process_justification_and_finalization_fork;
 
     let mut state = store
         .block_states
@@ -86,7 +87,9 @@ where
     // `process_justification_and_finalization` is called on the clone to
     // compute the unrealized checkpoints.  Per the spec: "Pull up the
     // post-state of the block to the next epoch boundary".
-    process_justification_and_finalization::<E>(&mut state)?;
+    // Dispatches to the phase0 or altair implementation based on the state's
+    // fork variant.
+    process_justification_and_finalization_fork::<E>(&mut state)?;
 
     let unrealized_justified = state.current_justified_checkpoint().clone();
     let unrealized_finalized = state.finalized_checkpoint().clone();
@@ -172,11 +175,12 @@ fn update_proposer_boost_root<E: EthSpec>(store: &mut Store<E>, root: Root)
 where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateWrite + Clone,
+    E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use crate::get_head::get_head;
     use pharos_stf::phase0::accessors::get_beacon_proposer_index;
-    use pharos_stf::process_slots;
+    use pharos_stf::process_slots_fork;
 
     let is_first_block = store.proposer_boost_root == Root::default();
     let is_timely = store.block_timeliness.get(&root).copied().unwrap_or(false);
@@ -189,7 +193,7 @@ where
             None => return,
         };
         let slot = get_current_slot(store);
-        if head_state.slot() < slot && process_slots::<E>(&mut head_state, slot).is_err() {
+        if head_state.slot() < slot && process_slots_fork::<E>(&mut head_state, slot).is_err() {
             return;
         }
 
@@ -197,7 +201,9 @@ where
             Some(b) => b,
             None => return,
         };
-        if block.proposer_index() == get_beacon_proposer_index::<E>(&head_state) {
+        let block_proposer = block.proposer_index();
+        let computed_proposer = get_beacon_proposer_index::<E>(&head_state);
+        if block_proposer == computed_proposer {
             store.proposer_boost_root = root;
         }
     }
@@ -216,9 +222,11 @@ pub fn on_block<E: EthSpec>(
 where
     E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
     E::BeaconState: BeaconStateWrite + Clone,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
     E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
     E::Phase0BeaconBlockBody: TreeHash
         + BeaconBlockBodyView<
@@ -226,11 +234,25 @@ where
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = pharos_types::phase0::Deposit<33>,
         >,
+    E::AltairBeaconBlock: BeaconBlockView + Clone,
+    E::AltairSignedBeaconBlock: SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
 {
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
     use pharos_stf::state_transition;
 
-    let block = signed_block.message();
+    // Extract the inner `E::BeaconBlock` (fork-enum) without calling
+    // `signed_block.message()`, which panics on the fork-enum
+    // (it cannot return a reference to an owned intermediate value).
+    // Instead, match on the phase0 / altair inner variants and promote.
+    let block: E::BeaconBlock = if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
+        E::phase0_into_block(inner.message().clone())
+    } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
+        E::altair_into_block(inner.message().clone())
+    } else {
+        return Err(ForkChoiceError::InvalidBlock {
+            reason: "unrecognised SignedBeaconBlock fork variant".to_owned(),
+        });
+    };
 
     // Parent block must be known.
     let pre_state = store
@@ -409,10 +431,11 @@ pub fn store_target_checkpoint_state<E: EthSpec>(
 ) -> Result<(), ForkChoiceError>
 where
     E::BeaconState: BeaconStateWrite + Clone,
+    E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
-    use pharos_stf::process_slots;
+    use pharos_stf::process_slots_fork;
 
     if store.checkpoint_states.contains_key(target) {
         return Ok(());
@@ -424,7 +447,7 @@ where
 
     let target_slot = compute_start_slot_at_epoch(target.epoch, E::SLOTS_PER_EPOCH);
     if base_state.slot() < target_slot {
-        process_slots::<E>(&mut base_state, target_slot)?;
+        process_slots_fork::<E>(&mut base_state, target_slot)?;
     }
     store.checkpoint_states.insert(target.clone(), base_state);
 
@@ -474,6 +497,7 @@ pub fn on_attestation<E: EthSpec>(
 where
     E::BeaconBlock: BeaconBlockView,
     E::BeaconState: BeaconStateWrite + Clone,
+    E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use pharos_stf::phase0::accessors::get_attesting_indices;

@@ -53,7 +53,7 @@ where
     E::Phase0BeaconBlockBody:
         BeaconBlockBodyView<Attestation = pharos_types::phase0::Attestation<2048>>,
 {
-    if target_slot <= state.slot() {
+    if target_slot < state.slot() {
         return Err(StateTransitionError::TargetSlotNotAfterCurrent {
             current: state.slot(),
             target: target_slot,

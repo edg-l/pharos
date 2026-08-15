@@ -14,6 +14,23 @@
 use std::path::Path;
 
 use pharos_ssz::{Decode, Encode, TreeHash};
+use pharos_types::altair::{
+    ContributionAndProof, LightClientBootstrap, LightClientFinalityUpdate, LightClientHeader,
+    LightClientOptimisticUpdate, LightClientUpdate, SignedContributionAndProof, SyncAggregate,
+    SyncAggregatorSelectionData, SyncCommittee, SyncCommitteeContribution, SyncCommitteeMessage,
+};
+use pharos_types::altair::{
+    MainnetBeaconBlock as AltairMainnetBeaconBlock,
+    MainnetBeaconBlockBody as AltairMainnetBeaconBlockBody,
+    MainnetBeaconState as AltairMainnetBeaconState,
+    MainnetSignedBeaconBlock as AltairMainnetSignedBeaconBlock,
+};
+use pharos_types::altair::{
+    MinimalBeaconBlock as AltairMinimalBeaconBlock,
+    MinimalBeaconBlockBody as AltairMinimalBeaconBlockBody,
+    MinimalBeaconState as AltairMinimalBeaconState,
+    MinimalSignedBeaconBlock as AltairMinimalSignedBeaconBlock,
+};
 use pharos_types::phase0::{
     AggregateAndProof, AttestationData, BeaconBlockHeader, Checkpoint, DepositData, DepositMessage,
     Eth1Block, Eth1Data, Fork, ForkData, ProposerSlashing, SignedAggregateAndProof,
@@ -290,6 +307,276 @@ fn dispatch_minimal(
         }
         _ => {
             eprintln!("skipping minimal/ssz_static/{type_name}: not in dispatch table");
+            Ok(false)
+        }
+    }
+}
+
+// ── Altair ssz_static runner ──────────────────────────────────────────────────
+
+/// Run all altair ssz_static tests for a given preset.
+///
+/// `preset_dir`: the top-level directory for this preset (e.g. `<root>/mainnet`).
+pub fn run_altair_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResult {
+    let base = preset_dir.join("altair/ssz_static");
+    if !base.is_dir() {
+        return StaticResult {
+            pass: 0,
+            fail: 0,
+            skip: 0,
+            failures: vec![],
+        };
+    }
+
+    let mut pass = 0u64;
+    let mut fail = 0u64;
+    let mut skip = 0u64;
+    let mut failures = Vec::new();
+
+    let type_dirs = read_dir_sorted(&base).unwrap_or_default();
+
+    for type_dir in type_dirs {
+        let type_name = dir_name(&type_dir);
+        let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
+        for suite_dir in suite_dirs {
+            let suite_name = dir_name(&suite_dir);
+            let case_dirs = read_dir_sorted(&suite_dir).unwrap_or_default();
+            for case_dir in case_dirs {
+                let case_name = dir_name(&case_dir);
+                let case_label =
+                    format!("{preset_name}/altair/ssz_static/{type_name}/{suite_name}/{case_name}");
+
+                let result =
+                    run_altair_static_case(preset_name, &type_name, &case_dir, &case_label);
+                match result {
+                    Ok(true) => pass += 1,
+                    Ok(false) => skip += 1,
+                    Err(e) => {
+                        fail += 1;
+                        failures.push(format!("`{case_label}`: {e}"));
+                    }
+                }
+            }
+        }
+    }
+
+    StaticResult {
+        pass,
+        fail,
+        skip,
+        failures,
+    }
+}
+
+fn run_altair_static_case(
+    preset: &str,
+    type_name: &str,
+    case_dir: &Path,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    let ssz_snappy = case_dir.join("serialized.ssz_snappy");
+    if !ssz_snappy.exists() {
+        return Ok(false);
+    }
+    let roots_yaml = case_dir.join("roots.yaml");
+    if !roots_yaml.exists() {
+        return Ok(false);
+    }
+
+    let compressed = std::fs::read(&ssz_snappy)?;
+    let ssz_bytes = decompress_raw(&compressed)?;
+    let expected_root = read_root_from_file(&roots_yaml)?;
+
+    dispatch_altair(preset, type_name, &ssz_bytes, &expected_root, case_label)
+}
+
+fn dispatch_altair(
+    preset: &str,
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    match preset {
+        "mainnet" => dispatch_altair_mainnet(type_name, ssz_bytes, expected_root, case_label),
+        "minimal" => dispatch_altair_minimal(type_name, ssz_bytes, expected_root, case_label),
+        _ => Ok(false),
+    }
+}
+
+fn dispatch_altair_mainnet(
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    match type_name {
+        // Phase0-inherited preset-independent types
+        "Fork" => check::<Fork>(ssz_bytes, expected_root, case_label),
+        "ForkData" => check::<ForkData>(ssz_bytes, expected_root, case_label),
+        "Checkpoint" => check::<Checkpoint>(ssz_bytes, expected_root, case_label),
+        "Validator" => check::<Validator>(ssz_bytes, expected_root, case_label),
+        "AttestationData" => check::<AttestationData>(ssz_bytes, expected_root, case_label),
+        "Eth1Data" => check::<Eth1Data>(ssz_bytes, expected_root, case_label),
+        "DepositMessage" => check::<DepositMessage>(ssz_bytes, expected_root, case_label),
+        "DepositData" => check::<DepositData>(ssz_bytes, expected_root, case_label),
+        "BeaconBlockHeader" => check::<BeaconBlockHeader>(ssz_bytes, expected_root, case_label),
+        "SigningData" => check::<SigningData>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlockHeader" => {
+            check::<SignedBeaconBlockHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "ProposerSlashing" => check::<ProposerSlashing>(ssz_bytes, expected_root, case_label),
+        "VoluntaryExit" => check::<VoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "SignedVoluntaryExit" => check::<SignedVoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "Eth1Block" => check::<Eth1Block>(ssz_bytes, expected_root, case_label),
+        // Preset-specific phase0-inherited types (mainnet)
+        "HistoricalBatch" => check::<MainnetHistoricalBatch>(ssz_bytes, expected_root, case_label),
+        "IndexedAttestation" => {
+            check::<MainnetIndexedAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "PendingAttestation" => {
+            check::<MainnetPendingAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "AttesterSlashing" => {
+            check::<MainnetAttesterSlashing>(ssz_bytes, expected_root, case_label)
+        }
+        "Attestation" => check::<MainnetAttestation>(ssz_bytes, expected_root, case_label),
+        "Deposit" => check::<MainnetDeposit>(ssz_bytes, expected_root, case_label),
+        "AggregateAndProof" => {
+            check::<AggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedAggregateAndProof" => {
+            check::<SignedAggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        // Altair-specific types (mainnet, SYNC_COMMITTEE_SIZE=512, SYNC_SUBCOMMITTEE_SIZE=128)
+        "BeaconBlockBody" => {
+            check::<AltairMainnetBeaconBlockBody>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlock" => check::<AltairMainnetBeaconBlock>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlock" => {
+            check::<AltairMainnetSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconState" => check::<AltairMainnetBeaconState>(ssz_bytes, expected_root, case_label),
+        "SyncAggregate" => check::<SyncAggregate<512>>(ssz_bytes, expected_root, case_label),
+        "SyncCommittee" => check::<SyncCommittee<512>>(ssz_bytes, expected_root, case_label),
+        "SyncCommitteeMessage" => {
+            check::<SyncCommitteeMessage>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncAggregatorSelectionData" => {
+            check::<SyncAggregatorSelectionData>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommitteeContribution" => {
+            check::<SyncCommitteeContribution<128>>(ssz_bytes, expected_root, case_label)
+        }
+        "ContributionAndProof" => {
+            check::<ContributionAndProof<128>>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedContributionAndProof" => {
+            check::<SignedContributionAndProof<128>>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientHeader" => check::<LightClientHeader>(ssz_bytes, expected_root, case_label),
+        "LightClientBootstrap" => {
+            check::<LightClientBootstrap<512>>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientUpdate" => {
+            check::<LightClientUpdate<512>>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientFinalityUpdate" => {
+            check::<LightClientFinalityUpdate<512>>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientOptimisticUpdate" => {
+            check::<LightClientOptimisticUpdate<512>>(ssz_bytes, expected_root, case_label)
+        }
+        _ => {
+            eprintln!("skipping mainnet/altair/ssz_static/{type_name}: not in dispatch table");
+            Ok(false)
+        }
+    }
+}
+
+fn dispatch_altair_minimal(
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    match type_name {
+        // Phase0-inherited preset-independent types
+        "Fork" => check::<Fork>(ssz_bytes, expected_root, case_label),
+        "ForkData" => check::<ForkData>(ssz_bytes, expected_root, case_label),
+        "Checkpoint" => check::<Checkpoint>(ssz_bytes, expected_root, case_label),
+        "Validator" => check::<Validator>(ssz_bytes, expected_root, case_label),
+        "AttestationData" => check::<AttestationData>(ssz_bytes, expected_root, case_label),
+        "Eth1Data" => check::<Eth1Data>(ssz_bytes, expected_root, case_label),
+        "DepositMessage" => check::<DepositMessage>(ssz_bytes, expected_root, case_label),
+        "DepositData" => check::<DepositData>(ssz_bytes, expected_root, case_label),
+        "BeaconBlockHeader" => check::<BeaconBlockHeader>(ssz_bytes, expected_root, case_label),
+        "SigningData" => check::<SigningData>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlockHeader" => {
+            check::<SignedBeaconBlockHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "ProposerSlashing" => check::<ProposerSlashing>(ssz_bytes, expected_root, case_label),
+        "VoluntaryExit" => check::<VoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "SignedVoluntaryExit" => check::<SignedVoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "Eth1Block" => check::<Eth1Block>(ssz_bytes, expected_root, case_label),
+        // Preset-specific phase0-inherited types (minimal)
+        "HistoricalBatch" => check::<MinimalHistoricalBatch>(ssz_bytes, expected_root, case_label),
+        "IndexedAttestation" => {
+            check::<MinimalIndexedAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "PendingAttestation" => {
+            check::<MinimalPendingAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "AttesterSlashing" => {
+            check::<MinimalAttesterSlashing>(ssz_bytes, expected_root, case_label)
+        }
+        "Attestation" => check::<MinimalAttestation>(ssz_bytes, expected_root, case_label),
+        "Deposit" => check::<MinimalDeposit>(ssz_bytes, expected_root, case_label),
+        "AggregateAndProof" => {
+            check::<AggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedAggregateAndProof" => {
+            check::<SignedAggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        // Altair-specific types (minimal, SYNC_COMMITTEE_SIZE=32, SYNC_SUBCOMMITTEE_SIZE=8)
+        "BeaconBlockBody" => {
+            check::<AltairMinimalBeaconBlockBody>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlock" => check::<AltairMinimalBeaconBlock>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlock" => {
+            check::<AltairMinimalSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconState" => check::<AltairMinimalBeaconState>(ssz_bytes, expected_root, case_label),
+        "SyncAggregate" => check::<SyncAggregate<32>>(ssz_bytes, expected_root, case_label),
+        "SyncCommittee" => check::<SyncCommittee<32>>(ssz_bytes, expected_root, case_label),
+        "SyncCommitteeMessage" => {
+            check::<SyncCommitteeMessage>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncAggregatorSelectionData" => {
+            check::<SyncAggregatorSelectionData>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommitteeContribution" => {
+            check::<SyncCommitteeContribution<8>>(ssz_bytes, expected_root, case_label)
+        }
+        "ContributionAndProof" => {
+            check::<ContributionAndProof<8>>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedContributionAndProof" => {
+            check::<SignedContributionAndProof<8>>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientHeader" => check::<LightClientHeader>(ssz_bytes, expected_root, case_label),
+        "LightClientBootstrap" => {
+            check::<LightClientBootstrap<32>>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientUpdate" => check::<LightClientUpdate<32>>(ssz_bytes, expected_root, case_label),
+        "LightClientFinalityUpdate" => {
+            check::<LightClientFinalityUpdate<32>>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientOptimisticUpdate" => {
+            check::<LightClientOptimisticUpdate<32>>(ssz_bytes, expected_root, case_label)
+        }
+        _ => {
+            eprintln!("skipping minimal/altair/ssz_static/{type_name}: not in dispatch table");
             Ok(false)
         }
     }

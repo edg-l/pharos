@@ -370,7 +370,12 @@ where
 // Since these operations only touch the shared fields (which exist verbatim in
 // the altair state), we implement thin direct-field versions here.
 
-fn process_block_header_altair<
+/// `process_block_header` for Altair.
+///
+/// Exposed for the conformance harness (`altair/operations/block_header`).
+/// Logic is identical to the phase0 version; the function operates directly on
+/// the altair `BeaconState` fields.
+pub fn process_block_header_altair<
     const MAX_PROPOSER_SLASHINGS: u64,
     const MAX_ATTESTER_SLASHINGS: u64,
     const MAX_ATTESTATIONS: u64,

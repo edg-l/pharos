@@ -55,6 +55,10 @@ pub struct MetaYaml {
     ///
     /// Used by sanity/blocks, finality, and random fixtures.
     pub blocks_count: Option<u64>,
+    /// `fork_epoch: u64` — the epoch at which the fork transition occurs.
+    ///
+    /// Used by altair/transition fixtures.
+    pub fork_epoch: Option<u64>,
 }
 
 impl MetaYaml {
@@ -69,11 +73,13 @@ impl MetaYaml {
         let deposits_count = val.get("deposits_count").and_then(|v| v.as_u64());
 
         let blocks_count = val.get("blocks_count").and_then(|v| v.as_u64());
+        let fork_epoch = val.get("fork_epoch").and_then(|v| v.as_u64());
 
         Ok(MetaYaml {
             bls_setting,
             deposits_count,
             blocks_count,
+            fork_epoch,
         })
     }
 }
@@ -84,15 +90,15 @@ impl MetaYaml {
 ///
 /// Path structure (plain notation; angle brackets denote variable segments):
 ///
-/// `root/tests/preset/fork/category[/sub_category][/inner_dir]/case/`
+/// `root/preset/fork/category[/sub_category][/inner_dir]/case/`
 ///
 /// For categories with `opts.inner_dir = Some("pyspec_tests")` (default):
 ///
-/// `root/tests/minimal/phase0/genesis/initialization/pyspec_tests/case/`
+/// `root/minimal/phase0/genesis/initialization/pyspec_tests/case/`
 ///
 /// For shuffling (S4 exception, `opts.inner_dir = None`, `sub_category = Some("core/shuffle")`):
 ///
-/// `root/tests/minimal/phase0/shuffling/core/shuffle/case/`
+/// `root/minimal/phase0/shuffling/core/shuffle/case/`
 pub fn walk_category<'a>(
     root: &'a Path,
     preset: &'a str,
@@ -101,7 +107,7 @@ pub fn walk_category<'a>(
     sub_category: Option<&'a str>,
     opts: WalkOpts,
 ) -> impl Iterator<Item = (PathBuf, Option<MetaYaml>)> + 'a {
-    let mut base = root.join("tests").join(preset).join(fork).join(category);
+    let mut base = root.join(preset).join(fork).join(category);
 
     if let Some(sub) = sub_category {
         // sub_category may contain path separators (e.g. "core/shuffle").
@@ -211,6 +217,55 @@ where
 {
     let inner: E::Phase0BeaconState = load_ssz_snappy(dir, name)?;
     Ok(E::phase0_into_state(inner))
+}
+
+/// Load `pre.ssz_snappy` and `post.ssz_snappy` as altair `BeaconState`s, then
+/// wrap each in the fork-enum `E::BeaconState` via `E::altair_into_state`.
+///
+/// Altair fixture files contain raw altair SSZ without a fork-discriminant
+/// prefix. This helper decodes them as `E::AltairBeaconState` and promotes to
+/// the fork-enum so they can be passed to STF functions.
+pub fn load_pre_post_altair_state<E: EthSpec>(
+    dir: &Path,
+) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
+where
+    E::AltairBeaconState: Decode,
+{
+    let pre_inner: E::AltairBeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
+    let pre = E::altair_into_state(pre_inner);
+    let post = if dir.join("post.ssz_snappy").exists() {
+        let post_inner: E::AltairBeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
+        Some(E::altair_into_state(post_inner))
+    } else {
+        None
+    };
+    Ok((pre, post))
+}
+
+/// Load `pre.ssz_snappy` as an altair `BeaconState`, wrapped in the fork-enum.
+pub fn load_altair_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+where
+    E::AltairBeaconState: Decode,
+{
+    let inner: E::AltairBeaconState = load_ssz_snappy(dir, name)?;
+    Ok(E::altair_into_state(inner))
+}
+
+/// Decode a single `<name>.ssz_snappy` file as an altair `SignedBeaconBlock`,
+/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
+///
+/// Altair fixture block files contain raw altair SSZ without a fork-discriminant
+/// prefix. This helper decodes them as `E::AltairSignedBeaconBlock` and promotes
+/// to the fork-enum so they can be passed to STF functions.
+pub fn load_altair_signed_block<E: EthSpec>(
+    dir: &Path,
+    name: &str,
+) -> Result<E::SignedBeaconBlock, String>
+where
+    E::AltairSignedBeaconBlock: Decode,
+{
+    let inner: E::AltairSignedBeaconBlock = load_ssz_snappy(dir, name)?;
+    Ok(E::altair_into_signed_block(inner))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

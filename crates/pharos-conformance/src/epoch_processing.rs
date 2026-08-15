@@ -33,7 +33,9 @@ use pharos_types::{
     EthSpec, MainnetEthSpec, MinimalEthSpec, phase0::Attestation, views::BeaconBlockBodyView,
 };
 
-use crate::fixture_walker::{WalkOpts, load_pre_post_phase0_state, walk_category};
+use crate::fixture_walker::{
+    WalkOpts, load_pre_post_altair_state, load_pre_post_phase0_state, walk_category,
+};
 use crate::fs_util::dir_name;
 
 /// Result of running all epoch-processing tests for a single preset.
@@ -195,6 +197,350 @@ where
             } else {
                 CaseResult::Fail(format!(
                     "{case_name}: state mismatch after epoch sub-routine"
+                ))
+            }
+        }
+        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
+        (Err(_), None) => CaseResult::Pass,
+        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
+    }
+}
+
+// ── Altair epoch-processing dispatchers ───────────────────────────────────────
+
+/// Run all altair epoch-processing sub-categories for the mainnet preset.
+pub fn run_epoch_processing_altair_mainnet(root: &Path) -> EpochResult {
+    use pharos_stf::altair::epoch::{
+        process_effective_balance_updates as altair_eff_bal,
+        process_eth1_data_reset as altair_eth1_reset,
+        process_historical_roots_update as altair_hist_roots,
+        process_inactivity_updates as altair_inactivity,
+        process_justification_and_finalization as altair_jf,
+        process_participation_flag_updates as altair_participation_flags,
+        process_randao_mixes_reset as altair_randao, process_registry_updates as altair_registry,
+        process_rewards_and_penalties as altair_rewards, process_slashings as altair_slashings,
+        process_slashings_reset as altair_slash_reset,
+        process_sync_committee_updates as altair_sync_committee,
+    };
+    use pharos_types::{MainnetEthSpec as E, altair::MainnetBeaconState};
+
+    let mut total = EpochResult::new();
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "justification_and_finalization",
+        |s| {
+            altair_jf::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "inactivity_updates",
+        |s| {
+            altair_inactivity::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                s,
+            )
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "rewards_and_penalties",
+        |s| {
+            altair_rewards::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "registry_updates",
+        |s| {
+            altair_registry::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "slashings",
+        |s| {
+            altair_slashings::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "eth1_data_reset",
+        |s| {
+            altair_eth1_reset::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                s,
+            )
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "effective_balance_updates",
+        |s| {
+            altair_eff_bal::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "slashings_reset",
+        |s| {
+            altair_slash_reset::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                s,
+            )
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "randao_mixes_reset",
+        |s| {
+            altair_randao::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "historical_roots_update",
+        |s| {
+            altair_hist_roots::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                s,
+            )
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "participation_flag_updates",
+        |s| {
+            altair_participation_flags::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MainnetBeaconState, E, _>(root, "mainnet", "sync_committee_updates", |s| {
+        altair_sync_committee::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(s).map_err(|e| format!("{e}"))
+    }));
+    total
+}
+
+/// Run all altair epoch-processing sub-categories for the minimal preset.
+pub fn run_epoch_processing_altair_minimal(root: &Path) -> EpochResult {
+    use pharos_stf::altair::epoch::{
+        process_effective_balance_updates as altair_eff_bal,
+        process_eth1_data_reset as altair_eth1_reset,
+        process_historical_roots_update as altair_hist_roots,
+        process_inactivity_updates as altair_inactivity,
+        process_justification_and_finalization as altair_jf,
+        process_participation_flag_updates as altair_participation_flags,
+        process_randao_mixes_reset as altair_randao, process_registry_updates as altair_registry,
+        process_rewards_and_penalties as altair_rewards, process_slashings as altair_slashings,
+        process_slashings_reset as altair_slash_reset,
+        process_sync_committee_updates as altair_sync_committee,
+    };
+    use pharos_types::{MinimalEthSpec as E, altair::MinimalBeaconState};
+
+    let mut total = EpochResult::new();
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "justification_and_finalization",
+        |s| {
+            altair_jf::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "inactivity_updates",
+        |s| {
+            altair_inactivity::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "rewards_and_penalties",
+        |s| {
+            altair_rewards::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "registry_updates",
+        |s| {
+            altair_registry::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "slashings",
+        |s| {
+            altair_slashings::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "eth1_data_reset",
+        |s| {
+            altair_eth1_reset::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "effective_balance_updates",
+        |s| {
+            altair_eff_bal::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "slashings_reset",
+        |s| {
+            altair_slash_reset::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "randao_mixes_reset",
+        |s| {
+            altair_randao::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "historical_roots_update",
+        |s| {
+            altair_hist_roots::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "participation_flag_updates",
+        |s| {
+            altair_participation_flags::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_altair_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "sync_committee_updates",
+        |s| {
+            altair_sync_committee::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(s)
+                .map_err(|e| format!("{e}"))
+        },
+    ));
+    total
+}
+
+/// Walk an altair epoch sub-category and run each case with a concrete closure.
+///
+/// `S` is the concrete altair `BeaconState<...>` type for this preset.
+/// `E` is the `EthSpec` impl.
+/// `F` is the sub-routine closure: `FnMut(&mut S) -> Result<(), String>`.
+fn run_altair_sub<S, E, F>(root: &Path, preset: &str, sub: &str, mut apply: F) -> EpochResult
+where
+    S: pharos_ssz::Decode + pharos_ssz::Encode,
+    E: EthSpec<AltairBeaconState = S>,
+    F: FnMut(&mut S) -> Result<(), String>,
+{
+    let mut out = EpochResult::new();
+    for (case_dir, _meta) in walk_category(
+        root,
+        preset,
+        "altair",
+        "epoch_processing",
+        Some(sub),
+        epoch_walk_opts(),
+    ) {
+        let case_name = format!(
+            "altair/epoch_processing/{preset}/{sub}/{}",
+            dir_name(&case_dir)
+        );
+        let result = run_altair_epoch_case::<S, E, _>(&case_dir, &case_name, &mut apply);
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_altair_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &mut F) -> CaseResult
+where
+    S: pharos_ssz::Decode + pharos_ssz::Encode,
+    E: EthSpec<AltairBeaconState = S>,
+    F: FnMut(&mut S) -> Result<(), String>,
+{
+    let (mut pre, post) = match load_pre_post_altair_state::<E>(case_dir) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    // Unwrap from fork-enum to inner altair state.
+    let mut pre_inner = match E::into_altair_state(pre) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not altair state")),
+    };
+
+    let result = apply(&mut pre_inner);
+
+    // Rewrap for comparison.
+    pre = E::altair_into_state(pre_inner);
+
+    match (result, post) {
+        (Ok(()), Some(expected)) => {
+            if pre.as_ssz_bytes() == expected.as_ssz_bytes() {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!(
+                    "{case_name}: state mismatch after altair epoch sub-routine"
                 ))
             }
         }

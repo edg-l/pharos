@@ -89,6 +89,35 @@ pub fn run_genesis_minimal(root: &Path) -> GenesisResult {
     }
 }
 
+// ── Altair entry points ───────────────────────────────────────────────────────
+//
+// No altair genesis fixtures exist in the upstream consensus-spec-tests
+// (the genesis sub-category is phase0-only through at least v1.6.1).
+// These entry points are provided to satisfy the conformance table; they
+// walk the non-existent directories and return zero counts, which lets the
+// `run` dispatcher present them as "0 pass / 0 fail / 0 skip" (placeholder
+// semantics) rather than generating a compile error.
+
+/// Run altair genesis tests for the mainnet preset (no fixtures; returns zero counts).
+pub fn run_genesis_altair_mainnet(_root: &Path) -> GenesisResult {
+    GenesisResult {
+        pass: 0,
+        fail: 0,
+        skip: 0,
+        failures: Vec::new(),
+    }
+}
+
+/// Run altair genesis tests for the minimal preset (no fixtures; returns zero counts).
+pub fn run_genesis_altair_minimal(_root: &Path) -> GenesisResult {
+    GenesisResult {
+        pass: 0,
+        fail: 0,
+        skip: 0,
+        failures: Vec::new(),
+    }
+}
+
 // ── Case runners ─────────────────────────────────────────────────────────────
 
 #[allow(dead_code)]

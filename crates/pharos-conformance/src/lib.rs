@@ -17,6 +17,7 @@ pub mod fixture_walker;
 pub mod fixtures;
 pub mod fork_choice;
 pub mod genesis;
+pub mod light_client;
 pub mod operations;
 pub mod random;
 pub mod report;
@@ -25,6 +26,7 @@ pub mod sanity;
 pub mod shuffling;
 pub mod snappy;
 pub mod ssz_generic_types;
+pub mod transition;
 pub mod yaml_util;
 
 mod fs_util;
@@ -517,10 +519,10 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
     // ── phase0/fork_choice/{mainnet,minimal} ──────────────────────────────────
     //
     // Per M1 plan Q1: phase-0 fork-choice fixtures do not exist upstream, so
-    // these rows are driven against `tests/{preset}/altair/fork_choice/`.  The
-    // shared Q1 footnote is registered once and attached to both rows.
+    // these rows are driven against `tests/{preset}/altair/fork_choice/`.
+    // The shared Q1 footnote is registered once and attached to both rows.
     let fc_footnote = report.add_footnote(
-        "Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures, applying the skip-unknown-step-keys policy. Decision recorded in `docs/decisions.md` (Q1).",
+        "Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures.",
     );
 
     if filter.matches("phase0", "fork_choice", "mainnet") {
@@ -573,6 +575,470 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("phase0", "fork_choice", "minimal").with_footnote(fc_footnote));
     }
 
+    // ── altair/transition ────────────────────────────────────────────────────
+    if filter.matches("altair", "transition", "mainnet") {
+        let result = transition::run_transition_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "transition",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "transition", "mainnet"));
+    }
+
+    if filter.matches("altair", "transition", "minimal") {
+        let result = transition::run_transition_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "transition",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "transition", "minimal"));
+    }
+
+    // ── altair/ssz_static ────────────────────────────────────────────────────
+    if filter.matches("altair", "ssz_static", "mainnet") {
+        let mainnet_dir = root.join("mainnet");
+        if mainnet_dir.is_dir() {
+            let result = ssz_static::run_altair_ssz_static_preset(&mainnet_dir, "mainnet");
+            let had_failures = result.fail > 0;
+            report.rows.push(Row::live(
+                "altair",
+                "ssz_static",
+                "mainnet",
+                result.pass,
+                result.fail,
+                result.skip,
+            ));
+            report.failures.extend(result.failures);
+            if bail && had_failures {
+                fill_future_placeholders(&mut report);
+                return report;
+            }
+        } else {
+            report
+                .rows
+                .push(Row::placeholder("altair", "ssz_static", "mainnet"));
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "ssz_static", "mainnet"));
+    }
+
+    if filter.matches("altair", "ssz_static", "minimal") {
+        let minimal_dir = root.join("minimal");
+        if minimal_dir.is_dir() {
+            let result = ssz_static::run_altair_ssz_static_preset(&minimal_dir, "minimal");
+            let had_failures = result.fail > 0;
+            report.rows.push(Row::live(
+                "altair",
+                "ssz_static",
+                "minimal",
+                result.pass,
+                result.fail,
+                result.skip,
+            ));
+            report.failures.extend(result.failures);
+            if bail && had_failures {
+                fill_future_placeholders(&mut report);
+                return report;
+            }
+        } else {
+            report
+                .rows
+                .push(Row::placeholder("altair", "ssz_static", "minimal"));
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "ssz_static", "minimal"));
+    }
+
+    // ── altair/operations ────────────────────────────────────────────────────
+    if filter.matches("altair", "operations", "mainnet") {
+        let result = operations::run_operations_altair_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "operations",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "operations", "mainnet"));
+    }
+
+    if filter.matches("altair", "operations", "minimal") {
+        let result = operations::run_operations_altair_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "operations",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "operations", "minimal"));
+    }
+
+    // ── altair/epoch_processing ───────────────────────────────────────────────
+    if filter.matches("altair", "epoch_processing", "mainnet") {
+        let result = epoch_processing::run_epoch_processing_altair_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "epoch_processing",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "epoch_processing", "mainnet"));
+    }
+
+    if filter.matches("altair", "epoch_processing", "minimal") {
+        let result = epoch_processing::run_epoch_processing_altair_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "epoch_processing",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "epoch_processing", "minimal"));
+    }
+
+    // ── altair/sanity ─────────────────────────────────────────────────────────
+    if filter.matches("altair", "sanity", "mainnet") {
+        let result = sanity::run_sanity_altair_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "sanity",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "sanity", "mainnet"));
+    }
+
+    if filter.matches("altair", "sanity", "minimal") {
+        let result = sanity::run_sanity_altair_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "sanity",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "sanity", "minimal"));
+    }
+
+    // ── altair/finality ───────────────────────────────────────────────────────
+    if filter.matches("altair", "finality", "mainnet") {
+        let result = finality::run_finality_altair_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "finality",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "finality", "mainnet"));
+    }
+
+    if filter.matches("altair", "finality", "minimal") {
+        let result = finality::run_finality_altair_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "finality",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "finality", "minimal"));
+    }
+
+    // ── altair/random ─────────────────────────────────────────────────────────
+    if filter.matches("altair", "random", "mainnet") {
+        let result = random::run_random_altair_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "random",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "random", "mainnet"));
+    }
+
+    if filter.matches("altair", "random", "minimal") {
+        let result = random::run_random_altair_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "random",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "random", "minimal"));
+    }
+
+    // ── altair/rewards ────────────────────────────────────────────────────────
+    if filter.matches("altair", "rewards", "mainnet") {
+        let result = rewards::run_rewards_altair_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "rewards",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "rewards", "mainnet"));
+    }
+
+    if filter.matches("altair", "rewards", "minimal") {
+        let result = rewards::run_rewards_altair_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "rewards",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "rewards", "minimal"));
+    }
+
+    // ── altair/light_client ───────────────────────────────────────────────────
+    if filter.matches("altair", "light_client", "mainnet") {
+        let result = light_client::run_light_client_altair_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "light_client",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "light_client", "mainnet"));
+    }
+
+    if filter.matches("altair", "light_client", "minimal") {
+        let result = light_client::run_light_client_altair_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "light_client",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "light_client", "minimal"));
+    }
+
+    // ── altair/genesis ────────────────────────────────────────────────────────
+    if filter.matches("altair", "genesis", "mainnet") {
+        let result = genesis::run_genesis_altair_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "genesis",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "genesis", "mainnet"));
+    }
+
+    if filter.matches("altair", "genesis", "minimal") {
+        let result = genesis::run_genesis_altair_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "altair",
+            "genesis",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("altair", "genesis", "minimal"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -610,6 +1076,27 @@ fn fill_future_placeholders(report: &mut Report) {
         ("phase0", "rewards", "minimal"),
         ("phase0", "fork_choice", "mainnet"),
         ("phase0", "fork_choice", "minimal"),
+        // Altair categories
+        ("altair", "transition", "mainnet"),
+        ("altair", "transition", "minimal"),
+        ("altair", "ssz_static", "mainnet"),
+        ("altair", "ssz_static", "minimal"),
+        ("altair", "operations", "mainnet"),
+        ("altair", "operations", "minimal"),
+        ("altair", "epoch_processing", "mainnet"),
+        ("altair", "epoch_processing", "minimal"),
+        ("altair", "sanity", "mainnet"),
+        ("altair", "sanity", "minimal"),
+        ("altair", "finality", "mainnet"),
+        ("altair", "finality", "minimal"),
+        ("altair", "random", "mainnet"),
+        ("altair", "random", "minimal"),
+        ("altair", "rewards", "mainnet"),
+        ("altair", "rewards", "minimal"),
+        ("altair", "light_client", "mainnet"),
+        ("altair", "light_client", "minimal"),
+        ("altair", "genesis", "mainnet"),
+        ("altair", "genesis", "minimal"),
     ]
     .iter()
     .copied()
@@ -649,7 +1136,27 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         // shuffling: per-preset rows (legacy phase0/shuffling/- removed).
         ("phase0", "shuffling", "mainnet"),
         ("phase0", "shuffling", "minimal"),
-        ("altair", "ssz_static", "-"),
+        // altair categories
+        ("altair", "transition", "mainnet"),
+        ("altair", "transition", "minimal"),
+        ("altair", "ssz_static", "mainnet"),
+        ("altair", "ssz_static", "minimal"),
+        ("altair", "operations", "mainnet"),
+        ("altair", "operations", "minimal"),
+        ("altair", "epoch_processing", "mainnet"),
+        ("altair", "epoch_processing", "minimal"),
+        ("altair", "sanity", "mainnet"),
+        ("altair", "sanity", "minimal"),
+        ("altair", "finality", "mainnet"),
+        ("altair", "finality", "minimal"),
+        ("altair", "random", "mainnet"),
+        ("altair", "random", "minimal"),
+        ("altair", "rewards", "mainnet"),
+        ("altair", "rewards", "minimal"),
+        ("altair", "light_client", "mainnet"),
+        ("altair", "light_client", "minimal"),
+        ("altair", "genesis", "mainnet"),
+        ("altair", "genesis", "minimal"),
         ("bellatrix", "ssz_static", "-"),
         ("capella", "ssz_static", "-"),
         ("deneb", "ssz_static", "-"),
