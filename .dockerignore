@@ -1,0 +1,34 @@
+# Build artifacts.
+target/
+**/target/
+
+# Local state and caches.
+data/
+.cache/
+*.log
+
+# Git metadata; only needed if we ever bake a commit-sha label in.
+.git/
+.gitignore
+
+# Editor / IDE.
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Tests fixtures (download with scripts/fetch-spec-tests.sh at runtime).
+spec-tests/
+
+# Local Docker compose state.
+docker-compose.override.yml
+
+# CLAUDE.md / per-milestone plans are local-only; never bake them in.
+CLAUDE.md
+docs/m*-plan.md
+docs/m*-review*.md
+
+# Misc.
+README.md.bak
+*.bak

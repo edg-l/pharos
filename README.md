@@ -6,15 +6,19 @@
 
 A from-scratch Rust Ethereum proof-of-stake consensus client.
 
-**Status: pre-alpha, M2 complete.** Not usable as a node yet. Currently
-passes 100% of every Phase 0 conformance category (SSZ static + generic,
-operations, epoch processing, sanity, finality, random, rewards, genesis,
-shuffling, BLS) across both `mainnet` and `minimal` presets, with zero
-failures. State transition (`pharos-stf`), LMD-GHOST + FFG fork choice
-(`pharos-fork-choice`), and the M2 networking baseline (`pharos-network`:
-discv5, libp2p gossipsub + req-resp, peer manager, Status/Goodbye
-handshake) are in. Engine API client, Beacon API, and validator client
-are on the M3+ roadmap.
+**Status: pre-alpha, M3a done; M3b (Altair) in flight.** Not usable as a
+node yet. Phase 0 conformance is at 100% (SSZ static + generic, operations,
+epoch processing, sanity, finality, random, rewards, genesis, shuffling,
+BLS) on both `mainnet` and `minimal` presets, zero failures. State
+transition, LMD-GHOST + FFG fork choice, the M2 networking baseline
+(`discv5`, `libp2p` gossipsub + req-resp, peer manager, Status/Goodbye
+handshake), and the M3a infrastructure (`pharos-storage` + RocksDB,
+real `Host<E>`, persistent restart) are in. Altair containers, STF
+(block operations, `upgrade_to_altair`, epoch processing, state-transition
+entry), and the enum-of-forks state shape have landed; Altair conformance,
+context-bytes codec, MetaDataV2, light-client server, and the YAML preset
+loader are the remaining M3b phases. Engine API client, Beacon API, and
+validator client are on the M4+ roadmap.
 
 ## Philosophy
 
@@ -41,11 +45,11 @@ crates/
   pharos-utils         # primitives (hashes, BLS, Uint256, newtypes)
   pharos-ssz           # in-house SSZ encode/decode + Merkleization
   pharos-ssz-derive    # #[derive(Encode, Decode, TreeHash)]
-  pharos-types         # Phase 0 containers + EthSpec preset trait
+  pharos-types         # Phase 0 + Altair containers, EthSpec, fork enum
   pharos-conformance   # spec-test runner + progress dashboard
-  pharos-storage       # Store trait + rocksdb backend  (skeleton)
+  pharos-storage       # Store trait + rocksdb backend
   pharos-fork-choice   # LMD-GHOST + FFG Casper
-  pharos-stf           # process_block / process_epoch
+  pharos-stf           # process_block / process_epoch (phase0 + altair)
   pharos-engine        # Engine API client (CL -> EL)    (skeleton)
   pharos-network       # libp2p + discv5 + gossip + req-resp
   pharos-api           # Beacon API HTTP server          (skeleton)
@@ -68,7 +72,15 @@ boundary.
   Status/Goodbye, peer scoring stub. `NetworkHandle` + `NetworkBuilder`
   public surface, `Host<E>` trait family for the node binary to plug
   block-provider / fork-context / gossip-validator. **Done.**
-- **M3 — Altair.** Sync committees, light-client protocol.
+- **M3a — Phase 0 infrastructure.** `pharos-storage` over RocksDB (atomic
+  block transitions, snapshot-rehydration warm restart), real `Host<E>`
+  replacing the M2 stub, `NetworkEvent` expansion (`PeerSubscribed`,
+  `PeerIdentified`, `DialFailed`, `ExternalAddrConfirmed`),
+  Goodbye-on-shutdown, monotonic `MetaData.seq_number`. **Done.**
+- **M3b — Altair.** Sync committees, light-client server, MetaDataV2,
+  context-aware req-resp codec, cross-fork ENR migration, YAML preset
+  loader. Phases 0–3 in (EthSpec consts, containers + fork enum,
+  STF block ops + `upgrade_to_altair`, STF epoch processing).
 - **M4 — Bellatrix + Engine API.** First merged sync against a devnet.
 - **M5–M10 — Capella, Deneb, Beacon API, validator client, Electra,
   Fulu (PeerDAS).**
@@ -82,8 +94,8 @@ Full roadmap: [`docs/roadmap.md`](docs/roadmap.md).
 Run the harness against the local fixtures cache:
 
 ```sh
-scripts/fetch-spec-tests.sh                                  # one-time
-cargo run -p pharos-conformance --release -- --fork phase0 --write
+make fetch-spec-tests        # one-time, downloads to ~/.cache/pharos-spec-tests
+make conformance             # runs the suite and rewrites docs/conformance.md
 ```
 
 The result lands at [`docs/conformance.md`](docs/conformance.md) and is
@@ -91,6 +103,19 @@ committed to git so progress is visible in history. Categories not yet
 implemented appear as `-` so the table doubles as a roadmap.
 
 ## Building
+
+A `Makefile` wraps the common cargo invocations. `make` (no arguments)
+lists every target.
+
+```sh
+make build                   # release build of `pharos` and `pharos-vc`
+make test                    # full workspace test suite
+make lint                    # clippy --workspace --all-targets -D warnings
+make fmt                     # cargo fmt --all
+make ci                      # full CI gate: fmt-check + lint + check + test
+```
+
+Want raw cargo? Everything still works:
 
 ```sh
 cargo build --workspace
@@ -100,6 +125,40 @@ cargo fmt --all -- --check
 ```
 
 Rust 2024 edition, MSRV 1.85. No nightly features.
+
+## Running
+
+The beacon node needs an SSZ-encoded genesis `BeaconState` at startup
+(`--genesis-state-path`); there is no in-tree default. Once that is in
+hand:
+
+```sh
+make run GENESIS_PATH=/path/to/genesis.ssz
+# or override the data directory:
+make run GENESIS_PATH=/path/to/genesis.ssz DATA_DIR=/var/lib/pharos
+# pass extra flags through:
+make run GENESIS_PATH=/path/to/genesis.ssz ARGS="--quic-only"
+```
+
+`make install` puts `pharos` and `pharos-vc` in `~/.cargo/bin`.
+
+## Docker
+
+A multi-stage Dockerfile is provided. It uses
+[`cargo-chef`](https://github.com/LukeMathWalker/cargo-chef) plus BuildKit
+cache mounts so dependency layers stay cached across source changes; the
+runtime image is a slim Debian carrying only the two binaries, a
+non-root `pharos` user, and `tini` for clean signal handling under
+orchestrators (Kurtosis, k8s, compose).
+
+```sh
+make docker-build                          # builds pharos:dev
+make docker-run GENESIS_PATH=$PWD/genesis.ssz
+```
+
+Ports exposed: `9000/tcp` (libp2p), `9000/udp` (discv5), `9001/udp`
+(QUIC, optional). The container writes state under `/var/lib/pharos`;
+mount a volume there for persistence.
 
 ## Pairing
 
