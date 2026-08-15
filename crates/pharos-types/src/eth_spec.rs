@@ -562,15 +562,23 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
 
     /// Extract a clone of the `ExecutionPayload` from a fork-enum `SignedBeaconBlock`.
     ///
-    /// Returns `Some(payload)` for Bellatrix blocks; `None` for Phase0 / Altair
-    /// (pre-merge, no execution payload). NOTE: Capella currently returns `None`
-    /// (the assoc `ExecutionPayload` is the Bellatrix type) — Phase 4 wires the
-    /// V2 Capella payload path; until then a Capella head must not rely on this.
+    /// Returns `Some(payload)` for Bellatrix blocks; `None` for Phase0/Altair/Capella.
     ///
-    /// Used by the block-ingestion loop to push the wire-format payload to the
+    /// Used by the block-ingestion loop to push the wire-format Bellatrix payload to the
     /// engine driver via `engine_newPayloadV1`. The clone is unavoidable because
     /// the ingestion loop needs ownership to pass across a `spawn_blocking` boundary.
     fn get_execution_payload(signed: &Self::SignedBeaconBlock) -> Option<Self::ExecutionPayload>;
+
+    /// Extract a clone of the Capella `ExecutionPayload` from a fork-enum `SignedBeaconBlock`.
+    ///
+    /// Returns `Some(payload)` for Capella blocks; `None` for Phase0/Altair/Bellatrix.
+    ///
+    /// Used by the block-ingestion loop to push the wire-format Capella payload
+    /// (with withdrawals) to the engine driver via `engine_newPayloadV2`.
+    /// Wired in Phase 4 (`D-engine-v2-dispatch`).
+    fn get_capella_execution_payload(
+        signed: &Self::SignedBeaconBlock,
+    ) -> Option<Self::CapellaExecutionPayload>;
 
     // -- Container associated types (D7) --
     // These allow STF code to be generic over `<E: EthSpec>` and reference
@@ -1450,7 +1458,20 @@ impl EthSpec for MainnetEthSpec {
             crate::state::MainnetSignedBeaconBlock::Bellatrix(b) => {
                 Some(b.message.body.execution_payload.clone())
             }
-            crate::state::MainnetSignedBeaconBlock::Capella(_) => None, // Phase 4 wires Capella payload
+            crate::state::MainnetSignedBeaconBlock::Capella(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn get_capella_execution_payload(
+        signed: &Self::SignedBeaconBlock,
+    ) -> Option<Self::CapellaExecutionPayload> {
+        match signed {
+            crate::state::MainnetSignedBeaconBlock::Capella(b) => {
+                Some(b.message.body.execution_payload.clone())
+            }
+            crate::state::MainnetSignedBeaconBlock::Bellatrix(_) => None,
             crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
             crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
         }
@@ -2043,7 +2064,20 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalSignedBeaconBlock::Bellatrix(b) => {
                 Some(b.message.body.execution_payload.clone())
             }
-            crate::state::MinimalSignedBeaconBlock::Capella(_) => None, // Phase 4 wires Capella payload
+            crate::state::MinimalSignedBeaconBlock::Capella(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn get_capella_execution_payload(
+        signed: &Self::SignedBeaconBlock,
+    ) -> Option<Self::CapellaExecutionPayload> {
+        match signed {
+            crate::state::MinimalSignedBeaconBlock::Capella(b) => {
+                Some(b.message.body.execution_payload.clone())
+            }
+            crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
             crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
             crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
         }

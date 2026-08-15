@@ -17,8 +17,8 @@ use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
 use pharos_engine::{
-    EngineHandle, ForkchoiceUpdatedVersion, NewPayloadVersion,
-    types::{ExecutionPayloadV1, ForkchoiceStateV1},
+    EngineHandle, ForkchoiceUpdatedVersion, NewPayloadVersion, NewPayloadWire,
+    types::{ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1},
 };
 use pharos_fork_choice::Store as FcStore;
 use pharos_types::{EthSpec, PayloadStatus, phase0::primitives::Root};
@@ -63,14 +63,46 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
             MAX_EXTRA_DATA_BYTES,
         >,
     ) -> bool {
-        // Convert the SSZ payload to the Engine API wire format.
-        // We use the PayloadToWire trait but only for the concrete type we support.
-        // For other const params, fall back to a best-effort conversion.
         let wire = payload_to_wire_generic(payload);
-        match self
-            .engine
-            .new_payload_blocking(pharos_engine::NewPayloadVersion::V1, wire)
-        {
+        self.new_payload_wire(NewPayloadWire::V1(wire))
+    }
+
+    /// Override the default: call `engine_newPayloadV2` with the full capella payload
+    /// (including withdrawals) instead of stripping and falling back to V1.
+    ///
+    /// Per `D-engine-v2-dispatch` (docs/decisions.md M6-Capella section): capella
+    /// blocks MUST use V2; this is the Phase-2 carry-in fix (capella STF previously
+    /// forwarded a Bellatrix-shaped payload with withdrawals stripped).
+    fn notify_new_payload_capella<
+        const MAX_BYTES_PER_TRANSACTION: u64,
+        const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+        const BYTES_PER_LOGS_BLOOM: u64,
+        const MAX_EXTRA_DATA_BYTES: u64,
+        const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    >(
+        &self,
+        payload: &pharos_types::capella::ExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+        >,
+    ) -> bool {
+        let wire: ExecutionPayloadV2 = payload.clone().into();
+        self.new_payload_wire(NewPayloadWire::V2(wire))
+    }
+}
+
+impl ExecutionEngineHandle {
+    /// Shared helper: send a `NewPayloadWire` request to the engine actor and
+    /// interpret the response as a validity boolean.
+    fn new_payload_wire(&self, wire: NewPayloadWire) -> bool {
+        let version = match &wire {
+            NewPayloadWire::V1(_) => NewPayloadVersion::V1,
+            NewPayloadWire::V2(_) => NewPayloadVersion::V2,
+        };
+        match self.engine.new_payload_blocking(version, wire) {
             Ok(status) => {
                 use pharos_engine::types::PayloadStatusStatus;
                 matches!(
@@ -79,7 +111,7 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
                 )
             }
             Err(e) => {
-                tracing::warn!(error = %e, "ExecutionEngineHandle::notify_new_payload: engine error");
+                tracing::warn!(error = %e, "ExecutionEngineHandle::new_payload_wire: engine error");
                 false
             }
         }
@@ -127,21 +159,31 @@ fn payload_to_wire_generic<
     }
 }
 
-// ── PayloadToWire ─────────────────────────────────────────────────────────────
+// ── PayloadToWire / PayloadToWireV2 ──────────────────────────────────────────
 
-/// Convert a CL-side `ExecutionPayload` (SSZ representation, from `pharos-types`)
-/// to the Engine API wire format `ExecutionPayloadV1` (hex-string fields, from
-/// `pharos-engine`).
+/// Convert a Bellatrix CL-side `ExecutionPayload` to `ExecutionPayloadV1` wire format.
 ///
 /// Implemented for `MainnetExecutionPayload` and `MinimalExecutionPayload`.
 /// The conversion is in `pharos-node` because `pharos-types` must not depend on
 /// `pharos-engine` (the Engine API client is a node-level concern).
 ///
-/// Called by the block-ingestion loop (Task 4.8b) for every Bellatrix block
+/// Called by the block-ingestion loop for every Bellatrix block
 /// to push `engine_newPayloadV1` requests to the engine driver.
 pub trait PayloadToWire {
     /// Convert `&self` to an `ExecutionPayloadV1`.
     fn to_execution_payload_v1(&self) -> ExecutionPayloadV1;
+}
+
+/// Convert a Capella CL-side `ExecutionPayload` to `ExecutionPayloadV2` wire format
+/// (includes withdrawals).
+///
+/// Implemented for the concrete Capella `ExecutionPayload` with mainnet/minimal const params.
+/// Used by `import.rs` to push `engine_newPayloadV2` for capella blocks.
+///
+/// Per `D-engine-v2-dispatch` (docs/decisions.md M6-Capella section).
+pub trait PayloadToWireV2 {
+    /// Convert `&self` to an `ExecutionPayloadV2`.
+    fn to_execution_payload_v2(&self) -> ExecutionPayloadV2;
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -170,19 +212,27 @@ fn u64_to_quantity_hex(n: u64) -> String {
 /// A zero value is encoded as `"0x0"`.
 fn uint256_to_quantity_hex(n: &pharos_utils::Uint256) -> String {
     // Bytes are LE; reverse to get BE for the Engine API QUANTITY encoding.
+    // Minimal hex with NO leading-zero nibble (strict ELs like geth/reth reject
+    // "0x07"; the value must encode as "0x7").
     let be_bytes: Vec<u8> = n.to_le_bytes().into_iter().rev().collect();
-    // Skip leading zero bytes to get minimal representation.
-    let first_nonzero = be_bytes
-        .iter()
-        .position(|&b| b != 0)
-        .unwrap_or(be_bytes.len() - 1);
-    let significant = &be_bytes[first_nonzero..];
-    bytes_to_data_hex(significant)
+    match be_bytes.iter().position(|&b| b != 0) {
+        None => "0x0".to_string(),
+        Some(i) => {
+            use std::fmt::Write as _;
+            let mut hex = String::with_capacity(2 + (be_bytes.len() - i) * 2);
+            hex.push_str("0x");
+            let _ = write!(hex, "{:x}", be_bytes[i]);
+            for b in &be_bytes[i + 1..] {
+                let _ = write!(hex, "{b:02x}");
+            }
+            hex
+        }
+    }
 }
 
 // ── PayloadToWire impl ────────────────────────────────────────────────────────
 
-/// Implement `PayloadToWire` for the concrete `ExecutionPayload` type.
+/// Implement `PayloadToWire` for the concrete Bellatrix `ExecutionPayload` type.
 ///
 /// Both `MainnetExecutionPayload` and `MinimalExecutionPayload` are aliases
 /// for the same `ExecutionPayload<1_073_741_824, 1_048_576, 256, 32>` type,
@@ -215,6 +265,28 @@ impl PayloadToWire
     }
 }
 
+// ── PayloadToWireV2 impls ─────────────────────────────────────────────────────
+
+/// Implement `PayloadToWireV2` for the mainnet Capella `ExecutionPayload`
+/// (MAX_WITHDRAWALS_PER_PAYLOAD = 16).
+impl PayloadToWireV2
+    for pharos_types::capella::ExecutionPayload<1_073_741_824, 1_048_576, 256, 32, 16>
+{
+    fn to_execution_payload_v2(&self) -> ExecutionPayloadV2 {
+        self.clone().into()
+    }
+}
+
+/// Implement `PayloadToWireV2` for the minimal Capella `ExecutionPayload`
+/// (MAX_WITHDRAWALS_PER_PAYLOAD = 4).
+impl PayloadToWireV2
+    for pharos_types::capella::ExecutionPayload<1_073_741_824, 1_048_576, 256, 32, 4>
+{
+    fn to_execution_payload_v2(&self) -> ExecutionPayloadV2 {
+        self.clone().into()
+    }
+}
+
 // ── HeadChange ────────────────────────────────────────────────────────────────
 
 /// Describes a head-selection update, broadcast from the ingestion loop to
@@ -237,13 +309,16 @@ pub struct HeadChange {
 
 // ── NewPayloadRequest ─────────────────────────────────────────────────────────
 
-/// Wraps an `ExecutionPayloadV1` together with its CL block root so the engine
-/// driver can record the returned `PayloadStatus` keyed by root.
+/// Wraps a fork-discriminated execution payload together with its CL block root
+/// so the engine driver can record the returned `PayloadStatus` keyed by root.
+///
+/// V1 carries a Bellatrix payload; V2 carries a Capella payload (with withdrawals).
+/// The driver dispatches `engine_newPayloadV1` or `engine_newPayloadV2` accordingly.
 pub struct NewPayloadRequest<E: EthSpec> {
     /// CL block root of the block that contains this payload.
     pub block_root: Root,
-    /// The wire-format execution payload to pass to `engine_newPayloadV1`.
-    pub payload: ExecutionPayloadV1,
+    /// The wire-format execution payload (fork-discriminated).
+    pub payload: NewPayloadWire,
     /// `_marker` lets the struct carry the `E: EthSpec` bound without storing
     /// an `E`-typed value (the payload itself is fork-agnostic at wire level).
     pub _marker: std::marker::PhantomData<E>,
@@ -328,14 +403,39 @@ pub async fn run_engine_driver_loop<E: EthSpec>(
                     finalized_block_hash: change.finalized_block_hash.clone(),
                 };
 
+                // Select engine_forkchoiceUpdatedV1 (Bellatrix) or V2 (Capella+)
+                // based on the head block's fork.
+                //
+                // For the follow-only path (no payload attributes), FCU V1 and V2
+                // behave identically when attrs = null. We dispatch V2 when the
+                // head block is a Capella block (E::unwrap_capella_block returns Some).
+                //
+                // Per `D-engine-v2-dispatch`: dispatch V2 when head is Capella.
+                let fcu_version = {
+                    let store = store.read();
+                    if let Some(block) = store.blocks.get(&change.head_root) {
+                        if E::unwrap_capella_block(block).is_some() {
+                            ForkchoiceUpdatedVersion::V2
+                        } else {
+                            ForkchoiceUpdatedVersion::V1
+                        }
+                    } else {
+                        ForkchoiceUpdatedVersion::V1
+                    }
+                };
+
                 let engine_clone = engine.clone();
                 let state_clone = state.clone();
                 let fcu_result = tokio::task::spawn_blocking(move || {
-                    engine_clone.forkchoice_updated_blocking(
-                        ForkchoiceUpdatedVersion::V1,
-                        state_clone,
-                        None,
-                    )
+                    match fcu_version {
+                        ForkchoiceUpdatedVersion::V2 => engine_clone
+                            .forkchoice_updated_v2_blocking(state_clone, None),
+                        _ => engine_clone.forkchoice_updated_blocking(
+                            ForkchoiceUpdatedVersion::V1,
+                            state_clone,
+                            None,
+                        ),
+                    }
                 })
                 .await;
 
@@ -389,9 +489,13 @@ pub async fn run_engine_driver_loop<E: EthSpec>(
                 let Some(req) = maybe_req else { break };
 
                 let engine_clone = engine.clone();
-                let payload = req.payload.clone();
+                let payload_wire = req.payload.clone();
+                let version = match &payload_wire {
+                    NewPayloadWire::V1(_) => NewPayloadVersion::V1,
+                    NewPayloadWire::V2(_) => NewPayloadVersion::V2,
+                };
                 let np_result = tokio::task::spawn_blocking(move || {
-                    engine_clone.new_payload_blocking(NewPayloadVersion::V1, payload)
+                    engine_clone.new_payload_blocking(version, payload_wire)
                 })
                 .await;
 
@@ -420,5 +524,70 @@ pub async fn run_engine_driver_loop<E: EthSpec>(
                 store.write().mark_payload_status(req.block_root, status);
             }
         }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pharos_engine::{ExecutionPayloadV1, ExecutionPayloadV2};
+
+    /// Verify that `NewPayloadRequest` built with a `V1` wire payload selects
+    /// `NewPayloadVersion::V1` (Bellatrix path).
+    #[test]
+    fn new_payload_wire_v1_selects_v1_version() {
+        let payload = ExecutionPayloadV1 {
+            parent_hash: "0x00".into(),
+            fee_recipient: "0x00".into(),
+            state_root: "0x00".into(),
+            receipts_root: "0x00".into(),
+            logs_bloom: "0x00".into(),
+            prev_randao: "0x00".into(),
+            block_number: "0x0".into(),
+            gas_limit: "0x0".into(),
+            gas_used: "0x0".into(),
+            timestamp: "0x0".into(),
+            extra_data: "0x".into(),
+            base_fee_per_gas: "0x0".into(),
+            block_hash: "0x00".into(),
+            transactions: vec![],
+        };
+        let wire = NewPayloadWire::V1(payload);
+        let version = match &wire {
+            NewPayloadWire::V1(_) => NewPayloadVersion::V1,
+            NewPayloadWire::V2(_) => NewPayloadVersion::V2,
+        };
+        assert_eq!(version, NewPayloadVersion::V1);
+    }
+
+    /// Verify that `NewPayloadRequest` built with a `V2` wire payload selects
+    /// `NewPayloadVersion::V2` (Capella path, with withdrawals).
+    #[test]
+    fn new_payload_wire_v2_selects_v2_version() {
+        let payload = ExecutionPayloadV2 {
+            parent_hash: "0x00".into(),
+            fee_recipient: "0x00".into(),
+            state_root: "0x00".into(),
+            receipts_root: "0x00".into(),
+            logs_bloom: "0x00".into(),
+            prev_randao: "0x00".into(),
+            block_number: "0x0".into(),
+            gas_limit: "0x0".into(),
+            gas_used: "0x0".into(),
+            timestamp: "0x0".into(),
+            extra_data: "0x".into(),
+            base_fee_per_gas: "0x0".into(),
+            block_hash: "0x00".into(),
+            transactions: vec![],
+            withdrawals: vec![],
+        };
+        let wire = NewPayloadWire::V2(payload);
+        let version = match &wire {
+            NewPayloadWire::V1(_) => NewPayloadVersion::V1,
+            NewPayloadWire::V2(_) => NewPayloadVersion::V2,
+        };
+        assert_eq!(version, NewPayloadVersion::V2);
     }
 }

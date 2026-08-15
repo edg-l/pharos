@@ -22,3 +22,4 @@ parking_lot.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+pharos-ssz.workspace = true

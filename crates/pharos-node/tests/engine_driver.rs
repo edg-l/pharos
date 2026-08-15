@@ -252,7 +252,7 @@ async fn engine_driver_marks_invalid_payload_and_skips_in_get_head() {
     payload_tx
         .send(NewPayloadRequest {
             block_root: block_a_root,
-            payload: dummy_payload,
+            payload: pharos_engine::NewPayloadWire::V1(dummy_payload),
             _marker: std::marker::PhantomData,
         })
         .await

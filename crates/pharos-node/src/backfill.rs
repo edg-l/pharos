@@ -29,7 +29,7 @@ use pharos_types::views::BeaconBlockView as _;
 use pharos_types::{EthSpec, phase0::primitives::Slot};
 
 use crate::block_ingestion::{extract_block_root, extract_parent_root};
-use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire};
+use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2};
 use crate::host_impl::HostImpl;
 use crate::lookup::LookupRequest;
 
@@ -161,6 +161,7 @@ where
     E::BellatrixSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
+    E::CapellaExecutionPayload: PayloadToWireV2,
 {
     let cfg = E::default_runtime_config();
     let seconds_per_slot = cfg.seconds_per_slot;

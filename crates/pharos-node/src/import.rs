@@ -24,7 +24,7 @@ use pharos_types::views::{BeaconStateView as _, ForkVariant};
 use pharos_types::{EthSpec, phase0::primitives::Root};
 
 use crate::engine_driver::{
-    HeadChange, NewPayloadRequest, PayloadToWire, compute_finalized_block_hash,
+    HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2, compute_finalized_block_hash,
     compute_safe_block_hash, hash_to_hex,
 };
 
@@ -134,6 +134,7 @@ where
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
+    E::CapellaExecutionPayload: PayloadToWireV2,
     EE: ExecutionEngine + 'static,
     PP: PowBlockProvider + Send + Sync + 'static,
 {
@@ -219,11 +220,26 @@ where
 
     on_block_result.map_err(ImportError::ForkChoice)?;
 
-    // (f) For Bellatrix blocks, push the execution payload to the engine driver.
-    if let Some(payload) = E::get_execution_payload(signed_block) {
+    // (f) For execution-layer blocks, push the execution payload to the engine driver.
+    // Capella blocks use engine_newPayloadV2 (with withdrawals); Bellatrix uses V1.
+    // Per `D-engine-v2-dispatch` (docs/decisions.md M6-Capella section).
+    if let Some(capella_payload) = E::get_capella_execution_payload(signed_block) {
+        // Capella block: V2 wire format (includes withdrawals).
+        use pharos_engine::NewPayloadWire;
         let req = NewPayloadRequest {
             block_root,
-            payload: payload.to_execution_payload_v1(),
+            payload: NewPayloadWire::V2(capella_payload.to_execution_payload_v2()),
+            _marker: std::marker::PhantomData,
+        };
+        if payload_tx.try_send(req).is_err() {
+            warn!(%block_root, "import_block: payload_tx full or closed; dropping newPayloadV2");
+        }
+    } else if let Some(payload) = E::get_execution_payload(signed_block) {
+        // Bellatrix block: V1 wire format.
+        use pharos_engine::NewPayloadWire;
+        let req = NewPayloadRequest {
+            block_root,
+            payload: NewPayloadWire::V1(payload.to_execution_payload_v1()),
             _marker: std::marker::PhantomData,
         };
         if payload_tx.try_send(req).is_err() {

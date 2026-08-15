@@ -28,11 +28,14 @@ use std::time::Duration;
 use tokio::runtime::{Builder, Handle};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::client::{EngineClient, ForkchoiceUpdatedVersion, GetPayloadVersion, NewPayloadVersion};
+use crate::client::{
+    EngineClient, ForkchoiceUpdatedVersion, GetPayloadVersion, NewPayloadVersion, NewPayloadWire,
+};
 use crate::error::EngineError;
 use crate::types::{
-    ExecutionPayloadV1, ForkchoiceStateV1, ForkchoiceUpdatedV1Response, PayloadAttributesV1,
-    PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
+    ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1, ForkchoiceUpdatedV1Response,
+    PayloadAttributesV1, PayloadAttributesV2, PayloadIdV1, PayloadStatusV1, SyncingStatus,
+    TransitionConfigurationV1,
 };
 
 /// Capacity of the EngineHandle → actor request channel.
@@ -51,21 +54,36 @@ const MAX_HEALTH_FAILURES: u8 = 3;
 
 /// Typed request envelope handled by the engine actor.
 pub enum EngineRequest {
+    /// `engine_newPayload*` — fork-discriminated via `NewPayloadWire`.
     NewPayload {
         version: NewPayloadVersion,
-        payload: ExecutionPayloadV1,
+        payload: NewPayloadWire,
         reply: oneshot::Sender<Result<PayloadStatusV1, EngineError>>,
     },
+    /// `engine_forkchoiceUpdatedV1` — Bellatrix (no payload attributes on follow path).
     ForkchoiceUpdated {
         version: ForkchoiceUpdatedVersion,
         state: ForkchoiceStateV1,
         attrs: Option<PayloadAttributesV1>,
         reply: oneshot::Sender<Result<ForkchoiceUpdatedV1Response, EngineError>>,
     },
+    /// `engine_forkchoiceUpdatedV2` — Capella (no payload attributes on follow path).
+    ForkchoiceUpdatedV2 {
+        state: ForkchoiceStateV1,
+        attrs: Option<PayloadAttributesV2>,
+        reply: oneshot::Sender<Result<ForkchoiceUpdatedV1Response, EngineError>>,
+    },
+    /// `engine_getPayloadV1` — Bellatrix block production.
     GetPayload {
         version: GetPayloadVersion,
         id: PayloadIdV1,
         reply: oneshot::Sender<Result<ExecutionPayloadV1, EngineError>>,
+    },
+    /// `engine_getPayloadV2` — Capella block production (wire path only; M8).
+    /// TODO(M8): wire `GetPayloadV2` into the block-production path.
+    GetPayloadV2 {
+        id: PayloadIdV1,
+        reply: oneshot::Sender<Result<ExecutionPayloadV2, EngineError>>,
     },
     GetBlockByHash {
         hash: String,
@@ -117,11 +135,35 @@ impl EngineHandle {
             .map_err(|_| EngineError::UnexpectedResponse("engine actor dropped reply".into()))?
     }
 
-    /// Sync `engine_newPayload*`.
+    /// Sync `engine_newPayloadV1` — Bellatrix.
+    pub fn new_payload_v1_blocking(
+        &self,
+        payload: ExecutionPayloadV1,
+    ) -> Result<PayloadStatusV1, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::NewPayload {
+            version: NewPayloadVersion::V1,
+            payload: NewPayloadWire::V1(payload),
+            reply,
+        })
+    }
+
+    /// Sync `engine_newPayloadV2` — Capella (with withdrawals).
+    pub fn new_payload_v2_blocking(
+        &self,
+        payload: ExecutionPayloadV2,
+    ) -> Result<PayloadStatusV1, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::NewPayload {
+            version: NewPayloadVersion::V2,
+            payload: NewPayloadWire::V2(payload),
+            reply,
+        })
+    }
+
+    /// Sync `engine_newPayload*` dispatch — fork-discriminated.
     pub fn new_payload_blocking(
         &self,
         version: NewPayloadVersion,
-        payload: ExecutionPayloadV1,
+        payload: NewPayloadWire,
     ) -> Result<PayloadStatusV1, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::NewPayload {
             version,
@@ -130,7 +172,7 @@ impl EngineHandle {
         })
     }
 
-    /// Sync `engine_forkchoiceUpdated*`.
+    /// Sync `engine_forkchoiceUpdatedV1` — Bellatrix.
     pub fn forkchoice_updated_blocking(
         &self,
         version: ForkchoiceUpdatedVersion,
@@ -145,13 +187,36 @@ impl EngineHandle {
         })
     }
 
-    /// Sync `engine_getPayload*`.
+    /// Sync `engine_forkchoiceUpdatedV2` — Capella (optional V2 payload attributes).
+    pub fn forkchoice_updated_v2_blocking(
+        &self,
+        state: ForkchoiceStateV1,
+        attrs: Option<PayloadAttributesV2>,
+    ) -> Result<ForkchoiceUpdatedV1Response, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::ForkchoiceUpdatedV2 {
+            state,
+            attrs,
+            reply,
+        })
+    }
+
+    /// Sync `engine_getPayloadV1` — Bellatrix block production.
     pub fn get_payload_blocking(
         &self,
         version: GetPayloadVersion,
         id: PayloadIdV1,
     ) -> Result<ExecutionPayloadV1, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::GetPayload { version, id, reply })
+    }
+
+    /// Sync `engine_getPayloadV2` — Capella block production (wire path only).
+    ///
+    /// TODO(M8): wire `get_payload_v2_blocking` into the block-production path.
+    pub fn get_payload_v2_blocking(
+        &self,
+        id: PayloadIdV1,
+    ) -> Result<ExecutionPayloadV2, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetPayloadV2 { id, reply })
     }
 
     /// Sync `eth_chainId`.
@@ -309,8 +374,18 @@ async fn dispatch(client: &EngineClient, req: EngineRequest) {
         } => {
             let _ = reply.send(client.forkchoice_updated(version, state, attrs).await);
         }
+        EngineRequest::ForkchoiceUpdatedV2 {
+            state,
+            attrs,
+            reply,
+        } => {
+            let _ = reply.send(client.forkchoice_updated_v2(state, attrs).await);
+        }
         EngineRequest::GetPayload { version, id, reply } => {
             let _ = reply.send(client.get_payload(version, id).await);
+        }
+        EngineRequest::GetPayloadV2 { id, reply } => {
+            let _ = reply.send(client.get_payload_v2(id).await);
         }
         EngineRequest::GetBlockByHash { hash, reply } => {
             let _ = reply.send(client.get_block_by_hash(&hash).await);

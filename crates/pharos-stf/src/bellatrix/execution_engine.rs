@@ -10,6 +10,7 @@
 //! thread is not a tokio worker.
 
 use pharos_types::bellatrix::ExecutionPayload;
+use pharos_types::capella::ExecutionPayload as CapellaExecutionPayload;
 
 // ── NewPayloadRequest ─────────────────────────────────────────────────────────
 
@@ -59,6 +60,53 @@ pub trait ExecutionEngine: Send + Sync + 'static {
             MAX_EXTRA_DATA_BYTES,
         >,
     ) -> bool;
+
+    /// `notify_new_payload` for Capella payloads (with withdrawals).
+    ///
+    /// **CONSENSUS-SAFETY WARNING**: any `ExecutionEngine` that talks to a REAL
+    /// execution client MUST override this method to call `engine_newPayloadV2`
+    /// with the full Capella payload INCLUDING `withdrawals`. The default below
+    /// strips withdrawals and forwards to V1 — a real EL would then compute a
+    /// different `state_root` and return `INVALID`. The default is only safe for
+    /// test/null engines (e.g. `NullExecutionEngine`) that do not validate
+    /// against a live EL. The production `ExecutionEngineHandle` in `pharos-node`
+    /// overrides this to call `engine_newPayloadV2` directly (`D-engine-v2-dispatch`).
+    /// NOTE: this notify is independent of the STF `process_withdrawals`
+    /// equality check, which always runs regardless of the EL response.
+    fn notify_new_payload_capella<
+        const MAX_BYTES_PER_TRANSACTION: u64,
+        const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+        const BYTES_PER_LOGS_BLOOM: u64,
+        const MAX_EXTRA_DATA_BYTES: u64,
+        const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    >(
+        &self,
+        payload: &CapellaExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+        >,
+    ) -> bool {
+        // Default: strip withdrawals, forward to V1.
+        self.notify_new_payload(&ExecutionPayload {
+            parent_hash: payload.parent_hash,
+            fee_recipient: payload.fee_recipient,
+            state_root: payload.state_root,
+            receipts_root: payload.receipts_root,
+            logs_bloom: payload.logs_bloom.clone(),
+            prev_randao: payload.prev_randao,
+            block_number: payload.block_number,
+            gas_limit: payload.gas_limit,
+            gas_used: payload.gas_used,
+            timestamp: payload.timestamp,
+            extra_data: payload.extra_data.clone(),
+            base_fee_per_gas: payload.base_fee_per_gas,
+            block_hash: payload.block_hash,
+            transactions: payload.transactions.clone(),
+        })
+    }
 
     /// `verify_and_notify_new_payload` per `specs/bellatrix/beacon-chain.md:337-357`.
     ///

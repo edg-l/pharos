@@ -223,7 +223,7 @@ impl<E: EthSpec> HostImpl<E> {
         if let Some(ref tx) = self.payload_tx {
             let req = NewPayloadRequest {
                 block_root,
-                payload,
+                payload: pharos_engine::NewPayloadWire::V1(payload),
                 _marker: PhantomData,
             };
             // Best-effort: if the channel is full the ingestion loop has fallen

@@ -3060,6 +3060,7 @@ dependencies = [
  "axum",
  "jsonwebtoken",
  "parking_lot",
+ "pharos-ssz",
  "pharos-types",
  "pharos-utils",
  "reqwest",

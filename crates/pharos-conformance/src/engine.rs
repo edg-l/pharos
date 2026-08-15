@@ -21,8 +21,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::post;
 use pharos_engine::{
-    EngineClient, ForkchoiceUpdatedVersion, GetPayloadVersion, JwtSecret, NewPayloadVersion,
-    TransitionConfigurationV1,
+    EngineClient, ExecutionPayloadV2, GetPayloadVersion, JwtSecret, NewPayloadVersion,
+    NewPayloadWire, TransitionConfigurationV1,
 };
 use reqwest::Url;
 use serde_json::Value;
@@ -203,31 +203,43 @@ fn run_method_examples(method: &YamlMethod, result: &mut CategoryResult) {
         return;
     }
 
-    // V1 methods that belong to post-Bellatrix forks and must be skipped.
-    // These end in "V1" but were introduced in Shanghai (getPayloadBodies*)
-    // or Cancun (getBlobs*), both out of scope for M4a.
-    const CAPELLA_PLUS_V1: &[&str] = &[
+    // V1 methods introduced in Shanghai or later (not Bellatrix/Paris):
+    // getPayloadBodies* are Shanghai V1 methods but out of scope for M6.
+    // getBlobsV1 is Cancun, out of scope.
+    const DEFERRED_V1: &[&str] = &[
         "engine_getBlobsV1",
         "engine_getPayloadBodiesByHashV1",
         "engine_getPayloadBodiesByRangeV1",
     ];
 
-    // Bellatrix-unversioned methods (no "V1" suffix) that are in scope for M4a.
-    const BELLATRIX_UNVERSIONED: &[&str] = &["engine_exchangeCapabilities"];
+    // Unversioned methods (no "V1/V2" suffix) in scope.
+    const UNVERSIONED: &[&str] = &["engine_exchangeCapabilities"];
 
-    // Determine version: V1 or Bellatrix-unversioned vs everything else.
+    // V2 methods in scope for M6 (Capella / Shanghai).
+    const V2_IN_SCOPE: &[&str] = &["engine_newPayloadV2", "engine_forkchoiceUpdatedV2"];
+
+    // V3+ methods not yet in scope (Deneb+).
+    const V3_PLUS: &[&str] = &[
+        "engine_newPayloadV3",
+        "engine_forkchoiceUpdatedV3",
+        "engine_getPayloadV3",
+    ];
+
     let is_v1 = name.ends_with("V1");
-    let is_bellatrix_unversioned = BELLATRIX_UNVERSIONED.contains(&name.as_str());
+    let is_v2_in_scope = V2_IN_SCOPE.contains(&name.as_str());
+    let is_unversioned = UNVERSIONED.contains(&name.as_str());
+    let is_deferred = DEFERRED_V1.contains(&name.as_str()) || V3_PLUS.contains(&name.as_str());
 
     for ex in &method.examples {
         let label = format!("{name}/{}", ex.name);
 
-        // Skip non-V1, non-unversioned methods and V1 methods from later forks.
-        if (!is_v1 && !is_bellatrix_unversioned) || CAPELLA_PLUS_V1.contains(&name.as_str()) {
+        // Skip deferred/out-of-scope methods.
+        if is_deferred || (!is_v1 && !is_v2_in_scope && !is_unversioned) {
             result.skip += 1;
-            result
-                .skip_reasons
-                .insert(label, "capella+ method, scoped out of m4a".to_string());
+            result.skip_reasons.insert(
+                label,
+                "method not in scope for current milestone".to_string(),
+            );
             continue;
         }
 
@@ -411,10 +423,17 @@ async fn dispatch_engine_call(
 ) -> Result<Value, String> {
     match method {
         "engine_newPayloadV1" => {
-            // Build a minimal ExecutionPayloadV1 from params[0] if present, else use default.
             let payload = params_to_execution_payload_v1(_params.get(0));
             let status = client
-                .new_payload(NewPayloadVersion::V1, payload)
+                .new_payload(NewPayloadVersion::V1, NewPayloadWire::V1(payload))
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(status).map_err(|e| e.to_string())
+        }
+        "engine_newPayloadV2" => {
+            let payload = params_to_execution_payload_v2(_params.get(0));
+            let status = client
+                .new_payload(NewPayloadVersion::V2, NewPayloadWire::V2(payload))
                 .await
                 .map_err(|e| e.to_string())?;
             serde_json::to_value(status).map_err(|e| e.to_string())
@@ -429,7 +448,22 @@ async fn dispatch_engine_call(
                 }
             });
             let fcu_response = client
-                .forkchoice_updated(ForkchoiceUpdatedVersion::V1, state, attrs)
+                .forkchoice_updated_v1(state, attrs)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(fcu_response).map_err(|e| e.to_string())
+        }
+        "engine_forkchoiceUpdatedV2" => {
+            let state = params_to_forkchoice_state(_params.get(0));
+            let attrs = _params.get(1).and_then(|v| {
+                if v.is_null() {
+                    None
+                } else {
+                    params_to_payload_attrs_v2(v).ok()
+                }
+            });
+            let fcu_response = client
+                .forkchoice_updated_v2(state, attrs)
                 .await
                 .map_err(|e| e.to_string())?;
             serde_json::to_value(fcu_response).map_err(|e| e.to_string())
@@ -526,6 +560,57 @@ fn params_to_execution_payload_v1(v: Option<&Value>) -> pharos_engine::Execution
     })
 }
 
+fn params_to_execution_payload_v2(v: Option<&Value>) -> ExecutionPayloadV2 {
+    use pharos_engine::WithdrawalV1;
+    let v = match v {
+        Some(v) => v,
+        None => {
+            return ExecutionPayloadV2 {
+                parent_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                fee_recipient: "0x0000000000000000000000000000000000000000".into(),
+                state_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                receipts_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                logs_bloom: "0x00".into(),
+                prev_randao: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                block_number: "0x0".into(),
+                gas_limit: "0x0".into(),
+                gas_used: "0x0".into(),
+                timestamp: "0x0".into(),
+                extra_data: "0x".into(),
+                base_fee_per_gas: "0x0".into(),
+                block_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                transactions: vec![],
+                withdrawals: vec![],
+            };
+        }
+    };
+    serde_json::from_value(v.clone()).unwrap_or_else(|_| ExecutionPayloadV2 {
+        parent_hash: str_field(v, "parentHash"),
+        fee_recipient: str_field(v, "feeRecipient"),
+        state_root: str_field(v, "stateRoot"),
+        receipts_root: str_field(v, "receiptsRoot"),
+        logs_bloom: str_field(v, "logsBloom"),
+        prev_randao: str_field(v, "prevRandao"),
+        block_number: str_field(v, "blockNumber"),
+        gas_limit: str_field(v, "gasLimit"),
+        gas_used: str_field(v, "gasUsed"),
+        timestamp: str_field(v, "timestamp"),
+        extra_data: str_field(v, "extraData"),
+        base_fee_per_gas: str_field(v, "baseFeePerGas"),
+        block_hash: str_field(v, "blockHash"),
+        transactions: vec![],
+        withdrawals: v
+            .get("withdrawals")
+            .and_then(|w| serde_json::from_value::<Vec<WithdrawalV1>>(w.clone()).ok())
+            .unwrap_or_default(),
+    })
+}
+
 fn params_to_forkchoice_state(v: Option<&Value>) -> pharos_engine::ForkchoiceStateV1 {
     let zero = "0x0000000000000000000000000000000000000000000000000000000000000000".to_string();
     let v = match v {
@@ -546,6 +631,10 @@ fn params_to_forkchoice_state(v: Option<&Value>) -> pharos_engine::ForkchoiceSta
 }
 
 fn params_to_payload_attrs(v: &Value) -> Result<pharos_engine::PayloadAttributesV1, String> {
+    serde_json::from_value(v.clone()).map_err(|e| e.to_string())
+}
+
+fn params_to_payload_attrs_v2(v: &Value) -> Result<pharos_engine::PayloadAttributesV2, String> {
     serde_json::from_value(v.clone()).map_err(|e| e.to_string())
 }
 

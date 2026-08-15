@@ -16,7 +16,7 @@ use pharos_types::{
     },
 };
 
-use crate::bellatrix::execution_engine::{ExecutionEngine, NewPayloadRequest};
+use crate::bellatrix::execution_engine::ExecutionEngine;
 use crate::error::StateTransitionError;
 use crate::phase0::accessors::compute_epoch_at_slot;
 
@@ -132,24 +132,10 @@ where
     }
 
     // spec: execution engine verification.
-    let valid = execution_engine.verify_and_notify_new_payload(NewPayloadRequest {
-        execution_payload: &pharos_types::bellatrix::ExecutionPayload {
-            parent_hash: payload.parent_hash,
-            fee_recipient: payload.fee_recipient,
-            state_root: payload.state_root,
-            receipts_root: payload.receipts_root,
-            logs_bloom: payload.logs_bloom.clone(),
-            prev_randao: payload.prev_randao,
-            block_number: payload.block_number,
-            gas_limit: payload.gas_limit,
-            gas_used: payload.gas_used,
-            timestamp: payload.timestamp,
-            extra_data: payload.extra_data.clone(),
-            base_fee_per_gas: payload.base_fee_per_gas,
-            block_hash: payload.block_hash,
-            transactions: payload.transactions.clone(),
-        },
-    });
+    // Call notify_new_payload_capella so the EL receives the full Capella payload
+    // including withdrawals (engine_newPayloadV2). The default fallback strips
+    // withdrawals for implementations that have not been upgraded to V2.
+    let valid = execution_engine.notify_new_payload_capella(payload);
     if !valid {
         return Err(StateTransitionError::InvalidExecutionPayload(
             "execution engine rejected payload",

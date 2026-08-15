@@ -36,7 +36,7 @@ use crate::block_ingestion::{
     ReinjectBlock, decode_block_by_topic, encode_signed_block_as_gossip_bytes, extract_block_root,
     extract_parent_root, hold_future_block,
 };
-use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire};
+use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2};
 use crate::host_impl::HostImpl;
 use crate::import::ImportError;
 use crate::pending_blocks::{PendingBlocks, PendingEntry};
@@ -204,6 +204,7 @@ where
         + pharos_ssz::Encode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
+    E::CapellaExecutionPayload: PayloadToWireV2,
 {
     let cfg = E::default_runtime_config();
 
@@ -385,6 +386,7 @@ where
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
+    E::CapellaExecutionPayload: PayloadToWireV2,
 {
     match crate::import::import_block::<E, EE, PP>(
         signed_block,
@@ -507,6 +509,7 @@ async fn fetch_and_walk<E, P, EE, PP>(
         + pharos_ssz::Encode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
+    E::CapellaExecutionPayload: PayloadToWireV2,
 {
     let mut current_target = target_root;
     let mut depth = MAX_LOOKUP_DEPTH;
@@ -692,6 +695,7 @@ async fn drain_and_replay<E, EE, PP>(
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
+    E::CapellaExecutionPayload: PayloadToWireV2,
 {
     let mut stack: Vec<Root> = vec![root];
 

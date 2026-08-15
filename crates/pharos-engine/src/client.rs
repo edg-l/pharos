@@ -18,33 +18,67 @@ use serde_json::{Value, json};
 use crate::error::EngineError;
 use crate::jwt::{JwtSecret, sign_token};
 use crate::types::{
-    BlockHeader, ExecutionPayloadV1, ForkchoiceStateV1, ForkchoiceUpdatedV1Response,
-    PayloadAttributesV1, PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
+    BlockHeader, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
+    ForkchoiceUpdatedV1Response, PayloadAttributesV1, PayloadAttributesV2, PayloadIdV1,
+    PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
 };
 
 const ENGINE_RPC_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// Engine API methods advertised by pharos in `engine_exchangeCapabilities`.
+///
+/// Includes all V1 (Bellatrix/Paris) and V2 (Capella/Shanghai) methods.
+/// V3+ (Deneb) will be added in M7.
+pub const DEFAULT_ENGINE_CAPABILITIES: &[&str] = &[
+    "engine_newPayloadV1",
+    "engine_newPayloadV2",
+    "engine_forkchoiceUpdatedV1",
+    "engine_forkchoiceUpdatedV2",
+    "engine_getPayloadV1",
+    "engine_getPayloadV2",
+    "engine_exchangeCapabilities",
+    "engine_exchangeTransitionConfigurationV1",
+];
+
 // ── Version enums ────────────────────────────────────────────────────────────
 
-/// Version selector for `engine_newPayload*`. Bellatrix is V1-only.
-/// Capella adds V2 (M5), Deneb adds V3 (M6), Electra adds V4 (M7).
+/// Version selector for `engine_newPayload*`. Bellatrix uses V1; Capella uses V2.
+/// Deneb adds V3 (M7), Electra adds V4 (M8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NewPayloadVersion {
     V1,
+    /// Capella / Shanghai: `engine_newPayloadV2` with `ExecutionPayloadV2` (+ withdrawals).
+    V2,
 }
 
-/// Version selector for `engine_forkchoiceUpdated*`. Bellatrix is V1-only.
-/// Capella adds V2 (M5), Deneb adds V3 (M6), Electra adds V4 (M9).
+/// Version selector for `engine_forkchoiceUpdated*`. Bellatrix uses V1; Capella uses V2.
+/// Deneb adds V3 (M7), Electra adds V4 (M8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForkchoiceUpdatedVersion {
     V1,
+    /// Capella / Shanghai: `engine_forkchoiceUpdatedV2` with optional `PayloadAttributesV2`.
+    V2,
 }
 
-/// Version selector for `engine_getPayload*`. Bellatrix is V1-only.
-/// Capella adds V2 (M5), Deneb adds V3 (M6), Electra adds V4 (M7).
+/// Version selector for `engine_getPayload*`. Bellatrix uses V1; Capella uses V2.
+/// Deneb adds V3 (M7), Electra adds V4 (M8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GetPayloadVersion {
     V1,
+    /// Capella / Shanghai: `engine_getPayloadV2`. Wire type only; live driver
+    /// wiring is block-production-only (deferred to M8 — follow-only node).
+    V2,
+}
+
+// ── NewPayloadWire ────────────────────────────────────────────────────────────
+
+/// Fork-discriminated execution payload for `engine_newPayload*` dispatch.
+///
+/// V1 carries a Bellatrix payload; V2 carries a Capella payload with withdrawals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewPayloadWire {
+    V1(ExecutionPayloadV1),
+    V2(ExecutionPayloadV2),
 }
 
 // ── EngineClient ─────────────────────────────────────────────────────────────
@@ -139,41 +173,115 @@ impl EngineClient {
 
     // ── Engine API methods ───────────────────────────────────────────────────
 
-    /// `engine_newPayload*` per version.
+    /// `engine_newPayloadV1` — Bellatrix execution payload.
+    pub async fn new_payload_v1(
+        &self,
+        payload: ExecutionPayloadV1,
+    ) -> Result<PayloadStatusV1, EngineError> {
+        self.rpc_call("engine_newPayloadV1", [payload]).await
+    }
+
+    /// `engine_newPayloadV2` — Capella execution payload (with withdrawals).
+    pub async fn new_payload_v2(
+        &self,
+        payload: ExecutionPayloadV2,
+    ) -> Result<PayloadStatusV1, EngineError> {
+        self.rpc_call("engine_newPayloadV2", [payload]).await
+    }
+
+    /// `engine_newPayload*` dispatch per version.
+    ///
+    /// V1: Bellatrix; V2: Capella (withdrawals). Panics if the version/payload
+    /// combination is invalid (caller is responsible for picking the right variant).
     pub async fn new_payload(
         &self,
         v: NewPayloadVersion,
-        payload: ExecutionPayloadV1,
+        payload: NewPayloadWire,
     ) -> Result<PayloadStatusV1, EngineError> {
-        let method = match v {
-            NewPayloadVersion::V1 => "engine_newPayloadV1",
-        };
-        self.rpc_call(method, [payload]).await
+        match (v, payload) {
+            (NewPayloadVersion::V1, NewPayloadWire::V1(p)) => self.new_payload_v1(p).await,
+            (NewPayloadVersion::V2, NewPayloadWire::V2(p)) => self.new_payload_v2(p).await,
+            _ => Err(EngineError::UnexpectedResponse(
+                "new_payload: version/payload mismatch".into(),
+            )),
+        }
     }
 
-    /// `engine_forkchoiceUpdated*` per version.
+    /// `engine_forkchoiceUpdatedV1` — Bellatrix forkchoice update.
+    pub async fn forkchoice_updated_v1(
+        &self,
+        state: ForkchoiceStateV1,
+        attrs: Option<PayloadAttributesV1>,
+    ) -> Result<ForkchoiceUpdatedV1Response, EngineError> {
+        self.rpc_call("engine_forkchoiceUpdatedV1", (state, attrs))
+            .await
+    }
+
+    /// `engine_forkchoiceUpdatedV2` — Capella forkchoice update (withdrawals attributes).
+    pub async fn forkchoice_updated_v2(
+        &self,
+        state: ForkchoiceStateV1,
+        attrs: Option<PayloadAttributesV2>,
+    ) -> Result<ForkchoiceUpdatedV1Response, EngineError> {
+        self.rpc_call("engine_forkchoiceUpdatedV2", (state, attrs))
+            .await
+    }
+
+    /// `engine_forkchoiceUpdated*` dispatch per version.
     pub async fn forkchoice_updated(
         &self,
         v: ForkchoiceUpdatedVersion,
         state: ForkchoiceStateV1,
         attrs: Option<PayloadAttributesV1>,
     ) -> Result<ForkchoiceUpdatedV1Response, EngineError> {
-        let method = match v {
-            ForkchoiceUpdatedVersion::V1 => "engine_forkchoiceUpdatedV1",
-        };
-        self.rpc_call(method, (state, attrs)).await
+        match v {
+            ForkchoiceUpdatedVersion::V1 => self.forkchoice_updated_v1(state, attrs).await,
+            ForkchoiceUpdatedVersion::V2 => {
+                // The generic dispatch path drops V1 attrs for V2: V2 requires
+                // `PayloadAttributesV2`, so a caller wanting attributes MUST use
+                // `forkchoice_updated_v2` directly. The follow-only path always
+                // passes `None` here. Guard against a future caller silently
+                // losing attributes.
+                debug_assert!(
+                    attrs.is_none(),
+                    "forkchoice_updated(V2, .., Some(attrs)) drops V1 attrs; \
+                     call forkchoice_updated_v2 with PayloadAttributesV2 instead"
+                );
+                self.forkchoice_updated_v2(state, None).await
+            }
+        }
     }
 
-    /// `engine_getPayload*` per version.
+    /// `engine_getPayloadV1` — Bellatrix (block production).
+    pub async fn get_payload_v1(&self, id: PayloadIdV1) -> Result<ExecutionPayloadV1, EngineError> {
+        self.rpc_call("engine_getPayloadV1", [id]).await
+    }
+
+    /// `engine_getPayloadV2` — Capella (block production).
+    ///
+    /// Returns an `ExecutionPayloadV2` (with withdrawals). This is the wire
+    /// path only; live block-production driver wiring is deferred to M8.
+    /// TODO(M8): wire `get_payload_v2` into the block-production path.
+    pub async fn get_payload_v2(&self, id: PayloadIdV1) -> Result<ExecutionPayloadV2, EngineError> {
+        self.rpc_call("engine_getPayloadV2", [id]).await
+    }
+
+    /// `engine_getPayload*` dispatch per version (legacy single-payload interface).
     pub async fn get_payload(
         &self,
         v: GetPayloadVersion,
         id: PayloadIdV1,
     ) -> Result<ExecutionPayloadV1, EngineError> {
-        let method = match v {
-            GetPayloadVersion::V1 => "engine_getPayloadV1",
-        };
-        self.rpc_call(method, [id]).await
+        match v {
+            GetPayloadVersion::V1 => self.get_payload_v1(id).await,
+            GetPayloadVersion::V2 => {
+                // V2 is block-production-only; deferred to M8. Should not be
+                // reached on the follow-only path.
+                Err(EngineError::UnexpectedResponse(
+                    "engine_getPayloadV2 is not wired on the follow-only path (M8)".into(),
+                ))
+            }
+        }
     }
 
     /// `engine_exchangeTransitionConfigurationV1` — compares the CL's terminal
@@ -191,6 +299,9 @@ impl EngineClient {
 
     /// `engine_exchangeCapabilities` — caches the EL-advertised method set
     /// on first call. Subsequent calls return the cached value without an RPC.
+    ///
+    /// When `our_methods` is empty the client advertises the full default set
+    /// (all V1 + V2 methods).
     pub async fn exchange_capabilities(
         &self,
         our_methods: &[&str],
@@ -198,7 +309,14 @@ impl EngineClient {
         if let Some(cached) = self.capabilities.read().as_ref() {
             return Ok(cached.clone());
         }
-        let methods: Vec<String> = our_methods.iter().map(|s| s.to_string()).collect();
+        let methods: Vec<String> = if our_methods.is_empty() {
+            DEFAULT_ENGINE_CAPABILITIES
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            our_methods.iter().map(|s| s.to_string()).collect()
+        };
         let theirs: Vec<String> = self
             .rpc_call("engine_exchangeCapabilities", [methods])
             .await?;

@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use pharos_engine::jwt::sign_token;
 use pharos_engine::{
     EngineClient, ExecutionPayloadV1, ForkchoiceStateV1, ForkchoiceUpdatedV1Response,
-    ForkchoiceUpdatedVersion, JwtSecret, NewPayloadVersion, PayloadStatusStatus,
+    ForkchoiceUpdatedVersion, JwtSecret, NewPayloadVersion, NewPayloadWire, PayloadStatusStatus,
 };
 use reqwest::Url;
 use serde::Deserialize;
@@ -235,7 +235,7 @@ async fn new_payload_valid_invalid_syncing() {
             json!({"status": status_str, "latestValidHash": null, "validationError": null}),
         );
         let resp = client
-            .new_payload(NewPayloadVersion::V1, dummy_payload())
+            .new_payload(NewPayloadVersion::V1, NewPayloadWire::V1(dummy_payload()))
             .await
             .unwrap();
         assert_eq!(resp.status, expected, "status `{status_str}` round-trip");
