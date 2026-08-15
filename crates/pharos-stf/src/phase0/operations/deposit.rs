@@ -64,7 +64,7 @@ fn apply_deposit<E: EthSpec>(
 where
     E::BeaconState: BeaconStateWrite,
 {
-    let existing_index = state.validators().iter().position(|v| &v.pubkey == pubkey);
+    let existing_index = state.validators_iter().position(|v| &v.pubkey == pubkey);
 
     match existing_index {
         Some(idx) => {

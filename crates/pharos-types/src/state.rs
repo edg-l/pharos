@@ -211,6 +211,27 @@ impl<
             BeaconState::Bellatrix(s) => s.validators(),
         }
     }
+    fn validators_iter(&self) -> Box<dyn Iterator<Item = &Validator> + '_> {
+        match self {
+            BeaconState::Phase0(s) => s.validators_iter(),
+            BeaconState::Altair(s) => s.validators_iter(),
+            BeaconState::Bellatrix(s) => s.validators_iter(),
+        }
+    }
+    fn validator(&self, idx: usize) -> Option<&Validator> {
+        match self {
+            BeaconState::Phase0(s) => s.validator(idx),
+            BeaconState::Altair(s) => s.validator(idx),
+            BeaconState::Bellatrix(s) => s.validator(idx),
+        }
+    }
+    fn num_validators(&self) -> usize {
+        match self {
+            BeaconState::Phase0(s) => s.num_validators(),
+            BeaconState::Altair(s) => s.num_validators(),
+            BeaconState::Bellatrix(s) => s.num_validators(),
+        }
+    }
     fn balances(&self) -> &[Gwei] {
         match self {
             BeaconState::Phase0(s) => s.balances(),
@@ -225,6 +246,13 @@ impl<
             BeaconState::Bellatrix(s) => s.block_roots(),
         }
     }
+    fn block_root_at(&self, idx: usize) -> Option<Root> {
+        match self {
+            BeaconState::Phase0(s) => s.block_root_at(idx),
+            BeaconState::Altair(s) => s.block_root_at(idx),
+            BeaconState::Bellatrix(s) => s.block_root_at(idx),
+        }
+    }
     fn state_roots(&self) -> Vec<Root> {
         match self {
             BeaconState::Phase0(s) => s.state_roots(),
@@ -232,11 +260,25 @@ impl<
             BeaconState::Bellatrix(s) => s.state_roots(),
         }
     }
+    fn state_root_at(&self, idx: usize) -> Option<Root> {
+        match self {
+            BeaconState::Phase0(s) => s.state_root_at(idx),
+            BeaconState::Altair(s) => s.state_root_at(idx),
+            BeaconState::Bellatrix(s) => s.state_root_at(idx),
+        }
+    }
     fn randao_mixes(&self) -> Vec<Hash256> {
         match self {
             BeaconState::Phase0(s) => s.randao_mixes(),
             BeaconState::Altair(s) => s.randao_mixes(),
             BeaconState::Bellatrix(s) => s.randao_mixes(),
+        }
+    }
+    fn randao_mix_at(&self, idx: usize) -> Option<Hash256> {
+        match self {
+            BeaconState::Phase0(s) => s.randao_mix_at(idx),
+            BeaconState::Altair(s) => s.randao_mix_at(idx),
+            BeaconState::Bellatrix(s) => s.randao_mix_at(idx),
         }
     }
     fn slashings(&self) -> &[Gwei] {

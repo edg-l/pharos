@@ -35,9 +35,9 @@ where
     let previous_epoch = get_previous_epoch::<E>(state);
 
     if epoch == current_epoch {
-        Ok(state.current_epoch_attestations().to_vec())
+        Ok(state.current_epoch_attestations())
     } else if epoch == previous_epoch {
-        Ok(state.previous_epoch_attestations().to_vec())
+        Ok(state.previous_epoch_attestations())
     } else {
         Err(EpochProcessingError::InvalidEpochForAttestation)
     }

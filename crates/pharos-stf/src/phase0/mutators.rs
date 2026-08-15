@@ -74,9 +74,8 @@ where
     E::BeaconState: BeaconStateWrite,
 {
     {
-        let vs = state.validators();
-        let validator = vs
-            .get(index.0 as usize)
+        let validator = state
+            .validator(index.0 as usize)
             .ok_or(StateTransitionError::SlotOutOfRange)?;
         if validator.exit_epoch.0 != FAR_FUTURE_EPOCH {
             return Ok(());
@@ -88,8 +87,7 @@ where
 
     let exit_queue_epoch = {
         let max_existing = state
-            .validators()
-            .iter()
+            .validators_iter()
             .filter(|v| v.exit_epoch.0 != FAR_FUTURE_EPOCH)
             .map(|v| v.exit_epoch.0)
             .max()
@@ -100,8 +98,7 @@ where
 
     let churn_limit = get_validator_churn_limit::<E>(state);
     let exit_queue_churn = state
-        .validators()
-        .iter()
+        .validators_iter()
         .filter(|v| v.exit_epoch == exit_queue_epoch)
         .count() as u64;
 
@@ -121,12 +118,10 @@ where
         .ok_or(StateTransitionError::SlotOutOfRange)?;
     let withdrawable_epoch = Epoch(withdrawable_epoch_raw);
 
-    let mut validator = {
-        let vs = state.validators();
-        vs.get(index.0 as usize)
-            .ok_or(StateTransitionError::SlotOutOfRange)?
-            .clone()
-    };
+    let mut validator = state
+        .validator(index.0 as usize)
+        .ok_or(StateTransitionError::SlotOutOfRange)?
+        .clone();
     validator.exit_epoch = final_exit_epoch;
     validator.withdrawable_epoch = withdrawable_epoch;
     state.set_validator(index.0 as usize, validator)?;
@@ -148,9 +143,8 @@ where
     initiate_validator_exit::<E>(state, slashed_index)?;
 
     let (effective_balance, current_withdrawable_epoch) = {
-        let vs = state.validators();
-        let v = vs
-            .get(slashed_index.0 as usize)
+        let v = state
+            .validator(slashed_index.0 as usize)
             .ok_or(StateTransitionError::SlotOutOfRange)?;
         (v.effective_balance, v.withdrawable_epoch)
     };

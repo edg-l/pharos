@@ -25,14 +25,11 @@ where
     let total_slashings: u64 = state.slashings().iter().map(|g| g.0).sum();
     let adjusted = (total_slashings * E::PROPORTIONAL_SLASHING_MULTIPLIER).min(total_balance);
 
-    let validators_snap = state.validators();
-    let n = validators_snap.len();
-    // Collect (index, effective_balance) for validators that are due for slashing penalty.
-    // Due at: epoch + EPOCHS_PER_SLASHINGS_VECTOR / 2 == validator.withdrawable_epoch.
     let slashing_epoch_mid = epoch.0 + E::EPOCHS_PER_SLASHINGS_VECTOR / 2;
-    let slashable: Vec<(usize, u64)> = (0..n)
-        .filter_map(|i| {
-            let v = &validators_snap[i];
+    let slashable: Vec<(usize, u64)> = state
+        .validators_iter()
+        .enumerate()
+        .filter_map(|(i, v)| {
             if v.slashed && slashing_epoch_mid == v.withdrawable_epoch.0 {
                 Some((i, v.effective_balance.0))
             } else {

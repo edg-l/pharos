@@ -97,7 +97,7 @@ where
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
-    let n = state.validators().len();
+    let n = state.num_validators();
     let mut rewards = vec![0u64; n];
     let mut penalties = vec![0u64; n];
 
@@ -183,7 +183,7 @@ where
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
-    let n = state.validators().len();
+    let n = state.num_validators();
     let mut rewards = vec![0u64; n];
     let penalties = vec![0u64; n];
 
@@ -228,7 +228,7 @@ where
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
-    let n = state.validators().len();
+    let n = state.num_validators();
     let rewards = vec![0u64; n];
     let mut penalties = vec![0u64; n];
 
@@ -285,7 +285,7 @@ where
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
-    let n = state.validators().len();
+    let n = state.num_validators();
 
     let source = get_source_deltas::<E>(state)?;
     let target = get_target_deltas::<E>(state)?;
@@ -337,7 +337,7 @@ where
     }
 
     let (rewards, penalties) = get_attestation_deltas::<E>(state)?;
-    let n = state.validators().len();
+    let n = state.num_validators();
     for i in 0..n {
         increase_balance::<E>(state, ValidatorIndex(i as u64), Gwei(rewards[i]));
         decrease_balance::<E>(state, ValidatorIndex(i as u64), Gwei(penalties[i]));

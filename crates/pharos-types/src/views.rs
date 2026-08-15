@@ -118,10 +118,20 @@ pub trait BeaconStateView {
     fn fork(&self) -> &Fork;
     fn latest_block_header(&self) -> &BeaconBlockHeader;
     fn validators(&self) -> Vec<Validator>;
+    /// Borrowing iterator over validators (no Vec materialization).
+    fn validators_iter(&self) -> Box<dyn Iterator<Item = &Validator> + '_>;
+    /// Borrowing access to a single validator by index (O(log N) on tree backend).
+    fn validator(&self, idx: usize) -> Option<&Validator>;
+    /// Number of validators (cheap on both Naive and Tree backends).
+    fn num_validators(&self) -> usize;
     fn balances(&self) -> &[Gwei];
     fn block_roots(&self) -> Vec<Root>;
+    /// Direct indexed block-root lookup (no Vec materialization).
+    fn block_root_at(&self, idx: usize) -> Option<Root>;
     fn state_roots(&self) -> Vec<Root>;
+    fn state_root_at(&self, idx: usize) -> Option<Root>;
     fn randao_mixes(&self) -> Vec<Hash256>;
+    fn randao_mix_at(&self, idx: usize) -> Option<Hash256>;
     fn slashings(&self) -> &[Gwei];
     fn eth1_data(&self) -> &Eth1Data;
     fn previous_justified_checkpoint(&self) -> &Checkpoint;
@@ -269,17 +279,35 @@ impl<
     fn validators(&self) -> Vec<Validator> {
         self.validators.iter().cloned().collect()
     }
+    fn validators_iter(&self) -> Box<dyn Iterator<Item = &Validator> + '_> {
+        Box::new(self.validators.iter())
+    }
+    fn validator(&self, idx: usize) -> Option<&Validator> {
+        self.validators.get(idx)
+    }
+    fn num_validators(&self) -> usize {
+        self.validators.len()
+    }
     fn balances(&self) -> &[Gwei] {
         self.balances.as_slice()
     }
     fn block_roots(&self) -> Vec<Root> {
         self.block_roots.iter().cloned().collect()
     }
+    fn block_root_at(&self, idx: usize) -> Option<Root> {
+        self.block_roots.get(idx).copied()
+    }
     fn state_roots(&self) -> Vec<Root> {
         self.state_roots.iter().cloned().collect()
     }
+    fn state_root_at(&self, idx: usize) -> Option<Root> {
+        self.state_roots.get(idx).copied()
+    }
     fn randao_mixes(&self) -> Vec<Hash256> {
         self.randao_mixes.iter().cloned().collect()
+    }
+    fn randao_mix_at(&self, idx: usize) -> Option<Hash256> {
+        self.randao_mixes.get(idx).copied()
     }
     fn slashings(&self) -> &[Gwei] {
         self.slashings.as_slice()

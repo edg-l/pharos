@@ -65,7 +65,9 @@ pub fn get_block_root_at_slot<E: EthSpec>(
         return Err(StateTransitionError::SlotOutOfRange);
     }
     let idx = (slot.0 % E::SLOTS_PER_HISTORICAL_ROOT) as usize;
-    Ok(state.block_roots()[idx])
+    state
+        .block_root_at(idx)
+        .ok_or(StateTransitionError::SlotOutOfRange)
 }
 
 /// `get_block_root` per `specs/phase0/beacon-chain.md:1011-1015`.
@@ -82,7 +84,7 @@ pub fn get_block_root<E: EthSpec>(
 /// `get_randao_mix` per `specs/phase0/beacon-chain.md:1030-1035`.
 pub fn get_randao_mix<E: EthSpec>(state: &E::BeaconState, epoch: Epoch) -> Hash256 {
     let idx = (epoch.0 % E::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
-    state.randao_mixes()[idx]
+    state.randao_mix_at(idx).unwrap_or_default()
 }
 
 /// `get_active_validator_indices` per `specs/phase0/beacon-chain.md:1042-1047`.
@@ -91,8 +93,7 @@ pub fn get_active_validator_indices<E: EthSpec>(
     epoch: Epoch,
 ) -> Vec<ValidatorIndex> {
     state
-        .validators()
-        .iter()
+        .validators_iter()
         .enumerate()
         .filter_map(|(i, v)| {
             if is_active_validator(v, epoch.0) {
@@ -232,8 +233,7 @@ pub fn get_total_balance<E: EthSpec>(state: &E::BeaconState, indices: &[Validato
         .iter()
         .map(|i| {
             state
-                .validators()
-                .get(i.0 as usize)
+                .validator(i.0 as usize)
                 .map(|v| v.effective_balance.0)
                 .unwrap_or(0)
         })

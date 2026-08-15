@@ -387,17 +387,35 @@ impl<
     fn validators(&self) -> Vec<Validator> {
         self.validators.iter().cloned().collect()
     }
+    fn validators_iter(&self) -> Box<dyn Iterator<Item = &Validator> + '_> {
+        Box::new(self.validators.iter())
+    }
+    fn validator(&self, idx: usize) -> Option<&Validator> {
+        self.validators.get(idx)
+    }
+    fn num_validators(&self) -> usize {
+        self.validators.len()
+    }
     fn balances(&self) -> &[Gwei] {
         self.balances.as_slice()
     }
     fn block_roots(&self) -> Vec<Root> {
         self.block_roots.iter().cloned().collect()
     }
+    fn block_root_at(&self, idx: usize) -> Option<Root> {
+        self.block_roots.get(idx).copied()
+    }
     fn state_roots(&self) -> Vec<Root> {
         self.state_roots.iter().cloned().collect()
     }
+    fn state_root_at(&self, idx: usize) -> Option<Root> {
+        self.state_roots.get(idx).copied()
+    }
     fn randao_mixes(&self) -> Vec<Hash256> {
         self.randao_mixes.iter().cloned().collect()
+    }
+    fn randao_mix_at(&self, idx: usize) -> Option<Hash256> {
+        self.randao_mixes.get(idx).copied()
     }
     fn slashings(&self) -> &[Gwei] {
         self.slashings.as_slice()

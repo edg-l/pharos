@@ -77,7 +77,7 @@ pub fn is_valid_indexed_attestation<E: EthSpec>(
     // Collect pubkeys.
     let pubkeys: Vec<pharos_utils::BLSPubkey> = indices
         .iter()
-        .filter_map(|i| state.validators().get(i.0 as usize).map(|v| v.pubkey))
+        .filter_map(|i| state.validator(i.0 as usize).map(|v| v.pubkey))
         .collect();
 
     if pubkeys.len() != indices.len() {

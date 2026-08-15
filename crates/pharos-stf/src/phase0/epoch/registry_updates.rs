@@ -39,11 +39,12 @@ where
 
     // Process activation eligibility and ejections.
     // Iterate by index to allow in-place mutation of each validator.
-    let n = state.validators().len();
+    let n = state.num_validators();
     for index in 0..n {
         let (is_queue_eligible, should_eject) = {
-            let vs = state.validators();
-            let v = &vs[index];
+            let v = state
+                .validator(index)
+                .ok_or(EpochProcessingError::ValidatorIndexOutOfRange { index })?;
             let queue_eligible = is_eligible_for_activation_queue::<E>(v);
             let eject = is_active_validator(v, current_epoch.0)
                 && v.effective_balance.0 <= EJECTION_BALANCE;
@@ -51,7 +52,10 @@ where
         };
 
         if is_queue_eligible {
-            let mut v = state.validators()[index].clone();
+            let mut v = state
+                .validator(index)
+                .ok_or(EpochProcessingError::ValidatorIndexOutOfRange { index })?
+                .clone();
             v.activation_eligibility_epoch = pharos_types::phase0::Epoch(current_epoch.0 + 1);
             state
                 .set_validator(index, v)
@@ -67,16 +71,26 @@ where
     // Build activation queue: validators eligible for activation, not yet activated,
     // sorted by (activation_eligibility_epoch, index) per spec.
     let finalized_epoch = state.finalized_checkpoint().epoch;
-    let validators_snap = state.validators();
-    let mut activation_queue: Vec<usize> = (0..validators_snap.len())
-        .filter(|&i| is_eligible_for_activation(finalized_epoch, &validators_snap[i]))
+    let mut activation_queue: Vec<(usize, pharos_types::phase0::Epoch)> = state
+        .validators_iter()
+        .enumerate()
+        .filter_map(|(i, v)| {
+            if is_eligible_for_activation(finalized_epoch, v) {
+                Some((i, v.activation_eligibility_epoch))
+            } else {
+                None
+            }
+        })
         .collect();
 
-    activation_queue.sort_by_key(|&i| (validators_snap[i].activation_eligibility_epoch, i));
+    activation_queue.sort_by_key(|&(i, ae)| (ae, i));
 
     let churn_limit = get_validator_churn_limit::<E>(state) as usize;
-    for &index in activation_queue.iter().take(churn_limit) {
-        let mut v = state.validators()[index].clone();
+    for &(index, _) in activation_queue.iter().take(churn_limit) {
+        let mut v = state
+            .validator(index)
+            .ok_or(EpochProcessingError::ValidatorIndexOutOfRange { index })?
+            .clone();
         v.activation_epoch = compute_activation_exit_epoch(current_epoch, E::MAX_SEED_LOOKAHEAD);
         state
             .set_validator(index, v)

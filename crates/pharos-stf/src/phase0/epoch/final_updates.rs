@@ -49,7 +49,7 @@ where
     let downward_threshold = hysteresis_increment * E::HYSTERESIS_DOWNWARD_MULTIPLIER;
     let upward_threshold = hysteresis_increment * E::HYSTERESIS_UPWARD_MULTIPLIER;
 
-    let n = state.validators().len();
+    let n = state.num_validators();
 
     // Snapshot the per-validator (balance, effective_balance) pairs so the
     // parallel map below has no shared mutable access.
@@ -232,7 +232,7 @@ pub fn process_participation_record_updates<E: EthSpec>(
 where
     E::BeaconState: BeaconStateWrite,
 {
-    let current: Vec<_> = state.current_epoch_attestations().to_vec();
+    let current = state.current_epoch_attestations();
     state
         .set_previous_epoch_attestations(current)
         .map_err(EpochProcessingError::from)?;
