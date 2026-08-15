@@ -34,6 +34,11 @@ numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
 - [M4b — Checkpoint sync + forward backfill](#m4b-decisions)
   - D-anchor-as-weak-subj-root D-checkpoint-sync-source D-anchor-state-on-disk
   - D-backfill-driver D-engine-config-keepalive D-jwt-auto-gen
+- [M4-perf — Tree-backed SSZ + tree-hash caching](#m4-perf-decisions)
+  - D-tree-node-shape D-packed-as-full-chunk D-tree-backend-fields
+  - D-validator-cache-clone-resets D-cached-root-wrapper D-no-tree-backend-on-decode
+  - D-state-view-borrowing-accessors D-treehash-rayon-strategy
+  - D-conformance-parallelism-dropped
 
 ## M1 — Phase 0 STF + fork choice
 
@@ -1387,3 +1392,154 @@ and a `jwt-secret` entry in the YAML config file (adds config surface for a valu
 benefits from automatic rotation on first boot; file-based auto-gen matches what Lighthouse
 and Teku do). Enforced in `crates/pharos-node/src/jwt_autogen.rs` (`ensure_jwt_secret`
 at line 26, `open_for_write` at line 65).
+
+## M4-perf decisions
+
+### D-tree-node-shape — Persistent CoW tree with per-node `OnceLock<Hash256>`
+
+**Status**: Accepted. **Date**: 2026-05-27.
+
+`SszList<T, N>` / `SszVector<T, N>` keep a `Backend::{Naive(Vec<T>), Tree(Arc<Node<T>>)}`
+discriminant. The `Tree` variant uses `Node<T> { Branch { left: Arc<Node<T>>, right:
+Arc<Node<T>>, hash: OnceLock<Hash256> }, Leaf(T), ZeroSubtree(u8) }` with a const-generic
+depth derived from `N`. `Arc` enables structural sharing across CoW writes; `with_set(i, v)`
+allocates fresh `Branch` nodes only along the spine from the root to leaf `i`, reusing
+all sibling subtrees. Per-node `OnceLock<Hash256>` caches the Merkle root so subsequent
+`tree_hash_root()` calls only recompute the dirty spine. `ZeroSubtree(d)` represents an
+all-zero subtree at depth `d` without allocating, matching the SSZ default for unpopulated
+list slots. Enforced in `crates/pharos-ssz/src/sequence.rs` (`Node` at line 74, tree
+backend implementation throughout).
+
+### D-packed-as-full-chunk — `FixedBytes<32>` admitted to tree backend via per-type carveout
+
+**Status**: Accepted. **Date**: 2026-05-27.
+
+`TreeHash::PACKED_AS_FULL_CHUNK: bool` is a new associated const on the `TreeHash` trait,
+default `false`. `FixedBytes<N>` overrides it to `N == 32` so `Root`, `Hash256`, and
+`Bytes32` qualify. The `Tree` backend's invariant — one element per leaf — is
+incompatible with genuine multi-per-chunk basics (`u8`/`u32`/`u64`), which SSZ packs
+multiple-per-32-byte-chunk. The carveout admits `FixedBytes<32>` while still rejecting
+those, which unlocks tree-backing for `state_roots`/`block_roots`/`randao_mixes`/`historical_roots`
+(all `SszVector<Root, _>`-shaped) without writing a translation layer. Rejected
+alternatives: bespoke `SszList<u8, _>` packing rule (deferred to M11; basic-element
+trees stay on `Backend::Naive(_)`); a separate `PackedTree` backend (doubles backend
+surface for a single special case). Enforced at `crates/pharos-ssz/src/tree_hash.rs:83`
+(default) and `crates/pharos-ssz/src/tree_hash.rs:354` (`FixedBytes<N>` override), gated
+in `sequence.rs` at lines 448, 476, 731, 1706.
+
+### D-tree-backend-fields — Seven hot `BeaconState` fields flipped to `Tree`; the rest stay `Naive`
+
+**Status**: Accepted. **Date**: 2026-05-27.
+
+The following fields on every fork's `BeaconState` are constructed with `Backend::Tree`
+in their respective `Default` / `into_tree_backend` paths: `validators`, `historical_roots`,
+`state_roots`, `block_roots`, `randao_mixes`, `previous_epoch_attestations`,
+`current_epoch_attestations` (the latter two are Phase 0 only; Altair onwards uses
+participation flags). These are the structurally large, hash-hot fields. All other
+list/vector fields (`balances`, `slashings`, `eth1_data_votes`, etc.) stay
+`Backend::Naive(_)`: either they are basic-element packed and so excluded by
+`D-packed-as-full-chunk`, or they are small enough that the tree-backend overhead
+beats the cache win. Enforced in `crates/pharos-types/src/{phase0,altair,bellatrix}/state.rs`
+(`into_tree_backend` methods).
+
+### D-validator-cache-clone-resets — `Validator::tree_hash_root` cached via `OnceLock`; `Clone` resets the cache
+
+**Status**: Accepted. **Date**: 2026-05-27.
+
+`Validator` gains a hand-written `TreeHash` impl that memoises `tree_hash_root()` in a
+private `OnceLock<Hash256>` field (`cached_root`). The field is skipped by SSZ
+`Encode`/`Decode` and excluded from `PartialEq`/`Eq`/`Hash` (semantic transparency).
+`Clone` is hand-written to RESET the cache, not propagate it. This corrects the
+original plan's `validator_clone_carries_cache` semantic, which caused 215 conformance
+failures during implementation: STF call sites do
+`let mut v = validators[i].clone(); v.exit_epoch = ...; with_set(i, v)`, and a populated
+clone-carried cache would yield a stale root after the mutation. Resetting on clone is
+the safe default and the cost is one re-hash per cloned validator on first access. The
+miss rate is bounded — active validators are rarely cloned per slot. Enforced in
+`crates/pharos-types/src/phase0/misc.rs` (`Validator` `Clone` and `TreeHash` impls).
+
+### D-cached-root-wrapper — `pharos-utils::CachedRoot` helper with `Clone`-resets + transparent `PartialEq`
+
+**Status**: Accepted. **Date**: 2026-05-27.
+
+`pharos_utils::CachedRoot` wraps `OnceLock<Hash256>` with: `Clone` produces an empty
+`CachedRoot` (matching `D-validator-cache-clone-resets`), `PartialEq` returns `true`
+unconditionally (so two states that hash-equal but differ in cache population status
+still compare equal), `Default` returns empty, and the wrapper is annotated
+`#[ssz(skip)]` at field sites so SSZ encode/decode treats it as invisible. The
+wrapper is used at the `BeaconState` level (per-fork `cached_root` field) to memoise
+the top-level state root; it composes with the per-validator `Validator::cached_root`
+to cache at two granularities. Rejected alternatives: re-deriving `Clone` /
+`PartialEq` everywhere it appears (forces hand-written impls on every container
+that carries a cache); a separate trait (`CacheField`) and blanket impls (more code
+for the same effect). Enforced in `crates/pharos-utils/src/cached_root.rs`
+(struct at line 16, `Clone` at line 35, `PartialEq` at line 48).
+
+### D-no-tree-backend-on-decode — SSZ decode lands `Backend::Naive`; tree flip is explicit at runtime entry points
+
+**Status**: Accepted. **Date**: 2026-05-27.
+
+`BeaconState::from_ssz_bytes` for every fork decodes list/vector fields into
+`Backend::Naive(Vec<T>)` regardless of whether the field is on the
+`D-tree-backend-fields` list. The Phase 2 commit that wired `.into_tree_backend()`
+inside `from_ssz_bytes` was a regression: it forced every spec-test fixture to
+allocate full `Arc<Node<T>>` trees up-front for 8192-element `state_roots`/`block_roots`
+and 65536-element `randao_mixes`, then build trees that are immediately discarded
+when the next assertion runs. The conformance writer is single-shot per state and
+sees no cache amortisation; the up-front tree build cost was a 22% regression.
+Decode therefore lands `Naive`; live-node code paths that benefit from the tree
+backend (storage rehydration, checkpoint sync apply, genesis init) call
+`into_tree_backend()` explicitly at those entry points. The conformance writer
+keeps `Naive` end-to-end. Enforced by absence: `rg "into_tree_backend" crates/pharos-types/src`
+shows the helper but no `from_ssz_bytes` call site invokes it.
+
+### D-state-view-borrowing-accessors — `BeaconStateView::validators_iter`/`validator(idx)`/`num_validators` replace `validators() -> Vec<Validator>`
+
+**Status**: Accepted. **Date**: 2026-05-27.
+
+`BeaconStateView::validators()` previously returned `Vec<Validator>` via
+`self.validators.iter().cloned().collect()`. Hot STF accessors (`get_total_balance`,
+`get_active_validator_indices`, `process_rewards_and_penalties`, etc.) called it
+once per indexed access, producing O(N) `Validator` clones per call and O(N²) clone
+cost per epoch transition. Borrowing accessors were added — `validators_iter(&self)`,
+`validator(&self, idx)`, `num_validators(&self)`, plus position-borrowing siblings
+`block_root_at`, `state_root_at`, `randao_mix_at` — and every hot caller migrated.
+The original `Vec`-returning methods are retained for legacy callers and tests but
+flagged as cold-path. This single change accounts for the bulk of the conformance
+wall-clock improvement (the writer never amortises the per-state caches, so its
+speedup came almost entirely from killing the Vec materialization). Enforced at
+`crates/pharos-types/src/views.rs:120-126` (trait methods) and
+`crates/pharos-types/src/views.rs:284-294` (impls).
+
+### D-treehash-rayon-strategy — `#[derive(TreeHash)]` emits field-level `rayon::join` for structs with ≥ 4 fields
+
+**Status**: Accepted. **Date**: 2026-05-27.
+
+`pharos-ssz-derive`'s `#[derive(TreeHash)]` macro emits a balanced binary
+`rayon::join` tree over per-field roots when the struct has at least four SSZ-visible
+fields (`#[ssz(skip)]` fields do not count); structs with fewer keep the serial array
+build, where the `rayon::join` overhead exceeds the work. `rayon` is re-exported from
+`pharos-ssz` (`pub use ::rayon;`) so consumer crates do not need a direct `rayon`
+dependency; the macro emits `::pharos_ssz::rayon::join`. The threshold is a constant
+on the derive macro side, not a runtime branch. Enforced in
+`crates/pharos-ssz-derive/src/lib.rs` (`PAR_TREE_HASH_FIELD_THRESHOLD = 4` at line 36,
+balanced `rayon::join` builder at line 382).
+
+### D-conformance-parallelism-dropped — Phase 5 outer `par_iter` over (fork, category, preset) abandoned
+
+**Status**: Rejected. **Date**: 2026-05-27.
+
+The original M4-perf plan included a Phase 5 that would `par_iter` over the ~60
+(fork, category, preset) triples consumed by `pharos_conformance::lib::run`. The
+phase was attempted twice and dropped both times. Cause: nested rayon `par_iter`
+(the outer 60-spec parallelism dispatching closures that themselves call
+`into_par_iter` over per-spec cases) thrashes the global thread pool — workers
+split across outer and inner work, and a heavy outer item (e.g. `phase0/sanity/mainnet`)
+cannot get a full thread-pool slice. The agent implementation was ~4× slower than
+the sequential ladder on a filtered solo run and roughly matched the ladder on a
+full run, with no net win. The conformance writer stays sequential at the outer
+level; per-case inner parallelism (the existing `par_iter` over fixture cases
+inside each category) is preserved. See also: `mem_98f64695` (rayon nested
+par_iter pitfall pattern, global memory). Recorded for posterity; not enforced
+in code (the rejected refactor never landed).
+

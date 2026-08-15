@@ -471,7 +471,32 @@ pipeline integration test — `checkpoint_backfill_pipeline.rs`, 10-run green) �
 
 Deferred from M4b: weak-subjectivity validation (M11), historical backfill (M11).
 
-#### M4-perf — Tree-backed persistent SSZ collections + tree-hash parallelism
+#### M4-perf — Tree-backed persistent SSZ collections + tree-hash parallelism (DONE)
+
+Closed 2026-05-27. Commits `8e04006` (Phase 1 tree backend) →
+`020ea9d` (state-level cached_root). Full conformance writer
+**~11 min → 2:59 (3.7×)**; targeted `phase0/sanity/mainnet`
+**5:46 → ~19 s (18×)**. `docs/conformance.md` row counts byte-identical
+(only the header date line changes). The headline win came not from the
+originally-planned Phase 5 outer `par_iter` (dropped — see
+`D-conformance-parallelism-dropped`) but from
+`BeaconStateView::validators() -> Vec<Validator>` materialization being
+the dominant hot path in the writer; the borrowing accessors
+(`D-state-view-borrowing-accessors`) account for the bulk of the gain.
+Phase 3 (`Validator::tree_hash_root` `OnceLock` cache,
+clone-resets-cache per `D-validator-cache-clone-resets`) and Phase 6
+(state-level `CachedRoot` per `D-cached-root-wrapper`) are live-node
+wins that the single-shot conformance writer does not amortise; they
+remain latent until live-node call sites migrate to
+`cached_tree_hash_root()` + explicit `into_tree_backend()` at storage /
+checkpoint-sync / genesis entry points. ADRs added to
+`docs/decisions.md` (M4-perf section): `D-tree-node-shape`,
+`D-packed-as-full-chunk`, `D-tree-backend-fields`,
+`D-validator-cache-clone-resets`, `D-cached-root-wrapper`,
+`D-no-tree-backend-on-decode`, `D-state-view-borrowing-accessors`,
+`D-treehash-rayon-strategy`, `D-conformance-parallelism-dropped`.
+Workspace version bumped `0.4.0` → `0.5.0`. Phase 6 wrap-up + audits in
+`docs/m4-perf-plan.md`.
 
 Why this slice: the conformance suite and STF are both dominated by
 `BeaconState::tree_hash_root` — sha2 is ~90% of the writer's CPU per

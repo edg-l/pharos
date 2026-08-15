@@ -6,7 +6,7 @@
 
 A from-scratch Rust Ethereum proof-of-stake consensus client.
 
-**Status: pre-alpha, M4b done.** Not usable as a node yet. Phase 0,
+**Status: pre-alpha, M4-perf done.** Not usable as a node yet. Phase 0,
 Altair, and Bellatrix conformance are all at 100% (all categories, zero
 failures) on both `mainnet` and `minimal` presets. State transition,
 LMD-GHOST + FFG fork choice, the M2 networking baseline (`discv5`, `libp2p`
@@ -90,6 +90,12 @@ boundary.
   Engine API keepalive (60-second `exchangeTransitionConfigurationV1`
   poll), checkpoint sync from a trusted Beacon API URL, forward backfill
   via `BeaconBlocksByRange`, mock pipeline integration test. **Done.**
+- **M4-perf — Tree-backed persistent SSZ + tree-hash caching.** Persistent
+  CoW `SszList`/`SszVector` with `Arc<Node>` + `OnceLock<Hash256>`,
+  `Validator` and `BeaconState` cached roots, derive-emitted field-level
+  `rayon::join`, borrowing `BeaconStateView` accessors. Full conformance
+  writer ~11 min → ~3 min (3.7×); `phase0/sanity/mainnet` 5:46 → ~19 s
+  (18×); row counts byte-identical. **Done.**
 - **M4c–M4d — LC gossip carry-ins, perf bench baseline, devnet acceptance
   gate.** First merged sync against a real ethrex devnet.
 - **M5–M10 — Capella, Deneb, Beacon API, validator client, Electra,

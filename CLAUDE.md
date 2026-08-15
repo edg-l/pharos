@@ -169,6 +169,42 @@ ADRs added to `docs/decisions.md` (M4b section): `D-anchor-as-weak-subj-root`,
 `D-engine-config-keepalive`, `D-jwt-auto-gen`. Deferred: weak-subjectivity validation
 (M11), historical backfill (M11). Phase 6 wrap-up + audits in `docs/m4b-plan.md`.
 
+## M4-perf status
+
+Closed. Full conformance writer ~11 min → 2:59 (3.7×); targeted `phase0/sanity/mainnet`
+5:46 → ~19 s (18×). `docs/conformance.md` row counts byte-identical. Tree-backed
+`SszList<T, N>`/`SszVector<T, N>` ships (`crates/pharos-ssz/src/sequence.rs`):
+`Backend::{Naive, Tree(Arc<Node<T>>)}` with `Branch { OnceLock<Hash256> }`, `Leaf`,
+`ZeroSubtree(depth)`, CoW path-copy writes, structural sharing. `FixedBytes<32>`
+admitted to tree backend via `PACKED_AS_FULL_CHUNK` carveout. Seven hot `BeaconState`
+fields flipped to `Tree` (`validators`, `historical_roots`, `state_roots`,
+`block_roots`, `randao_mixes`, `previous/current_epoch_attestations`). `Validator`
+ships an `OnceLock<Hash256>` cache with hand-written `Clone` that RESETS the cache
+(`clone-mutate-with_set` is the dominant STF pattern; carrying the cache would yield
+stale roots). `pharos_utils::CachedRoot` wrapper adds state-level top-root memoisation
+with `Clone`-resets, transparent `PartialEq`, `#[ssz(skip)]` field annotation; wired
+into all three fork variants of `BeaconState`. `#[derive(TreeHash)]` emits balanced
+binary `rayon::join` for structs with ≥ 4 SSZ-visible fields
+(`PAR_TREE_HASH_FIELD_THRESHOLD` in `crates/pharos-ssz-derive/src/lib.rs`).
+`BeaconStateView` gains borrowing accessors (`validators_iter`, `validator(idx)`,
+`num_validators`, `block_root_at`, `state_root_at`, `randao_mix_at`); all hot STF
+call sites migrated; the `Vec<Validator>`-returning legacy methods are retained but
+cold-path. Conformance decode lands `Backend::Naive` regardless of the
+`D-tree-backend-fields` list — the Phase 2 attempt to flip on decode was a 22%
+regression because the writer is single-shot per state and amortises nothing; the
+explicit `into_tree_backend()` helpers exist on each `BeaconState` for live-node
+entry points to call. Phase 5 outer `par_iter` over (fork, category, preset)
+triples was attempted twice and dropped — nested rayon thrashes the global thread
+pool. ADRs added to `docs/decisions.md` (M4-perf section): `D-tree-node-shape`,
+`D-packed-as-full-chunk`, `D-tree-backend-fields`,
+`D-validator-cache-clone-resets`, `D-cached-root-wrapper`,
+`D-no-tree-backend-on-decode`, `D-state-view-borrowing-accessors`,
+`D-treehash-rayon-strategy`, `D-conformance-parallelism-dropped`. Workspace version
+bumped `0.4.0` → `0.5.0`. Phase 6 wrap-up in `docs/m4-perf-plan.md`. Latent wins
+(Phase 3 + Phase 6 state cache) currently unused at runtime — pending live-node
+caller migration to `cached_tree_hash_root()` + `into_tree_backend()` at storage /
+checkpoint-sync / genesis entry points.
+
 ## Reference repos (cloned in `~/dev/`)
 
 - `consensus-specs/` — Python specs + reference tests (test fixtures live
