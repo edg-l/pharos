@@ -10,3 +10,6 @@ description = "LMD-GHOST + FFG Casper fork choice for Pharos."
 [dependencies]
 pharos-types.workspace = true
 pharos-utils.workspace = true
+pharos-ssz.workspace = true
+pharos-stf.workspace = true
+thiserror.workspace = true

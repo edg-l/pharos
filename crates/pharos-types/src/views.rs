@@ -90,6 +90,7 @@ pub trait SignedBeaconBlockView {
 /// Collection fields are exposed as slices so the concrete const-generic
 /// parameter does not appear at call sites.
 pub trait BeaconStateView {
+    fn genesis_time(&self) -> u64;
     fn genesis_validators_root(&self) -> Root;
     fn slot(&self) -> Slot;
     fn fork(&self) -> &Fork;
@@ -224,6 +225,9 @@ impl<
         MAX_VALIDATORS_PER_COMMITTEE,
     >
 {
+    fn genesis_time(&self) -> u64 {
+        self.genesis_time
+    }
     fn genesis_validators_root(&self) -> Root {
         self.genesis_validators_root
     }

@@ -223,6 +223,23 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Sources: `configs/mainnet.yaml` (65536), `configs/minimal.yaml` (32).
     const CHURN_LIMIT_QUOTIENT: u64;
 
+    /// `SLOT_DURATION_MS` — slot duration in milliseconds.
+    ///
+    /// Sources: `configs/mainnet.yaml:68` (12000), `configs/minimal.yaml:64` (6000).
+    /// Used by fork-choice `on_tick` and proposer-boost timing.
+    const SLOT_DURATION_MS: u64;
+
+    /// `ATTESTATION_DUE_BPS` — attestation deadline as basis points of `SLOT_DURATION_MS`.
+    ///
+    /// Sources: `configs/mainnet.yaml:80` (3333), `configs/minimal.yaml:76` (3333).
+    /// Used by `record_block_timeliness` and proposer-boost timing.
+    const ATTESTATION_DUE_BPS: u64;
+
+    /// `BASIS_POINTS` — the basis-points denominator (10000).
+    ///
+    /// Per `specs/phase0/fork-choice.md` "Constant" section.
+    const BASIS_POINTS: u64 = 10_000;
+
     /// Human-readable preset name (e.g. `"mainnet"`, `"minimal"`).
     fn name() -> &'static str;
 
@@ -412,6 +429,10 @@ impl EthSpec for MainnetEthSpec {
     const MIN_PER_EPOCH_CHURN_LIMIT: u64 = 4;
     /// `CHURN_LIMIT_QUOTIENT` from `configs/mainnet.yaml`.
     const CHURN_LIMIT_QUOTIENT: u64 = 65_536;
+    /// `SLOT_DURATION_MS` from `configs/mainnet.yaml:68`.
+    const SLOT_DURATION_MS: u64 = 12_000;
+    /// `ATTESTATION_DUE_BPS` from `configs/mainnet.yaml:80`.
+    const ATTESTATION_DUE_BPS: u64 = 3_333;
 
     fn name() -> &'static str {
         "mainnet"
@@ -547,6 +568,10 @@ impl EthSpec for MinimalEthSpec {
     const MIN_PER_EPOCH_CHURN_LIMIT: u64 = 2;
     /// `CHURN_LIMIT_QUOTIENT` from `configs/minimal.yaml`.
     const CHURN_LIMIT_QUOTIENT: u64 = 32;
+    /// `SLOT_DURATION_MS` from `configs/minimal.yaml:64`.
+    const SLOT_DURATION_MS: u64 = 6_000;
+    /// `ATTESTATION_DUE_BPS` from `configs/minimal.yaml:76`.
+    const ATTESTATION_DUE_BPS: u64 = 3_333;
 
     fn name() -> &'static str {
         "minimal"

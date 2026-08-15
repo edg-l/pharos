@@ -8,7 +8,7 @@ use std::str::FromStr;
 ///
 /// `Copy` is implemented unconditionally for all `N` because `[u8; N]` is
 /// `Copy` for all `N` on stable Rust (S6).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FixedBytes<const N: usize>(pub(crate) [u8; N]);
 
 impl<const N: usize> FixedBytes<N> {

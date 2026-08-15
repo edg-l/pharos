@@ -20,6 +20,7 @@ pub mod error;
 pub mod phase0;
 
 pub use phase0::block::process_block;
+pub use phase0::epoch::justification_and_finalization::process_justification_and_finalization;
 pub use phase0::epoch::process_epoch;
 pub use phase0::genesis::{initialize_beacon_state_from_eth1, is_valid_genesis_state};
 pub use phase0::slot::process_slots;

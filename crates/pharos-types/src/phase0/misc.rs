@@ -37,7 +37,7 @@ pub struct ForkData {
 // ── Checkpoint ────────────────────────────────────────────────────────────────
 
 /// `Checkpoint` per `specs/phase0/beacon-chain.md:383-386`.
-#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default, Hash)]
 pub struct Checkpoint {
     /// `epoch: Epoch` — `specs/phase0/beacon-chain.md:384`.
     pub epoch: Epoch,

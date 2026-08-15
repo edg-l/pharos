@@ -367,8 +367,11 @@ dependencies = [
 name = "pharos-fork-choice"
 version = "0.1.0"
 dependencies = [
+ "pharos-ssz",
+ "pharos-stf",
  "pharos-types",
  "pharos-utils",
+ "thiserror",
 ]
 
 [[package]]
