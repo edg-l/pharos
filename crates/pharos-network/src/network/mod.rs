@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt as _;
 use libp2p::core::ConnectedPoint;
@@ -30,7 +31,7 @@ use pharos_types::EthSpec;
 use pharos_types::phase0::Status as BeaconStatus;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Interval, interval};
+use tokio::time::{Interval, interval, timeout};
 
 use discv5::enr::EnrKey as _;
 
@@ -48,7 +49,9 @@ use crate::rpc::handler::handle_request;
 use crate::rpc::types::{RpcRequest, RpcResponse};
 use crate::scoring::{HandshakeFailKind, PeerScorer, RpcErrorKind, RpcMethod, ScoreEvent};
 use crate::topics::GossipTopic;
-use crate::types::{ConnectionDirection, GOODBYE_FAULT_ERROR, GOODBYE_IRRELEVANT_NETWORK};
+use crate::types::{
+    ConnectionDirection, GOODBYE_CLIENT_SHUTDOWN, GOODBYE_FAULT_ERROR, GOODBYE_IRRELEVANT_NETWORK,
+};
 
 use behaviour::{PharosBehaviour, PharosBehaviourEvent};
 
@@ -234,7 +237,10 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                 }
                 cmd = self.command_rx.recv() => {
                     match cmd {
-                        Some(NetworkCommand::Shutdown) | None => break,
+                        Some(NetworkCommand::Shutdown) | None => {
+                            self.shutdown_goodbye().await;
+                            break;
+                        }
                         Some(cmd) => self.on_command(cmd),
                     }
                 }
@@ -251,6 +257,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                     self.tick_score_prune();
                 }
                 _ = &mut self.shutdown_signal => {
+                    self.shutdown_goodbye().await;
                     break;
                 }
             }
@@ -974,6 +981,72 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                 crate::rpc::types::RpcRequest::Goodbye(GOODBYE_FAULT_ERROR),
             );
             self.swarm.disconnect_peer_id(peer_id).ok();
+        }
+    }
+
+    /// Send `Goodbye(ClientShutdown)` to every connected peer, then force-disconnect.
+    ///
+    /// Implements the D-shutdown-protocol ADR: best-effort Goodbye with a 500 ms
+    /// bounded drain so a slow peer cannot hold up the shutdown indefinitely.
+    ///
+    /// Steps:
+    /// 1. Collect connected peers.
+    /// 2. Pre-register `DisconnectReason::Goodbye(GOODBYE_CLIENT_SHUTDOWN)` for each,
+    ///    then send `RpcRequest::Goodbye(1)` fire-and-forget.
+    /// 3. Run `drain_outbound_requests` bounded by a 500 ms timeout.
+    /// 4. Force-disconnect each peer.
+    ///
+    /// Spec cite: `p2p-interface.md:1383-1385` (ClientShutdown = 1).
+    async fn shutdown_goodbye(&mut self) {
+        let peers: Vec<PeerId> = self.peer_manager.connected_peers().collect();
+        if peers.is_empty() {
+            return;
+        }
+        let expected = peers.len();
+        for &peer in &peers {
+            self.peer_manager.note_disconnect_reason(
+                peer,
+                crate::types::DisconnectReason::Goodbye(GOODBYE_CLIENT_SHUTDOWN),
+            );
+            self.peer_manager.on_disconnecting(peer);
+            self.send_rpc_request(&peer, RpcRequest::Goodbye(GOODBYE_CLIENT_SHUTDOWN));
+        }
+        // Best-effort drain: wait up to 500 ms for Goodbye response/failure events.
+        // Timeout result is intentionally ignored (ok = drained, Err = timed out).
+        timeout(
+            Duration::from_millis(500),
+            self.drain_outbound_requests(expected),
+        )
+        .await
+        .ok();
+        // Force-disconnect each peer (idempotent if the peer already dropped us).
+        for peer in &peers {
+            self.swarm.disconnect_peer_id(*peer).ok();
+        }
+    }
+
+    /// Poll the swarm until `expected` Goodbye response/failure events are observed,
+    /// or the caller's timeout fires.
+    ///
+    /// Other swarm events encountered during the drain are trace-logged and discarded;
+    /// the drain loop is not the normal event loop and must not process them fully.
+    /// Counting logic: each Goodbye we sent expects exactly one
+    /// `request_response::Event::OutboundFailure` or `::Message::Response` from the
+    /// `RpcGoodbye` behaviour. One response/failure per peer decrements the counter;
+    /// when the counter reaches 0 we return.
+    async fn drain_outbound_requests(&mut self, mut expected: usize) {
+        use libp2p::swarm::SwarmEvent;
+        while expected > 0 {
+            let ev = self.swarm.select_next_some().await;
+            match &ev {
+                SwarmEvent::Behaviour(PharosBehaviourEvent::RpcGoodbye(_)) => {
+                    expected = expected.saturating_sub(1);
+                    tracing::trace!(remaining = expected, "goodbye drain: RpcGoodbye event");
+                }
+                _ => {
+                    tracing::trace!("goodbye drain: discarding non-goodbye swarm event");
+                }
+            }
         }
     }
 

@@ -100,6 +100,11 @@ pub struct PeerInfo {
 
 // ── Goodbye reason codes ──────────────────────────────────────────────────────
 
+/// Goodbye reason code: client is shutting down gracefully.
+///
+/// Per `p2p-interface.md:1393` Goodbye reason codes table: value 1 = ClientShutdown.
+pub const GOODBYE_CLIENT_SHUTDOWN: u64 = 1;
+
 /// Goodbye reason code: peer is on an irrelevant network (different fork).
 ///
 /// Per `p2p-interface.md` Goodbye reason codes table: value 2 = IrrelevantNetwork.
