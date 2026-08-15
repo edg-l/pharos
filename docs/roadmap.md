@@ -313,13 +313,49 @@ and milestone assignment. Public surface (`NetworkBuilder`,
 `docs/m2-plan.md` Section "Acceptance Criteria" and `docs/decisions.md`
 M2 section.
 
-### M3 — Altair
+### M3a — Phase 0 infrastructure (DONE)
+
+Delivered via commits `a0d5c36` (NetworkEvent expansion) → `26e0282` (Host<E> real impl
++ storage substrate) → `f094278` (Goodbye-on-shutdown) → `b79f40b` (MetaData.seq_number startup wiring).
+
+- [x] **Storage substrate.** Real RocksDB-backed `Store` trait in
+  `crates/pharos-storage/` with seven column families, big-endian slot keys,
+  Lz4 compression on `blocks`/`states` CFs, `schema_version` sentinel, and
+  atomic `WriteBatch` writes via `BlockTransition`. See ADR `D-rocksdb` and
+  `D-store-trait`.
+- [x] **BlockProvider real impl.** `HostImpl<E>` wires `block_by_root` and
+  `blocks_by_range` to `RocksStore` so `BeaconBlocksByRange` /
+  `BeaconBlocksByRoot` return persisted blocks
+  (`crates/pharos-node/src/host_impl.rs`). See ADR `D-gossip-validator-sync`.
+- [x] **Host<E> real impl.** `HostImpl<E: EthSpec>` replaces the M2 stubs
+  (`BlockStoreStub`, `ForkContextStub`, `GossipValidatorStub`), backed by
+  `Arc<RocksStore>` and `Arc<RwLock<pharos_fork_choice::Store<E>>>`. See
+  ADRs `D-block-encoding-on-disk`, `D-storage-error-strategy`.
+- [x] **Network-event expansion.** `NetworkEvent::PeerSubscribed`,
+  `PeerUnsubscribed`, `PeerIdentified`, `DialFailed`, `ExternalAddrConfirmed`
+  implemented in `crates/pharos-network/src/network/mod.rs` M3a Phase 3 arms.
+  See ADR `D-network-event-surface` (updated) and `D-peer-info-shape`.
+- [x] **Goodbye-on-shutdown.** `shutdown_goodbye` sends
+  `Goodbye(ClientShutdown = 1)` to every connected peer with a 500 ms bounded
+  drain before force-disconnect
+  (`crates/pharos-network/src/network/mod.rs:1000`). See ADR `D-shutdown-protocol`.
+- [x] **MetaData.seq_number increment.** `record_attnets_change` on `HostImpl<E>`
+  bumps `seq_number` only on a genuine attnets change; called at startup from
+  `main.rs` to set initial attestation subnets (`seq_number` 0 → 1). See ADR
+  `D-metadata-mutation`.
+- [x] **ForkSchedule + fork_schedule() accessor.** Phase-0-only `ForkSchedule`
+  struct in `pharos-types::fork`, accessible via `HostImpl::fork_schedule(&self)`.
+  `altair_fork_epoch = FAR_FUTURE_EPOCH` at M3a; shape is forward-compatible
+  for M3b's Altair entry. See ADR `D-fork-schedule`.
+
+### M3b — Altair fork code (PENDING)
+
 - Sync committees, light-client gossip + req-resp.
 - Spec tests `altair` green.
 - **Spec wire-format changes**:
   - Context-aware req-resp encoding: each response chunk is prefixed with
     a fork-digest so the codec can decode per-fork types. M2 codec only
-    handles Phase-0 encoding; M3 bumps the codec to handle context bytes.
+    handles Phase-0 encoding; M3b bumps the codec to handle context bytes.
   - `MetaDataV2` with the new `syncnets: BitVector<SYNC_COMMITTEE_SUBNET_COUNT>`
     field; bump req-resp protocol from `/metadata/1/ssz_snappy` to
     `/metadata/2/ssz_snappy` and dual-handle peers that negotiated v1.
@@ -327,39 +363,6 @@ M2 section.
     `light_client_finality_update`, `light_client_optimistic_update`.
   - New req-resp methods: `LightClientBootstrap`, `LightClientUpdatesByRange`,
     `LightClientFinalityUpdate`, `LightClientOptimisticUpdate`.
-- **Storage substrate** (currently 8 LOC of `pharos-storage/src/lib.rs`):
-  - Real RocksDB-backed `Store` trait impl with hot/cold split design hooks
-    (full impl is M11; M3 ships the schema + writes).
-  - Column families: blocks, states (snapshots), block_root→slot index,
-    forkchoice, metadata. Migrate-friendly schema version key.
-  - `BlockProvider` real impl backing `pharos-network`'s `Host<E>` so
-    `BeaconBlocksByRange` / `BeaconBlocksByRoot` return persisted blocks.
-- **Host<E> + GossipValidator real impl** (replaces M2 stubs in
-  `pharos-node/src/host_impl.rs`):
-  - Decision per M2 R10: refactor `GossipValidator` to async (preferred) or
-    keep sync and wrap STF calls in `tokio::task::spawn_blocking` at the
-    call site. ADR before implementing.
-  - `ForkContextImpl` wires `current_fork_digest()` to actual epoch (fork
-    schedule from config / preset).
-- **Network-event expansion** (deferred from M2 integration testing):
-  - `NetworkEvent::PeerSubscribed { peer, topic }` /
-    `PeerUnsubscribed { peer, topic }` — surface
-    `gossipsub::Event::Subscribed`/`Unsubscribed` for peer scoring
-    and mesh diagnostics.
-  - `NetworkEvent::PeerIdentified { peer, info }` — surface
-    `identify::Event::Received` for client tracking
-    (agent_string, protocols).
-  - `NetworkEvent::DialFailed { peer, error }` — surface
-    `SwarmEvent::OutgoingConnectionError` so the peer manager can
-    mark dead peers.
-  - `NetworkEvent::ExternalAddrConfirmed { address }` — surface
-    `SwarmEvent::ExternalAddrConfirmed` (AutoNAT/identify) so ENR
-    can be updated with the observed address.
-- Goodbye-on-shutdown: send `Goodbye(1 = ClientShutdown)` to every
-  connected peer before tearing down the swarm
-  (`specs/phase0/p2p-interface.md:1393`).
-- `MetaData.seq_number` monotonic increment on attnets / syncnets
-  change (M2 R13, `p2p-interface.md:391-393`).
 - Cross-fork ENR migration + topic re-subscription at fork epochs
   (`eth2` ENR field re-publish with new sequence number).
 - **Subnet rotation** driver in `pharos-node`: subscribe to attestation

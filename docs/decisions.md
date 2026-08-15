@@ -541,11 +541,16 @@ consumer needs for the M2-acceptance set: `PeerConnected`,
 not yet surfaced on the public API; each is logged at `tracing::debug!`
 and routed to per-milestone follow-ups in `docs/roadmap.md`:
 
-- M3 (Altair) follow-ups:
+- M3a (infrastructure split) — implemented in M3a Phase 3
+  (`crates/pharos-network/src/network/mod.rs` gossip/swarm arms):
   - `gossipsub::Event::Subscribed`/`Unsubscribed` → `PeerSubscribed`/`PeerUnsubscribed`
-  - `identify::Event::Received` → `PeerIdentified`
-  - `SwarmEvent::OutgoingConnectionError` → `DialFailed`
-  - `SwarmEvent::ExternalAddrConfirmed` → ENR auto-update path.
+    (lines 356-375, `on_gossip_event`). `PeerUnsubscribed` ships but has no
+    dedicated integration-test coverage; a test is deferred to M11 or a
+    future maintenance pass per the Phase 6 audit.
+  - `identify::Event::Received` → `PeerIdentified` (line 312, `on_identify` helper).
+  - `SwarmEvent::OutgoingConnectionError` → `DialFailed` (line 316).
+  - `SwarmEvent::ExternalAddrConfirmed` → `ExternalAddrConfirmed` (line 332).
+    ENR update remains deferred to M3b (cross-fork ENR migration).
 - M11 (productionization) follow-ups:
   - `gossipsub::Event::SlowPeer`, `GossipsubNotSupported` (real peer scoring).
   - `ping::Event` per-peer RTT (dead-peer detection).
@@ -585,3 +590,233 @@ within their binary (Phase 8 wrap-up amendment) because parallel libtest
 execution causes gossipsub mesh-formation timing to race under CPU
 contention; this is a test harness concern, not a production
 correctness issue.
+
+## M3a — Infrastructure split of M3
+
+### D-rocksdb — Column-family layout, schema versioning, big-endian slot keys
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+`pharos-storage` opens a single RocksDB directory with seven column
+families (CFs): `default` (required by RocksDB, left empty), `blocks`,
+`block_root_to_slot`, `slot_to_block_root`, `states`, `forkchoice`, and
+`metadata`. All seven are registered at open time via
+`DB::open_cf_descriptors`
+(`crates/pharos-storage/src/db.rs:71`).
+
+Key/value shapes per CF:
+
+| CF | Key | Value |
+|---|---|---|
+| `blocks` | `Root` (32 B) | SSZ `SignedBeaconBlock` |
+| `block_root_to_slot` | `Root` (32 B) | `u64` LE (slot) |
+| `slot_to_block_root` | `u64` BE (slot) | `Root` (32 B) |
+| `states` | `Root` (32 B) | SSZ `BeaconState` |
+| `forkchoice` | `b"forkchoice"` (literal) | SSZ `ForkChoiceSnapshot` |
+| `metadata` | string bytes | raw bytes |
+
+Slot keys in `slot_to_block_root` are stored as big-endian `u64` so that
+RocksDB's default lexicographic comparator produces ascending numeric
+order, enabling correct `Iterator::seek`-based range scans without a
+custom comparator
+(`crates/pharos-storage/src/keys.rs:19`, `crates/pharos-storage/src/cf.rs:21`).
+
+Schema versioning: on first open, `metadata[b"schema_version"]` is
+written as `1u32` (little-endian 4 bytes). On subsequent opens the
+stored value is read and compared to `SCHEMA_VERSION = 1`; a mismatch
+returns `StorageError::SchemaMismatch { found, expected }` so an
+out-of-date binary fails fast rather than misreading data
+(`crates/pharos-storage/src/db.rs:29`, `db.rs:76-96`).
+
+Warm-restart rehydration walk: on node restart, `get_forkchoice_snapshot`
+returns the persisted `ForkChoiceSnapshot` (finalized checkpoint, head
+root, genesis time, `last_known_time`). The node binary calls
+`rehydrate_fork_choice_store` (`crates/pharos-node/src/startup.rs`) which
+anchors at `finalized_checkpoint.root` and walks forward through
+`slot_to_block_root` to rebuild the in-memory `pharos_fork_choice::Store<E>`
+block and state maps. After rehydration, `on_tick` is called with the
+current wall-clock time to advance the fork-choice time cursor from the
+stale `last_known_time`
+(`crates/pharos-node/src/main.rs:155-159`).
+
+### D-store-trait — Sync storage trait, BlockTransition atomic batches, non-generic ForkChoiceSnapshot
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+`Store<E: EthSpec>` is a synchronous trait (`crates/pharos-storage/src/store.rs:22`).
+RocksDB is a synchronous library; the STF and fork-choice algorithms
+are also synchronous. Async callers (the network task, the gossip
+validator dispatcher) wrap calls in `tokio::task::spawn_blocking`.
+`Send + Sync + 'static` bounds on `Store<E>` allow sharing behind
+`Arc<dyn Store<E>>`.
+
+Multi-row writes (block + state + fork-choice snapshot + slot indices)
+are committed as a single `rocksdb::WriteBatch` via
+`write_block_transition(&self, batch: BlockTransition<E>)`
+(`crates/pharos-storage/src/store.rs:78`,
+`crates/pharos-storage/src/db.rs:230`). A crash between two un-batched
+writes would leave the slot index out of sync with the `blocks` CF; the
+WriteBatch WAL contract prevents this.
+
+`ForkChoiceSnapshot` (`crates/pharos-storage/src/forkchoice.rs:32`) is
+non-generic: it holds only cursor scalars (checkpoints, roots, `last_known_time`,
+`genesis_time`, `head_root`, `head_slot`). The in-memory `blocks` and
+`block_states` HashMaps of `pharos_fork_choice::Store<E>` are NOT
+persisted; they are rebuilt from the `blocks`/`states` CFs on warm
+restart. This avoids any proto-array fiction: the snapshot stores what the
+spec checkpoints dictate, nothing more.
+
+### D-gossip-validator-sync — Sync GossipValidator trait, spawn_blocking at call site
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+`GossipValidator<E>` methods (`validate_beacon_block`,
+`validate_attestation`, etc.) are synchronous
+(`crates/pharos-network/src/host.rs`). The gossip dispatch path in the
+network task calls them directly via `dispatch_gossip_message`
+(`crates/pharos-network/src/network/mod.rs:436`). For M3a the methods
+return `GossipVerdict::Accept` immediately (bodies are M4); no blocking
+actually occurs.
+
+When M4 fills the validation bodies with real STF calls, the call site
+(`dispatch_gossip_message`) must be wrapped in
+`tokio::task::spawn_blocking` because STF is CPU-bound and would stall
+the network event loop. The decision to keep the trait sync (rather than
+`async fn`) is intentional: sync traits are object-safe, easier to test
+without an async runtime, and align with the "sync STF, async I/O at the
+edges" project principle. The wrapping responsibility lies at the
+`on_gossip_message` call site, not inside the trait.
+
+Risk note: tokio's default blocking pool has 512 threads. A sustained
+gossip flood of more than 512 simultaneous in-flight validations would
+exhaust the pool. M11 peer scoring rate-limits per-peer gossip ingest
+before it reaches the validator, which is the intended mitigation path.
+
+### D-block-encoding-on-disk — SSZ-only encoding, Lz4 compression on blocks and states CFs
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+All values written to `blocks` and `states` CFs are raw SSZ bytes
+(`block.as_ssz_bytes()`, `state.as_ssz_bytes()`) with no additional
+framing or checksum. SSZ is the Ethereum canonical wire and archival
+format; using it on disk means the stored bytes are exactly what
+`BeaconBlocksByRange` would send on the wire, eliminating a
+serialization step on the read path.
+
+RocksDB-level Lz4 block compression is enabled on the `blocks` and
+`states` CFs via `DBCompressionType::Lz4` in per-CF `Options`
+(`crates/pharos-storage/src/db.rs:117`). Other CFs (`slot_to_block_root`,
+`block_root_to_slot`, `forkchoice`, `metadata`) use RocksDB's default
+(no compression; rows are too small to benefit). Lz4 was chosen over
+snappy to avoid confusion with the gossipsub snappy-block framing used
+on the wire, and over zstd for its lower decompression latency.
+
+### D-storage-error-strategy — Single StorageError enum, thiserror, #[from] from upstream
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+All `pharos-storage` operations return `Result<_, StorageError>` where
+`StorageError` is a single `thiserror`-derived enum
+(`crates/pharos-storage/src/error.rs:8`). `#[from]` is used for the two
+upstream error sources: `rocksdb::Error` (variant `RocksDb`) and
+`pharos_ssz::SszError` (variant `SszDecode`). Remaining variants are
+structured (`SchemaMismatch { found, expected }`, `ColumnFamilyNotFound`,
+`KeyNotFound`, `InvalidKeyLength { got, expected }`, `Io`). This mirrors
+the M1 `D2` decision for `StateTransitionError` and keeps callers on a
+single `Result` type without sub-enums.
+
+### D-peer-info-shape — PeerInfo fields, identify-flood mitigation, unknown-peer drop
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+`PeerInfo` (`crates/pharos-network/src/types.rs:69`) holds:
+- `agent_string: Option<String>` — agent version from the identify protocol
+  (e.g. `"Lighthouse/v4.0.0"`).
+- `protocols: Vec<String>` — protocol IDs advertised by the peer via identify.
+- `observed_addr: Option<Multiaddr>` — the address the peer reports it
+  observed for our local node.
+
+These three fields are populated from `identify::Event::Received` in
+`on_identify` (`crates/pharos-network/src/network/mod.rs:767`). They are
+`None` / empty until the first identify exchange completes.
+
+Identify-flood mitigation: `on_identify` calls
+`peer_manager.update_identify`, which returns `None` when the peer is not
+in the connected-peer map. Unknown-peer identify events are silently dropped
+(`crates/pharos-network/src/network/mod.rs:779`). For known peers,
+`update_identify` overwrites the previous `agent_string`, `protocols`, and
+`observed_addr` in place (per-peer overwrite), so memory stays `O(num_peers)`
+regardless of how many times a peer pushes identify.
+
+### D-shutdown-protocol — Best-effort Goodbye on shutdown, 500ms timeout, ClientShutdown=1
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+When the network task receives `NetworkCommand::Shutdown` (or the
+shutdown signal fires), `shutdown_goodbye` is called before exiting the
+event loop (`crates/pharos-network/src/network/mod.rs:1000`). The method:
+
+1. Collects all `Connected` peers from the peer manager.
+2. For each peer, pre-registers `DisconnectReason::Goodbye(1)` and sends
+   `RpcRequest::Goodbye(GOODBYE_CLIENT_SHUTDOWN)` fire-and-forget.
+3. Runs `drain_outbound_requests` inside a 500 ms `tokio::time::timeout`.
+   The timeout result is discarded (ok = all acknowledged, Err = timed out;
+   either path continues to step 4).
+4. Force-disconnects each peer via `swarm.disconnect_peer_id`.
+
+`GOODBYE_CLIENT_SHUTDOWN = 1` matches the reason code table in
+`specs/phase0/p2p-interface.md:1393`
+(`crates/pharos-network/src/types.rs:106`). The 500 ms bound prevents a
+slow or unresponsive peer from delaying a clean shutdown indefinitely.
+
+### D-metadata-mutation — RwLock<MetaData> on HostImpl, record_attnets_change idempotency
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+`HostImpl<E>` holds `metadata: RwLock<MetaData>` (via `parking_lot::RwLock`)
+(`crates/pharos-node/src/host_impl.rs:75`). All `ForkContext::local_metadata`
+calls take a read lock and clone the 16-byte struct; `record_attnets_change`
+takes a write lock only when the caller provides a new attnets bitvector.
+
+`record_attnets_change(new_attnets)` (`crates/pharos-node/src/host_impl.rs:138`)
+bumps `seq_number` only when `new_attnets != md.attnets` (idempotent on
+the same value). Increment is wrapping-add per the spec
+(`p2p-interface.md:391-393`). At startup, the method is called once from
+`main.rs` to set the initial attestation subnet bitfield computed by
+`compute_subscribed_subnets`, which bumps `seq_number` from 0 to 1
+(`crates/pharos-node/src/main.rs:200`). The M3b subnet-rotation epoch
+driver will call it every `EPOCHS_PER_SUBNET_SUBSCRIPTION` epochs.
+
+Lock contention is negligible: reads are concurrent; writes happen at most
+once per epoch boundary (roughly every 384 seconds on mainnet).
+
+### D-fork-schedule — Phase-0-only ForkSchedule, fork_schedule() accessor, forward-compatible shape
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+`ForkSchedule` (`crates/pharos-types/src/fork.rs:50`) lives in
+`pharos-types::fork` so both `pharos-node` and `pharos-network` can
+depend on it without a back-edge. Flat-field shape:
+
+```rust
+pub struct ForkSchedule {
+    pub genesis_fork_version: Version,
+    pub altair_fork_version: Version,
+    pub altair_fork_epoch: Epoch,
+    pub genesis_validators_root: Root,
+}
+```
+
+At M3a, `altair_fork_epoch` is set to `Epoch(u64::MAX)` (`FAR_FUTURE_EPOCH`)
+in `HostImpl::new`
+(`crates/pharos-node/src/host_impl.rs:97-102`). `fork_at_epoch(epoch)`
+returns Phase 0 for all `epoch` values at M3a. M3b's YAML preset loader
+overwrites `altair_fork_epoch` with the real value; the struct shape does
+not change.
+
+`HostImpl::fork_schedule(&self) -> &ForkSchedule`
+(`crates/pharos-node/src/host_impl.rs:129`) provides read-only access to
+the schedule. The M3b subnet-rotation driver and ENR updater hold an
+`Arc<HostImpl<E>>` and call this accessor to determine the current fork
+without re-reading the field under a lock (the schedule is immutable after
+construction).
