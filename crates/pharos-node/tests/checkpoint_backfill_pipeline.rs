@@ -362,19 +362,20 @@ async fn checkpoint_sync_then_backfill_advances_head() {
 
     // ── 8. Rehydrate fork-choice store ────────────────────────────────────────
 
-    let mut fc_store = rehydrate_fork_choice_store::<MinimalEthSpec>(&store, &snapshot)
-        .expect("rehydrate_fork_choice_store must succeed");
+    // Minimal-preset runtime config (6s slots, minimal fork epochs). Passed to
+    // rehydrate so any hot-window replay uses the correct slot duration + fork
+    // schedule, and re-installed on the fc store below (as `main.rs` does).
+    let minimal_cfg = MinimalEthSpec::default_runtime_config();
+    let mut fc_store =
+        rehydrate_fork_choice_store::<MinimalEthSpec>(&store, &snapshot, &minimal_cfg)
+            .expect("rehydrate_fork_choice_store must succeed");
 
     // Install the minimal-preset runtime config + fork-epoch schedule, exactly as
-    // `main.rs` does from the loaded `--config-dir` after rehydration. `rehydrate_
-    // fork_choice_store` defaults `runtime_cfg` to the mainnet `RuntimeConfig::
-    // default()` (12s slots, mainnet fork epochs); the backfill loop reads this cfg
-    // and threads it into `state_transition`, so without this the STF validates the
-    // fixture's `execution_payload.timestamp` (built with minimal 6s slots) against
-    // `genesis_time + slot * 12` and fails with a timestamp mismatch — the chain
-    // never advances past the anchor (see D-live-fork-trigger / D-runtime-cfg-
-    // threading-live-loops).
-    let minimal_cfg = MinimalEthSpec::default_runtime_config();
+    // `main.rs` does from the loaded `--config-dir` after rehydration. The backfill
+    // loop reads this cfg and threads it into `state_transition`; without it the STF
+    // validates the fixture's `execution_payload.timestamp` (built with minimal 6s
+    // slots) against `genesis_time + slot * 12` and fails with a timestamp mismatch
+    // (see D-live-fork-trigger / D-runtime-cfg-threading-live-loops).
     fc_store.set_fork_epochs(
         minimal_cfg.altair_fork_epoch,
         minimal_cfg.bellatrix_fork_epoch,

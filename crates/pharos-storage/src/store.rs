@@ -40,12 +40,22 @@ pub struct ColdMigrationBatch<E: EthSpec> {
     /// State roots to delete from `CF_STATES` (hot epoch-boundary states now cold).
     pub prune_state_roots: Vec<Root>,
 
+    /// Orphan block roots to delete from `CF_BLOCKS` AND `CF_BLOCK_ROOT_TO_SLOT`.
+    ///
+    /// Orphans are non-canonical blocks (competing forks below the finalized slot)
+    /// identified in Task 4.1 by comparing hot block roots against the authoritative
+    /// `slot_to_block_root` canonical index. Per `D-prune-behind-finalized`:
+    /// orphan's `blocks` CF entry and its reverse-index `block_root_to_slot` entry
+    /// are deleted; the canonical `slot_to_block_root[slot]` entry is NOT deleted
+    /// (it is the navigational index cold regen + network depend on indefinitely).
+    pub prune_orphan_block_roots: Vec<Root>,
+
     /// The new hot/cold boundary: written to `metadata[b"split_slot"]`.
     ///
     /// NOTE: the `slot_to_block_root` / `block_root_to_slot` index CFs are
-    /// deliberately NOT pruned — they are append-only navigational indexes that
-    /// cold regen (`block_root_at_slot`) and the network `BeaconBlocksByRange`
-    /// path require for migrated history indefinitely.
+    /// deliberately NOT pruned for canonical migrated blocks — they are append-only
+    /// navigational indexes that cold regen (`block_root_at_slot`) and the network
+    /// `BeaconBlocksByRange` path require for migrated history indefinitely.
     pub split_slot: Slot,
 }
 

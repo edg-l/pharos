@@ -1,16 +1,16 @@
-//! Freezer migration integration test (Task 3.7 of M-Storage Phase 3).
+//! Restart-across-split integration test (Task 4.5 of M-Storage Phase 4).
 //!
-//! Builds a chain of `2 * SLOTS_PER_EPOCH` blocks, persists all blocks via
-//! `run_backfill_loop` (Phase-1 import path), then simulates finalization by
-//! directly advancing the in-memory `finalized_checkpoint` to the first epoch
-//! boundary. Calls `migrate_to_cold` with the migration batch and asserts:
+//! Builds a chain of `2 * SLOTS_PER_EPOCH` Bellatrix blocks, persists all
+//! blocks via `run_backfill_loop`, simulates finalization at epoch 1
+//! (slot `SLOTS_PER_EPOCH`), runs `migrate_to_cold` to push data cold, then
+//! drops the DB, reopens it, and calls `rehydrate_fork_choice_store`.
 //!
-//!   (a) Finalized blocks appear in `cold-blocks` CF (via `get_cold_block`).
-//!   (b) `restore-points` has the boundary entry (via `nearest_restore_point`).
-//!   (c) Hot `states` CF rows below the split slot are deleted.
-//!   (d) A cold-region historical state read via Phase-2
-//!       `StateRegenService::state_at_slot` succeeds, producing the same state
-//!       root as the inline-computed state.
+//! Asserts:
+//!   (a) Head matches: `get_head` after rehydration returns the expected head root.
+//!   (b) Pre-split (cold) block is retrievable via `get_cold_block`.
+//!   (c) Pre-split historical state regenerates via `StateRegenService::state_at_slot`
+//!       for a slot below the split, matching the inline-computed state root.
+//!   (d) Post-split hot block is present in the rehydrated `block_states` map.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +21,9 @@ use pharos_ssz::{SszList, SszSequence as _, SszVector, TreeHash};
 use pharos_stf::phase0::accessors::{compute_signing_root, get_current_epoch, get_domain};
 use pharos_stf::phase0::helpers::{DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO};
 use pharos_stf::{ForkEpochs, NullExecutionEngine, process_slots_fork, state_transition};
-use pharos_storage::{ColdMigrationBatch, RocksStore, RocksStoreConfig, Store as DbStore};
+use pharos_storage::{
+    ColdMigrationBatch, ForkChoiceSnapshot, RocksStore, RocksStoreConfig, Store as DbStore,
+};
 use pharos_types::{
     EthSpec, MinimalEthSpec,
     altair::{MinimalSyncAggregate, MinimalSyncCommittee},
@@ -34,7 +36,7 @@ use pharos_types::{
         BeaconBlock as ForkBeaconBlock, MinimalBeaconState as ForkMinState,
         SignedBeaconBlock as ForkSignedBeaconBlock,
     },
-    views::{BeaconBlockView as _, BeaconStateView as _},
+    views::BeaconBlockView as _,
 };
 use pharos_utils::{BLSPubkey, BLSSignature, Hash256};
 use tokio::sync::{Notify, mpsc, watch};
@@ -42,6 +44,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use pharos_node::backfill::{BackfillBlockProvider, BackfillError, run_backfill_loop};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest};
 use pharos_node::host_impl::HostImpl;
+use pharos_node::startup::rehydrate_fork_choice_store;
 use pharos_node::state_regen::StateRegenService;
 
 mod common;
@@ -66,13 +69,13 @@ type MinForkSignedBlock = ForkSignedBeaconBlock<
 >;
 type MinForkState = ForkMinState;
 
-const TERMINAL_BLOCK_HASH_BYTES: [u8; 32] = [0xAA_u8; 32];
+const TERMINAL_BLOCK_HASH_BYTES: [u8; 32] = [0xBB_u8; 32];
 const BACKFILL_GENESIS_TIME_SECS: u64 = 1_000_000;
 
 // ── BLS helpers ───────────────────────────────────────────────────────────────
 
 fn test_sk() -> blst::min_pk::SecretKey {
-    blst::min_pk::SecretKey::key_gen(&[1u8; 32], &[]).expect("valid IKM")
+    blst::min_pk::SecretKey::key_gen(&[2u8; 32], &[]).expect("valid IKM")
 }
 
 fn test_pubkey() -> BLSPubkey {
@@ -331,20 +334,22 @@ impl BackfillBlockProvider<MinimalEthSpec> for FixtureBlockProvider {
 
 // ── Test ──────────────────────────────────────────────────────────────────────
 
-/// Freezer migration test.
+/// Restart-across-split test.
 ///
 /// 1. Builds `2 * SLOTS_PER_EPOCH = 16` Bellatrix blocks and persists via backfill.
-/// 2. Simulates finalization: directly sets `finalized_checkpoint` to epoch 1
-///    (slot 8 = first epoch boundary) in the fork-choice store.
-/// 3. Collects the migration batch and calls `migrate_to_cold`.
-/// 4. Asserts:
-///    (a) Blocks in slots [1, split_slot] appear in `cold-blocks` CF.
-///    (b) `nearest_restore_point(split_slot)` returns the epoch-boundary entry.
-///    (c) Hot `states` CF row at the epoch boundary (slot 8) is deleted.
-///    (d) A cold regen via `StateRegenService::state_at_slot` for slot 5
-///        (below the split) produces the correct state root.
+/// 2. Simulates finalization at epoch 1 (split_slot = SPE = 8).
+/// 3. Runs `migrate_to_cold` (freezer step) to push finalized data cold.
+/// 4. Persists the split_slot metadata and a `ForkChoiceSnapshot` that points
+///    to the tip (slot 16) as the head.
+/// 5. Drops the DB (`Arc` → strong_count = 0) and reopens it.
+/// 6. Calls `rehydrate_fork_choice_store` on the fresh `RocksStore`.
+/// 7. Asserts:
+///    (a) `get_head` returns the expected head root.
+///    (b) A pre-split (cold) block is retrievable via `get_cold_block`.
+///    (c) A pre-split historical state regenerates via `StateRegenService`.
+///    (d) A post-split hot block is present in `rehydrated.block_states`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn freezer_migration_cold_presence_and_regen() {
+async fn restart_across_split_rehydrates_correctly() {
     let _ = tracing_subscriber::fmt::try_init();
 
     const SPE: u64 = MinimalEthSpec::SLOTS_PER_EPOCH;
@@ -355,13 +360,38 @@ async fn freezer_migration_cold_presence_and_regen() {
     let anchor_root: Root = anchor_block.tree_hash_root();
 
     let tmpdir = tempfile::tempdir().unwrap();
+    let db_path = tmpdir.path().join("chain_db");
+
     let store = Arc::new(
         RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
-            path: tmpdir.path().join("chain_db"),
+            path: db_path.clone(),
             create_if_missing: true,
         })
         .expect("open RocksStore"),
     );
+
+    // Persist the genesis state (slot 0) so `StateRegenService` can use it as
+    // the replay anchor for pre-split slots (e.g. slot 5 < split_slot = 8).
+    // The genesis state is NOT imported via `import_block`, so we persist it
+    // manually.  We also store a state-summary and the slot-index entry for
+    // the anchor block so `nearest_epoch_boundary_state_on_disk` can find it.
+    {
+        use pharos_storage::{BlockTransition, StateSummary};
+        let genesis_state_root: Root = genesis_state.tree_hash_root();
+        let mut bt = BlockTransition::<MinimalEthSpec>::new();
+        bt.state = Some((genesis_state_root, genesis_state.clone()));
+        bt.slot_index = Some((Slot(0), anchor_root));
+        bt.state_summary = Some((
+            anchor_root,
+            StateSummary {
+                slot: Slot(0),
+                state_root: genesis_state_root,
+                parent_root: Root::default(),
+            },
+        ));
+        <RocksStore as DbStore<MinimalEthSpec>>::write_block_transition(&store, bt)
+            .expect("persist genesis state");
+    }
 
     let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
     fc.runtime_cfg = MinimalEthSpec::default_runtime_config();
@@ -462,9 +492,12 @@ async fn freezer_migration_cold_presence_and_regen() {
     // Give the persist workers a moment to flush.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
+    // The expected head root is the last block root in the chain.
+    let expected_head_root = block_roots[n_blocks as usize - 1];
+
     // ── 2. Simulate finalization at epoch 1 (split_slot = SPE = 8) ───────────
     let split_slot = Slot(SPE); // epoch boundary = slot 8
-    let finalized_root = block_roots[(SPE - 1) as usize]; // root of block at slot 8
+    let finalized_root = block_roots[(SPE - 1) as usize]; // root of block at slot SPE
 
     {
         let mut fc = fc_for_assert.write();
@@ -479,15 +512,12 @@ async fn freezer_migration_cold_presence_and_regen() {
     }
 
     // ── 3. Build and execute migration batch ──────────────────────────────────
-    //
-    // Collect blocks and states for slots [1, split_slot].
     let mut cold_blocks_vec: Vec<(Root, MinForkSignedBlock)> = Vec::new();
     let mut prune_block_roots: Vec<Root> = Vec::new();
     let mut prune_state_roots: Vec<Root> = Vec::new();
 
     for s in 1..=split_slot.0 {
         let slot = Slot(s);
-
         if let Ok(Some(root)) = store.block_root_at_slot(slot) {
             if let Ok(Some(block)) =
                 <RocksStore as DbStore<MinimalEthSpec>>::get_block(&store, &root)
@@ -495,8 +525,6 @@ async fn freezer_migration_cold_presence_and_regen() {
                 cold_blocks_vec.push((root, block));
                 prune_block_roots.push(root);
             }
-
-            // Collect state roots to prune at epoch boundaries.
             if s % SPE == 0 {
                 if let Ok(Some(summary)) =
                     <RocksStore as DbStore<MinimalEthSpec>>::get_state_summary(&store, &root)
@@ -516,8 +544,8 @@ async fn freezer_migration_cold_presence_and_regen() {
         }
     }
 
-    // The restore-point state: epoch-boundary at split_slot.
-    let rp_root = block_roots[(SPE - 1) as usize]; // slot SPE block root
+    // Restore-point: epoch-boundary state at split_slot.
+    let rp_root = block_roots[(SPE - 1) as usize];
     let rp_summary = <RocksStore as DbStore<MinimalEthSpec>>::get_state_summary(&store, &rp_root)
         .expect("state_summary lookup")
         .expect("state_summary must exist at split boundary");
@@ -533,112 +561,147 @@ async fn freezer_migration_cold_presence_and_regen() {
         cold_states,
         prune_block_roots: prune_block_roots.clone(),
         prune_state_roots: prune_state_roots.clone(),
-        prune_orphan_block_roots: Vec::new(), // no competing forks in this linear-chain test
+        prune_orphan_block_roots: Vec::new(), // linear chain — no orphans
         split_slot,
     };
 
     <RocksStore as DbStore<MinimalEthSpec>>::migrate_to_cold(&store, batch)
         .expect("migrate_to_cold must succeed");
 
-    // ── 4a. Assert: finalized blocks in cold-blocks CF ────────────────────────
-    for (slot_idx, &root) in block_roots[..(SPE as usize)].iter().enumerate() {
-        let slot = slot_idx as u64 + 1;
-        let cold_block = <RocksStore as DbStore<MinimalEthSpec>>::get_cold_block(&store, &root)
-            .unwrap_or_else(|e| panic!("get_cold_block at slot {slot}: {e}"));
-        assert!(
-            cold_block.is_some(),
-            "block at slot {slot} must be in cold-blocks CF after migration"
-        );
-    }
+    // ── 4. Persist a ForkChoiceSnapshot pointing at the tip ──────────────────
+    //
+    // `rehydrate_fork_choice_store` reads the snapshot to know head_slot and
+    // the finalized/justified checkpoints.  We write one that accurately
+    // reflects the post-migration state: finalized at epoch 1, head at slot 16.
+    // Use justified_checkpoint.epoch = 0 (GENESIS_EPOCH) so that
+    // `filter_block_tree`'s `correct_justified` shortcut fires unconditionally
+    // for all blocks in the chain — without attestations, get_voting_source
+    // returns epoch 0 for all blocks (via unrealized_justifications which is
+    // empty after restart), and only the GENESIS_EPOCH shortcut keeps them
+    // viable as fork-choice heads.  This is the same approach used by
+    // `apply_anchor` (see checkpoint_sync.rs comments).
+    //
+    // Set genesis_time to a value that makes the current slot close to the
+    // actual chain tip so `current_epoch` is small and `correct_justified` holds.
+    let slot_duration = MinimalEthSpec::SLOT_DURATION_MS / 1000;
+    let fake_genesis_time = 10_000_000u64 - n_blocks * slot_duration;
+    let snap = ForkChoiceSnapshot {
+        genesis_time: fake_genesis_time,
+        justified_checkpoint: Checkpoint {
+            epoch: Epoch(0),
+            root: finalized_root,
+        },
+        finalized_checkpoint: Checkpoint {
+            epoch: Epoch(1),
+            root: finalized_root,
+        },
+        unrealized_justified_checkpoint: Checkpoint {
+            epoch: Epoch(0),
+            root: finalized_root,
+        },
+        unrealized_finalized_checkpoint: Checkpoint {
+            epoch: Epoch(1),
+            root: finalized_root,
+        },
+        proposer_boost_root: Root::default(),
+        head_root: expected_head_root,
+        head_slot: Slot(n_blocks),
+        last_known_time: 10_000_000,
+    };
+    <RocksStore as DbStore<MinimalEthSpec>>::put_forkchoice_snapshot(&store, &snap)
+        .expect("put_forkchoice_snapshot");
 
-    // ── 4b. Assert: restore-points index has the boundary entry ──────────────
-    let rp_entry =
-        <RocksStore as DbStore<MinimalEthSpec>>::nearest_restore_point(&store, split_slot)
-            .expect("nearest_restore_point")
-            .expect("restore-points must have an entry at or below split_slot");
-    assert_eq!(
-        rp_entry.0, split_slot,
-        "restore-point slot must match the split boundary"
+    // ── 5. Drop the DB and reopen ─────────────────────────────────────────────
+    drop(store);
+    drop(fc_for_assert);
+
+    let store2 = Arc::new(
+        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            path: db_path.clone(),
+            create_if_missing: false,
+        })
+        .expect("reopen RocksStore"),
     );
+
+    // ── 6. Rehydrate fork-choice store ────────────────────────────────────────
+    let rehydrated =
+        rehydrate_fork_choice_store::<MinimalEthSpec>(&store2, &snap, runtime_cfg.as_ref())
+            .expect("rehydrate");
+
+    // ── 7a. Assert: head matches ──────────────────────────────────────────────
+    let rehydrated_head = get_head::<MinimalEthSpec>(&rehydrated);
     assert_eq!(
-        rp_entry.1, rp_summary.state_root,
-        "restore-point state_root must match the epoch-boundary state"
+        rehydrated_head, expected_head_root,
+        "rehydrated head root must match the expected tip (slot {n_blocks})"
     );
 
-    // ── 4c. Assert: hot states CF rows below split are deleted ────────────────
-    for state_root in &prune_state_roots {
-        let hot = <RocksStore as DbStore<MinimalEthSpec>>::get_state(&store, state_root)
-            .expect("get_state lookup");
-        assert!(
-            hot.is_none(),
-            "hot state {state_root:?} must be deleted after migration"
-        );
-    }
-
-    // ── 4d. Assert: cold regen via StateRegenService succeeds ─────────────────
+    // ── 7b. Assert: pre-split (cold) block is retrievable ────────────────────
     //
-    // Slot 4 is below split_slot (8), not an epoch boundary, so the regen
-    // service must:
-    //   1. Find the nearest stored restore point (slot 8) via cold-states.
-    //   2. Replay backward? No — regen goes from a state BELOW the target.
-    //      Wait: slot 4 < slot 8. The nearest state AT-OR-BEFORE slot 4 from
-    //      cold is... none, since the only cold restore point is at slot 8.
-    //
-    // After migration, the genesis state (slot 0) is in the in-memory
-    // fork-choice store's block_states map. The regen service picks the
-    // nearest boundary ≤ target_slot from (a) in-memory, (b) hot-disk, (c) cold.
-    //
-    // For slot 4: in-memory has the genesis post-state at slot 0 (always
-    // present after `get_forkchoice_store`). The regen walks forward to slot 4.
-    //
-    // For slot 10 (> split_slot=8): the cold restore point at slot 8 is the
-    // nearest stored state. The regen loads it from cold-states and replays to
-    // slot 10.
-    //
-    // Test slot 10 (above split, uses cold restore point + replay):
-    let target_slot = Slot(SPE + 2); // slot 10
-    let expected_state_root = inline_states[(SPE + 1) as usize].tree_hash_root();
-
-    // Evict all in-memory block_states except genesis and the finalized boundary
-    // so that cold-states is the only anchor for post-split regen.
+    // A block at slot 3 (below split_slot = 8) must be in the cold-blocks CF.
+    let cold_slot = Slot(3);
+    let cold_root = store2
+        .block_root_at_slot(cold_slot)
+        .expect("slot-index lookup")
+        .expect("slot 3 must have a block root");
+    let cold_block = <RocksStore as DbStore<MinimalEthSpec>>::get_cold_block(&store2, &cold_root)
+        .expect("get_cold_block")
+        .expect("pre-split block at slot 3 must be in cold-blocks CF");
     {
-        let mut fc = fc_for_assert.write();
-        let evict: Vec<_> = fc
-            .block_states
-            .iter()
-            .filter_map(|(r, s)| {
-                let slot = s.slot();
-                if slot > split_slot {
-                    // Keep the post-split in-memory states for the walk base.
-                    None
-                } else if slot == Slot(0) {
-                    // Keep genesis anchor.
-                    None
-                } else {
-                    Some(*r)
-                }
-            })
-            .collect();
-        for r in evict {
-            fc.block_states.remove(&r);
-        }
+        use pharos_types::views::SignedBeaconBlockView as _;
+        let msg_slot =
+            if let Some(inner) = MinimalEthSpec::unwrap_bellatrix_signed_block(&cold_block) {
+                use pharos_types::views::BeaconBlockView as _;
+                inner.message().slot()
+            } else {
+                panic!("expected Bellatrix cold block");
+            };
+        assert_eq!(
+            msg_slot, cold_slot,
+            "cold block slot must be {}",
+            cold_slot.0
+        );
     }
 
+    // ── 7c. Assert: pre-split historical state regenerates ───────────────────
+    //
+    // Slot 5 (below split_slot = 8, non-epoch-boundary) must be regenerated
+    // from the cold restore point (slot 8) via `StateRegenService`.
+    // The expected state root is the inline-computed root from `build_chain`.
+    let target_slot = Slot(5);
+    let expected_state_root = inline_states[(target_slot.0 - 1) as usize].tree_hash_root();
+
+    let fc_for_regen = Arc::new(RwLock::new(rehydrated));
     let regen = StateRegenService::<MinimalEthSpec>::new(
-        Arc::clone(&store),
-        Arc::clone(&fc_for_assert),
+        Arc::clone(&store2),
+        Arc::clone(&fc_for_regen),
         Arc::clone(&runtime_cfg),
     );
 
     let regen_state = tokio::task::spawn_blocking(move || regen.state_at_slot(target_slot))
         .await
         .expect("spawn_blocking must not panic")
-        .expect("state_at_slot must succeed for slot 10");
+        .expect("state_at_slot must succeed for slot 5");
 
     assert_eq!(
         regen_state.tree_hash_root(),
         expected_state_root,
         "regenerated state root for slot {} must match inline-computed root",
         target_slot.0
+    );
+
+    // ── 7d. Assert: post-split hot block is present ───────────────────────────
+    //
+    // A block at slot `SPE + 3` (= 11, above split_slot = 8) must be in the
+    // rehydrated `block_states` map.
+    let hot_slot = Slot(SPE + 3); // slot 11
+    let hot_root = store2
+        .block_root_at_slot(hot_slot)
+        .expect("slot-index lookup")
+        .expect("slot 11 must have a block root");
+
+    assert!(
+        fc_for_regen.read().block_states.contains_key(&hot_root),
+        "rehydrated block_states must contain post-split block at slot {}",
+        hot_slot.0
     );
 }

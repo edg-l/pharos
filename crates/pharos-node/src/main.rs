@@ -266,7 +266,7 @@ async fn main() -> anyhow::Result<()> {
     // `genesis_validators_root` is extracted from whichever anchor we land on.
     let (fc_store, genesis_validators_root) = if let Some(ref snap) = snapshot {
         info!("warm restart: rehydrating fork-choice store from snapshot");
-        let fc = rehydrate_fork_choice_store::<MainnetEthSpec>(&store, snap)
+        let fc = rehydrate_fork_choice_store::<MainnetEthSpec>(&store, snap, &runtime_cfg)
             .context("rehydrating fork-choice store")?;
         // Derive genesis_validators_root from the anchor block's post-state.
         // The finalized_checkpoint.root is the block root; get the block to
@@ -339,7 +339,7 @@ async fn main() -> anyhow::Result<()> {
         let gvr = anchor.state.genesis_validators_root();
         let synth_snap = apply_anchor::<MainnetEthSpec>(anchor, &store)
             .context("persisting checkpoint anchor")?;
-        let fc = rehydrate_fork_choice_store::<MainnetEthSpec>(&store, &synth_snap)
+        let fc = rehydrate_fork_choice_store::<MainnetEthSpec>(&store, &synth_snap, &runtime_cfg)
             .context("rehydrating fork-choice store from checkpoint anchor")?;
         (fc, gvr)
     } else if let Some(ref genesis_path) = args.genesis_state_path {
@@ -364,6 +364,26 @@ async fn main() -> anyhow::Result<()> {
             ..pharos_types::phase0::MainnetBeaconBlock::default()
         });
         let fc = get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
+
+        // Task 4.3 (genesis path): initialize split_slot and anchor_slot to 0.
+        // On a genesis cold start there is no prior data, so the hot window
+        // starts at slot 0. These are two independent metadata writes (not a
+        // BlockTransition): genesis has no associated block yet, and a crash
+        // between them is harmless — both default to 0 when absent (the freezer /
+        // regen / rehydrate all fall back to `Slot(0)` on a missing key).
+        <RocksStore as pharos_storage::Store<MainnetEthSpec>>::put_metadata(
+            &store,
+            b"split_slot",
+            &0u64.to_be_bytes(),
+        )
+        .context("writing genesis split_slot metadata")?;
+        <RocksStore as pharos_storage::Store<MainnetEthSpec>>::put_metadata(
+            &store,
+            b"anchor_slot",
+            &0u64.to_be_bytes(),
+        )
+        .context("writing genesis anchor_slot metadata")?;
+
         (fc, gvr)
     } else {
         bail!(

@@ -128,6 +128,59 @@ impl RocksStore {
 
     // ── Public inherent helpers (not on Store<E> trait) ───────────────────────
 
+    /// Enumerate all block roots in the hot `blocks` CF whose slot falls in
+    /// `[from_slot, below_slot)`.
+    ///
+    /// Used by the Phase-4 orphan-pruning pass in `run_freezer_loop`: iterates
+    /// the `block_root_to_slot` reverse-index (which is not deleted by migration
+    /// — only the `blocks` CF entry moves cold) to find every hot block root at
+    /// a slot below the new split and returns `(root, slot)` pairs.  The caller
+    /// then compares each root against `slot_to_block_root[slot]` (the
+    /// authoritative canonical index) to identify orphans without using
+    /// `get_ancestor` (CRITICAL-4).
+    pub fn hot_block_roots_in_range(
+        &self,
+        from_slot: Slot,
+        below_slot: Slot,
+    ) -> Result<Vec<(Root, Slot)>, StorageError> {
+        // Only roots still present in the hot `blocks` CF are orphan candidates;
+        // roots already migrated cold are no longer in `blocks` and must be
+        // skipped (they were canonical and already cold-copied by Task 3.3).
+        let blocks_cf = self.cf_handle(CF_BLOCKS)?;
+        let root_to_slot_cf = self.cf_handle(CF_BLOCK_ROOT_TO_SLOT)?;
+
+        let mut result = Vec::new();
+        // Iterate the entire `block_root_to_slot` CF (keys are 32-byte roots in
+        // arbitrary order, not sorted by slot).  For each entry, check if the
+        // slot is in the target range and the block still exists in the hot CF.
+        let iter = self.db.iterator_cf(root_to_slot_cf, IteratorMode::Start);
+
+        for item in iter {
+            let (k, v) = item?;
+            if k.len() != 32 {
+                continue;
+            }
+            if v.len() != 8 {
+                continue;
+            }
+            // `block_root_to_slot` values are little-endian u64 (written by
+            // `write_block_transition` at `db.rs:326`).
+            let slot_u64 = u64::from_le_bytes(v[..8].try_into().expect("length 8 checked"));
+            let slot = Slot(slot_u64);
+            if slot < from_slot || slot >= below_slot {
+                continue;
+            }
+            // Only include roots still present in the hot `blocks` CF.
+            let mut root_bytes = [0u8; 32];
+            root_bytes.copy_from_slice(&k);
+            let root = Root::from(root_bytes);
+            if self.db.get_cf(blocks_cf, root_key(&root))?.is_some() {
+                result.push((root, slot));
+            }
+        }
+        Ok(result)
+    }
+
     /// Look up the canonical block root at `slot` from the `slot_to_block_root` CF.
     ///
     /// Returns `None` when no block was imported at this slot (e.g. missed slot
@@ -529,17 +582,34 @@ impl<E: EthSpec> Store<E> for RocksStore {
             wb.delete_cf(hot_blocks_cf, root_key(root));
         }
 
+        // ── 3b. Delete orphan blocks + their reverse-index entries ────────────
+        //
+        // Orphans are non-canonical blocks identified by Task 4.1 (CRITICAL-4):
+        // their `blocks` CF entry AND their `block_root_to_slot` reverse-index
+        // entry are deleted.  The canonical `slot_to_block_root[slot]` entries
+        // are NOT deleted (they are the navigational index cold regen and network
+        // require indefinitely).  Also delete the `state-summary` CF entry for
+        // the orphan so the replay walk does not follow a stale parent chain.
+        let root_to_slot_cf = self.cf_handle(CF_BLOCK_ROOT_TO_SLOT)?;
+        let state_summary_cf = self.cf_handle(CF_STATE_SUMMARY)?;
+        for root in &batch.prune_orphan_block_roots {
+            wb.delete_cf(hot_blocks_cf, root_key(root));
+            wb.delete_cf(root_to_slot_cf, root_key(root));
+            wb.delete_cf(state_summary_cf, root_key(root));
+        }
+
         // ── 4. Delete pruned hot states ───────────────────────────────────────
         let hot_states_cf = self.cf_handle(CF_STATES)?;
         for state_root in &batch.prune_state_roots {
             wb.delete_cf(hot_states_cf, root_key(state_root));
         }
 
-        // NOTE: the `slot_to_block_root` / `block_root_to_slot` index CFs are
-        // intentionally NOT pruned. They are append-only navigational indexes
-        // that cold regen (`block_root_at_slot` → nearest restore point + replay)
-        // and the network `BeaconBlocksByRange` serving path require for migrated
-        // history. Only the payload CFs (`blocks`, `states`) move hot→cold.
+        // NOTE: the `slot_to_block_root` index CF is intentionally NOT pruned.
+        // It is an append-only navigational index that cold regen
+        // (`block_root_at_slot` → nearest restore point + replay) and the
+        // network `BeaconBlocksByRange` serving path require for migrated history.
+        // Orphan block roots' `block_root_to_slot` reverse entries ARE pruned
+        // (see step 3b) so RAM / disk is reclaimed for non-canonical history.
 
         // ── 5. Advance metadata[b"split_slot"] ───────────────────────────────
         let meta_cf = self.cf_handle(CF_METADATA)?;

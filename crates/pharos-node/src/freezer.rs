@@ -18,6 +18,8 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 use pharos_fork_choice::Store as FcStore;
+use std::collections::HashSet;
+
 use pharos_storage::{ColdMigrationBatch, RocksStore, Store as DbStore};
 use pharos_types::{
     EthSpec,
@@ -118,6 +120,7 @@ pub async fn run_freezer_loop<E: EthSpec>(
         let mut cold_blocks: Vec<(Root, E::SignedBeaconBlock)> = Vec::new();
         let mut prune_block_roots: Vec<Root> = Vec::new();
         let mut prune_state_roots: Vec<Root> = Vec::new();
+        let mut prune_orphan_block_roots: Vec<Root> = Vec::new();
 
         // Collect canonical block roots for slots in (split_slot, finalized_slot].
         // For each canonical block: copy to cold, schedule hot deletion. The
@@ -174,6 +177,61 @@ pub async fn run_freezer_loop<E: EthSpec>(
             }
         }
 
+        // ── Task 4.1: Identify and prune orphan (non-canonical) hot blocks ───
+        //
+        // CRITICAL-4: canonicality is determined ONLY from the persisted
+        // `slot_to_block_root` index — NOT from `get_ancestor`, which is
+        // in-memory only and returns the queried root on a missing `store.blocks`
+        // entry (get_head.rs:90-92), thus misreporting orphans as canonical after
+        // Task 3.4 eviction.
+        //
+        // For each hot block root at a slot in (split_slot, finalized_slot]:
+        //   canonical iff slot_to_block_root[slot] == root.
+        // Non-canonical roots are added to `prune_orphan_block_roots` (deleted
+        // from `blocks` + `block_root_to_slot` + `state-summary` without a cold
+        // copy).  Their epoch-boundary states (if any) are added to
+        // `prune_state_roots` so the hot `states` CF is cleaned up too.
+        {
+            let canonical_set: HashSet<Root> = canonical_roots_in_range
+                .iter()
+                .map(|(_, root)| *root)
+                .collect();
+
+            match store.hot_block_roots_in_range(Slot(split_slot.0 + 1), Slot(finalized_slot.0 + 1))
+            {
+                Ok(hot_roots) => {
+                    for (root, slot) in hot_roots {
+                        if canonical_set.contains(&root) {
+                            // Canonical: already handled above (cold-copy + prune).
+                            continue;
+                        }
+                        // Orphan: not canonical at its slot.
+                        debug!(
+                            root = ?root, slot = slot.0,
+                            "freezer: pruning orphan (non-canonical) hot block"
+                        );
+                        prune_orphan_block_roots.push(root);
+                        // Prune orphan's epoch-boundary state if stored.
+                        if slot.0 % E::SLOTS_PER_EPOCH == 0 {
+                            if let Ok(Some(summary)) =
+                                <RocksStore as DbStore<E>>::get_state_summary(&store, &root)
+                            {
+                                if let Ok(Some(_)) = <RocksStore as DbStore<E>>::get_state(
+                                    &store,
+                                    &summary.state_root,
+                                ) {
+                                    prune_state_roots.push(summary.state_root);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "freezer: hot_block_roots_in_range failed; skipping orphan pruning");
+                }
+            }
+        }
+
         // ── Select restore-point states ───────────────────────────────────────
         //
         // Write ALL restore-point boundaries in (split_slot, finalized_slot] —
@@ -196,6 +254,7 @@ pub async fn run_freezer_loop<E: EthSpec>(
             cold_states,
             prune_block_roots: prune_block_roots.clone(),
             prune_state_roots,
+            prune_orphan_block_roots: prune_orphan_block_roots.clone(),
             split_slot: new_split,
         };
 
@@ -223,7 +282,13 @@ pub async fn run_freezer_loop<E: EthSpec>(
         //
         // Pattern: collect eviction set under READ lock (no contention with import),
         // then take a SHORT WRITE lock only for the HashMap::remove loop.
-        evict_finalized_from_fc::<E>(&fork_choice, &prune_block_roots, new_split);
+        // Evict both canonical migrated blocks and orphan blocks from RAM.
+        let all_evict: Vec<Root> = prune_block_roots
+            .iter()
+            .chain(prune_orphan_block_roots.iter())
+            .copied()
+            .collect();
+        evict_finalized_from_fc::<E>(&fork_choice, &all_evict, new_split);
     }
 
     info!("freezer loop exited");
@@ -325,8 +390,6 @@ fn evict_finalized_from_fc<E: EthSpec>(
     evict_roots: &[Root],
     finalized_slot: Slot,
 ) {
-    use std::collections::HashSet;
-
     if evict_roots.is_empty() {
         return;
     }

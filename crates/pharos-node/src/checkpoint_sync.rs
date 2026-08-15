@@ -315,11 +315,23 @@ pub fn apply_anchor<E: EthSpec>(
         last_known_time,
     };
 
+    // Initialize `split_slot` and `anchor_slot` metadata to the anchor slot so
+    // the freezer and rehydrate know where the hot window starts.  Both keys ride
+    // the SAME single-BlockTransition anchor write per `D-anchor-state-on-disk`.
+    // Per Task 4.3: anchor is the initial hot/cold boundary.
+    let anchor_slot_be = state_slot.0.to_be_bytes();
+
     let mut batch = BlockTransition::<E>::new();
     batch.block = Some((anchor.block_root, anchor.signed_block));
     batch.state = Some((anchor.state_root, anchor.state));
     batch.forkchoice = Some(snap.clone());
     batch.slot_index = Some((state_slot, anchor.block_root));
+    batch
+        .metadata
+        .push((b"split_slot", anchor_slot_be.to_vec()));
+    batch
+        .metadata
+        .push((b"anchor_slot", anchor_slot_be.to_vec()));
 
     <RocksStore as Store<E>>::write_block_transition(store, batch)?;
 

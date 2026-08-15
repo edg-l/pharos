@@ -329,6 +329,9 @@ where
             }
         }
         // Fall through to regen when the block root is not in-memory.
+        // `StateRegenService::state_at_slot` (Phase 2) falls through to cold
+        // restore-points via `nearest_cold_restore_point` (Phase 3 + Task 3.6),
+        // so this is correct live + cold (per Task 4.4 API audit).
         // `regen_fn` converts `RegenError → ApiError`; we swallow ApiError here
         // because the trait returns `Option<E::BeaconState>`.
         if let Some(regen) = &self.regen_fn {
@@ -359,6 +362,9 @@ where
             return Some(state);
         }
         // Fall through to regen (replay-on-read) when not found in hot storage.
+        // `StateRegenService::state_at_root` (Phase 2) walks state-summaries +
+        // falls through to cold restore-points (Phase 3 + Task 3.6), so this is
+        // correct live + cold (per Task 4.4 API audit).
         if let Some(regen) = &self.regen_fn {
             regen(RegenTarget::StateRoot(state_root)).ok()
         } else {
@@ -368,36 +374,57 @@ where
 
     fn block_root_for_slot(&self, slot: Slot) -> Option<Root> {
         use pharos_types::views::BeaconBlockView;
-        // TODO(Phase 4): fall through to the persisted `slot_to_block_root` index
-        // (RocksStore::block_root_at_slot) when the slot is outside the in-memory
-        // window, so `resolve_state_id` by decimal slot works for cold history.
-        let fc = self.fork_choice.read();
-        fc.blocks.iter().find_map(|(root, block)| {
-            if block.slot() == slot {
-                Some(*root)
-            } else {
-                None
+        // Fast path: in-memory fork-choice blocks (covers recent hot window).
+        {
+            let fc = self.fork_choice.read();
+            if let Some(root) = fc.blocks.iter().find_map(|(root, block)| {
+                if block.slot() == slot {
+                    Some(*root)
+                } else {
+                    None
+                }
+            }) {
+                return Some(root);
             }
-        })
+        }
+        // Fall through to the persisted `slot_to_block_root` CF.
+        // This resolves `resolve_state_id` by decimal slot for cold history
+        // (finalized blocks migrated below split_slot by Phase-3 freezer).
+        // Per Task 4.4 (API audit): correct live + cold.
+        self.store.block_root_at_slot(slot).ok().flatten()
     }
 
     fn genesis_block_root(&self) -> Root {
         // The genesis block root is the anchor root stored in the fork-choice
         // store's finalized checkpoint at epoch 0.  We look for the block at
-        // slot 0 in-memory, then fall back to the finalized checkpoint root.
+        // slot 0 in-memory, then fall through to the persisted slot-index, then
+        // fall back to the finalized checkpoint root.
+        //
+        // Per Task 4.4 (API audit): correct live + cold.  After Phase-3 migration
+        // the genesis/anchor block is in the cold-blocks CF; the `finalized_checkpoint.root`
+        // fallback covers checkpoint-sync nodes where genesis is the anchor.  For
+        // genesis-from-scratch nodes, slot 0 is looked up in the persisted slot-index.
         use pharos_types::views::BeaconBlockView;
-        let fc = self.fork_choice.read();
-        if let Some(root) = fc.blocks.iter().find_map(|(r, b)| {
-            if b.slot() == pharos_types::phase0::Slot(0) {
-                Some(*r)
-            } else {
-                None
-            }
-        }) {
+        let (in_memory_root, finalized_root) = {
+            let fc = self.fork_choice.read();
+            let in_mem = fc.blocks.iter().find_map(|(r, b)| {
+                if b.slot() == pharos_types::phase0::Slot(0) {
+                    Some(*r)
+                } else {
+                    None
+                }
+            });
+            (in_mem, fc.finalized_checkpoint.root)
+        };
+        if let Some(root) = in_memory_root {
+            return root;
+        }
+        // Fall through to the persisted slot-index (covers cold genesis).
+        if let Ok(Some(root)) = self.store.block_root_at_slot(pharos_types::phase0::Slot(0)) {
             return root;
         }
         // Anchor checkpoint is the first block we know about.
-        fc.finalized_checkpoint.root
+        finalized_root
     }
 
     fn sync_committee_pubkeys(&self, block_root: Root) -> Option<SyncCommitteePubkeys> {
@@ -419,10 +446,20 @@ where
 
     fn signed_block_header_at(&self, root: Root) -> Option<(BeaconBlockHeader, BLSSignature)> {
         // Fetch the full SignedBeaconBlock from storage to extract the real signature.
-        // This is cheap for recently-imported blocks (always present after Task 1.1).
-        let signed = <RocksStore as DbStore<E>>::get_block(&self.store, &root)
-            .ok()
-            .flatten()?;
+        // Try hot CF first; fall through to cold for migrated blocks.
+        // Per Task 4.4 (API audit): correct live + cold.
+        let signed = {
+            let hot = <RocksStore as DbStore<E>>::get_block(&self.store, &root)
+                .ok()
+                .flatten();
+            if hot.is_some() {
+                hot?
+            } else {
+                <RocksStore as DbStore<E>>::get_cold_block(&self.store, &root)
+                    .ok()
+                    .flatten()?
+            }
+        };
 
         // Reconstruct BOTH the header fields and the real signature directly from
         // the stored `SignedBeaconBlock` — no dependency on the in-memory
@@ -459,14 +496,22 @@ where
     }
 
     fn block_by_root_for_api(&self, root: Root) -> Result<Option<SignedBlockForApi>, ApiError> {
-        // Fetch from cold storage (the only place full signed blocks are kept).
-        // A genuine DB read error is surfaced as 500, distinct from a missing
-        // block (Ok(None) → 404 at the handler).
-        let block = match <RocksStore as DbStore<E>>::get_block(&self.store, &root)
-            .map_err(|e| ApiError::Internal(format!("block store read failed: {e}")))?
-        {
-            Some(b) => b,
-            None => return Ok(None),
+        // Fetch from the hot CF first; fall through to the cold CF for finalized
+        // blocks migrated by the Phase-3 freezer.  A genuine DB read error is
+        // surfaced as 500, distinct from a missing block (Ok(None) → 404 at the
+        // handler).  Per Task 4.4 (API audit): correct live + cold.
+        let hot = <RocksStore as DbStore<E>>::get_block(&self.store, &root)
+            .map_err(|e| ApiError::Internal(format!("block store read failed: {e}")))?;
+        let block = if let Some(b) = hot {
+            b
+        } else {
+            // Fall through to cold-blocks CF (finalized blocks migrated by freezer).
+            match <RocksStore as DbStore<E>>::get_cold_block(&self.store, &root)
+                .map_err(|e| ApiError::Internal(format!("cold block store read failed: {e}")))?
+            {
+                Some(b) => b,
+                None => return Ok(None),
+            }
         };
 
         // Use the `EthSpec` unwrap helpers to dispatch to the correct fork-specific

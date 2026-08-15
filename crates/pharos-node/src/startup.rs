@@ -1,22 +1,41 @@
 //! Node startup helpers — warm-restart rehydration of the in-memory fork-choice
 //! store from persisted RocksDB data.
 //!
-//! # Warm-restart contract (`D-rocksdb` snapshot-rehydration)
+//! # Warm-restart contract (`D-rocksdb` snapshot-rehydration) — Phase 4 update
 //!
-//! The `forkchoice` column family holds only checkpoint cursors and head
-//! pointers. On restart, `rehydrate_fork_choice_store` rebuilds the in-memory
-//! `pharos_fork_choice::Store<E>` by:
+//! After the Phase-3 freezer migrates finalized blocks/states to cold CFs, the
+//! hot region only holds epoch-boundary states in `[split_slot, head_slot]`.
+//! Intermediate-slot states are NOT stored; the old walk that silently skipped
+//! stateless blocks (`if let Some(state) = get_state`) would produce a sparse
+//! `block_states` map with holes in the parent→child chain (CRITICAL-3).
 //!
-//! 1. Reading the anchor block at `snapshot.finalized_checkpoint.root` from
-//!    CF `blocks`.
-//! 2. Walking forward in CF `slot_to_block_root` from
-//!    `finalized_checkpoint.epoch * SLOTS_PER_EPOCH` up to `snapshot.head_slot`,
-//!    loading each block + post-state into `blocks` / `block_states`.
-//! 3. Re-deriving `checkpoint_states` for `justified_checkpoint` and
-//!    `finalized_checkpoint` by looking up the corresponding states.
-//! 4. Leaving `latest_messages`, `equivocating_indices`, `block_timeliness`,
-//!    and `unrealized_justifications` at empty/default values; they repopulate
-//!    from incoming attestations after restart.
+//! `rehydrate_fork_choice_store` fixes this by:
+//!
+//! 1. Reading `metadata[b"split_slot"]` to determine the hot window start.
+//!    Pre-split data lives in cold CFs and is NOT rehydrated into in-memory maps
+//!    (served on demand by `StateRegenService`).
+//! 2. Loading the anchor block at `snapshot.finalized_checkpoint.root`, falling
+//!    through `get_block` → `get_cold_block` when the block has been migrated.
+//!    The anchor state falls through similarly: hot `states` → cold restore-point
+//!    + replay.
+//! 3. Forward-walking `slot_to_block_root` from `split_slot` to `head_slot`,
+//!    loading each canonical block AND regenerating its post-state for every
+//!    slot where a full state was NOT stored (non-epoch-boundary slots) via
+//!    `inline_replay_to`, so `block_states` is DENSE over `[split_slot, head_slot]`.
+//! 4. Re-deriving `checkpoint_states` and rehydrating `payload_statuses`.
+//!
+//! # Why dense `[split_slot, head_slot]` suffices for `filter_block_tree`/`get_head`
+//!
+//! `get_filtered_block_tree` (`get_head.rs:329-338`) seeds its walk at
+//! `store.justified_checkpoint.root` (line 334) and `filter_block_tree`
+//! (`get_head.rs:253-326`) recurses only over blocks that are children of that
+//! base via `parent_root` child-enumeration over `store.blocks` (lines 280-296).
+//! `get_head` (`get_head.rs:346-375`) descends GHOST likewise from
+//! `justified_checkpoint.root`.  Since `justified_checkpoint.epoch ≥
+//! finalized_checkpoint.epoch ≥ split_slot / SLOTS_PER_EPOCH`, the walk base is
+//! always at or above `split_slot`, so a dense `[split_slot, head_slot]` window
+//! fully covers the reachable set.  Pre-split blocks are never reached from the
+//! walk base, so not rehydrating them is correct (CRITICAL-3 fix).
 //!
 //! After this function returns, the caller MUST call
 //! `pharos_fork_choice::on_tick(&mut store, SystemTime::now()...)` to advance
@@ -25,16 +44,26 @@
 use std::collections::{HashMap, HashSet};
 
 use pharos_ssz::TreeHash;
+use pharos_stf::phase0::state_write::BeaconStateWrite;
+use pharos_stf::{
+    AltairDispatch, AltairProcessSlotsDispatch, AltairUpgradeDispatch, BellatrixDispatch,
+    BellatrixProcessSlotsDispatch, BellatrixUpgradeDispatch, CapellaDispatch,
+    CapellaProcessSlotsDispatch, ForkEpochs, NullExecutionEngine, Phase0UpgradeDispatch,
+    process_slots_fork, state_transition,
+};
 use pharos_storage::{ForkChoiceSnapshot, RocksStore, StorageError, Store};
 use pharos_types::PayloadStatus;
+use pharos_types::config::RuntimeConfig;
+use pharos_types::phase0::Checkpoint;
 use pharos_types::phase0::primitives::{Root, Slot};
+use pharos_types::views::BeaconBlockBodyView;
 use pharos_types::{BeaconBlockView, EthSpec, SignedBeaconBlockView};
 use pharos_utils::{Hash256, Uint256};
+use tracing::warn;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/// Extract the inner `E::BeaconBlock` from a fork-enum `E::SignedBeaconBlock`
-/// without calling the panicking `message()` on the fork-enum variant.
+/// Extract the inner `E::BeaconBlock` from a fork-enum `E::SignedBeaconBlock`.
 ///
 /// Returns `None` only if the signed block variant is unrecognised (should
 /// never happen in a well-typed system).
@@ -57,53 +86,309 @@ where
     }
 }
 
-// ── rehydrate_fork_choice_store ───────────────────────────────────────────────
-
-/// Rebuild the in-memory `pharos_fork_choice::Store<E>` from persisted data.
+/// Load a beacon state by root, falling through to cold restore-point + replay
+/// when the hot `states` CF does not contain it.
 ///
-/// Performs steps 2-5 of the `D-rocksdb` snapshot-rehydration walk.
-/// The caller is responsible for the subsequent `on_tick` call (step 5+).
-///
-/// Returns `Err(StorageError::KeyNotFound)` if the anchor block at
-/// `snapshot.finalized_checkpoint.root` is not found in the `blocks` CF.
-pub fn rehydrate_fork_choice_store<E: EthSpec>(
+/// Used for the anchor state during rehydration where the finalized state may
+/// have been pruned from hot storage by Phase-3 migration.
+fn load_state_hot_or_cold<E: EthSpec>(
     store: &RocksStore,
-    snapshot: &ForkChoiceSnapshot,
-) -> Result<pharos_fork_choice::Store<E>, StorageError>
+    state_root: Root,
+    search_up_to: Slot,
+    runtime_cfg: &RuntimeConfig,
+) -> Result<Option<E::BeaconState>, StorageError>
 where
+    E::BeaconState: BeaconStateWrite + TreeHash,
     E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
     E::AltairSignedBeaconBlock: SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock: SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    E::AltairBeaconState:
+        AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: BellatrixDispatch<E, NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + TreeHash,
+    E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine> + CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
-    use pharos_fork_choice::Store as FcStore;
-    use pharos_types::phase0::Checkpoint;
+    // 1. Hot states CF.
+    if let Some(state) = <RocksStore as Store<E>>::get_state(store, &state_root)? {
+        return Ok(Some(state));
+    }
 
-    // Step 2: load the anchor block (finalized_checkpoint.root).
+    // 2. Cold restore-points: find the nearest restore point at or before
+    //    `search_up_to`, load the cold state, replay forward to find the state
+    //    matching `state_root`.
+    let Some((rp_slot, _)) = <RocksStore as Store<E>>::nearest_restore_point(store, search_up_to)?
+    else {
+        return Ok(None);
+    };
+    let Some(cold_state) = <RocksStore as Store<E>>::get_cold_state(store, rp_slot)? else {
+        return Ok(None);
+    };
+
+    // Scan [rp_slot, search_up_to] to find which slot has `state_root` as its
+    // post-state, then replay forward.
+    for s in rp_slot.0..=search_up_to.0 {
+        let slot = Slot(s);
+        let block_root = match store.block_root_at_slot(slot)? {
+            Some(r) => r,
+            None => continue,
+        };
+        if let Ok(Some(summary)) = <RocksStore as Store<E>>::get_state_summary(store, &block_root) {
+            if summary.state_root == state_root {
+                // Replay from the cold restore point to this slot.
+                return match inline_replay_to::<E>(store, cold_state, rp_slot, slot, runtime_cfg) {
+                    Ok(replayed) => Ok(Some(replayed)),
+                    Err(e) => {
+                        warn!(
+                            state_root = ?state_root,
+                            error = %e,
+                            "rehydrate: cold restore-point replay failed"
+                        );
+                        Ok(None)
+                    }
+                };
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Replay blocks from `start_slot+1` to `target_slot` using the slot-index and
+/// stored blocks (hot then cold), applying the STF.
+///
+/// Equivalent to `StateRegenService::replay_to` but operates directly on
+/// `&RocksStore` without requiring `Arc` wrapping, making it usable during the
+/// early startup phase before `Arc`s are allocated.
+///
+/// Uses `RuntimeConfig::default()` for the replay (same as checkpoint-sync
+/// anchor replay).  `validate_result = false` — stored blocks are trusted.
+fn inline_replay_to<E: EthSpec>(
+    store: &RocksStore,
+    mut state: E::BeaconState,
+    start_slot: Slot,
+    target_slot: Slot,
+    runtime_cfg: &RuntimeConfig,
+) -> Result<E::BeaconState, StorageError>
+where
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairSignedBeaconBlock: SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixSignedBeaconBlock: SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    E::AltairBeaconState:
+        AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: BellatrixDispatch<E, NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + TreeHash,
+    E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine> + CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
+{
+    if start_slot >= target_slot {
+        return Ok(state);
+    }
+
+    let null_engine = NullExecutionEngine;
+    // Use the REAL loaded fork schedule + slot duration. If the hot window being
+    // replayed crosses a fork epoch (e.g. Bellatrix→Capella), `process_slots_fork`
+    // must upgrade the state at that boundary — using `ForkEpochs::never()` here
+    // would leave the state on the old fork and make the next-fork block fail
+    // `UnsupportedFork`, leaving a hole in `block_states` (the CRITICAL-3 bug this
+    // walk exists to prevent). The fork epochs are NETWORK config, not compile-time
+    // (e.g. our devnet sets CAPELLA_FORK_EPOCH=1), so they must come from the
+    // loaded `runtime_cfg`, not `E::*_FORK_EPOCH`.
+    let fork_epochs = ForkEpochs::from_runtime_cfg(runtime_cfg);
+
+    let mut current_slot = Slot(start_slot.0 + 1);
+
+    while current_slot <= target_slot {
+        let block_root_opt = store
+            .block_root_at_slot(current_slot)
+            .map_err(|_| StorageError::KeyNotFound)?;
+
+        if let Some(block_root) = block_root_opt {
+            // Load from hot CF first, then cold.
+            let signed_block = match <RocksStore as Store<E>>::get_block(store, &block_root)? {
+                Some(b) => b,
+                None => match <RocksStore as Store<E>>::get_cold_block(store, &block_root)? {
+                    Some(b) => b,
+                    None => {
+                        // Block missing from both — advance as empty slot.
+                        process_slots_fork::<E>(&mut state, current_slot, fork_epochs, runtime_cfg)
+                            .map_err(|_| StorageError::KeyNotFound)?;
+                        current_slot = Slot(current_slot.0 + 1);
+                        continue;
+                    }
+                },
+            };
+
+            state = state_transition::<E, NullExecutionEngine>(
+                state,
+                &signed_block,
+                &null_engine,
+                false,
+                runtime_cfg,
+            )
+            .map_err(|e| {
+                warn!(slot = current_slot.0, error = %e, "inline_replay_to: state_transition failed");
+                StorageError::KeyNotFound
+            })?;
+            current_slot = Slot(current_slot.0 + 1);
+        } else {
+            // Empty slot — advance via process_slots_fork.
+            process_slots_fork::<E>(&mut state, current_slot, fork_epochs, runtime_cfg)
+                .map_err(|e| {
+                    warn!(slot = current_slot.0, error = %e, "inline_replay_to: process_slots_fork failed");
+                    StorageError::KeyNotFound
+                })?;
+            current_slot = Slot(current_slot.0 + 1);
+        }
+    }
+
+    Ok(state)
+}
+
+// ── rehydrate_fork_choice_store ───────────────────────────────────────────────
+
+/// Rebuild the in-memory `pharos_fork_choice::Store<E>` from persisted data.
+///
+/// Handles both the legacy (pre-split) case and the Phase-4 hot/cold case where
+/// the freezer has migrated finalized data below `split_slot` to cold CFs and
+/// pruned non-epoch-boundary states from hot storage.
+///
+/// # CRITICAL-3 fix
+///
+/// The pre-Phase-4 walk used `if let Some(state) = get_state(state_root)` and
+/// silently skipped blocks with no stored state.  After the freezer prunes
+/// non-epoch-boundary states, this would produce a sparse `blocks` map with
+/// holes in the parent→child chain that `filter_block_tree`/`get_head` walk.
+/// This version regenerates intermediate post-states via `inline_replay_to` so
+/// `block_states` is DENSE over `[split_slot, head_slot]`.
+///
+/// Returns `Err(StorageError::KeyNotFound)` when the anchor block cannot be
+/// found in either hot or cold storage.
+pub fn rehydrate_fork_choice_store<E: EthSpec>(
+    store: &RocksStore,
+    snapshot: &ForkChoiceSnapshot,
+    runtime_cfg: &RuntimeConfig,
+) -> Result<pharos_fork_choice::Store<E>, StorageError>
+where
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairSignedBeaconBlock: SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixSignedBeaconBlock: SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    E::AltairBeaconState:
+        AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: BellatrixDispatch<E, NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + TreeHash,
+    E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine> + CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
+{
+    // ── Step 1: Determine the hot window start (split_slot) ───────────────────
+    //
+    // Everything strictly below `split_slot` lives in cold CFs and is NOT
+    // rehydrated into the in-memory maps (served on demand by regen).
+    // Default to 0 when the key is absent (genesis or pre-Phase-4 node).
+    let split_slot: Slot = <RocksStore as Store<E>>::get_metadata(store, b"split_slot")
+        .unwrap_or(None)
+        .and_then(|v| {
+            v.try_into()
+                .ok()
+                .map(|arr: [u8; 8]| Slot(u64::from_be_bytes(arr)))
+        })
+        .unwrap_or(Slot(0));
+
+    // ── Step 2: Load the anchor block + state (hot or cold) ──────────────────
     let anchor_root = snapshot.finalized_checkpoint.root;
-    let anchor_signed = <RocksStore as Store<E>>::get_block(store, &anchor_root)?
-        .ok_or(StorageError::KeyNotFound)?;
+
+    // Try hot blocks first; fall through to cold when migrated.
+    let anchor_signed = match <RocksStore as Store<E>>::get_block(store, &anchor_root)? {
+        Some(b) => b,
+        None => <RocksStore as Store<E>>::get_cold_block(store, &anchor_root)?
+            .ok_or(StorageError::KeyNotFound)?,
+    };
 
     let anchor_block = extract_block::<E>(&anchor_signed).ok_or(StorageError::KeyNotFound)?;
     let anchor_state_root = anchor_block.state_root();
-    let anchor_state = <RocksStore as Store<E>>::get_state(store, &anchor_state_root)?
-        .ok_or(StorageError::KeyNotFound)?;
+    let anchor_slot = anchor_block.slot();
+
+    // Try hot states CF first; fall through to cold restore-point + replay.
+    let anchor_state = load_state_hot_or_cold::<E>(
+        store,
+        anchor_state_root,
+        split_slot.max(anchor_slot),
+        runtime_cfg,
+    )?
+    .ok_or(StorageError::KeyNotFound)?;
 
     // Seed the maps with the anchor.
-    let mut blocks: HashMap<_, E::BeaconBlock> = HashMap::new();
+    let mut blocks: HashMap<Root, E::BeaconBlock> = HashMap::new();
     blocks.insert(anchor_root, anchor_block);
 
-    let mut block_states: HashMap<_, E::BeaconState> = HashMap::new();
+    let mut block_states: HashMap<Root, E::BeaconState> = HashMap::new();
     block_states.insert(anchor_root, anchor_state);
 
-    // Step 3: walk forward from finalized epoch start up to head_slot (inclusive).
-    let start_slot = Slot(snapshot.finalized_checkpoint.epoch.0 * E::SLOTS_PER_EPOCH);
+    // ── Step 3: Forward-walk [split_slot, head_slot] ──────────────────────────
+    //
+    // Walk `slot_to_block_root` from `split_slot` (the hot window start) up to
+    // `head_slot` (inclusive) via `get_blocks_by_range`.
+    //
+    // For each canonical block in range:
+    //   - Insert the block into `blocks`.
+    //   - Try loading its post-state from the hot `states` CF (epoch boundaries).
+    //   - For intermediate slots with no stored state, regenerate via
+    //     `inline_replay_to` from the last loaded state so `block_states` is
+    //     DENSE.  This is the NORMAL path; the `if let Some` guard is only
+    //     defensive (never the normal code path after Phase-4).
+    //
+    // VERIFY (CRITICAL-3 filter_block_tree/get_head invariant):
+    //   `filter_block_tree` (get_head.rs:253-326) is called with base =
+    //   `store.justified_checkpoint.root` (get_head.rs:334).  It recurses only
+    //   over blocks whose `parent_root` == the current node (lines 280-296), so
+    //   it only visits entries in `store.blocks`.  `get_head` (get_head.rs:346-375)
+    //   likewise descends from `justified_checkpoint.root`.
+    //   Since `justified ≥ finalized ≥ split_slot`, a dense [split_slot, head_slot]
+    //   window fully covers every block reachable from the walk base.  Pre-split
+    //   blocks are in cold CFs (not in `store.blocks`) and are never reached.
     let end_slot = snapshot.head_slot;
+    if end_slot >= split_slot {
+        let count = end_slot.0.saturating_sub(split_slot.0).saturating_add(1);
+        let range_blocks = <RocksStore as Store<E>>::get_blocks_by_range(store, split_slot, count)?;
 
-    if end_slot > start_slot {
-        // count = number of slots to scan; +1 to include head_slot itself.
-        let count = end_slot.0.saturating_sub(start_slot.0).saturating_add(1);
-        let range_blocks = <RocksStore as Store<E>>::get_blocks_by_range(store, start_slot, count)?;
+        // Track the most recently loaded (root, state, slot) for replay.
+        let mut replay_anchor: Option<(Root, E::BeaconState, Slot)> = {
+            block_states
+                .get(&anchor_root)
+                .cloned()
+                .map(|s| (anchor_root, s, anchor_slot))
+        };
 
         for signed in range_blocks {
             let block = match extract_block::<E>(&signed) {
@@ -111,6 +396,7 @@ where
                 None => continue,
             };
             let block_root = block.tree_hash_root();
+            let block_slot = block.slot();
             let state_root = block.state_root();
 
             // Skip anchor — already inserted.
@@ -118,14 +404,47 @@ where
                 continue;
             }
 
-            if let Some(state) = <RocksStore as Store<E>>::get_state(store, &state_root)? {
-                blocks.insert(block_root, block);
-                block_states.insert(block_root, state);
+            // Insert the block.
+            blocks.insert(block_root, block);
+
+            // Try the hot states CF first (epoch-boundary states).
+            match <RocksStore as Store<E>>::get_state(store, &state_root)? {
+                Some(state) => {
+                    block_states.insert(block_root, state.clone());
+                    replay_anchor = Some((block_root, state, block_slot));
+                }
+                None => {
+                    // Intermediate slot: no stored state.  Regenerate via replay
+                    // from the last loaded state.  This is the NORMAL path for
+                    // non-epoch-boundary slots; the guard above is only defensive.
+                    if let Some((_, ref anchor_s, anchor_s_slot)) = replay_anchor {
+                        match inline_replay_to::<E>(
+                            store,
+                            anchor_s.clone(),
+                            anchor_s_slot,
+                            block_slot,
+                            runtime_cfg,
+                        ) {
+                            Ok(replayed) => {
+                                block_states.insert(block_root, replayed.clone());
+                                replay_anchor = Some((block_root, replayed, block_slot));
+                            }
+                            Err(e) => {
+                                warn!(
+                                    root = ?block_root,
+                                    slot = block_slot.0,
+                                    error = %e,
+                                    "rehydrate: inline replay failed for intermediate slot; skipping (CRITICAL-3 guard)"
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    // Step 4: re-derive checkpoint_states for justified and finalized checkpoints.
+    // ── Step 4: re-derive checkpoint_states ──────────────────────────────────
     let mut checkpoint_states: HashMap<Checkpoint, E::BeaconState> = HashMap::new();
 
     if let Some(just_state) = block_states
@@ -134,8 +453,6 @@ where
     {
         checkpoint_states.insert(snapshot.justified_checkpoint.clone(), just_state);
     }
-
-    // Finalized may equal justified; insert even if so (idempotent).
     if let Some(fin_state) = block_states
         .get(&snapshot.finalized_checkpoint.root)
         .cloned()
@@ -143,20 +460,16 @@ where
         checkpoint_states.insert(snapshot.finalized_checkpoint.clone(), fin_state);
     }
 
-    // Step 5: rehydrate payload_statuses from the `payload-status` CF.
-    //
-    // On warm restart, the persisted discriminant bytes are decoded back to
-    // `PayloadStatus` variants and inserted into the in-memory map so that
-    // `filter_block_tree` continues to skip `Invalid` payloads after restart.
+    // ── Step 5: rehydrate payload_statuses ───────────────────────────────────
     let payload_statuses: HashMap<Root, PayloadStatus> = {
         let raw = <RocksStore as Store<E>>::payload_statuses_iter(store)?;
         raw.into_iter().collect()
     };
 
-    // Step 6: build the Store with the rehydrated payload_statuses and empty volatile collections.
+    // ── Step 6: build the Store ───────────────────────────────────────────────
     // Terminal-block constants are zeroed here; the caller (main.rs) sets them
     // via `Store::set_terminal_config` using the loaded `RuntimeConfig`.
-    Ok(FcStore {
+    Ok(pharos_fork_choice::Store {
         time: snapshot.last_known_time,
         genesis_time: snapshot.genesis_time,
         justified_checkpoint: snapshot.justified_checkpoint.clone(),
@@ -175,13 +488,10 @@ where
         terminal_total_difficulty: Uint256::ZERO,
         terminal_block_hash: Hash256::default(),
         terminal_block_hash_activation_epoch: u64::MAX,
-        // Fork epoch schedule and runtime config default to "never upgrade".
-        // main.rs sets these via `Store::set_fork_epochs` + direct assignment
-        // after loading the `RuntimeConfig`.
         altair_fork_epoch: u64::MAX,
         bellatrix_fork_epoch: u64::MAX,
         capella_fork_epoch: u64::MAX,
-        runtime_cfg: pharos_types::config::RuntimeConfig::default(),
+        runtime_cfg: RuntimeConfig::default(),
     })
 }
 
@@ -191,7 +501,6 @@ where
 mod tests {
     use super::*;
     use pharos_fork_choice::get_forkchoice_store;
-    use pharos_ssz::TreeHash;
     use pharos_storage::{BlockTransition, RocksStoreConfig};
     use pharos_types::MainnetEthSpec;
     use pharos_types::phase0::primitives::Root;
@@ -213,7 +522,6 @@ mod tests {
         let fc =
             get_forkchoice_store::<MainnetEthSpec>(genesis_state.clone(), anchor_block.clone());
 
-        // Compute block_root before building snapshot so we can reference it.
         let block_root: Root = anchor_block.tree_hash_root();
 
         let snap = ForkChoiceSnapshot {
@@ -228,7 +536,6 @@ mod tests {
             last_known_time: fc.genesis_time,
         };
 
-        // Persist the anchor block and its state so rehydrate can load them.
         {
             use pharos_types::phase0::MainnetSignedBeaconBlock;
             use pharos_types::state::SignedBeaconBlock;
@@ -256,7 +563,6 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let (rocks, snap) = make_store_with_snapshot(&dir);
 
-        // Write three payload statuses.
         let root_a = Root::from([0x01u8; 32]);
         let root_b = Root::from([0x02u8; 32]);
         let root_c = Root::from([0x03u8; 32]);
@@ -272,9 +578,9 @@ mod tests {
                 .expect("write");
         }
 
-        // Rehydrate and assert in-memory map matches.
         let fc_store =
-            rehydrate_fork_choice_store::<MainnetEthSpec>(&rocks, &snap).expect("rehydrate");
+            rehydrate_fork_choice_store::<MainnetEthSpec>(&rocks, &snap, &RuntimeConfig::default())
+                .expect("rehydrate");
 
         assert_eq!(
             fc_store.payload_statuses.get(&root_a),
