@@ -16,7 +16,7 @@ use thiserror::Error;
 use tracing::warn;
 
 use pharos_fork_choice::Store as FcStore;
-use pharos_fork_choice::{PowBlockProvider, get_head, on_block};
+use pharos_fork_choice::{PowBlockProvider, get_head, on_block, on_tick_per_slot};
 use pharos_stf::{ExecutionEngine, StateTransitionError, state_transition};
 use pharos_storage::StorageError;
 use pharos_types::config::RuntimeConfig;
@@ -189,6 +189,24 @@ where
 
     let on_block_result = tokio::task::spawn_blocking(move || {
         let mut store = fc_clone.write();
+        // Advance the fork-choice clock to wall-now before on_block's future-slot
+        // guard runs. The background 1s on_tick driver fires at an arbitrary
+        // sub-second phase and floors to whole seconds, so right after a slot
+        // boundary `store.time` can still report the previous slot — which would
+        // spuriously reject a just-proposed block as FutureSlot.
+        //
+        // Advance-only and single-step, deliberately NOT the catch-up `on_tick`:
+        //  - never regress the cursor (a caller or the background ticker may have
+        //    set `store.time` further ahead; on_tick_per_slot's `store.time =
+        //    time` would otherwise move it backwards),
+        //  - O(1): `on_tick`'s slot-by-slot catch-up loop would iterate once per
+        //    elapsed slot, which explodes against a mock `genesis_time = 0`.
+        // The background `on_tick` remains the primary clock driver; this is only
+        // a sub-slot freshness nudge. on_block's `get_current_slot >= block.slot`
+        // assert is untouched.
+        if now > store.time {
+            on_tick_per_slot::<E>(&mut store, now);
+        }
         on_block::<E, PP>(&mut store, &block_for_on_block, post_state, now, &pow_clone)
     })
     .await?;
