@@ -268,4 +268,85 @@ follow established inter-client practice.
 Enforced in: `crates/pharos-network/src/discovery/enr.rs`
 (`build_local_enr`, `read_quic_port`, `read_quic6_port`).
 
-<!-- TODO M2 Phase 9.1: D-trait-boundaries — Host<E> trait owns inbound RPC; NetworkEvent does NOT include an RpcRequest variant. See docs/m2-plan.md amendments. -->
+<!-- M2 Phase 9.1 fills D-libp2p, D-discv5, D-runtime-ownership,
+     D-trait-boundaries (stub below), D-fork-digest-source, D-channels,
+     D-test-runner, D-peer-scoring. -->
+
+### D-trait-boundaries — Host<E> owns inbound RPC dispatch
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+The `Host<E: EthSpec>` trait, composed of `ForkContext`, `BlockProvider`,
+and `GossipValidator`, is held by the network task and dispatched
+synchronously when an inbound req-resp message arrives. The earlier
+Task 7.1 sketch included `NetworkEvent::RpcRequest { peer, request,
+response: oneshot::Sender<RpcResponse<E>> }` which would have forwarded
+inbound RPC out to the `NetworkHandle` consumer; this variant was
+removed during Phase 7.
+
+Rationale: throughput is equivalent (channel hop is ~200-400 ns, negligible
+against ~10-100 ms storage-bound RPC like `BlocksByRange`). Tail latency is
+strictly better under the Host pattern because the network task is not
+coupled to a consumer queue — a slow consumer cannot stall inbound RPC.
+The Host pattern also matches Phase 5's existing `handle_request` and
+Phase 8 tests (which preload `TestHost::BlockProvider`).
+
+Enforced in: `crates/pharos-network/src/network/mod.rs`
+(`on_request_response_event` → `handle_request` → `Host` method calls).
+`NetworkEvent` enum has no `RpcRequest` variant.
+
+### D-network-event-surface — what NetworkEvent exposes (and what it doesn't)
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+The M2 `NetworkEvent` enum surfaces only the events a beacon-node
+consumer needs for the M2-acceptance set: `PeerConnected`,
+`PeerDisconnected`, `GossipMessage`, `NewListenAddr`, `LocalEnr`,
+`Shutdown`. The following libp2p sub-protocol events are received but
+not yet surfaced on the public API; each is logged at `tracing::debug!`
+and routed to per-milestone follow-ups in `docs/roadmap.md`:
+
+- M3 (Altair) follow-ups:
+  - `gossipsub::Event::Subscribed`/`Unsubscribed` → `PeerSubscribed`/`PeerUnsubscribed`
+  - `identify::Event::Received` → `PeerIdentified`
+  - `SwarmEvent::OutgoingConnectionError` → `DialFailed`
+  - `SwarmEvent::ExternalAddrConfirmed` → ENR auto-update path.
+- M11 (productionization) follow-ups:
+  - `gossipsub::Event::SlowPeer`, `GossipsubNotSupported` (real peer scoring).
+  - `ping::Event` per-peer RTT (dead-peer detection).
+  - Remaining `SwarmEvent` variants (`IncomingConnectionError`,
+    `NewExternalAddrOfPeer`, `ExpiredListenAddr`, `ListenerError`,
+    `ListenerClosed`).
+
+Rationale: M2 acceptance is wire-level correctness, not operational
+observability. Adding event variants at M2 cost only API surface; using
+them productively requires the peer-scoring substrate that lives in M11
+and the cross-fork ENR/topic logic that lives in M3. Locking the
+follow-ups into the roadmap at M2-close prevents drift.
+
+### M-networking-spec-source — consensus-specs has no networking suite
+
+**Status**: Methodology note. **Date**: 2026-05-22.
+
+`consensus-specs/tests/formats/` ships fixtures for SSZ, STF, fork
+choice, light client, KZG/BLS, etc. — but NOT for networking, gossipsub,
+or req-resp. This is industry-wide (Lighthouse, Prysm, Lodestar, Teku,
+Nimbus all hand-roll their networking tests). Pharos spec rigor for the
+network crate is therefore enforced via:
+
+1. **Inline citations** from code to spec lines in
+   `specs/phase0/p2p-interface.md` (varint `:1264-1267`,
+   IrrelevantNetwork `:1394`, gossipsub `StrictNoSign` `:482-484`, etc.).
+2. **Hand-written integration tests** in `crates/pharos-network/tests/`
+   (TCP+QUIC connect, discovery, gossip with reject topology, RPC
+   round-trips, fork-digest goodbye).
+3. **Phase 9 Task 9.7** spec-vs-code line audit at every networking
+   milestone (M2 close, M3 close).
+4. **Cross-client interop tests** against Lighthouse + ethrex planned
+   for M4 (before first merged sync), to be added in `crates/pharos-network/tests/interop/`.
+
+`#[serial_test]` is used to serialize the gossip integration tests
+within their binary (Phase 8 wrap-up amendment) because parallel libtest
+execution causes gossipsub mesh-formation timing to race under CPU
+contention; this is a test harness concern, not a production
+correctness issue.
