@@ -3,7 +3,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
 use clap::Parser;
@@ -25,6 +25,7 @@ use tracing::info;
 
 use pharos_node::ExecutionEngineHandle;
 use pharos_node::block_ingestion::run_block_ingestion_loop;
+use pharos_node::checkpoint_sync::{apply_anchor, fetch_checkpoint};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::engine_keepalive::{hex_to_u256, run_transition_config_keepalive, u256_to_hex};
 use pharos_node::fork_migration::run_fork_migration_loop;
@@ -58,12 +59,33 @@ struct Args {
 
     /// Path to a Phase-0 `BeaconState` SSZ file used as the genesis anchor.
     ///
-    /// Required on cold start. On warm restart the stored fork-choice snapshot
-    /// is loaded instead, but the genesis state is still needed to extract the
-    /// genesis validators root and fork version. Use `--checkpoint-sync-url`
-    /// (M4) for production mainnet.
-    #[arg(long, value_name = "PATH")]
-    genesis_state_path: PathBuf,
+    /// Required on cold start unless `--checkpoint-sync-url` is provided.
+    /// On warm restart the stored fork-choice snapshot is loaded instead.
+    #[arg(
+        long,
+        value_name = "PATH",
+        required_unless_present = "checkpoint_sync_url"
+    )]
+    genesis_state_path: Option<PathBuf>,
+
+    /// URL of a trusted Beacon API endpoint serving a finalised state to
+    /// bootstrap fork choice from.
+    ///
+    /// When present AND no warm-restart snapshot exists in `--data-dir`, pharos
+    /// fetches `GET <url>/eth/v2/debug/beacon/states/finalized` plus the matching
+    /// block and uses it as the fork-choice anchor (skipping genesis replay).
+    /// On warm restart, this flag is ignored; the persisted snapshot wins.
+    ///
+    /// Weak-subjectivity validation is deferred to M11; the operator's choice of
+    /// URL is the trust root. For tamper detection, pair with
+    /// `--checkpoint-sync-block-root`.
+    #[arg(long, value_name = "URL")]
+    checkpoint_sync_url: Option<String>,
+
+    /// Optional 0x-prefixed 32-byte hex block root that the checkpoint-sync
+    /// anchor MUST match. Aborts startup on mismatch.
+    #[arg(long, value_name = "ROOT", requires = "checkpoint_sync_url")]
+    checkpoint_sync_block_root: Option<String>,
 
     /// Path to the network config directory (without `.yaml` extension).
     ///
@@ -182,41 +204,127 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to open chain database")?,
     );
 
-    // ── Step 3: Load genesis state + build fork-choice ────────────────────
+    // ── Step 3: Build fork-choice store ──────────────────────────────────────
+    //
+    // Three-way branch (`D-anchor-state-on-disk`):
+    //   1. Warm restart   — RocksDB snapshot exists → rehydrate.
+    //   2. Checkpoint sync — `--checkpoint-sync-url` set → fetch + persist anchor.
+    //   3. Genesis cold start — `--genesis-state-path` provided → genesis replay.
+    //   4. Neither         — bail with a helpful error.
 
-    let genesis_bytes = std::fs::read(&args.genesis_state_path)
-        .with_context(|| format!("reading genesis state from {:?}", args.genesis_state_path))?;
-    // The genesis state is stored as a raw phase0 SSZ blob. Decode as the
-    // concrete phase0 type and wrap in the fork-enum (Phase0 variant).
-    let genesis_state_inner = Phase0MainnetBeaconState::from_ssz_bytes(&genesis_bytes)
-        .context("decoding genesis BeaconState SSZ")?;
-    let genesis_state = MainnetBeaconState::Phase0(genesis_state_inner);
-
-    // Compute genesis validators root and fork version from the state.
     use pharos_types::views::BeaconStateView;
-    let genesis_validators_root = genesis_state.genesis_validators_root();
-    let genesis_fork_version = MainnetEthSpec::GENESIS_FORK_VERSION;
-    let fork_version = pharos_types::phase0::primitives::Version::from_array(genesis_fork_version);
 
-    // Build fork-choice store: warm restart or cold start.
     let snapshot =
         <RocksStore as pharos_storage::Store<MainnetEthSpec>>::get_forkchoice_snapshot(&store)
             .context("reading fork-choice snapshot")?;
 
-    let fc_store = if let Some(ref snap) = snapshot {
+    // `genesis_validators_root` is extracted from whichever anchor we land on.
+    let (fc_store, genesis_validators_root) = if let Some(ref snap) = snapshot {
         info!("warm restart: rehydrating fork-choice store from snapshot");
-        rehydrate_fork_choice_store::<MainnetEthSpec>(&store, snap)
-            .context("rehydrating fork-choice store")?
-    } else {
+        let fc = rehydrate_fork_choice_store::<MainnetEthSpec>(&store, snap)
+            .context("rehydrating fork-choice store")?;
+        // Derive genesis_validators_root from the anchor block's post-state.
+        // The finalized_checkpoint.root is the block root; get the block to
+        // find state_root, then load the state.
+        let anchor_block = <RocksStore as pharos_storage::Store<MainnetEthSpec>>::get_block(
+            &store,
+            &snap.finalized_checkpoint.root,
+        )
+        .context("loading anchor block for genesis_validators_root")?;
+        let gvr = if let Some(signed) = anchor_block {
+            // Access the inner block via fork-unwrap to get state_root.
+            use pharos_types::views::BeaconBlockView as _;
+            use pharos_types::views::SignedBeaconBlockView as _;
+            let state_root =
+                if let Some(inner) = MainnetEthSpec::unwrap_phase0_signed_block(&signed) {
+                    inner.message().state_root()
+                } else if let Some(inner) = MainnetEthSpec::unwrap_altair_signed_block(&signed) {
+                    inner.message().state_root()
+                } else if let Some(inner) = MainnetEthSpec::unwrap_bellatrix_signed_block(&signed) {
+                    inner.message().state_root()
+                } else {
+                    unreachable!("unrecognised SignedBeaconBlock fork variant in warm restart")
+                };
+            let state = <RocksStore as pharos_storage::Store<MainnetEthSpec>>::get_state(
+                &store,
+                &state_root,
+            )
+            .context("loading anchor state for genesis_validators_root")?
+            .ok_or_else(|| anyhow::anyhow!("anchor state not found for state_root {state_root}"))?;
+            state.genesis_validators_root()
+        } else if let Some(ref path) = args.genesis_state_path {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("reading genesis state from {path:?}"))?;
+            let inner = Phase0MainnetBeaconState::from_ssz_bytes(&bytes)
+                .context("decoding genesis BeaconState SSZ")?;
+            let s = MainnetBeaconState::Phase0(inner);
+            s.genesis_validators_root()
+        } else {
+            bail!(
+                "warm restart: anchor block not found in store and --genesis-state-path not provided"
+            );
+        };
+        (fc, gvr)
+    } else if let Some(ref ckpt_url) = args.checkpoint_sync_url {
+        info!(url = %ckpt_url, "checkpoint-sync: fetching anchor");
+        let url =
+            reqwest::Url::parse(ckpt_url).context("--checkpoint-sync-url is not a valid URL")?;
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .context("building checkpoint-sync HTTP client")?;
+        // Parse the optional operator-supplied expected block root and pass it
+        // into fetch_checkpoint for tamper detection (TamperFlagMismatch).
+        let expected_block_root = if let Some(ref expected_hex) = args.checkpoint_sync_block_root {
+            Some(parse_root_hex(expected_hex)?)
+        } else {
+            None
+        };
+
+        let anchor = fetch_checkpoint::<MainnetEthSpec>(&url, &http, expected_block_root)
+            .await
+            .context("fetching checkpoint anchor")?;
+
+        // TODO(M11): weak-subjectivity check goes here.
+        info!(
+            slot = %anchor.state.slot(), block_root = %anchor.block_root,
+            "checkpoint-sync: anchor accepted"
+        );
+
+        let gvr = anchor.state.genesis_validators_root();
+        let synth_snap = apply_anchor::<MainnetEthSpec>(anchor, &store)
+            .context("persisting checkpoint anchor")?;
+        let fc = rehydrate_fork_choice_store::<MainnetEthSpec>(&store, &synth_snap)
+            .context("rehydrating fork-choice store from checkpoint anchor")?;
+        (fc, gvr)
+    } else if let Some(ref genesis_path) = args.genesis_state_path {
         info!("cold start: seeding fork-choice from genesis state");
+        let genesis_bytes = std::fs::read(genesis_path)
+            .with_context(|| format!("reading genesis state from {genesis_path:?}"))?;
+        // The genesis state is a raw phase0 SSZ blob.
+        let genesis_state_inner = Phase0MainnetBeaconState::from_ssz_bytes(&genesis_bytes)
+            .context("decoding genesis BeaconState SSZ")?;
+        let genesis_state = MainnetBeaconState::Phase0(genesis_state_inner);
+
+        let gvr = genesis_state.genesis_validators_root();
         // Anchor block: state_root = hash_tree_root(genesis_state), empty sig.
         let state_root = genesis_state.tree_hash_root();
         let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MainnetBeaconBlock {
             state_root,
             ..pharos_types::phase0::MainnetBeaconBlock::default()
         });
-        get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block)
+        let fc = get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
+        (fc, gvr)
+    } else {
+        bail!(
+            "no startup path available: provide --genesis-state-path for genesis cold start, \
+             --checkpoint-sync-url for checkpoint sync, or ensure --data-dir contains a prior \
+             snapshot for warm restart"
+        );
     };
+
+    let genesis_fork_version = MainnetEthSpec::GENESIS_FORK_VERSION;
+    let fork_version = pharos_types::phase0::primitives::Version::from_array(genesis_fork_version);
 
     let mut fc_store_mut = fc_store;
 
@@ -246,11 +354,12 @@ async fn main() -> anyhow::Result<()> {
     let (head_tx, head_rx) = watch::channel::<Option<HeadChange>>(None);
     let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MainnetEthSpec>>(64);
 
-    // Spawn the engine actor when an explicit JWT secret is given or when the
-    // user has configured a non-default execution endpoint.  Without either
-    // signal (e.g. dev/test runs with the defaults) the engine driver is not
-    // started.
-    let el_configured = args.execution_endpoint != "http://127.0.0.1:8551";
+    // Spawn the engine actor when an explicit JWT secret is given, when the
+    // user has configured a non-default execution endpoint, or when checkpoint
+    // sync is requested (which implies an EL will be needed immediately after
+    // anchor is written).
+    let el_configured =
+        args.execution_endpoint != "http://127.0.0.1:8551" || args.checkpoint_sync_url.is_some();
     let engine_handle_opt = if args.jwt_secret.is_some() || el_configured {
         let jwt_secret = ensure_jwt_secret(&args.data_dir, args.jwt_secret.as_deref())
             .context("ensuring JWT secret")?;
@@ -287,9 +396,8 @@ async fn main() -> anyhow::Result<()> {
         info!(endpoint = %args.execution_endpoint, "engine actor started");
         Some(handle)
     } else {
-        // TODO(m4b-phase-2): extend message with "+ no --checkpoint-sync-url" when the flag lands
         info!(
-            "no EL configured (default endpoint + no --jwt-secret); engine API integration disabled"
+            "no EL configured (default endpoint + no --jwt-secret + no --checkpoint-sync-url); engine API integration disabled"
         );
         None
     };
@@ -494,4 +602,17 @@ async fn main() -> anyhow::Result<()> {
     info!("network shutdown complete");
 
     Ok(())
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Parse a `0x`-prefixed 32-byte hex string into a `Root`.
+fn parse_root_hex(s: &str) -> anyhow::Result<pharos_types::phase0::primitives::Root> {
+    let stripped = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(stripped)
+        .with_context(|| format!("--checkpoint-sync-block-root is not valid hex: {s:?}"))?;
+    let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+        anyhow::anyhow!("--checkpoint-sync-block-root must be 32 bytes (got != 32)")
+    })?;
+    Ok(pharos_types::phase0::primitives::Root::from(arr))
 }

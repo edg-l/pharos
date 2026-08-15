@@ -4,6 +4,7 @@
 //! `HostImpl<E>` and related types without duplicating construction logic.
 
 pub mod block_ingestion;
+pub mod checkpoint_sync;
 pub mod engine_driver;
 pub mod engine_keepalive;
 pub mod fork_migration;
