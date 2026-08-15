@@ -18,7 +18,7 @@ pub use handlers::{
 pub use pharos_types::PayloadStatus;
 pub use pow_block::{
     HashMapPowBlockProvider, NoopPowBlockProvider, PowBlock, PowBlockError, PowBlockProvider,
-    ValidateMergeBlockError, execution_block_hash_at_root, is_valid_terminal_pow_block,
-    validate_merge_block,
+    ValidateMergeBlockError, block_is_execution_enabled, execution_block_hash_at_root,
+    is_valid_terminal_pow_block, validate_merge_block,
 };
 pub use store::{LatestMessage, Store, get_forkchoice_store};

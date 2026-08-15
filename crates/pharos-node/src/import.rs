@@ -21,7 +21,7 @@ use pharos_stf::{ExecutionEngine, StateTransitionError, state_transition};
 use pharos_storage::{BlockTransition, RocksStore, StateSummary, StorageError, Store as DbStore};
 use pharos_types::config::RuntimeConfig;
 use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _, ForkVariant};
-use pharos_types::{EthSpec, phase0::primitives::Root};
+use pharos_types::{EthSpec, PayloadStatus, phase0::primitives::Root};
 
 use crate::engine_driver::{
     HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2, compute_finalized_block_hash,
@@ -80,6 +80,36 @@ pub(crate) struct ImportOutcome<E: EthSpec> {
     /// / BellatrixDispatchBounds — bounds the ingestion loop carries but
     /// import_block deliberately does not).
     pub post_state: E::BeaconState,
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Returns `true` if the signed block carries an active execution payload
+/// (non-zero `block_hash`), matching the semantics of `block_is_execution_enabled`.
+///
+/// Uses per-fork borrowing accessors (`unwrap_bellatrix_signed_block` /
+/// `unwrap_capella_signed_block`) so the entire inner block is never cloned —
+/// only the 32-byte `block_hash` field is read. Bellatrix and Capella blocks
+/// with a zeroed `block_hash` are pre-merge and return `false`.
+fn signed_block_is_execution_enabled<E: EthSpec>(b: &E::SignedBeaconBlock) -> bool {
+    use pharos_types::views::{
+        BeaconBlockBodyView as _, BeaconBlockView as _, SignedBeaconBlockView as _,
+    };
+    if let Some(inner) = E::unwrap_bellatrix_signed_block(b) {
+        inner
+            .message()
+            .body()
+            .execution_block_hash()
+            .is_some_and(|h| h != [0u8; 32])
+    } else if let Some(inner) = E::unwrap_capella_signed_block(b) {
+        inner
+            .message()
+            .body()
+            .execution_block_hash()
+            .is_some_and(|h| h != [0u8; 32])
+    } else {
+        false
+    }
 }
 
 // ── import_block ──────────────────────────────────────────────────────────────
@@ -306,6 +336,16 @@ where
         let post_state_persist = post_state_for_return.clone();
         let head_root_for_persist = head_change.head_root;
 
+        // Determine whether this block carries a live execution payload so the
+        // persist worker can pre-seed `payload_statuses[block_root] = NotValidated`.
+        // Per `D-preseed-notvalidated-on-import` (M8 Phase 1): every execution-
+        // carrying block must have an entry from import time; the async engine
+        // driver later overwrites with Valid / Invalid.
+        //
+        // Uses borrowing accessors rather than `E::signed_block_message` (which
+        // clones the entire inner block) to avoid a ~dozen-KB clone on every import.
+        let is_execution_block = signed_block_is_execution_enabled::<E>(signed_block);
+
         // Capture the fields needed from the block before moving into the closure.
         // `E::SignedBeaconBlock` is a fork-enum: use per-fork helpers rather than
         // the trait-dispatch `.message()` which panics for the enum variant.
@@ -333,7 +373,27 @@ where
         };
 
         let persist_result = tokio::task::spawn_blocking(move || {
-            // Take only a READ guard (write guard dropped after on_block).
+            // Pre-seed `payload_statuses[block_root] = NotValidated` for execution
+            // blocks BEFORE the read-lock snapshot, using a brief write lock.
+            //
+            // Invariant: every execution-carrying block has a `payload_statuses`
+            // entry from import time. The async engine driver later overwrites with
+            // Valid / Invalid. `mark_payload_status_if_absent` uses
+            // `entry().or_insert()` semantics so it NEVER overwrites a Valid /
+            // Invalid verdict the driver may have already set (the driver can race
+            // ahead of this worker on a fast EL).
+            //
+            // The write lock is acquired and released BEFORE all I/O so it is never
+            // held across a disk write. Per `D-preseed-notvalidated-on-import` (M8).
+            if is_execution_block {
+                fc_snap
+                    .write()
+                    .mark_payload_status_if_absent(block_root, PayloadStatus::NotValidated);
+            }
+
+            // Take only a READ guard for the snapshot and batch build (write guard
+            // dropped after on_block, and the brief pre-seed write lock above is
+            // also already dropped).
             let fc = fc_snap.read();
 
             // Snapshot fork-choice cursors so a restart rehydrates from the
@@ -367,6 +427,25 @@ where
                     parent_root: block_parent_root,
                 },
             ));
+
+            // Persist the pre-seeded NotValidated status to the `payload-status` CF
+            // so a restart rehydrates NotValidated for blocks whose EL verdict has
+            // not yet been received. Per `D-preseed-notvalidated-on-import` (M8 Phase 1).
+            //
+            // Guarded: skip the write if the engine driver has already persisted a
+            // Valid or Invalid verdict in the in-memory map. The driver can race
+            // ahead of this persist worker on a fast EL; overwriting Valid/Invalid
+            // with NotValidated on disk would corrupt the restart verdict. Using the
+            // read guard `fc` already held above avoids a second lock acquisition.
+            if is_execution_block {
+                let already_decided = fc
+                    .payload_statuses
+                    .get(&block_root)
+                    .is_some_and(|s| matches!(s, PayloadStatus::Valid | PayloadStatus::Invalid));
+                if !already_decided {
+                    batch.payload_status = Some((block_root, PayloadStatus::NotValidated));
+                }
+            }
 
             // Write epoch-boundary full state only when slot % SLOTS_PER_EPOCH == 0.
             // This bounds the per-epoch state-write cost to one full-state encode

@@ -166,6 +166,20 @@ impl<E: EthSpec> Store<E> {
         self.payload_statuses.insert(root, status);
     }
 
+    /// Insert `status` for `root` ONLY if no entry exists yet.
+    ///
+    /// Used at import time to pre-seed `NotValidated` without clobbering a
+    /// `Valid` / `Invalid` verdict the async engine driver may have already
+    /// written for a block that raced through the newPayload path before the
+    /// persist worker ran.
+    ///
+    /// Invariant (per `D-preseed-notvalidated-on-import`, M8 Phase 1): every
+    /// execution-carrying block has a `payload_statuses` entry from import time.
+    /// The async engine driver later overwrites with `Valid` or `Invalid`.
+    pub fn mark_payload_status_if_absent(&mut self, root: Root, status: PayloadStatus) {
+        self.payload_statuses.entry(root).or_insert(status);
+    }
+
     /// Override the Bellatrix terminal-block constants in this store.
     ///
     /// Called at node startup after `get_forkchoice_store` (or

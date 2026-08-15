@@ -96,7 +96,21 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
 
 impl ExecutionEngineHandle {
     /// Shared helper: send a `NewPayloadWire` request to the engine actor and
-    /// interpret the response as a validity boolean.
+    /// interpret the response as a validity boolean for the STF.
+    ///
+    /// Per `specs/sync/optimistic.md` "How to optimistically import blocks" —
+    /// `verify_and_notify_new_payload` returns `True` when the EL status is
+    /// `NOT_VALIDATED` (SYNCING / ACCEPTED) or `VALID`; returns `False` only on
+    /// `INVALIDATED` (INVALID / INVALID_BLOCK_HASH).
+    ///
+    /// Both `notify_new_payload` and `notify_new_payload_capella` on
+    /// `ExecutionEngineHandle` inherit this behaviour via this shared helper.
+    ///
+    /// IMPORTANT: `FixedExecutionEngine` (the conformance mock in
+    /// `pharos-stf`) is intentionally NOT changed — `execution_valid: false`
+    /// fixtures must still drive STF rejection on the conformance path.
+    ///
+    /// Per `D-engine-edge-stf-relaxation` (M8 Phase 1).
     fn new_payload_wire(&self, wire: NewPayloadWire) -> bool {
         let version = match &wire {
             NewPayloadWire::V1(_) => NewPayloadVersion::V1,
@@ -105,12 +119,20 @@ impl ExecutionEngineHandle {
         match self.engine.new_payload_blocking(version, wire) {
             Ok(status) => {
                 use pharos_engine::types::PayloadStatusStatus;
-                matches!(
+                // Return false ONLY for INVALID / INVALID_BLOCK_HASH.
+                // VALID / SYNCING / ACCEPTED all return true so the STF proceeds
+                // and the block is imported optimistically when the EL is still
+                // syncing. The async engine driver later overwrites the in-memory
+                // payload_status with the authoritative result.
+                !matches!(
                     status.status,
-                    PayloadStatusStatus::Valid | PayloadStatusStatus::Accepted
+                    PayloadStatusStatus::Invalid | PayloadStatusStatus::InvalidBlockHash
                 )
             }
             Err(e) => {
+                // Per `specs/sync/optimistic.md` "Execution Engine Errors":
+                // a CL MUST NOT optimistically import a block if the EL returns
+                // an error for engine_newPayload. Return false to reject.
                 tracing::warn!(error = %e, "ExecutionEngineHandle::new_payload_wire: engine error");
                 false
             }

@@ -201,3 +201,26 @@ where
         .and_then(|b| E::get_execution_block_hash(b))
         .unwrap_or_default()
 }
+
+// ── block_is_execution_enabled ────────────────────────────────────────────────
+
+/// Returns `true` iff `block` carries a live (non-default) execution payload.
+///
+/// - Phase0 / Altair blocks: no execution payload field → always `false`.
+/// - Bellatrix / Capella blocks: `true` iff `execution_payload.block_hash != default()`.
+///   A zero `block_hash` means the merge has not yet completed (pre-merge bellatrix
+///   state); a non-zero hash means execution is enabled and the EL must validate it.
+///
+/// Used by the persist worker in `import.rs` to pre-seed
+/// `payload_statuses[block_root] = NotValidated` for every execution-carrying
+/// block at import time, per `D-preseed-notvalidated-on-import` (M8 Phase 1).
+///
+/// Per `specs/sync/optimistic.md` "Helpers" — `is_execution_block` definition:
+/// a block is an execution block iff it contains an execution payload with a
+/// non-default `block_hash`.
+pub fn block_is_execution_enabled<E: EthSpec>(block: &E::BeaconBlock) -> bool {
+    match E::get_execution_block_hash(block) {
+        Some(hash) => hash != Hash256::default(),
+        None => false,
+    }
+}
