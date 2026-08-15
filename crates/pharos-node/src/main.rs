@@ -737,7 +737,22 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(runtime_cfg.clone()),
             regen_fn,
         );
-        let api_state = pharos_api::ApiState::new(Arc::new(chain_state));
+
+        // Build the SSE event bus and spawn the adapter task.
+        let event_bus = pharos_api::EventBus::new();
+        let adapter_head_rx = head_tx.subscribe();
+        {
+            use pharos_node::api_event_adapter::run_api_event_adapter;
+            let fc_adapter = Arc::clone(&fork_choice);
+            let bus_adapter = Arc::clone(&event_bus);
+            tokio::spawn(async move {
+                run_api_event_adapter::<MainnetEthSpec>(adapter_head_rx, fc_adapter, bus_adapter)
+                    .await;
+            });
+            info!("SSE event adapter task started");
+        }
+
+        let api_state = pharos_api::ApiState::new_with_bus(Arc::new(chain_state), event_bus);
         let http_addr = SocketAddr::new(args.http_address, args.http_port);
         tokio::spawn(async move {
             pharos_api::serve::<MainnetEthSpec>(http_addr, api_state).await;

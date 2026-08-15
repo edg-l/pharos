@@ -3,6 +3,7 @@
 //! Exposes internal modules so integration tests in `tests/` can access
 //! `HostImpl<E>` and related types without duplicating construction logic.
 
+pub mod api_event_adapter;
 pub mod backfill;
 pub mod block_ingestion;
 pub mod checkpoint_sync;

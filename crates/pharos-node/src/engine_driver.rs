@@ -299,6 +299,8 @@ impl PayloadToWireV2
 pub struct HeadChange {
     /// CL block root of the new head.
     pub head_root: Root,
+    /// Beacon chain slot of the new head block.
+    pub head_slot: pharos_types::phase0::Slot,
     /// EL block hash of the new head block.
     pub head_block_hash: String,
     /// EL block hash of the safe block (justified checkpoint).

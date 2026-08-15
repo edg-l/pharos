@@ -1,4 +1,4 @@
-//! Beacon API router: wires all Phase-1, Phase-2, and Phase-3 routes.
+//! Beacon API router: wires all Phase-1, Phase-2, Phase-3, and Phase-4 routes.
 
 use std::sync::Arc;
 
@@ -10,11 +10,12 @@ use crate::handlers::beacon_basic;
 use crate::handlers::blocks as blocks_handlers;
 use crate::handlers::config as config_handlers;
 use crate::handlers::config_extra;
+use crate::handlers::events as events_handlers;
 use crate::handlers::node;
 use crate::handlers::states;
 use crate::state::ApiState;
 
-/// Build the Beacon API router (Phase 1 + Phase 2 + Phase 3).
+/// Build the Beacon API router (Phase 1 + Phase 2 + Phase 3 + Phase 4).
 ///
 /// Routes wired:
 /// **Phase 1 — Tier-1 probes**
@@ -45,6 +46,9 @@ use crate::state::ApiState;
 /// - `GET /eth/v2/beacon/blocks/{block_id}/attestations`
 /// - `GET /eth/v1/config/fork_schedule`
 /// - `GET /eth/v1/config/deposit_contract`
+///
+/// **Phase 4 — SSE event stream**
+/// - `GET /eth/v1/events`
 pub fn build_router<E: EthSpec>(state: Arc<ApiState<E>>) -> Router {
     Router::new()
         // Node namespace (Phase 1)
@@ -130,5 +134,7 @@ pub fn build_router<E: EthSpec>(state: Arc<ApiState<E>>) -> Router {
             "/eth/v1/config/deposit_contract",
             get(config_extra::get_deposit_contract::<E>),
         )
+        // SSE event stream (Phase 4)
+        .route("/eth/v1/events", get(events_handlers::get_events::<E>))
         .with_state(state)
 }

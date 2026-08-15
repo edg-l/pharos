@@ -5,6 +5,7 @@
 
 pub mod dto;
 pub mod error;
+pub mod events;
 pub mod fork_tag;
 pub mod handlers;
 pub mod resolve;
@@ -15,6 +16,7 @@ pub mod server;
 pub mod state;
 
 pub use error::ApiError;
+pub use events::{ApiEvent, EventBus, KnownTopic};
 pub use router::build_router;
 pub use server::serve;
 pub use state::{ApiState, ChainStateApi, NodeChainState, NodeIdentityCache, RegenFn, RegenTarget};

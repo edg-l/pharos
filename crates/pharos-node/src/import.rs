@@ -260,18 +260,18 @@ where
     // the head-root selection and its block-hash lookup are consistent (avoids
     // a TOCTOU window where a concurrent write could change head between reads).
     let head_change = {
+        use pharos_types::views::BeaconBlockView as _;
         let store = fc_store.read();
         let head_root = get_head::<E>(&store);
         let safe_hash = compute_safe_block_hash::<E>(&store);
         let finalized_hash = compute_finalized_block_hash::<E>(&store);
-        let head_block_hash = hash_to_hex(
-            E::get_execution_block_hash(
-                store.blocks.get(&head_root).expect("head must be in store"),
-            )
-            .unwrap_or_default(),
-        );
+        let head_block = store.blocks.get(&head_root).expect("head must be in store");
+        let head_slot = head_block.slot();
+        let head_block_hash =
+            hash_to_hex(E::get_execution_block_hash(head_block).unwrap_or_default());
         HeadChange {
             head_root,
+            head_slot,
             head_block_hash,
             safe_block_hash: hash_to_hex(safe_hash),
             finalized_block_hash: hash_to_hex(finalized_hash),

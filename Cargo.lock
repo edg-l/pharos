@@ -3027,6 +3027,7 @@ dependencies = [
  "arc-swap",
  "axum",
  "discv5",
+ "futures",
  "hex",
  "libp2p",
  "parking_lot",

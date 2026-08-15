@@ -24,6 +24,7 @@ use pharos_utils::BLSSignature;
 
 use crate::dto::block::{BlockApiSerializer, SignedBlockForApi};
 use crate::error::ApiError;
+use crate::events::EventBus;
 
 // ── RegenTarget ────────────────────────────────────────────────────────────────
 
@@ -543,10 +544,24 @@ where
 /// `Arc` cheaply rather than cloning the full state.
 pub struct ApiState<E: EthSpec> {
     pub chain: Arc<dyn ChainStateApi<E>>,
+    /// SSE broadcast bus.  `None` when built without an event bus (e.g. tests
+    /// that only exercise non-SSE endpoints).
+    pub event_bus: Option<Arc<EventBus>>,
 }
 
 impl<E: EthSpec> ApiState<E> {
     pub fn new(chain: Arc<dyn ChainStateApi<E>>) -> Arc<Self> {
-        Arc::new(Self { chain })
+        Arc::new(Self {
+            chain,
+            event_bus: None,
+        })
+    }
+
+    /// Construct with an SSE event bus.
+    pub fn new_with_bus(chain: Arc<dyn ChainStateApi<E>>, event_bus: Arc<EventBus>) -> Arc<Self> {
+        Arc::new(Self {
+            chain,
+            event_bus: Some(event_bus),
+        })
     }
 }
