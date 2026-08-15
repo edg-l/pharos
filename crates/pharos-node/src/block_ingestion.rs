@@ -26,7 +26,10 @@ use pharos_stf::{
     AltairDispatchBounds, BellatrixDispatchBounds, ExecutionEngine, StateTransitionError,
 };
 use pharos_storage::StorageError;
-use pharos_types::views::{BeaconBlockView as _, ForkVariant, SignedBeaconBlockView as _};
+use pharos_types::views::{
+    BeaconBlockView as _, ForkVariant, LightClientFinalityUpdateView as _,
+    LightClientOptimisticUpdateView as _, SignedBeaconBlockView as _,
+};
 use pharos_types::{EthSpec, phase0::primitives::Root};
 
 use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire};
@@ -249,25 +252,50 @@ where
 
         // (i) Publish LC finality + optimistic updates (Tasks 2.4 + 2.5).
         // Gate: only when the head block is post-Altair.
+        //
+        // The broadcast is *delayed* to the spec's gossip window: a compliant
+        // node only forwards an LC update received after `get_sync_message_due_ms`
+        // (one `INTERVALS_PER_SLOT` fraction) into `signature_slot`. Publishing
+        // at slot start (block-import time) earns a `TooEarly` /
+        // `light_client_gossip_error` peer penalty. We spawn a short delayed
+        // task per update so the ingestion loop is never blocked; a newer head
+        // arriving meanwhile simply makes the older update stale, which peers
+        // IGNORE (monotonic-slot rule) without penalty. (Fixes the M5 score
+        // bleed; supersedes the `D-lc-broadcast-from-ingestion` immediate-send.)
         let has_lc_snapshots = outcome.fork_variant != ForkVariant::Phase0;
         if has_lc_snapshots {
+            let digest = host.current_fork_digest();
             if let Some(fu) = host.light_client_finality_update() {
-                let topic = GossipTopic {
-                    fork_digest: host.current_fork_digest(),
-                    kind: GossipTopicKind::LightClientFinalityUpdate,
-                };
-                if let Err(e) = egress.network.publish(topic, &fu).await {
-                    warn!(error = %e, "lc finality update publish failed");
-                }
+                let wait = host.lc_publish_wait(fu.finality_signature_slot());
+                let net = egress.network.clone();
+                tokio::spawn(async move {
+                    if !wait.is_zero() {
+                        tokio::time::sleep(wait).await;
+                    }
+                    let topic = GossipTopic {
+                        fork_digest: digest,
+                        kind: GossipTopicKind::LightClientFinalityUpdate,
+                    };
+                    if let Err(e) = net.publish(topic, &fu).await {
+                        warn!(error = %e, "lc finality update publish failed");
+                    }
+                });
             }
             if let Some(ou) = host.light_client_optimistic_update() {
-                let topic = GossipTopic {
-                    fork_digest: host.current_fork_digest(),
-                    kind: GossipTopicKind::LightClientOptimisticUpdate,
-                };
-                if let Err(e) = egress.network.publish(topic, &ou).await {
-                    warn!(error = %e, "lc optimistic update publish failed");
-                }
+                let wait = host.lc_publish_wait(ou.optimistic_signature_slot());
+                let net = egress.network.clone();
+                tokio::spawn(async move {
+                    if !wait.is_zero() {
+                        tokio::time::sleep(wait).await;
+                    }
+                    let topic = GossipTopic {
+                        fork_digest: digest,
+                        kind: GossipTopicKind::LightClientOptimisticUpdate,
+                    };
+                    if let Err(e) = net.publish(topic, &ou).await {
+                        warn!(error = %e, "lc optimistic update publish failed");
+                    }
+                });
             }
         }
     }

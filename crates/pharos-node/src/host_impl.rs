@@ -24,7 +24,7 @@ use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lru::LruCache;
 
@@ -296,6 +296,37 @@ impl<E: EthSpec> HostImpl<E> {
     /// `spawn_blocking` closure for LC snapshot writes (Task 2.2).
     pub fn store_arc(&self) -> Arc<RocksStore> {
         Arc::clone(&self.store)
+    }
+
+    /// Wall-clock delay the LC-gossip *publisher* must wait before broadcasting
+    /// an update whose `signature_slot` is given, so the broadcast lands inside
+    /// the spec's gossip window and is not rejected as `TooEarly`.
+    ///
+    /// Per `specs/altair/light-client/p2p-interface.md`, a compliant node only
+    /// forwards a finality/optimistic update received after
+    /// `get_sync_message_due_ms()` (one `INTERVALS_PER_SLOT` fraction into the
+    /// slot) has transpired since the start of `signature_slot`. Broadcasting
+    /// earlier earns a `light_client_gossip_error` peer penalty.
+    ///
+    /// This is the publish-side counterpart to the `due_ms` gate in
+    /// `validate_light_client_{finality,optimistic}_update`. We wait until the
+    /// full `due_ms` (no clock-disparity shaving) so the message stays inside
+    /// the receiver's window even under modest clock skew. Returns
+    /// `Duration::ZERO` when the window has already opened.
+    pub fn lc_publish_wait(&self, signature_slot: u64) -> Duration {
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis(),
+            Err(_) => return Duration::ZERO,
+        };
+        let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
+        let slot_ms = u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
+        let slot_start_ms = genesis_ms + u128::from(signature_slot) * slot_ms;
+        let due_ms = slot_start_ms + slot_ms / u128::from(INTERVALS_PER_SLOT);
+        if now_ms >= due_ms {
+            Duration::ZERO
+        } else {
+            Duration::from_millis((due_ms - now_ms) as u64)
+        }
     }
 
     /// Update the local `attnets` field and bump `seq_number` if attnets changed.
@@ -1514,6 +1545,45 @@ mod tests {
         };
         let runtime_cfg = Arc::new(RuntimeConfig::default());
         HostImpl::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
+    }
+
+    // ── lc_publish_wait: spec gossip-window delay for LC broadcasts (M5) ────────
+
+    /// An LC update whose `signature_slot` window already opened (slot far in
+    /// the past relative to wall clock) needs no publish delay.
+    #[test]
+    fn lc_publish_wait_past_slot_is_zero() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+        // genesis_time = 0 (default): slot 0's due time is epoch 0 + 4s, decades
+        // in the past, so the broadcast window is open.
+        assert_eq!(host.lc_publish_wait(0), Duration::ZERO);
+    }
+
+    /// An LC update for a slot whose due time is still ahead returns a positive
+    /// wait of ~(signature_slot * SECONDS_PER_SLOT + SECONDS_PER_SLOT /
+    /// INTERVALS_PER_SLOT) past genesis — the spec `get_sync_message_due_ms`
+    /// point. Publishing earlier is what lighthouse rejected as `TooEarly`.
+    #[test]
+    fn lc_publish_wait_future_slot_delays_to_due_time() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = make_host(&dir);
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Anchor genesis at "now" so future slots are genuinely ahead.
+        host.fork_choice.write().genesis_time = now_secs;
+        // seconds_per_slot = 12, INTERVALS_PER_SLOT = 3 → due = slot*12 + 4 s.
+        let sig_slot = 100u64;
+        let expected = sig_slot * 12 + 4; // 1204 s
+        let secs = host.lc_publish_wait(sig_slot).as_secs();
+        // A few seconds of slack between the genesis stamp and the clock read.
+        assert!(
+            secs >= expected - 3 && secs <= expected,
+            "wait {secs}s not within [{}, {expected}]s",
+            expected - 3
+        );
     }
 
     // ── Task 5.2: current_fork_digest / enr_fork_id on bellatrix-genesis host ──
