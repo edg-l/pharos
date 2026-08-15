@@ -4,6 +4,7 @@
 //! `validate_merge_block`) and `specs/bellatrix/fork-choice.md:303-304`
 //! (the `on_block` merge-transition guard).
 
+use pharos_ssz::{Decode, Encode, TreeHash};
 use pharos_types::phase0::Root;
 use pharos_utils::{Hash256, Uint256};
 use thiserror::Error;
@@ -16,7 +17,7 @@ use pharos_types::EthSpec;
 /// A PoW-chain block summary needed to verify the terminal PoW block condition.
 ///
 /// Per `specs/bellatrix/fork-choice.md` `PowBlock` container.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq)]
 pub struct PowBlock {
     /// The block's own hash.
     pub block_hash: Hash256,

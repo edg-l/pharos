@@ -19,4 +19,5 @@ pub use jwt::{JwtSecret, load_jwt_secret};
 pub use types::{
     BlockHeader, ExecutionPayloadV1, ForkchoiceStateV1, ForkchoiceUpdatedV1Response,
     PayloadAttributesV1, PayloadIdV1, PayloadStatusStatus, PayloadStatusV1, SyncingStatus,
+    TransitionConfigurationV1,
 };

@@ -268,6 +268,51 @@ where
     Ok(E::altair_into_signed_block(inner))
 }
 
+/// Load `pre.ssz_snappy` and `post.ssz_snappy` as bellatrix `BeaconState`s, then
+/// wrap each in the fork-enum `E::BeaconState` via `E::bellatrix_into_state`.
+///
+/// Bellatrix fixture files contain raw bellatrix SSZ without a fork-discriminant
+/// prefix. This helper decodes them as `E::BellatrixBeaconState` and promotes to
+/// the fork-enum so they can be passed to STF functions.
+pub fn load_pre_post_bellatrix_state<E: EthSpec>(
+    dir: &Path,
+) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
+where
+    E::BellatrixBeaconState: Decode,
+{
+    let pre_inner: E::BellatrixBeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
+    let pre = E::bellatrix_into_state(pre_inner);
+    let post = if dir.join("post.ssz_snappy").exists() {
+        let post_inner: E::BellatrixBeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
+        Some(E::bellatrix_into_state(post_inner))
+    } else {
+        None
+    };
+    Ok((pre, post))
+}
+
+/// Load `pre.ssz_snappy` as a bellatrix `BeaconState`, wrapped in the fork-enum.
+pub fn load_bellatrix_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+where
+    E::BellatrixBeaconState: Decode,
+{
+    let inner: E::BellatrixBeaconState = load_ssz_snappy(dir, name)?;
+    Ok(E::bellatrix_into_state(inner))
+}
+
+/// Decode a single `<name>.ssz_snappy` file as a bellatrix `SignedBeaconBlock`,
+/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
+pub fn load_bellatrix_signed_block<E: EthSpec>(
+    dir: &Path,
+    name: &str,
+) -> Result<E::SignedBeaconBlock, String>
+where
+    E::BellatrixSignedBeaconBlock: Decode,
+{
+    let inner: E::BellatrixSignedBeaconBlock = load_ssz_snappy(dir, name)?;
+    Ok(E::bellatrix_into_signed_block(inner))
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Decode a single `<name>.ssz_snappy` file inside `dir`.

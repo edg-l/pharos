@@ -32,7 +32,8 @@ use pharos_types::{
 use pharos_utils::Gwei;
 
 use crate::fixture_walker::{
-    WalkOpts, load_altair_state, load_phase0_state, load_ssz_snappy, walk_category,
+    WalkOpts, load_altair_state, load_bellatrix_state, load_phase0_state, load_ssz_snappy,
+    walk_category,
 };
 use crate::fs_util::dir_name;
 
@@ -363,6 +364,200 @@ fn make_deltas(rewards: Vec<Gwei>, penalties: Vec<Gwei>) -> Deltas<1_099_511_627
         penalties: SszList::from_vec(penalties)
             .expect("penalties vec length exceeds VALIDATOR_REGISTRY_LIMIT"),
     }
+}
+
+// ── Bellatrix entry points ────────────────────────────────────────────────────
+
+/// Run all bellatrix rewards sub-categories for the mainnet preset.
+pub fn run_rewards_bellatrix_mainnet(root: &Path) -> RewardsResult {
+    let mut total = RewardsResult::new();
+    for sub in ["basic", "leak", "random"] {
+        total.merge(run_bellatrix_rewards_sub_mainnet(root, sub));
+    }
+    total
+}
+
+/// Run all bellatrix rewards sub-categories for the minimal preset.
+pub fn run_rewards_bellatrix_minimal(root: &Path) -> RewardsResult {
+    let mut total = RewardsResult::new();
+    for sub in ["basic", "leak", "random"] {
+        total.merge(run_bellatrix_rewards_sub_minimal(root, sub));
+    }
+    total
+}
+
+fn run_bellatrix_rewards_sub_mainnet(root: &Path, sub: &str) -> RewardsResult {
+    use pharos_stf::altair::helpers::get_flag_index_deltas;
+    use pharos_stf::bellatrix::helpers::{
+        bellatrix_state_to_altair, get_inactivity_penalty_deltas_bellatrix,
+    };
+    use pharos_types::{MainnetEthSpec as E, bellatrix::MainnetBeaconState};
+
+    let mut out = RewardsResult::new();
+    for (case_dir, _meta) in walk_category(
+        root,
+        "mainnet",
+        "bellatrix",
+        "rewards",
+        Some(sub),
+        WalkOpts {
+            meta_required: false,
+            inner_dir: Some("pyspec_tests"),
+        },
+    ) {
+        let case_name = format!("bellatrix/rewards/{sub}/mainnet/{}", dir_name(&case_dir));
+        let result = run_bellatrix_rewards_case::<E, MainnetBeaconState>(
+            &case_dir,
+            &case_name,
+            |s, fi| {
+                let a = bellatrix_state_to_altair(s);
+                get_flag_index_deltas::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&a, fi)
+            },
+            |s| {
+                get_inactivity_penalty_deltas_bellatrix::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    E,
+                >(s)
+            },
+        );
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_bellatrix_rewards_sub_minimal(root: &Path, sub: &str) -> RewardsResult {
+    use pharos_stf::altair::helpers::get_flag_index_deltas;
+    use pharos_stf::bellatrix::helpers::{
+        bellatrix_state_to_altair, get_inactivity_penalty_deltas_bellatrix,
+    };
+    use pharos_types::{MinimalEthSpec as E, bellatrix::MinimalBeaconState};
+
+    let mut out = RewardsResult::new();
+    for (case_dir, _meta) in walk_category(
+        root,
+        "minimal",
+        "bellatrix",
+        "rewards",
+        Some(sub),
+        WalkOpts {
+            meta_required: false,
+            inner_dir: Some("pyspec_tests"),
+        },
+    ) {
+        let case_name = format!("bellatrix/rewards/{sub}/minimal/{}", dir_name(&case_dir));
+        let result = run_bellatrix_rewards_case::<E, MinimalBeaconState>(
+            &case_dir,
+            &case_name,
+            |s, fi| {
+                let a = bellatrix_state_to_altair(s);
+                get_flag_index_deltas::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                    &a, fi,
+                )
+            },
+            |s| {
+                get_inactivity_penalty_deltas_bellatrix::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    E,
+                >(s)
+            },
+        );
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_bellatrix_rewards_case<E, S>(
+    case_dir: &Path,
+    case_name: &str,
+    get_flag_deltas: impl Fn(&S, usize) -> (Vec<Gwei>, Vec<Gwei>),
+    get_inactivity_deltas: impl Fn(&S) -> (Vec<Gwei>, Vec<Gwei>),
+) -> CaseResult
+where
+    E: EthSpec<BellatrixBeaconState = S>,
+    S: pharos_ssz::Decode,
+{
+    let pre = match load_bellatrix_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let pre_inner = match E::into_bellatrix_state(pre) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not bellatrix state")),
+    };
+
+    macro_rules! check_flag_deltas {
+        ($flag_index:expr, $file:literal, $flag_name:literal) => {{
+            let (rewards, penalties) = get_flag_deltas(&pre_inner, $flag_index);
+            let actual = make_deltas(rewards, penalties);
+            let expected = match load_ssz_snappy::<Deltas<1_099_511_627_776u64>>(case_dir, $file) {
+                Ok(d) => d,
+                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+            };
+            if actual.as_ssz_bytes() != expected.as_ssz_bytes() {
+                return CaseResult::Fail(format!("{case_name}: {} mismatch", $flag_name));
+            }
+        }};
+    }
+
+    check_flag_deltas!(0, "source_deltas.ssz_snappy", "source_deltas");
+    check_flag_deltas!(1, "target_deltas.ssz_snappy", "target_deltas");
+    check_flag_deltas!(2, "head_deltas.ssz_snappy", "head_deltas");
+
+    let (rewards, penalties) = get_inactivity_deltas(&pre_inner);
+    let actual_inactivity = make_deltas(rewards, penalties);
+    let expected_inactivity = match load_ssz_snappy::<Deltas<1_099_511_627_776u64>>(
+        case_dir,
+        "inactivity_penalty_deltas.ssz_snappy",
+    ) {
+        Ok(d) => d,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    if actual_inactivity.as_ssz_bytes() != expected_inactivity.as_ssz_bytes() {
+        return CaseResult::Fail(format!("{case_name}: inactivity_penalty_deltas mismatch"));
+    }
+
+    CaseResult::Pass
 }
 
 // ── Internal result type ──────────────────────────────────────────────────────

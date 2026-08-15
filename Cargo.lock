@@ -2925,15 +2925,21 @@ dependencies = [
 name = "pharos-conformance"
 version = "0.2.0"
 dependencies = [
+ "axum",
  "hex",
+ "pharos-engine",
  "pharos-fork-choice",
  "pharos-ssz",
  "pharos-stf",
  "pharos-types",
  "pharos-utils",
+ "reqwest",
+ "serde",
+ "serde_json",
  "serde_yaml_ng",
  "snap",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

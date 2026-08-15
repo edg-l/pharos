@@ -12,3 +12,5 @@ pub mod helpers;
 pub mod operations;
 pub mod state_transition;
 pub mod upgrade;
+
+pub use block::bellatrix_block_to_altair_block;

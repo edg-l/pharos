@@ -19,7 +19,7 @@ use crate::error::EngineError;
 use crate::jwt::{JwtSecret, sign_token};
 use crate::types::{
     BlockHeader, ExecutionPayloadV1, ForkchoiceStateV1, ForkchoiceUpdatedV1Response,
-    PayloadAttributesV1, PayloadIdV1, PayloadStatusV1, SyncingStatus,
+    PayloadAttributesV1, PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
 };
 
 const ENGINE_RPC_TIMEOUT: Duration = Duration::from_secs(8);
@@ -174,6 +174,19 @@ impl EngineClient {
             GetPayloadVersion::V1 => "engine_getPayloadV1",
         };
         self.rpc_call(method, [id]).await
+    }
+
+    /// `engine_exchangeTransitionConfigurationV1` — compares the CL's terminal
+    /// configuration with the EL's and returns the EL's configuration.
+    ///
+    /// Both sides should agree on `terminalTotalDifficulty`, `terminalBlockHash`,
+    /// and `terminalBlockNumber`.  A mismatch signals misconfiguration.
+    pub async fn exchange_transition_configuration(
+        &self,
+        config: TransitionConfigurationV1,
+    ) -> Result<TransitionConfigurationV1, EngineError> {
+        self.rpc_call("engine_exchangeTransitionConfigurationV1", [config])
+            .await
     }
 
     /// `engine_exchangeCapabilities` — caches the EL-advertised method set

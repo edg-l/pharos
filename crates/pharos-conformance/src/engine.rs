@@ -1,0 +1,531 @@
+//! Engine API YAML conformance runner.
+//!
+//! Walks `execution-apis/src/engine/openrpc/methods/*.yaml`; for each
+//! example pair in each V1 method's `examples:` block: spins up an axum
+//! mock server on a random port, drives `EngineClient` against it, and
+//! asserts the request matches the YAML params and the response parses.
+//!
+//! Scope: Bellatrix (Paris) V1 methods only. V2+ examples are reported
+//! with skip reason `"capella+ method, scoped out of m4a"`.
+//!
+//! Per `D-engine-conformance-runner` (docs/m4a-plan.md Phase 5 Task 5.5).
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use axum::Router;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::post;
+use pharos_engine::{
+    EngineClient, ForkchoiceUpdatedVersion, GetPayloadVersion, JwtSecret, NewPayloadVersion,
+    TransitionConfigurationV1,
+};
+use reqwest::Url;
+use serde_json::Value;
+use tokio::net::TcpListener;
+
+// ── Public result type ────────────────────────────────────────────────────────
+
+/// Result of the engine YAML conformance suite.
+pub struct CategoryResult {
+    pub pass: u64,
+    pub fail: u64,
+    pub skip: u64,
+    pub failures: Vec<String>,
+    /// Reasons for skipped examples, keyed by example name.
+    pub skip_reasons: HashMap<String, String>,
+}
+
+impl CategoryResult {
+    fn new() -> Self {
+        Self {
+            pass: 0,
+            fail: 0,
+            skip: 0,
+            failures: Vec::new(),
+            skip_reasons: HashMap::new(),
+        }
+    }
+}
+
+// ── YAML structure models ─────────────────────────────────────────────────────
+
+/// A parsed YAML method entry (one element of the top-level array).
+struct YamlMethod {
+    name: String,
+    examples: Vec<YamlExample>,
+}
+
+/// A single example pair inside a method's `examples:` list.
+struct YamlExample {
+    name: String,
+    /// JSON-serialised array of `params[*].value` objects.
+    params_json: Value,
+    /// JSON-serialised `result.value`.
+    result_json: Value,
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+/// Run the Engine API YAML conformance suite.
+///
+/// `specs_dir` is the directory containing `forkchoice.yaml`, `payload.yaml`,
+/// `capabilities.yaml`, etc. Typically `~/dev/execution-apis/src/engine/openrpc/methods/`.
+///
+/// Returns `Ok(CategoryResult)` always; errors in individual examples are
+/// counted as failures, not propagated.
+pub fn run_engine_yaml_suite(specs_dir: &Path) -> CategoryResult {
+    let mut result = CategoryResult::new();
+
+    if !specs_dir.is_dir() {
+        result.failures.push(format!(
+            "engine yaml: specs dir not found: {}",
+            specs_dir.display()
+        ));
+        result.fail += 1;
+        return result;
+    }
+
+    // Parse all YAML files in the directory.
+    let yaml_files: Vec<_> = {
+        let mut files: Vec<_> = std::fs::read_dir(specs_dir)
+            .unwrap_or_else(|_| panic!("cannot read dir {}", specs_dir.display()))
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|e| e == "yaml").unwrap_or(false))
+            .collect();
+        files.sort();
+        files
+    };
+
+    for yaml_path in &yaml_files {
+        let methods = match parse_yaml_methods(yaml_path) {
+            Ok(m) => m,
+            Err(e) => {
+                result.fail += 1;
+                result.failures.push(format!(
+                    "engine yaml: failed to parse {}: {e}",
+                    yaml_path.display()
+                ));
+                continue;
+            }
+        };
+
+        for method in methods {
+            run_method_examples(&method, &mut result);
+        }
+    }
+
+    result
+}
+
+// ── YAML parsing ──────────────────────────────────────────────────────────────
+
+fn parse_yaml_methods(path: &Path) -> Result<Vec<YamlMethod>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let yaml: Value = serde_yaml_ng::from_str(&text).map_err(|e| e.to_string())?;
+
+    let arr = yaml.as_array().ok_or("expected top-level array")?;
+    let mut methods = Vec::new();
+
+    for entry in arr {
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
+        let examples_yaml = match entry.get("examples").and_then(Value::as_array) {
+            Some(e) => e,
+            None => {
+                methods.push(YamlMethod {
+                    name,
+                    examples: vec![],
+                });
+                continue;
+            }
+        };
+
+        let mut examples = Vec::new();
+        for ex in examples_yaml {
+            let ex_name = ex
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unnamed")
+                .to_string();
+
+            // Collect params[*].value as a JSON array.
+            let params_json: Value = ex
+                .get("params")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    Value::Array(arr.iter().filter_map(|p| p.get("value")).cloned().collect())
+                })
+                .unwrap_or(Value::Array(vec![]));
+
+            let result_json = ex
+                .get("result")
+                .and_then(|r| r.get("value"))
+                .cloned()
+                .unwrap_or(Value::Null);
+
+            examples.push(YamlExample {
+                name: ex_name,
+                params_json,
+                result_json,
+            });
+        }
+
+        methods.push(YamlMethod { name, examples });
+    }
+
+    Ok(methods)
+}
+
+// ── Per-method example runner ─────────────────────────────────────────────────
+
+fn run_method_examples(method: &YamlMethod, result: &mut CategoryResult) {
+    let name = &method.name;
+
+    // Skip non-engine methods.
+    if !name.starts_with("engine_") {
+        result.skip += method.examples.len() as u64;
+        for ex in &method.examples {
+            result.skip_reasons.insert(
+                format!("{name}/{}", ex.name),
+                "non-engine method".to_string(),
+            );
+        }
+        return;
+    }
+
+    // V1 methods that belong to post-Bellatrix forks and must be skipped.
+    // These end in "V1" but were introduced in Shanghai (getPayloadBodies*)
+    // or Cancun (getBlobs*), both out of scope for M4a.
+    const CAPELLA_PLUS_V1: &[&str] = &[
+        "engine_getBlobsV1",
+        "engine_getPayloadBodiesByHashV1",
+        "engine_getPayloadBodiesByRangeV1",
+    ];
+
+    // Bellatrix-unversioned methods (no "V1" suffix) that are in scope for M4a.
+    const BELLATRIX_UNVERSIONED: &[&str] = &["engine_exchangeCapabilities"];
+
+    // Determine version: V1 or Bellatrix-unversioned vs everything else.
+    let is_v1 = name.ends_with("V1");
+    let is_bellatrix_unversioned = BELLATRIX_UNVERSIONED.contains(&name.as_str());
+
+    for ex in &method.examples {
+        let label = format!("{name}/{}", ex.name);
+
+        // Skip non-V1, non-unversioned methods and V1 methods from later forks.
+        if (!is_v1 && !is_bellatrix_unversioned) || CAPELLA_PLUS_V1.contains(&name.as_str()) {
+            result.skip += 1;
+            result
+                .skip_reasons
+                .insert(label, "capella+ method, scoped out of m4a".to_string());
+            continue;
+        }
+
+        match run_single_example(name, ex) {
+            Ok(()) => result.pass += 1,
+            Err(e) => {
+                result.fail += 1;
+                result.failures.push(format!("engine/{label}: {e}"));
+            }
+        }
+    }
+}
+
+// ── Mock server state ─────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct MockState {
+    /// The JSON-RPC result value to return.
+    result: Arc<Value>,
+    /// Captured request body (set on first request).
+    captured: Arc<Mutex<Option<Value>>>,
+}
+
+async fn mock_handler(
+    State(state): State<MockState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    // Verify Bearer token is present (any value accepted).
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !auth.starts_with("Bearer ") {
+        return (StatusCode::UNAUTHORIZED, "missing bearer token").into_response();
+    }
+
+    // Parse and store the request.
+    if let Ok(parsed) = serde_json::from_slice::<Value>(&body) {
+        *state.captured.lock().unwrap() = Some(parsed.clone());
+
+        let id = parsed.get("id").cloned().unwrap_or(Value::Number(1.into()));
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": *state.result,
+        });
+
+        return (StatusCode::OK, axum::response::Json(response)).into_response();
+    }
+
+    (StatusCode::BAD_REQUEST, "bad json").into_response()
+}
+
+// ── Single example runner ─────────────────────────────────────────────────────
+
+fn run_single_example(method_name: &str, ex: &YamlExample) -> Result<(), String> {
+    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+
+    rt.block_on(async {
+        // Spin up mock server.
+        let captured = Arc::new(Mutex::new(None::<Value>));
+        let result_val = Arc::new(ex.result_json.clone());
+
+        let state = MockState {
+            result: Arc::clone(&result_val),
+            captured: Arc::clone(&captured),
+        };
+
+        let app = Router::new()
+            .route("/", post(mock_handler))
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| e.to_string())?;
+        let addr: SocketAddr = listener.local_addr().map_err(|e| e.to_string())?;
+
+        let server = axum::serve(listener, app);
+        // Run server in background; abort on drop via the JoinHandle.
+        let handle = tokio::spawn(server.into_future());
+
+        // Build EngineClient pointing at the mock.
+        let url = Url::parse(&format!("http://{addr}")).map_err(|e| e.to_string())?;
+        let jwt = JwtSecret::from_bytes([0u8; 32]);
+        let client = EngineClient::new(url, jwt).map_err(|e| e.to_string())?;
+
+        // Dispatch based on method name.
+        let call_result = dispatch_engine_call(&client, method_name, &ex.params_json).await;
+
+        // Abort mock server.
+        handle.abort();
+
+        call_result?;
+
+        // Verify captured request had correct method name and matching params.
+        let req = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "mock server received no request".to_string())?;
+        let got_method = req.get("method").and_then(Value::as_str).unwrap_or("");
+        if got_method != method_name {
+            return Err(format!("expected method {method_name}, got {got_method}"));
+        }
+
+        // Assert the params sent by EngineClient match the YAML example params.
+        // Structural comparison on serde_json::Value handles key-order differences.
+        let got_params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
+        if got_params != ex.params_json {
+            return Err(format!(
+                "params mismatch for {method_name}:\n  want: {}\n   got: {}",
+                serde_json::to_string(&ex.params_json).unwrap_or_default(),
+                serde_json::to_string(&got_params).unwrap_or_default(),
+            ));
+        }
+
+        Ok(())
+    })
+}
+
+// ── Engine call dispatcher ────────────────────────────────────────────────────
+
+async fn dispatch_engine_call(
+    client: &EngineClient,
+    method: &str,
+    _params: &Value,
+) -> Result<(), String> {
+    match method {
+        "engine_newPayloadV1" => {
+            // Build a minimal ExecutionPayloadV1 from params[0] if present, else use default.
+            let payload = params_to_execution_payload_v1(_params.get(0));
+            client
+                .new_payload(NewPayloadVersion::V1, payload)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        "engine_forkchoiceUpdatedV1" => {
+            let state = params_to_forkchoice_state(_params.get(0));
+            let attrs = _params.get(1).and_then(|v| {
+                if v.is_null() {
+                    None
+                } else {
+                    params_to_payload_attrs(v).ok()
+                }
+            });
+            client
+                .forkchoice_updated(ForkchoiceUpdatedVersion::V1, state, attrs)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        "engine_getPayloadV1" => {
+            let id = params_to_payload_id(_params.get(0));
+            client
+                .get_payload(GetPayloadVersion::V1, id)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        "engine_exchangeCapabilities" => {
+            // Extract the capabilities list from params[0] (array of strings).
+            let methods_owned: Vec<String> = _params
+                .get(0)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let methods_refs: Vec<&str> = methods_owned.iter().map(String::as_str).collect();
+            client
+                .exchange_capabilities(&methods_refs)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        "engine_exchangeTransitionConfigurationV1" => {
+            let config = params_to_transition_config(_params.get(0));
+            client
+                .exchange_transition_configuration(config)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        _ => {
+            // Unknown V1 method — this should not happen for in-scope methods.
+            Err(format!("unhandled engine method: {method}"))
+        }
+    }
+}
+
+// ── Param extraction helpers ──────────────────────────────────────────────────
+
+fn params_to_execution_payload_v1(v: Option<&Value>) -> pharos_engine::ExecutionPayloadV1 {
+    let v = match v {
+        Some(v) => v,
+        None => {
+            return pharos_engine::ExecutionPayloadV1 {
+                parent_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                fee_recipient: "0x0000000000000000000000000000000000000000".into(),
+                state_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                receipts_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                logs_bloom: "0x00".into(),
+                prev_randao: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                block_number: "0x0".into(),
+                gas_limit: "0x0".into(),
+                gas_used: "0x0".into(),
+                timestamp: "0x0".into(),
+                extra_data: "0x".into(),
+                base_fee_per_gas: "0x0".into(),
+                block_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                transactions: vec![],
+            };
+        }
+    };
+    serde_json::from_value(v.clone()).unwrap_or_else(|_| pharos_engine::ExecutionPayloadV1 {
+        parent_hash: str_field(v, "parentHash"),
+        fee_recipient: str_field(v, "feeRecipient"),
+        state_root: str_field(v, "stateRoot"),
+        receipts_root: str_field(v, "receiptsRoot"),
+        logs_bloom: str_field(v, "logsBloom"),
+        prev_randao: str_field(v, "prevRandao"),
+        block_number: str_field(v, "blockNumber"),
+        gas_limit: str_field(v, "gasLimit"),
+        gas_used: str_field(v, "gasUsed"),
+        timestamp: str_field(v, "timestamp"),
+        extra_data: str_field(v, "extraData"),
+        base_fee_per_gas: str_field(v, "baseFeePerGas"),
+        block_hash: str_field(v, "blockHash"),
+        transactions: vec![],
+    })
+}
+
+fn params_to_forkchoice_state(v: Option<&Value>) -> pharos_engine::ForkchoiceStateV1 {
+    let zero = "0x0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    let v = match v {
+        Some(v) => v,
+        None => {
+            return pharos_engine::ForkchoiceStateV1 {
+                head_block_hash: zero.clone(),
+                safe_block_hash: zero.clone(),
+                finalized_block_hash: zero,
+            };
+        }
+    };
+    serde_json::from_value(v.clone()).unwrap_or_else(|_| pharos_engine::ForkchoiceStateV1 {
+        head_block_hash: str_field(v, "headBlockHash"),
+        safe_block_hash: str_field(v, "safeBlockHash"),
+        finalized_block_hash: str_field(v, "finalizedBlockHash"),
+    })
+}
+
+fn params_to_payload_attrs(v: &Value) -> Result<pharos_engine::PayloadAttributesV1, String> {
+    serde_json::from_value(v.clone()).map_err(|e| e.to_string())
+}
+
+fn params_to_payload_id(v: Option<&Value>) -> pharos_engine::PayloadIdV1 {
+    let s = v
+        .and_then(Value::as_str)
+        .unwrap_or("\"0x0000000000000000\"");
+    // PayloadIdV1 deserialises from a JSON string like "\"0x...\"".
+    let json_str = if s.starts_with('"') {
+        s.to_string()
+    } else {
+        format!("\"{s}\"")
+    };
+    serde_json::from_str(&json_str).unwrap_or(pharos_engine::PayloadIdV1([0u8; 8]))
+}
+
+fn params_to_transition_config(v: Option<&Value>) -> TransitionConfigurationV1 {
+    let zero_hash =
+        "0x0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    let v = match v {
+        Some(v) => v,
+        None => {
+            return TransitionConfigurationV1 {
+                terminal_total_difficulty: "0x0".to_string(),
+                terminal_block_hash: zero_hash,
+                terminal_block_number: "0x0".to_string(),
+            };
+        }
+    };
+    serde_json::from_value(v.clone()).unwrap_or_else(|_| TransitionConfigurationV1 {
+        terminal_total_difficulty: str_field(v, "terminalTotalDifficulty"),
+        terminal_block_hash: str_field(v, "terminalBlockHash"),
+        terminal_block_number: str_field(v, "terminalBlockNumber"),
+    })
+}
+
+fn str_field(v: &Value, key: &str) -> String {
+    v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+}

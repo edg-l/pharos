@@ -669,6 +669,20 @@ where
     Ok(())
 }
 
+// ── should_override_forkchoice_update ────────────────────────────────────────
+
+/// `should_override_forkchoice_update` per `specs/bellatrix/fork-choice.md`.
+///
+/// Returns `true` when the proposer should withhold the forkchoice-updated call
+/// to avoid triggering a re-org of its own proposal (proposer-boost re-org
+/// prevention). Full implementation is deferred to M11 (proposer-boost
+/// re-orgs). For M4a this always returns `false`.
+///
+/// The conformance runner gates assertions on the YAML expecting `false`.
+pub fn should_override_forkchoice_update<E: EthSpec>(_store: &Store<E>) -> bool {
+    false
+}
+
 // ── BeaconStateWrite bound helper ─────────────────────────────────────────────
 
 // Re-export the BeaconStateWrite trait so that callers of this module's

@@ -138,6 +138,24 @@ pub struct BlockHeader {
     pub total_difficulty: Option<String>,
 }
 
+// ── TransitionConfigurationV1 ─────────────────────────────────────────────────
+
+/// `TransitionConfigurationV1` per `execution-apis/src/engine/paris.md`.
+///
+/// Sent and received by `engine_exchangeTransitionConfigurationV1`.  Both the
+/// CL and EL exchange the same struct so the two sides can verify they agree
+/// on the terminal total difficulty and terminal block hash/number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionConfigurationV1 {
+    /// Terminal total difficulty as a `QUANTITY` hex string.
+    pub terminal_total_difficulty: String,
+    /// Terminal block hash as a `DATA` hex string.
+    pub terminal_block_hash: String,
+    /// Terminal block number as a `QUANTITY` hex string.
+    pub terminal_block_number: String,
+}
+
 /// `eth_syncing` response. Either `false` (not syncing) or an object with
 /// progress fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

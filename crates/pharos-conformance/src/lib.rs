@@ -9,6 +9,7 @@
 //! 2. Run: `cargo run -p pharos-conformance -- --write`
 
 pub mod bls;
+pub mod engine;
 pub mod epoch_processing;
 pub mod error;
 pub mod filter;
@@ -1039,6 +1040,437 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("altair", "genesis", "minimal"));
     }
 
+    // ── bellatrix/transition ──────────────────────────────────────────────────
+    if filter.matches("bellatrix", "transition", "mainnet") {
+        let result = transition::run_transition_bellatrix_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "transition",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "transition", "mainnet"));
+    }
+
+    if filter.matches("bellatrix", "transition", "minimal") {
+        let result = transition::run_transition_bellatrix_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "transition",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "transition", "minimal"));
+    }
+
+    // ── bellatrix/ssz_static ──────────────────────────────────────────────────
+    if filter.matches("bellatrix", "ssz_static", "mainnet") {
+        let result = ssz_static::run_ssz_static_bellatrix_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "ssz_static",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "ssz_static", "mainnet"));
+    }
+
+    if filter.matches("bellatrix", "ssz_static", "minimal") {
+        let result = ssz_static::run_ssz_static_bellatrix_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "ssz_static",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "ssz_static", "minimal"));
+    }
+
+    // ── bellatrix/operations ──────────────────────────────────────────────────
+    if filter.matches("bellatrix", "operations", "mainnet") {
+        let result = operations::run_operations_bellatrix_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "operations",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "operations", "mainnet"));
+    }
+
+    if filter.matches("bellatrix", "operations", "minimal") {
+        let result = operations::run_operations_bellatrix_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "operations",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "operations", "minimal"));
+    }
+
+    // ── bellatrix/epoch_processing ────────────────────────────────────────────
+    if filter.matches("bellatrix", "epoch_processing", "mainnet") {
+        let result = epoch_processing::run_epoch_processing_bellatrix_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "epoch_processing",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "epoch_processing", "mainnet"));
+    }
+
+    if filter.matches("bellatrix", "epoch_processing", "minimal") {
+        let result = epoch_processing::run_epoch_processing_bellatrix_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "epoch_processing",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "epoch_processing", "minimal"));
+    }
+
+    // ── bellatrix/sanity ──────────────────────────────────────────────────────
+    if filter.matches("bellatrix", "sanity", "mainnet") {
+        let result = sanity::run_sanity_bellatrix_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "sanity",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "sanity", "mainnet"));
+    }
+
+    if filter.matches("bellatrix", "sanity", "minimal") {
+        let result = sanity::run_sanity_bellatrix_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "sanity",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "sanity", "minimal"));
+    }
+
+    // ── bellatrix/finality ────────────────────────────────────────────────────
+    if filter.matches("bellatrix", "finality", "mainnet") {
+        let result = finality::run_finality_bellatrix_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "finality",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "finality", "mainnet"));
+    }
+
+    if filter.matches("bellatrix", "finality", "minimal") {
+        let result = finality::run_finality_bellatrix_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "finality",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "finality", "minimal"));
+    }
+
+    // ── bellatrix/random ──────────────────────────────────────────────────────
+    if filter.matches("bellatrix", "random", "mainnet") {
+        let result = random::run_random_bellatrix_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "random",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "random", "mainnet"));
+    }
+
+    if filter.matches("bellatrix", "random", "minimal") {
+        let result = random::run_random_bellatrix_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "random",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "random", "minimal"));
+    }
+
+    // ── bellatrix/rewards ─────────────────────────────────────────────────────
+    if filter.matches("bellatrix", "rewards", "mainnet") {
+        let result = rewards::run_rewards_bellatrix_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "rewards",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "rewards", "mainnet"));
+    }
+
+    if filter.matches("bellatrix", "rewards", "minimal") {
+        let result = rewards::run_rewards_bellatrix_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "rewards",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "rewards", "minimal"));
+    }
+
+    // ── bellatrix/fork_choice ─────────────────────────────────────────────────
+    if filter.matches("bellatrix", "fork_choice", "mainnet") {
+        let result = fork_choice::run_fork_choice_bellatrix_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "fork_choice",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "fork_choice", "mainnet"));
+    }
+
+    if filter.matches("bellatrix", "fork_choice", "minimal") {
+        let result = fork_choice::run_fork_choice_bellatrix_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "bellatrix",
+            "fork_choice",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("bellatrix", "fork_choice", "minimal"));
+    }
+
+    // ── engine/yaml ───────────────────────────────────────────────────────────
+    if filter.matches("engine", "yaml", "-") {
+        let specs_dir = dirs_engine_yaml();
+        if specs_dir.is_dir() {
+            let result = engine::run_engine_yaml_suite(&specs_dir);
+            let had_failures = result.fail > 0;
+            report.rows.push(Row::live(
+                "engine",
+                "yaml",
+                "-",
+                result.pass,
+                result.fail,
+                result.skip,
+            ));
+            report.failures.extend(result.failures);
+            if bail && had_failures {
+                fill_future_placeholders(&mut report);
+                return report;
+            }
+        } else {
+            report.rows.push(Row::placeholder("engine", "yaml", "-"));
+        }
+    } else {
+        report.rows.push(Row::placeholder("engine", "yaml", "-"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -1097,6 +1529,27 @@ fn fill_future_placeholders(report: &mut Report) {
         ("altair", "light_client", "minimal"),
         ("altair", "genesis", "mainnet"),
         ("altair", "genesis", "minimal"),
+        // Bellatrix categories
+        ("bellatrix", "transition", "mainnet"),
+        ("bellatrix", "transition", "minimal"),
+        ("bellatrix", "ssz_static", "mainnet"),
+        ("bellatrix", "ssz_static", "minimal"),
+        ("bellatrix", "operations", "mainnet"),
+        ("bellatrix", "operations", "minimal"),
+        ("bellatrix", "epoch_processing", "mainnet"),
+        ("bellatrix", "epoch_processing", "minimal"),
+        ("bellatrix", "sanity", "mainnet"),
+        ("bellatrix", "sanity", "minimal"),
+        ("bellatrix", "finality", "mainnet"),
+        ("bellatrix", "finality", "minimal"),
+        ("bellatrix", "random", "mainnet"),
+        ("bellatrix", "random", "minimal"),
+        ("bellatrix", "rewards", "mainnet"),
+        ("bellatrix", "rewards", "minimal"),
+        ("bellatrix", "fork_choice", "mainnet"),
+        ("bellatrix", "fork_choice", "minimal"),
+        // Engine API YAML conformance
+        ("engine", "yaml", "-"),
     ]
     .iter()
     .copied()
@@ -1157,12 +1610,48 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("altair", "light_client", "minimal"),
         ("altair", "genesis", "mainnet"),
         ("altair", "genesis", "minimal"),
-        ("bellatrix", "ssz_static", "-"),
+        // bellatrix categories
+        ("bellatrix", "transition", "mainnet"),
+        ("bellatrix", "transition", "minimal"),
+        ("bellatrix", "ssz_static", "mainnet"),
+        ("bellatrix", "ssz_static", "minimal"),
+        ("bellatrix", "operations", "mainnet"),
+        ("bellatrix", "operations", "minimal"),
+        ("bellatrix", "epoch_processing", "mainnet"),
+        ("bellatrix", "epoch_processing", "minimal"),
+        ("bellatrix", "sanity", "mainnet"),
+        ("bellatrix", "sanity", "minimal"),
+        ("bellatrix", "finality", "mainnet"),
+        ("bellatrix", "finality", "minimal"),
+        ("bellatrix", "random", "mainnet"),
+        ("bellatrix", "random", "minimal"),
+        ("bellatrix", "rewards", "mainnet"),
+        ("bellatrix", "rewards", "minimal"),
+        ("bellatrix", "fork_choice", "mainnet"),
+        ("bellatrix", "fork_choice", "minimal"),
+        // engine API YAML conformance
+        ("engine", "yaml", "-"),
+        // future forks (placeholders)
         ("capella", "ssz_static", "-"),
         ("deneb", "ssz_static", "-"),
         ("electra", "ssz_static", "-"),
         ("fulu", "ssz_static", "-"),
     ]
+}
+
+/// Returns the path to the Engine API YAML methods directory.
+///
+/// Checks `$EXECUTION_APIS_DIR/src/engine/openrpc/methods/` first,
+/// then falls back to `~/dev/execution-apis/src/engine/openrpc/methods/`.
+fn dirs_engine_yaml() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("EXECUTION_APIS_DIR") {
+        let p = std::path::Path::new(&dir).join("src/engine/openrpc/methods");
+        if p.is_dir() {
+            return p;
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+    std::path::PathBuf::from(home).join("dev/execution-apis/src/engine/openrpc/methods")
 }
 
 fn read_tag(root: &Path) -> String {

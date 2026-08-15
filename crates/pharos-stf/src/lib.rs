@@ -22,7 +22,7 @@ pub mod error;
 pub mod phase0;
 
 pub use altair::state_transition::{AltairDispatch, AltairJaFDispatch, AltairProcessSlotsDispatch};
-pub use bellatrix::execution_engine::{ExecutionEngine, NullExecutionEngine};
+pub use bellatrix::execution_engine::{ExecutionEngine, FixedExecutionEngine, NullExecutionEngine};
 pub use bellatrix::state_transition::{BellatrixDispatch, BellatrixProcessSlotsDispatch};
 pub use phase0::block::process_block;
 pub use phase0::epoch::justification_and_finalization::process_justification_and_finalization;

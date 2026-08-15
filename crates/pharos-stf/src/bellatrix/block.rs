@@ -378,7 +378,9 @@ where
 /// Project a `bellatrix::BeaconBlock` into an equivalent `altair::BeaconBlock`.
 ///
 /// The altair block body is the bellatrix body minus `execution_payload`.
-fn bellatrix_block_to_altair_block<
+/// Exposed `pub` so conformance runners can drive per-operation tests (e.g.
+/// `process_block_header_altair`) against a bellatrix block fixture.
+pub fn bellatrix_block_to_altair_block<
     const MAX_PROPOSER_SLASHINGS: u64,
     const MAX_ATTESTER_SLASHINGS: u64,
     const MAX_ATTESTATIONS: u64,

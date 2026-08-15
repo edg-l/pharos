@@ -34,8 +34,9 @@ use pharos_types::{
 };
 
 use crate::fixture_walker::{
-    WalkOpts, load_altair_signed_block, load_altair_state, load_phase0_signed_block,
-    load_pre_post_altair_state, load_pre_post_phase0_state, walk_category,
+    WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
+    load_bellatrix_state, load_phase0_signed_block, load_pre_post_altair_state,
+    load_pre_post_bellatrix_state, load_pre_post_phase0_state, walk_category,
 };
 use crate::fs_util::dir_name;
 
@@ -584,6 +585,296 @@ fn run_altair_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult
         return CaseResult::Fail(format!("{case_name}: process_slots failed: {e}"));
     }
     let final_state = E::altair_into_state(pre_inner);
+    if final_state.as_ssz_bytes() == expected.as_ssz_bytes() {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
+    }
+}
+
+// ── Bellatrix entry points ────────────────────────────────────────────────────
+
+/// Run all bellatrix sanity sub-categories for the mainnet preset.
+pub fn run_sanity_bellatrix_mainnet(root: &Path) -> SanityResult {
+    let mut total = SanityResult::new();
+    total.merge(run_bellatrix_blocks_preset::<MainnetEthSpec>(
+        root, "mainnet",
+    ));
+    total.merge(run_bellatrix_slots_preset_mainnet(root));
+    total
+}
+
+/// Run all bellatrix sanity sub-categories for the minimal preset.
+pub fn run_sanity_bellatrix_minimal(root: &Path) -> SanityResult {
+    let mut total = SanityResult::new();
+    total.merge(run_bellatrix_blocks_preset::<MinimalEthSpec>(
+        root, "minimal",
+    ));
+    total.merge(run_bellatrix_slots_preset_minimal(root));
+    total
+}
+
+// ── bellatrix/sanity/blocks ───────────────────────────────────────────────────
+
+fn run_bellatrix_blocks_preset<E>(root: &Path, preset: &'static str) -> SanityResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E> + pharos_ssz::Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_ssz::TreeHash
+        + pharos_ssz::Decode,
+    E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
+    E::Phase0BeaconState: pharos_ssz::Decode,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock:
+        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+{
+    let mut out = SanityResult::new();
+    for (case_dir, meta) in walk_category(
+        root,
+        preset,
+        "bellatrix",
+        "sanity",
+        Some("blocks"),
+        WalkOpts::default(),
+    ) {
+        let case_name = format!("bellatrix/sanity/blocks/{preset}/{}", dir_name(&case_dir));
+
+        let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+            Some(n) => n,
+            None => {
+                out.skip += 1;
+                continue;
+            }
+        };
+
+        let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+
+        let result =
+            run_bellatrix_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result);
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_bellatrix_blocks_case<E>(
+    case_dir: &Path,
+    case_name: &str,
+    blocks_count: u64,
+    validate_result: bool,
+) -> CaseResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E> + pharos_ssz::Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_ssz::TreeHash
+        + pharos_ssz::Decode,
+    E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
+    E::Phase0BeaconState: pharos_ssz::Decode,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock:
+        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+{
+    let (pre, post) = match load_pre_post_bellatrix_state::<E>(case_dir) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut current: Option<E::BeaconState> = Some(pre);
+    let mut block_error: Option<String> = None;
+
+    for i in 0..blocks_count {
+        let block_file = format!("blocks_{i}.ssz_snappy");
+        let block = match load_bellatrix_signed_block::<E>(case_dir, &block_file) {
+            Ok(v) => v,
+            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+        };
+        let state = current.take().unwrap();
+        match state_transition::<E, pharos_stf::NullExecutionEngine>(
+            state,
+            &block,
+            &pharos_stf::NullExecutionEngine,
+            validate_result,
+            &E::default_runtime_config(),
+        ) {
+            Ok(new_state) => current = Some(new_state),
+            Err(e) => {
+                block_error = Some(format!("{e}"));
+                break;
+            }
+        }
+    }
+
+    match (block_error, post) {
+        (None, Some(expected)) => {
+            let state = current.unwrap();
+            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!("{case_name}: state mismatch after block sequence"))
+            }
+        }
+        (None, None) => CaseResult::Fail(format!(
+            "{case_name}: expected a block to fail but all blocks applied successfully"
+        )),
+        (Some(_), None) => CaseResult::Pass,
+        (Some(e), Some(_)) => {
+            CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
+        }
+    }
+}
+
+// ── bellatrix/sanity/slots ────────────────────────────────────────────────────
+
+fn run_bellatrix_slots_preset_mainnet(root: &Path) -> SanityResult {
+    let mut out = SanityResult::new();
+    for (case_dir, _meta) in walk_category(
+        root,
+        "mainnet",
+        "bellatrix",
+        "sanity",
+        Some("slots"),
+        WalkOpts {
+            meta_required: false,
+            inner_dir: Some("pyspec_tests"),
+        },
+    ) {
+        let case_name = format!("bellatrix/sanity/slots/mainnet/{}", dir_name(&case_dir));
+        let result = run_bellatrix_slots_case_mainnet(&case_dir, &case_name);
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_bellatrix_slots_preset_minimal(root: &Path) -> SanityResult {
+    let mut out = SanityResult::new();
+    for (case_dir, _meta) in walk_category(
+        root,
+        "minimal",
+        "bellatrix",
+        "sanity",
+        Some("slots"),
+        WalkOpts {
+            meta_required: false,
+            inner_dir: Some("pyspec_tests"),
+        },
+    ) {
+        let case_name = format!("bellatrix/sanity/slots/minimal/{}", dir_name(&case_dir));
+        let result = run_bellatrix_slots_case_minimal(&case_dir, &case_name);
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_bellatrix_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
+    use pharos_stf::bellatrix::state_transition::process_slots_bellatrix;
+    use pharos_types::MainnetEthSpec as E;
+
+    let slots_path = case_dir.join("slots.yaml");
+    let slots_count: u64 = match read_u64_yaml(&slots_path) {
+        Ok(n) => n,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let pre_state = match load_bellatrix_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_bellatrix_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let mut pre_inner = match E::into_bellatrix_state(pre_state) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not bellatrix state")),
+    };
+    let target_slot = Slot(pre_inner.slot.0 + slots_count);
+    if let Err(e) = process_slots_bellatrix::<
+        8192,
+        16_777_216,
+        2048,
+        1_099_511_627_776,
+        65536,
+        8192,
+        4,
+        512,
+        256,
+        32,
+        E,
+    >(&mut pre_inner, target_slot)
+    {
+        return CaseResult::Fail(format!("{case_name}: process_slots failed: {e}"));
+    }
+    let final_state = E::bellatrix_into_state(pre_inner);
+    if final_state.as_ssz_bytes() == expected.as_ssz_bytes() {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
+    }
+}
+
+fn run_bellatrix_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
+    use pharos_stf::bellatrix::state_transition::process_slots_bellatrix;
+    use pharos_types::MinimalEthSpec as E;
+
+    let slots_path = case_dir.join("slots.yaml");
+    let slots_count: u64 = match read_u64_yaml(&slots_path) {
+        Ok(n) => n,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let pre_state = match load_bellatrix_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_bellatrix_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let mut pre_inner = match E::into_bellatrix_state(pre_state) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not bellatrix state")),
+    };
+    let target_slot = Slot(pre_inner.slot.0 + slots_count);
+    if let Err(e) =
+        process_slots_bellatrix::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, 256, 32, E>(
+            &mut pre_inner,
+            target_slot,
+        )
+    {
+        return CaseResult::Fail(format!("{case_name}: process_slots failed: {e}"));
+    }
+    let final_state = E::bellatrix_into_state(pre_inner);
     if final_state.as_ssz_bytes() == expected.as_ssz_bytes() {
         CaseResult::Pass
     } else {

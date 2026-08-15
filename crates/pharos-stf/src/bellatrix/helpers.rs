@@ -143,7 +143,7 @@ pub(crate) fn decrease_balance_bellatrix<
 /// Project a `bellatrix::BeaconState` into an `altair::BeaconState` by
 /// cloning the shared fields. `latest_execution_payload_header` is not present
 /// in the altair state and is preserved in the caller's bellatrix state.
-pub(crate) fn bellatrix_state_to_altair<
+pub fn bellatrix_state_to_altair<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
     const ETH1_DATA_VOTES_LIMIT: u64,
@@ -207,7 +207,7 @@ pub(crate) fn bellatrix_state_to_altair<
 
 /// Copy the shared fields from an `altair::BeaconState` back into a
 /// `bellatrix::BeaconState`. `latest_execution_payload_header` is preserved.
-pub(crate) fn update_bellatrix_from_altair<
+pub fn update_bellatrix_from_altair<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
     const ETH1_DATA_VOTES_LIMIT: u64,
@@ -684,7 +684,7 @@ where
 ///
 /// The function operates on the projected altair state (all required fields are
 /// shared); it is called from `process_rewards_and_penalties_bellatrix`.
-pub(crate) fn get_inactivity_penalty_deltas_bellatrix<
+pub fn get_inactivity_penalty_deltas_bellatrix<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
     const ETH1_DATA_VOTES_LIMIT: u64,

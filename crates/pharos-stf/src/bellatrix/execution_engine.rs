@@ -100,6 +100,52 @@ pub trait ExecutionEngine: Send + Sync + 'static {
     }
 }
 
+// ── FixedExecutionEngine ──────────────────────────────────────────────────────
+
+/// `FixedExecutionEngine` — returns a fixed validity for all payload calls.
+///
+/// Used in conformance tests that supply an `execution_valid` flag via fixture
+/// metadata (`execution.yaml`). Construct with `FixedExecutionEngine(true)` or
+/// `FixedExecutionEngine(false)`.
+pub struct FixedExecutionEngine(pub bool);
+
+impl ExecutionEngine for FixedExecutionEngine {
+    fn notify_new_payload<
+        const MAX_BYTES_PER_TRANSACTION: u64,
+        const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+        const BYTES_PER_LOGS_BLOOM: u64,
+        const MAX_EXTRA_DATA_BYTES: u64,
+    >(
+        &self,
+        _payload: &ExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+        >,
+    ) -> bool {
+        self.0
+    }
+
+    fn verify_and_notify_new_payload<
+        const MAX_BYTES_PER_TRANSACTION: u64,
+        const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+        const BYTES_PER_LOGS_BLOOM: u64,
+        const MAX_EXTRA_DATA_BYTES: u64,
+    >(
+        &self,
+        _req: NewPayloadRequest<
+            '_,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+        >,
+    ) -> bool {
+        self.0
+    }
+}
+
 // ── NullExecutionEngine ───────────────────────────────────────────────────────
 
 /// `NullExecutionEngine` — always returns `true`.
