@@ -116,6 +116,7 @@ where
     <E::Phase0SignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::AltairSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::BellatrixSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
+    <E::CapellaSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
 {
     // ── Step 1-2: fetch state ─────────────────────────────────────────────────
     let state_url = url
@@ -364,6 +365,15 @@ fn decode_state<E: EthSpec>(
             let root = state.tree_hash_root();
             Ok((state, root))
         }
+        "capella" => {
+            let inner = E::CapellaBeaconState::from_ssz_bytes(bytes)
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            let state = E::capella_into_state(inner)
+                .into_tree_backend()
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            let root = state.tree_hash_root();
+            Ok((state, root))
+        }
         other => Err(CheckpointSyncError::UnsupportedFork(other.to_owned())),
     }
 }
@@ -389,6 +399,11 @@ fn decode_signed_block<E: EthSpec>(
                 .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
             Ok(E::bellatrix_into_signed_block(inner))
         }
+        "capella" => {
+            let inner = E::CapellaSignedBeaconBlock::from_ssz_bytes(bytes)
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            Ok(E::capella_into_signed_block(inner))
+        }
         other => Err(CheckpointSyncError::UnsupportedFork(other.to_owned())),
     }
 }
@@ -409,6 +424,7 @@ where
     <E::Phase0SignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::AltairSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::BellatrixSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
+    <E::CapellaSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
 {
     if let Some(inner) = E::unwrap_phase0_signed_block(signed) {
         return Ok(inner.message().tree_hash_root());
@@ -417,6 +433,9 @@ where
         return Ok(inner.message().tree_hash_root());
     }
     if let Some(inner) = E::unwrap_bellatrix_signed_block(signed) {
+        return Ok(inner.message().tree_hash_root());
+    }
+    if let Some(inner) = E::unwrap_capella_signed_block(signed) {
         return Ok(inner.message().tree_hash_root());
     }
     unreachable!("unrecognised SignedBeaconBlock fork variant")
@@ -441,7 +460,11 @@ fn extract_block_fields<E: EthSpec>(
         let msg = inner.message();
         return Ok((msg.state_root(), msg.slot(), msg.proposer_index()));
     }
-    // Unreachable: the three variants cover all fork-enum arms.
+    if let Some(inner) = E::unwrap_capella_signed_block(signed) {
+        let msg = inner.message();
+        return Ok((msg.state_root(), msg.slot(), msg.proposer_index()));
+    }
+    // Unreachable: the four variants cover all fork-enum arms.
     unreachable!("unrecognised SignedBeaconBlock fork variant")
 }
 
@@ -457,6 +480,12 @@ mod tests {
     use pharos_types::MinimalEthSpec;
     use pharos_types::bellatrix::{
         MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
+    };
+    use pharos_types::capella::{
+        MinimalBeaconBlock as CapellaMinimalBeaconBlock,
+        MinimalBeaconBlockBody as CapellaMinimalBeaconBlockBody,
+        MinimalBeaconState as CapellaMinimalBeaconState,
+        MinimalSignedBeaconBlock as CapellaMinimalSignedBeaconBlock,
     };
     use pharos_types::phase0::operations::BeaconBlockHeader;
     use pharos_types::phase0::primitives::{Root, Slot};
@@ -672,7 +701,106 @@ mod tests {
         );
     }
 
-    // ── Test (c): unsupported fork header ─────────────────────────────────────
+    // ── Test (c): happy path — Capella anchor ─────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_capella_anchor_happy_path() {
+        use pharos_ssz::Encode as _;
+
+        let body = CapellaMinimalBeaconBlockBody::default();
+        let body_root: Root = body.tree_hash_root();
+
+        let state_inner = CapellaMinimalBeaconState {
+            genesis_time: 1_700_000_000u64,
+            slot: Slot(64),
+            latest_block_header: BeaconBlockHeader {
+                slot: Slot(64),
+                state_root: Root::default(), // zeroed per spec (process_block_header)
+                body_root,
+                ..BeaconBlockHeader::default()
+            },
+            ..CapellaMinimalBeaconState::default()
+        };
+
+        // Compute the fork-enum state root via the Capella wrapper.
+        let fork_state = ForkMinimalBeaconState::Capella(state_inner.clone());
+        let computed_state_root: Root = fork_state.tree_hash_root();
+
+        // Build the block with the correct state_root.
+        let signed_block_inner = CapellaMinimalSignedBeaconBlock {
+            message: CapellaMinimalBeaconBlock {
+                slot: Slot(64),
+                state_root: computed_state_root,
+                body: body.clone(),
+                ..CapellaMinimalBeaconBlock::default()
+            },
+            ..CapellaMinimalSignedBeaconBlock::default()
+        };
+
+        // Derive expected block_root (same derivation as fetch_checkpoint).
+        let expected_block_root: Root = {
+            let mut h = state_inner.latest_block_header.clone();
+            h.state_root = computed_state_root;
+            h.tree_hash_root()
+        };
+
+        let state_bytes = state_inner.as_ssz_bytes();
+        let block_bytes = signed_block_inner.as_ssz_bytes();
+        let block_root_hex = hex::encode(expected_block_root.as_slice());
+
+        let state_bytes_arc = std::sync::Arc::new(state_bytes);
+        let block_bytes_arc = std::sync::Arc::new(block_bytes);
+        let app = Router::new()
+            .route(
+                "/eth/v2/debug/beacon/states/finalized",
+                get({
+                    let sb = state_bytes_arc.clone();
+                    move || {
+                        let sb = sb.clone();
+                        async move {
+                            let mut headers = HeaderMap::new();
+                            headers.insert("Eth-Consensus-Version", "capella".parse().unwrap());
+                            (StatusCode::OK, headers, (*sb).clone())
+                        }
+                    }
+                }),
+            )
+            .route(
+                &format!("/eth/v2/beacon/blocks/0x{block_root_hex}"),
+                get({
+                    let bb = block_bytes_arc.clone();
+                    move || {
+                        let bb = bb.clone();
+                        async move {
+                            let mut headers = HeaderMap::new();
+                            headers.insert("Eth-Consensus-Version", "capella".parse().unwrap());
+                            (StatusCode::OK, headers, (*bb).clone())
+                        }
+                    }
+                }),
+            );
+
+        let (addr, listener) = bind_random().await;
+        let handle = tokio::spawn(axum::serve(listener, app).into_future());
+
+        let url = reqwest::Url::parse(&format!("http://{addr}/")).unwrap();
+        let http = reqwest::Client::new();
+        let result = fetch_checkpoint::<MinimalEthSpec>(&url, &http, None).await;
+
+        handle.abort();
+
+        let anchor = result.expect("capella fetch should succeed");
+        assert_eq!(
+            anchor.block_root, expected_block_root,
+            "block_root mismatch"
+        );
+        assert_eq!(
+            anchor.state_root, computed_state_root,
+            "state_root mismatch"
+        );
+    }
+
+    // ── Test (c2): unsupported fork header ────────────────────────────────────
 
     #[tokio::test]
     async fn fetch_rejects_unsupported_fork() {
@@ -689,8 +817,8 @@ mod tests {
                     let sb = sb.clone();
                     async move {
                         let mut headers = HeaderMap::new();
-                        // Return an unsupported fork header.
-                        headers.insert("Eth-Consensus-Version", "capella".parse().unwrap());
+                        // Return a truly unknown fork header.
+                        headers.insert("Eth-Consensus-Version", "deneb".parse().unwrap());
                         (StatusCode::OK, headers, (*sb).clone())
                     }
                 }
@@ -705,8 +833,8 @@ mod tests {
         handle.abort();
 
         assert!(
-            matches!(result, Err(CheckpointSyncError::UnsupportedFork(ref s)) if s == "capella"),
-            "expected UnsupportedFork(capella), got {result:?}"
+            matches!(result, Err(CheckpointSyncError::UnsupportedFork(ref s)) if s == "deneb"),
+            "expected UnsupportedFork(deneb), got {result:?}"
         );
     }
 

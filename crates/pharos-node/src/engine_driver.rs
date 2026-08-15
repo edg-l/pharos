@@ -370,11 +370,13 @@ pub fn hash_to_hex(h: Hash256) -> String {
 /// Async engine-driver loop.
 ///
 /// Selects between:
-/// (a) `head_rx.changed()` — calls `engine_forkchoiceUpdatedV1` with the new
-///     head/safe/finalized hashes.  If the EL returns `INVALID`, marks the
-///     head block as `PayloadStatus::Invalid` in the in-memory store.
-/// (b) `payload_rx.recv()` — calls `engine_newPayloadV1` with the new payload.
-///     Maps `PayloadStatusStatus` to `PayloadStatus` and updates the store.
+/// (a) `head_rx.changed()` — calls `engine_forkchoiceUpdated` (V1 or V2 depending
+///     on the head block's fork) with the new head/safe/finalized hashes.  If the
+///     EL returns `INVALID`, marks the head block as `PayloadStatus::Invalid` in
+///     the in-memory store.
+/// (b) `payload_rx.recv()` — calls `engine_newPayload` (V1 or V2 depending on the
+///     payload's fork) with the new payload.  Maps `PayloadStatusStatus` to
+///     `PayloadStatus` and updates the store.
 ///
 /// The loop exits when both `head_rx` and `payload_rx` are dropped.
 pub async fn run_engine_driver_loop<E: EthSpec>(

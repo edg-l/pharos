@@ -510,7 +510,6 @@ async fn main() -> anyhow::Result<()> {
             runtime_cfg.bellatrix_fork_version,
         ),
         bellatrix_fork_epoch: pharos_utils::Epoch(runtime_cfg.bellatrix_fork_epoch),
-        // Phase 7 will wire real capella config values here.
         capella_fork_version: pharos_types::phase0::primitives::Version::from_array(
             runtime_cfg.capella_fork_version,
         ),

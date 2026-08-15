@@ -43,14 +43,17 @@ where
     E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
     E::AltairSignedBeaconBlock: SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock: SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
 {
     if let Some(inner) = E::unwrap_phase0_signed_block(signed) {
         Some(E::phase0_into_block(inner.message().clone()))
     } else if let Some(inner) = E::unwrap_altair_signed_block(signed) {
         Some(E::altair_into_block(inner.message().clone()))
+    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed) {
+        Some(E::bellatrix_into_block(inner.message().clone()))
     } else {
-        E::unwrap_bellatrix_signed_block(signed)
-            .map(|inner| E::bellatrix_into_block(inner.message().clone()))
+        E::unwrap_capella_signed_block(signed)
+            .map(|inner| E::capella_into_block(inner.message().clone()))
     }
 }
 
@@ -71,6 +74,7 @@ where
     E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
     E::AltairSignedBeaconBlock: SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock: SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
 {
     use pharos_fork_choice::Store as FcStore;
     use pharos_types::phase0::Checkpoint;
