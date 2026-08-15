@@ -303,6 +303,73 @@ Deferred: extend `D-future-block-hold` to the lookup direct-import path (self-he
 today); bench-regression check in CI (carry-in from M4c). NOTE: `D-byroot-lookup-deferred`
 (M5 section) is now obsolete — `8a76559` shipped the `BeaconBlocksByRoot` lookup.
 
+## M6-Capella status
+
+Closed. Capella shipped as a bellatrix sibling across all crates (8-phase plan in
+`docs/m6-capella-plan.md`): `pharos-types/capella` (containers + LC header with
+execution payload + branch), `pharos-stf/capella` (withdrawals, bls_to_exec_change,
+historical_summaries, `upgrade_to_capella`, per-step `process_block`), `pharos-engine`
+Engine API V2 (`newPayloadV2`/`forkchoiceUpdatedV2`; `getPayloadV2` wire-only, deferred
+to M8), `pharos-network` (`Fork::Capella` + fork-digest migration +
+`bls_to_execution_change` topic), `pharos-conformance` capella runners, `pharos-node`
+wiring (capella block decode, fork schedule from `runtime_cfg`, checkpoint-sync capella
+anchor, engine-V2 head selection). All four phase0/capella gossip validators implemented
+(`bls_to_execution_change` 2I+4R; the 3 folded phase0 validators 1I+6R each). All capella
+conformance categories green both presets (`docs/conformance.md`); pre-capella rows
+byte-identical (only the engine `yaml` row grew 6→8 from the new capella V2 examples).
+**Live Bellatrix→Capella transition devnet acceptance PASSED** (lighthouse v8.1.3 +
+ethrex v13, `CAPELLA_FORK_EPOCH=1`): pharos followed head 49 capella slots past the fork,
+`head==wall±1`, live `upgrade_to_capella` fired, ethrex `newPayloadV2` VALID, 0 bans,
+0 panics over 10 min. The devnet found TWO live-only correctness bugs (the M6 analogue of
+M5-follow): `D-live-fork-trigger-in-state-transition` (`state_transition` never called the
+Phase-2 `process_slots_fork`, so a bellatrix-state + capella-block crossing returned
+`UnsupportedFork` and froze the node) and `D-runtime-cfg-threading-live-loops` (the
+ingestion/backfill/lookup loops fed a default `RuntimeConfig` with `CAPELLA_FORK_EPOCH =
+u64::MAX`, suppressing the upgrade); both fixed and re-verified live. ADRs in
+`docs/decisions.md` (M6-Capella section: 10 ADRs + 2 devnet-correctness ADRs). Devnet
+generator now capella-transition (`~/.cache/pharos-devnet/gen-testnet.sh`:
+`CAPELLA_FORK_EPOCH=1` + genesis.json `shanghaiTime` + syncs pharos specdir config so
+lighthouse/pharos configs can't drift). Workspace version bumped `0.8.0` → `0.9.0`.
+Deferred: `engine_getPayloadV2` live block production (M8); extend `gossip_verdict_strings`
+audit to capella LC verdict strings (minor).
+
+## M-Storage status
+
+Closed. Persistent hot/cold chain storage (6-phase plan in `docs/storage-plan.md`).
+Motivation: an M7 code review found the live import path persisted NOTHING to
+RocksDB (only startup + checkpoint-sync wrote), so `/eth/v2/beacon/blocks/{id}` 404'd
+for any block imported after startup and nothing survived restart beyond the anchor.
+Shipped: (1) **live block persistence** — `import_block` writes block + slot-index +
+`StateSummary` + fc-snapshot + `head_state_root` every import in a SEPARATE
+`spawn_blocking` AFTER the `on_block` write-lock drops (never under the lock); full
+state only at epoch boundaries; real v1 header signatures sourced from the stored
+`SignedBeaconBlock`. (2) **replay-on-read** — `StateRegenService` (`state_regen.rs`):
+`nearest_stored_state` + `replay_to` (STF primitives unchanged) serve arbitrary
+historical states; `ChainStateApi::regenerate_state` (no `pharos-api`→`pharos-node`
+dep). (3) **hot/cold freezer** (`freezer.rs`) — driven off the head-watch; on
+finalization migrates `(split_slot, finalized_slot]` to cold CFs in ONE atomic
+`migrate_to_cold` WriteBatch (writes ALL interval-multiple restore points), then evicts
+finalized in-memory fork-choice entries (incl. `latest_messages` by evicted root) under
+read-then-short-write lock; `slot_to_block_root` index is NEVER pruned (cold regen +
+`BeaconBlocksByRange` need it). (4) **orphan pruning + restart recovery** — orphans
+identified via the authoritative `slot_to_block_root` index (NOT `get_ancestor`);
+`rehydrate_fork_choice_store` rebuilds a DENSE `[split_slot, head_slot]` `block_states`
+(intermediate states regenerated via `inline_replay_to` threading the REAL loaded
+`runtime_cfg` fork schedule — fork-crossing-safe), anchor + `split_slot`/`anchor_slot`
+seeded on the single anchor `BlockTransition`. Schema bumped v2→v3 (4 new CFs:
+`state-summary`, `cold-blocks`, `cold-states`, `restore-points`; opening a v2 DB returns
+`SchemaMismatch` → resync). ADRs in `docs/decisions.md` (M-Storage section, 10 ADRs
+ACCEPTED): `D-persist-in-import-core`, `D-epoch-boundary-state-cadence`,
+`D-replay-on-read`, `D-freezer-in-rocksdb`, `D-restore-point-interval`,
+`D-prune-behind-finalized`, `D-schema-v3-migration`, `D-state-diffs-deferred`,
+`D-store-signed-block-only`, `D-freezer-driver-off-head-watch`. Tests:
+`live_block_persistence`, `state_replay`, `freezer_migration`, `restart_across_split`,
+`state_summary_roundtrip`. `--restore-point-interval-epochs` (default 8) + `--no-freezer`
+CLI flags. Workspace version bumped `0.9.0` → `0.10.0`. Deferred: on-disk state diffs
+(`D-state-diffs-deferred`), historical genesis-ward backfill (M11), blob/data-column
+sidecar persistence (Deneb+), a fork-crossing rehydrate integration test (code path is
+fork-safe; existing restart test is same-fork).
+
 ## Reference repos (cloned in `~/dev/`)
 
 - `consensus-specs/` — Python specs + reference tests (test fixtures live
@@ -377,6 +444,14 @@ Pharos talks to an external EL via the Engine API. Default pairing:
   - **Reuse the log across iterations.** If a prior identical run's log
     already exists and the inputs haven't changed, read it instead of
     re-running.
+  - **Watch disk; `cargo clean` when `target/` bloats.** `target/debug` can
+    balloon over a long session (observed 456 GB), and version bumps invalidate
+    the whole build cache. A full disk surfaces as a linker `Bus error`
+    (SIGBUS, signal 7) or `No space left on device` mid-build, NOT an obvious
+    "disk full" message. If you see those, check `df -h /` and
+    `du -sh target`; run `cargo clean` to reclaim (it does NOT touch
+    `docs/` or fixtures), then rebuild. Also clear `~/.cache/tmp` (build
+    scratch) if it has grown.
 
 ## Spec-test workflow
 
