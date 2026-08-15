@@ -20,6 +20,7 @@ pub mod altair;
 pub mod error;
 pub mod phase0;
 
+pub use altair::state_transition::AltairDispatch;
 pub use phase0::block::process_block;
 pub use phase0::epoch::justification_and_finalization::process_justification_and_finalization;
 pub use phase0::epoch::process_epoch;
@@ -50,7 +51,8 @@ use phase0::{
 /// Dispatches on the `BeaconState` fork variant:
 /// - `Phase0` → unwraps the block to the concrete phase0 signed block, then
 ///   calls the phase0 STF (`process_slots`, `process_block`).
-/// - `Altair` → returns an error (altair STF ships in Phase 2).
+/// - `Altair` → unwraps state and block to altair inner types, calls the altair
+///   STF via `AltairDispatch`, wraps result back into the fork-enum.
 ///
 /// Advances `state` to `signed_block.message.slot` via `process_slots`,
 /// optionally verifies the block signature and final state root, then
@@ -75,6 +77,7 @@ where
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = Deposit<33>,
         >,
+    E::AltairBeaconState: AltairDispatch<E>,
 {
     // Fork dispatch via `fork_variant()`. Cannot pattern-match on a concrete
     // enum variant through the opaque `E::BeaconState` associated type;
@@ -89,9 +92,15 @@ where
             phase0_state_transition::<E>(&mut state, phase0_signed, validate_result)?;
         }
         ForkVariant::Altair => {
-            // Altair STF not yet implemented (Phase 2). Altair dispatch will be
-            // added in Phase 2's state_transition.rs.
-            return Err(StateTransitionError::UnsupportedFork);
+            // Unwrap fork-enum state and block to their inner altair types.
+            let altair_signed = E::unwrap_altair_signed_block(signed_block)
+                .ok_or(StateTransitionError::UnsupportedFork)?;
+            let altair_inner = E::into_altair_state(state)
+                .ok_or(StateTransitionError::UnsupportedFork)?;
+            // Apply the altair state transition via the `AltairDispatch` blanket impl.
+            let updated = altair_inner.apply_signed_block(altair_signed, validate_result)?;
+            // Wrap the result back into the fork-enum.
+            return Ok(E::altair_into_state(updated));
         }
     }
     Ok(state)

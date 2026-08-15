@@ -375,6 +375,26 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         s: &Self::SignedBeaconBlock,
     ) -> Option<&Self::Phase0SignedBeaconBlock>;
 
+    /// Unwrap a fork-enum `SignedBeaconBlock` to the inner altair variant.
+    ///
+    /// Returns `Some` if the block is an `Altair` variant, `None` otherwise.
+    /// Used by the altair STF dispatcher in `pharos-stf::lib`.
+    fn unwrap_altair_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::AltairSignedBeaconBlock>;
+
+    /// Unwrap a fork-enum `BeaconState` to the inner altair variant.
+    ///
+    /// Returns `Some` if the state is an `Altair` variant, `None` otherwise.
+    /// Used by the altair STF dispatcher in `pharos-stf::lib`.
+    fn unwrap_altair_state(s: &Self::BeaconState) -> Option<&Self::AltairBeaconState>;
+
+    /// Unwrap a fork-enum `BeaconState` to the inner altair variant (by value).
+    fn into_altair_state(s: Self::BeaconState) -> Option<Self::AltairBeaconState>;
+
+    /// Wrap a concrete altair `BeaconState` into the fork-enum `BeaconState`.
+    fn altair_into_state(s: Self::AltairBeaconState) -> Self::BeaconState;
+
     // -- Container associated types (D7) --
     // These allow STF code to be generic over `<E: EthSpec>` and reference
     // `E::BeaconState`, `E::BeaconBlock`, etc. without naming the concrete
@@ -768,6 +788,33 @@ impl EthSpec for MainnetEthSpec {
         }
     }
 
+    fn unwrap_altair_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::AltairSignedBeaconBlock> {
+        match s {
+            crate::state::MainnetSignedBeaconBlock::Altair(inner) => Some(inner),
+            crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
+        }
+    }
+
+    fn unwrap_altair_state(s: &Self::BeaconState) -> Option<&Self::AltairBeaconState> {
+        match s {
+            crate::state::MainnetBeaconState::Altair(inner) => Some(inner),
+            crate::state::MainnetBeaconState::Phase0(_) => None,
+        }
+    }
+
+    fn into_altair_state(s: Self::BeaconState) -> Option<Self::AltairBeaconState> {
+        match s {
+            crate::state::MainnetBeaconState::Altair(inner) => Some(inner),
+            crate::state::MainnetBeaconState::Phase0(_) => None,
+        }
+    }
+
+    fn altair_into_state(s: Self::AltairBeaconState) -> Self::BeaconState {
+        crate::state::MainnetBeaconState::Altair(s)
+    }
+
     // Fork-enum types (D7 / Task 1.9)
     type BeaconState = crate::state::MainnetBeaconState;
     type Phase0BeaconState = crate::phase0::MainnetBeaconState;
@@ -1030,6 +1077,33 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalSignedBeaconBlock::Phase0(inner) => Some(inner),
             crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
         }
+    }
+
+    fn unwrap_altair_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::AltairSignedBeaconBlock> {
+        match s {
+            crate::state::MinimalSignedBeaconBlock::Altair(inner) => Some(inner),
+            crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
+        }
+    }
+
+    fn unwrap_altair_state(s: &Self::BeaconState) -> Option<&Self::AltairBeaconState> {
+        match s {
+            crate::state::MinimalBeaconState::Altair(inner) => Some(inner),
+            crate::state::MinimalBeaconState::Phase0(_) => None,
+        }
+    }
+
+    fn into_altair_state(s: Self::BeaconState) -> Option<Self::AltairBeaconState> {
+        match s {
+            crate::state::MinimalBeaconState::Altair(inner) => Some(inner),
+            crate::state::MinimalBeaconState::Phase0(_) => None,
+        }
+    }
+
+    fn altair_into_state(s: Self::AltairBeaconState) -> Self::BeaconState {
+        crate::state::MinimalBeaconState::Altair(s)
     }
 
     // Fork-enum types (D7 / Task 1.9)

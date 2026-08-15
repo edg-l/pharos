@@ -61,6 +61,7 @@ pub fn run_finality_preset<E>(root: &Path, preset: &'static str) -> FinalityResu
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + TreeHash,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -115,6 +116,7 @@ fn run_blocks_case<E>(
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + TreeHash,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash

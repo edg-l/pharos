@@ -216,6 +216,7 @@ pub fn on_block<E: EthSpec>(
 where
     E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
     E::BeaconState: BeaconStateWrite + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,

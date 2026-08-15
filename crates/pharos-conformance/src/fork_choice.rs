@@ -97,6 +97,7 @@ pub fn run_fork_choice_preset<E>(root: &Path, preset: &'static str) -> ForkChoic
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -145,6 +146,7 @@ fn run_sub_category<E>(
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -197,6 +199,7 @@ fn run_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
