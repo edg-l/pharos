@@ -118,6 +118,49 @@ pub enum NetworkEvent {
     LocalEnr(crate::discovery::enr::Enr),
     /// The network task has shut down.
     Shutdown,
+
+    // ── M3a Phase 3 events (deferred from M2 audit, D-network-event-surface) ──
+    /// A remote peer subscribed to one of our known gossipsub topics.
+    ///
+    /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
+    /// Phase 3. Only emitted when the topic hash resolves against the local
+    /// `topic_map`; unknown-topic subscriptions are silently dropped.
+    PeerSubscribed { peer: PeerId, topic: GossipTopic },
+
+    /// A remote peer unsubscribed from one of our known gossipsub topics.
+    ///
+    /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
+    /// Phase 3. Only emitted when the topic hash resolves against the local
+    /// `topic_map`; unknown-topic unsubscriptions are silently dropped.
+    PeerUnsubscribed { peer: PeerId, topic: GossipTopic },
+
+    /// The identify protocol completed for a peer; `info` contains the updated
+    /// peer metadata (agent version, protocol list, observed address).
+    ///
+    /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
+    /// Phase 3. Only emitted when the peer is already in the connected-peer map;
+    /// identify events for unknown peers are dropped (D-peer-info-shape:
+    /// identify-flood mitigation by per-peer overwrite).
+    ///
+    /// `info` is boxed to keep the `NetworkEvent` enum size reasonable
+    /// (`PeerInfo` is large relative to the other variants).
+    PeerIdentified {
+        peer: PeerId,
+        info: Box<crate::types::PeerInfo>,
+    },
+
+    /// An outbound dial attempt failed.
+    ///
+    /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
+    /// Phase 3. `peer` is `None` when the peer identity was not yet known at
+    /// dial time (dial-failed-pre-identity case per D-network-event-surface).
+    DialFailed { peer: Option<PeerId>, error: String },
+
+    /// The swarm confirmed a new external address for the local node.
+    ///
+    /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
+    /// Phase 3. ENR update is deferred to M3b (cross-fork ENR migration).
+    ExternalAddrConfirmed { address: libp2p::Multiaddr },
 }
 
 // ── Network ───────────────────────────────────────────────────────────────────
@@ -258,8 +301,36 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                 tracing::info!(%address, "new listen address");
                 self.emit_event(NetworkEvent::NewListenAddr(address));
             }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::Identify(id_event)) => {
+                if let identify::Event::Received { peer_id, info, .. } = *id_event {
+                    self.on_identify(peer_id, info);
+                }
+            }
+            libp2p::swarm::SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                let error_str = format!("{error}");
+                self.emit_event(NetworkEvent::DialFailed {
+                    peer: peer_id,
+                    error: error_str,
+                });
+                if let Some(pid) = peer_id {
+                    self.peer_manager.record_event(
+                        pid,
+                        ScoreEvent::HandshakeFail {
+                            kind: HandshakeFailKind::Timeout,
+                        },
+                    );
+                }
+                self.peer_manager.note_dial_failure(peer_id);
+            }
+            libp2p::swarm::SwarmEvent::ExternalAddrConfirmed { address } => {
+                tracing::info!(%address, "external address confirmed");
+                // ENR update deferred to M3b (cross-fork ENR migration).
+                self.emit_event(NetworkEvent::ExternalAddrConfirmed { address });
+            }
             _ => {
-                tracing::debug!("swarm event: {:?}", event);
+                // Remaining swarm events are deferred to M11 (peer scoring,
+                // listener errors, etc.). Debug-log for observability.
+                tracing::debug!("swarm event (M11-deferred): {:?}", event);
             }
         }
     }
@@ -276,10 +347,24 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                     .await;
             }
             gossipsub::Event::Subscribed { peer_id, topic } => {
-                tracing::debug!(%peer_id, ?topic, "peer subscribed");
+                if let Ok(parsed) = GossipTopic::from_topic_hash(&topic, &self.topic_map) {
+                    self.emit_event(NetworkEvent::PeerSubscribed {
+                        peer: peer_id,
+                        topic: parsed,
+                    });
+                } else {
+                    tracing::debug!(%peer_id, ?topic, "peer subscribed to unknown topic; ignoring");
+                }
             }
             gossipsub::Event::Unsubscribed { peer_id, topic } => {
-                tracing::debug!(%peer_id, ?topic, "peer unsubscribed");
+                if let Ok(parsed) = GossipTopic::from_topic_hash(&topic, &self.topic_map) {
+                    self.emit_event(NetworkEvent::PeerUnsubscribed {
+                        peer: peer_id,
+                        topic: parsed,
+                    });
+                } else {
+                    tracing::debug!(%peer_id, ?topic, "peer unsubscribed from unknown topic; ignoring");
+                }
             }
             gossipsub::Event::GossipsubNotSupported { peer_id } => {
                 tracing::debug!(%peer_id, "gossipsub not supported");
@@ -662,6 +747,33 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
     fn on_metadata_response(&mut self, peer_id: PeerId, response: &RpcResponse<E>) {
         if let RpcResponse::MetaData(meta) = response {
             self.peer_manager.on_metadata(peer_id, meta.clone());
+        }
+    }
+
+    /// Handle a completed identify exchange for `peer`.
+    ///
+    /// Updates the peer manager's stored `PeerInfo` with the agent version,
+    /// protocol list, and observed address from `info`. Emits
+    /// `NetworkEvent::PeerIdentified` with the updated snapshot. Drops the
+    /// event when the peer is not in the connected map (unknown-peer identify;
+    /// per D-peer-info-shape identify-flood mitigation by per-peer overwrite).
+    fn on_identify(&mut self, peer: PeerId, info: identify::Info) {
+        let agent = info.agent_version.clone();
+        let protocols: Vec<String> = info.protocols.iter().map(|p| p.to_string()).collect();
+        let observed = info.observed_addr.clone();
+        match self
+            .peer_manager
+            .update_identify(peer, agent, protocols, observed)
+        {
+            Some(snapshot) => {
+                self.emit_event(NetworkEvent::PeerIdentified {
+                    peer,
+                    info: Box::new(snapshot),
+                });
+            }
+            None => {
+                tracing::debug!(%peer, "identify event for unknown peer; dropping");
+            }
         }
     }
 

@@ -1,9 +1,11 @@
 //! Peer connection tracking, status state machine, and ban list.
 
 use std::collections::HashMap;
+use std::num::NonZero;
 use std::time::{Duration, Instant};
 
 use libp2p::{Multiaddr, PeerId};
+use lru::LruCache;
 use tracing::warn;
 
 use pharos_types::phase0::Status;
@@ -29,6 +31,13 @@ pub struct PeerManager<S: PeerScorer> {
     /// peer. Set before issuing the swarm-level disconnect so the reason is
     /// available when libp2p delivers `ConnectionClosed` asynchronously.
     pending_disconnect_reasons: HashMap<PeerId, DisconnectReason>,
+    /// Bounded LRU cache of recently failed dial attempts (cap: 256).
+    ///
+    /// Keyed by `PeerId` when known at dial-fail time; the value is the
+    /// `Instant` the failure was recorded. M11 will replace this with richer
+    /// accounting (backoff intervals, failure counts). Added in M3a Phase 3
+    /// per D-network-event-surface.
+    recently_failed_dials: LruCache<PeerId, Instant>,
 }
 
 impl<S: PeerScorer> PeerManager<S> {
@@ -41,6 +50,7 @@ impl<S: PeerScorer> PeerManager<S> {
             max_peers,
             target_peers,
             pending_disconnect_reasons: HashMap::new(),
+            recently_failed_dials: LruCache::new(NonZero::new(256).expect("256 is non-zero")),
         }
     }
 
@@ -66,6 +76,9 @@ impl<S: PeerScorer> PeerManager<S> {
             direction: dir,
             state: PeerState::Connecting,
             metadata: None,
+            agent_string: None,
+            protocols: vec![],
+            observed_addr: None,
         };
         self.peers.insert(peer_id, info);
         self.scorer.record(peer_id, ScoreEvent::PeerConnected);
@@ -165,6 +178,27 @@ impl<S: PeerScorer> PeerManager<S> {
         }
     }
 
+    /// Update peer info from an identify protocol exchange.
+    ///
+    /// Overwrites `agent_string`, `protocols`, and `observed_addr` for the peer.
+    /// Keeps `peers` private; callers receive a clone of the updated `PeerInfo`.
+    /// Returns `None` when the peer is not in the connected map (identify event
+    /// for an unknown peer; the caller should drop the event per D-peer-info-shape
+    /// identify-flood mitigation).
+    pub(crate) fn update_identify(
+        &mut self,
+        peer: PeerId,
+        agent: String,
+        protocols: Vec<String>,
+        observed: Multiaddr,
+    ) -> Option<PeerInfo> {
+        let info = self.peers.get_mut(&peer)?;
+        info.agent_string = Some(agent);
+        info.protocols = protocols;
+        info.observed_addr = Some(observed);
+        Some(info.clone())
+    }
+
     /// Returns the stored `MetaData` seq_number for `peer_id`, or `None`.
     pub fn peer_metadata_seq(&self, peer_id: &PeerId) -> Option<u64> {
         self.peers
@@ -225,6 +259,19 @@ impl<S: PeerScorer> PeerManager<S> {
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
+
+    /// Record a failed outbound dial attempt in the bounded LRU cache.
+    ///
+    /// When `peer` is `Some`, the failure is attributed to a known `PeerId` and
+    /// the cache entry is updated. When `peer` is `None` (dial failed before
+    /// identity was established), the call is a no-op — there is no key to store.
+    /// The cache capacity is 256 entries; the least-recently-used entry is
+    /// evicted when full. M11 will replace this with backoff-aware accounting.
+    pub fn note_dial_failure(&mut self, peer: Option<PeerId>) {
+        if let Some(pid) = peer {
+            self.recently_failed_dials.put(pid, Instant::now());
+        }
+    }
 
     /// Returns the number of currently connected peers.
     pub fn peer_count(&self) -> usize {

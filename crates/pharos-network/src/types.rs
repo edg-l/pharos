@@ -63,6 +63,8 @@ pub enum PeerState {
 /// Aggregated state for a connected peer.
 ///
 /// Held in the peer manager's `HashMap<PeerId, PeerInfo>` (Task 2.4).
+/// Fields `agent_string`, `protocols`, and `observed_addr` are populated from
+/// the libp2p `identify` protocol exchange per D-peer-info-shape (M3a Phase 3).
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
     /// The libp2p peer identifier.
@@ -81,6 +83,19 @@ pub struct PeerInfo {
     pub state: PeerState,
     /// The peer's last known `MetaData` (populated after GetMetaData exchange).
     pub metadata: Option<pharos_types::phase0::MetaData>,
+    /// Agent version string from the identify protocol (e.g. `"Lighthouse/v4.0.0"`).
+    ///
+    /// Populated on `NetworkEvent::PeerIdentified`; `None` before identify completes.
+    pub agent_string: Option<String>,
+    /// Protocol IDs advertised by the peer via the identify protocol.
+    ///
+    /// Each entry is a string like `"/eth2/beacon_chain/req/status/1/ssz_snappy"`.
+    /// Empty before identify completes.
+    pub protocols: Vec<String>,
+    /// The address the peer observed for our local node, reported via identify.
+    ///
+    /// Useful for external address discovery. `None` before identify completes.
+    pub observed_addr: Option<Multiaddr>,
 }
 
 // ── Goodbye reason codes ──────────────────────────────────────────────────────

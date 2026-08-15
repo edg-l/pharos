@@ -11,6 +11,8 @@
 //! - `proposer_slashing`
 //! - `attester_slashing`
 
+use std::collections::HashMap;
+
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 
 use crate::error::NetworkError;
@@ -63,6 +65,21 @@ impl GossipTopic {
     /// Equivalent to `IdentTopic::new(self.topic_str()).hash()`.
     pub fn topic_hash(&self) -> TopicHash {
         IdentTopic::new(self.topic_str()).hash()
+    }
+
+    /// Look up a `GossipTopic` by its `TopicHash` in the local subscription map.
+    ///
+    /// The network's `topic_map` (`HashMap<TopicHash, GossipTopic>`) is built
+    /// from the topics subscribed at startup via `subscribe_phase0_topics`.
+    /// Returns `NetworkError::InvalidTopic` when the hash is not present (e.g.
+    /// a peer subscribed to a topic we are not tracking).
+    pub fn from_topic_hash(
+        hash: &TopicHash,
+        map: &HashMap<TopicHash, GossipTopic>,
+    ) -> Result<GossipTopic, NetworkError> {
+        map.get(hash).cloned().ok_or_else(|| {
+            NetworkError::InvalidTopic(format!("topic hash not in local subscription map: {hash}"))
+        })
     }
 
     /// Parse a topic string into a `GossipTopic`.
