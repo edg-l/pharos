@@ -20,12 +20,11 @@ use axum::http::{Request, StatusCode};
 use libp2p::PeerId;
 use pharos_api::{ApiState, ChainStateApi, NodeIdentityCache, build_router};
 use pharos_network::discovery::enr::Enr;
-use pharos_types::EthSpec;
-use pharos_types::MainnetEthSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::config::RuntimeConfig;
 use pharos_types::phase0::primitives::{Epoch, Root, Slot, ValidatorIndex};
 use pharos_types::phase0::{BeaconBlockHeader, Checkpoint};
+use pharos_types::{EthSpec, MainnetEthSpec};
 use tower::ServiceExt as _;
 
 // ── Mock ChainStateApi ────────────────────────────────────────────────────────
@@ -130,6 +129,26 @@ impl ChainStateApi<MainnetEthSpec> for MockChain {
     fn node_identity(&self) -> &NodeIdentityCache {
         &self.identity
     }
+
+    fn state_by_block_root(&self, _root: Root) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+        None
+    }
+
+    fn state_by_state_root(&self, _root: Root) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+        None
+    }
+
+    fn block_root_for_slot(&self, _slot: Slot) -> Option<Root> {
+        None
+    }
+
+    fn genesis_block_root(&self) -> Root {
+        Root::default()
+    }
+
+    fn sync_committee_pubkeys(&self, _root: Root) -> Option<(Vec<[u8; 48]>, Vec<[u8; 48]>)> {
+        None
+    }
 }
 
 /// A minimal mock that delegates everything to `MockChain` but overrides
@@ -189,6 +208,26 @@ impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
 
     fn node_identity(&self) -> &NodeIdentityCache {
         self.inner.node_identity()
+    }
+
+    fn state_by_block_root(&self, root: Root) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+        self.inner.state_by_block_root(root)
+    }
+
+    fn state_by_state_root(&self, root: Root) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+        self.inner.state_by_state_root(root)
+    }
+
+    fn block_root_for_slot(&self, slot: Slot) -> Option<Root> {
+        self.inner.block_root_for_slot(slot)
+    }
+
+    fn genesis_block_root(&self) -> Root {
+        self.inner.genesis_block_root()
+    }
+
+    fn sync_committee_pubkeys(&self, root: Root) -> Option<(Vec<[u8; 48]>, Vec<[u8; 48]>)> {
+        self.inner.sync_committee_pubkeys(root)
     }
 }
 

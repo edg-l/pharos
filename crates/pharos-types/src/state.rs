@@ -18,6 +18,7 @@ use crate::phase0::{
 };
 use crate::views::{
     BeaconBlockBodyView, BeaconBlockView, BeaconStateView, ForkVariant, SignedBeaconBlockView,
+    SyncCommitteePubkeys,
 };
 use pharos_ssz::{BYTES_PER_LENGTH_OFFSET, Decode, Encode, SszError, TreeHash, TreeHashType};
 use pharos_utils::{Bytes32, Gwei, Hash256};
@@ -439,6 +440,14 @@ impl<
     fn into_tree_backend(self) -> Result<Self, SszError> {
         // Delegate to the inherent fork-enum method (defined above).
         BeaconState::into_tree_backend(self)
+    }
+    fn sync_committee_pubkeys(&self) -> Option<SyncCommitteePubkeys> {
+        match self {
+            BeaconState::Phase0(_) => None,
+            BeaconState::Altair(s) => s.sync_committee_pubkeys(),
+            BeaconState::Bellatrix(s) => s.sync_committee_pubkeys(),
+            BeaconState::Capella(s) => s.sync_committee_pubkeys(),
+        }
     }
 }
 

@@ -36,6 +36,11 @@ use crate::phase0::{
 use pharos_ssz::{SszError, SszSequence};
 use pharos_utils::{Bytes32, Gwei, Hash256};
 
+/// `(current_sync_committee_pubkeys, next_sync_committee_pubkeys)`, each a list
+/// of 48-byte BLS public keys. Returned by [`BeaconStateView::sync_committee_pubkeys`]
+/// and the Beacon API `sync_committees` endpoint.
+pub type SyncCommitteePubkeys = (Vec<[u8; 48]>, Vec<[u8; 48]>);
+
 // ── ForkVariant ───────────────────────────────────────────────────────────────
 
 /// Identifies which fork a `BeaconState` (or block) belongs to.
@@ -173,6 +178,16 @@ pub trait BeaconStateView {
     /// after mutating any field; otherwise a subsequent `cached_tree_hash_root`
     /// call would return a stale value.
     fn invalidate_root_cache(&mut self);
+
+    /// Return the current and next sync committee pubkeys as 48-byte arrays,
+    /// or `None` for Phase0 states (which have no sync committee).
+    ///
+    /// Used by the Beacon API `sync_committees` endpoint to serve committee
+    /// data without requiring the API layer to match on concrete enum variants.
+    /// Default impl returns `None`; overridden on Altair/Bellatrix/Capella states.
+    fn sync_committee_pubkeys(&self) -> Option<SyncCommitteePubkeys> {
+        None
+    }
 
     /// Flip the seven hot list/vector fields (`validators`, `historical_roots`,
     /// `state_roots`, `block_roots`, `randao_mixes`, `previous/current_epoch_attestations`)

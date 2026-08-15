@@ -12,10 +12,10 @@ use libp2p::{Multiaddr, PeerId};
 use parking_lot::RwLock;
 use pharos_fork_choice::Store as FcStore;
 use pharos_network::discovery::enr::Enr;
-use pharos_storage::RocksStore;
+use pharos_storage::{RocksStore, Store as DbStore};
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::{
-    EthSpec,
+    EthSpec, SyncCommitteePubkeys,
     config::RuntimeConfig,
     phase0::{BeaconBlockHeader, Checkpoint, Root, Slot},
 };
@@ -79,6 +79,32 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
 
     /// Read-only reference to the node identity snapshot.
     fn node_identity(&self) -> &NodeIdentityCache;
+
+    // ── State-resolution methods (Phase 2) ────────────────────────────────────
+
+    /// Look up the post-state for a block root from the in-memory fork-choice
+    /// store. Returns `None` when the root is not present in-memory (cold state).
+    fn state_by_block_root(&self, root: Root) -> Option<E::BeaconState>;
+
+    /// Look up a state by its state-root from cold storage.
+    ///
+    /// Falls back to `RocksStore::get_state` when the root is not in the
+    /// in-memory `block_states` map.  Returns `None` when not found anywhere.
+    fn state_by_state_root(&self, state_root: Root) -> Option<E::BeaconState>;
+
+    /// Return the block root for a given slot from the in-memory store, or
+    /// `None` if the slot is not within the in-memory window.
+    fn block_root_for_slot(&self, slot: Slot) -> Option<Root>;
+
+    /// Return the genesis block root (the initial anchor block root).
+    fn genesis_block_root(&self) -> Root;
+
+    /// Return `(current_sync_committee_pubkeys, next_sync_committee_pubkeys)` for
+    /// the post-state of `block_root`, or `None` for Phase0 states (no sync committee).
+    ///
+    /// Each pubkey is a 48-byte BLS public key (`BLSPubkey = FixedBytes<48>`).
+    /// Returns `None` when the block root is not in-memory, or the state is Phase0.
+    fn sync_committee_pubkeys(&self, block_root: Root) -> Option<SyncCommitteePubkeys>;
 }
 
 // ── NodeChainState ────────────────────────────────────────────────────────────
@@ -86,7 +112,7 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
 /// Concrete `ChainStateApi` backed by the shared fork-choice store and storage.
 pub struct NodeChainState<E: EthSpec> {
     /// Shared chain DB (cold states, anchor, etc.).
-    _store: Arc<RocksStore>,
+    store: Arc<RocksStore>,
     /// Live fork-choice store (in-memory head, checkpoints, blocks).
     fork_choice: Arc<RwLock<FcStore<E>>>,
     /// Static node identity snapshot.
@@ -103,7 +129,7 @@ impl<E: EthSpec> NodeChainState<E> {
         runtime_cfg: Arc<RuntimeConfig>,
     ) -> Self {
         Self {
-            _store: store,
+            store,
             fork_choice,
             identity,
             runtime_cfg,
@@ -188,6 +214,73 @@ impl<E: EthSpec> ChainStateApi<E> for NodeChainState<E> {
 
     fn node_identity(&self) -> &NodeIdentityCache {
         &self.identity
+    }
+
+    fn state_by_block_root(&self, root: Root) -> Option<E::BeaconState> {
+        let fc = self.fork_choice.read();
+        fc.block_states.get(&root).cloned()
+    }
+
+    fn state_by_state_root(&self, state_root: Root) -> Option<E::BeaconState> {
+        // First check in-memory fork-choice post-states (keyed by block root,
+        // but each has a .state_root). Clone the candidates out and release the
+        // read lock BEFORE merkleizing — `tree_hash_root()` over a full state is
+        // expensive and must not block concurrent fork-choice writers.
+        let candidates: Vec<E::BeaconState> = {
+            let fc = self.fork_choice.read();
+            fc.block_states.values().cloned().collect()
+        };
+        {
+            use pharos_ssz::TreeHash;
+            for state in candidates {
+                if state.tree_hash_root() == state_root {
+                    return Some(state);
+                }
+            }
+        }
+        // Fall back to cold storage.
+        <RocksStore as DbStore<E>>::get_state(&self.store, &state_root)
+            .ok()
+            .flatten()
+    }
+
+    fn block_root_for_slot(&self, slot: Slot) -> Option<Root> {
+        use pharos_types::views::BeaconBlockView;
+        let fc = self.fork_choice.read();
+        fc.blocks.iter().find_map(|(root, block)| {
+            if block.slot() == slot {
+                Some(*root)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn genesis_block_root(&self) -> Root {
+        // The genesis block root is the anchor root stored in the fork-choice
+        // store's finalized checkpoint at epoch 0.  We look for the block at
+        // slot 0 in-memory, then fall back to the finalized checkpoint root.
+        use pharos_types::views::BeaconBlockView;
+        let fc = self.fork_choice.read();
+        if let Some(root) = fc.blocks.iter().find_map(|(r, b)| {
+            if b.slot() == pharos_types::phase0::Slot(0) {
+                Some(*r)
+            } else {
+                None
+            }
+        }) {
+            return root;
+        }
+        // Anchor checkpoint is the first block we know about.
+        fc.finalized_checkpoint.root
+    }
+
+    fn sync_committee_pubkeys(&self, block_root: Root) -> Option<SyncCommitteePubkeys> {
+        use pharos_types::BeaconStateView;
+        let fc = self.fork_choice.read();
+        // Delegate to BeaconStateView::sync_committee_pubkeys which has
+        // per-fork overrides returning the committee pubkeys (Phase0 returns None).
+        fc.block_states.get(&block_root)?.sync_committee_pubkeys()
     }
 }
 

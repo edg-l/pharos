@@ -7,17 +7,22 @@
 //! - `~/dev/beacon-APIs/apis/beacon/genesis.yaml`
 //! - `~/dev/beacon-APIs/apis/beacon/blocks/headers.yaml`
 //!
-//! NOTE (Phase 1): responses are JSON-only. Content-negotiation (SSZ via
-//! `Accept: application/octet-stream`) lands in Phase 2 (Task 2.6).
+//! Both endpoints are JSON-only in the spec (no SSZ form). Since Phase 2 they
+//! route through `ApiResponse` so the `Accept` header is validated uniformly:
+//! a missing / `*/*` / `application/json` Accept yields JSON, any other explicit
+//! Accept (including `application/octet-stream`, which these endpoints cannot
+//! satisfy) yields 406.
 
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
 use pharos_types::EthSpec;
 use serde::Serialize;
 
 use crate::error::ApiError;
+use crate::respond::{ApiResponse, parse_accept};
 use crate::serde_helpers::{quoted_u64, serialize_hex4, serialize_hex32};
 use crate::state::ApiState;
 
@@ -85,7 +90,12 @@ pub struct BlockHeadersResponse {
 /// `GET /eth/v1/beacon/genesis`
 pub async fn get_genesis<E: EthSpec>(
     State(state): State<Arc<ApiState<E>>>,
-) -> Result<Json<GenesisResponse>, ApiError> {
+    headers: HeaderMap,
+) -> Response {
+    let format = match parse_accept(&headers) {
+        Ok(f) => f,
+        Err(e) => return e.into_response(),
+    };
     let chain = Arc::clone(&state.chain);
     let result = tokio::task::spawn_blocking(move || {
         let (genesis_time, genesis_validators_root, genesis_fork_version) = chain.genesis();
@@ -98,9 +108,12 @@ pub async fn get_genesis<E: EthSpec>(
         }
     })
     .await
-    .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")))?;
+    .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")));
 
-    Ok(Json(result))
+    match result {
+        Ok(dto) => ApiResponse::json(dto).render(format),
+        Err(e) => e.into_response(),
+    }
 }
 
 /// `GET /eth/v1/beacon/headers/head`
@@ -110,7 +123,12 @@ pub async fn get_genesis<E: EthSpec>(
 /// only the head without query filtering (Phase 3 adds full query support).
 pub async fn get_head_header<E: EthSpec>(
     State(state): State<Arc<ApiState<E>>>,
-) -> Result<Json<BlockHeadersResponse>, ApiError> {
+    headers: HeaderMap,
+) -> Response {
+    let format = match parse_accept(&headers) {
+        Ok(f) => f,
+        Err(e) => return e.into_response(),
+    };
     let chain = Arc::clone(&state.chain);
     let result = tokio::task::spawn_blocking(move || {
         let head_root = chain.head_root();
@@ -127,7 +145,7 @@ pub async fn get_head_header<E: EthSpec>(
             .map(|h| u64::from(h.slot) >= head_slot)
             .unwrap_or(false);
 
-        Ok(BlockHeadersResponse {
+        Ok::<_, ApiError>(BlockHeadersResponse {
             execution_optimistic: is_optimistic,
             finalized: is_finalized,
             data: vec![BlockHeaderItem {
@@ -147,7 +165,11 @@ pub async fn get_head_header<E: EthSpec>(
         })
     })
     .await
-    .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")))??;
+    .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")));
 
-    Ok(Json(result))
+    match result {
+        Ok(Ok(dto)) => ApiResponse::json(dto).render(format),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => e.into_response(),
+    }
 }

@@ -70,5 +70,5 @@ pub use payload_status::PayloadStatus;
 pub use state::{BeaconBlock, BeaconBlockBody, BeaconState, SignedBeaconBlock};
 pub use views::{
     BeaconBlockBodyView, BeaconBlockView, BeaconStateView, LightClientFinalityUpdateView,
-    LightClientOptimisticUpdateView, SignedBeaconBlockView,
+    LightClientOptimisticUpdateView, SignedBeaconBlockView, SyncCommitteePubkeys,
 };

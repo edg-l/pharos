@@ -18,7 +18,7 @@ use crate::altair::operations::SyncCommittee;
 use crate::phase0::misc::{Checkpoint, Eth1Data, Fork, Validator};
 use crate::phase0::operations::BeaconBlockHeader;
 use crate::phase0::primitives::{Gwei, Root, Slot};
-use crate::views::{BeaconStateView, ForkVariant};
+use crate::views::{BeaconStateView, ForkVariant, SyncCommitteePubkeys};
 
 // ── BeaconState ───────────────────────────────────────────────────────────────
 
@@ -454,6 +454,20 @@ impl<
     }
     fn into_tree_backend(self) -> Result<Self, pharos_ssz::SszError> {
         BeaconState::into_tree_backend(self)
+    }
+    fn sync_committee_pubkeys(&self) -> Option<SyncCommitteePubkeys> {
+        Some((
+            self.current_sync_committee
+                .pubkeys
+                .iter()
+                .map(|pk| pk.into_inner())
+                .collect(),
+            self.next_sync_committee
+                .pubkeys
+                .iter()
+                .map(|pk| pk.into_inner())
+                .collect(),
+        ))
     }
 }
 

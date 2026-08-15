@@ -5,6 +5,8 @@
 
 pub mod error;
 pub mod handlers;
+pub mod resolve;
+pub mod respond;
 pub mod router;
 pub mod serde_helpers;
 pub mod server;
