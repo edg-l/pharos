@@ -18,7 +18,7 @@ pub use handlers::{
 };
 pub use optimistic::{
     SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY, apply_invalid_payload, is_optimistic,
-    is_optimistic_candidate_block, resolve_invalid_block,
+    is_optimistic_candidate_block, promote_valid_ancestors, resolve_invalid_block,
 };
 pub use pharos_types::PayloadStatus;
 pub use pow_block::{

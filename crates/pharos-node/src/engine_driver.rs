@@ -21,7 +21,9 @@ use pharos_engine::{
     types::{ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1},
 };
 use pharos_fork_choice::{
-    Store as FcStore, apply_invalid_payload, execution_block_hash_at_root, get_head,
+    PowBlockProvider, Store as FcStore, ValidateMergeBlockError, apply_invalid_payload,
+    block_is_execution_enabled, execution_block_hash_at_root, get_head, promote_valid_ancestors,
+    validate_merge_block,
 };
 use pharos_types::{EthSpec, PayloadStatus, phase0::primitives::Root, views::BeaconBlockView};
 use pharos_utils::Hash256;
@@ -480,12 +482,13 @@ fn maybe_emit_head_change<E: EthSpec>(
 /// Per `D-engine-head-driver` (M4a Phase 4) and `D-latest-valid-hash-resolution` (M8 Phase 3).
 ///
 /// The loop exits when both `head_rx` and `payload_rx` are dropped.
-pub async fn run_engine_driver_loop<E: EthSpec>(
+pub async fn run_engine_driver_loop<E: EthSpec, P: PowBlockProvider + Send + Sync + 'static>(
     engine: EngineHandle,
     store: Arc<RwLock<FcStore<E>>>,
     mut head_rx: watch::Receiver<Option<HeadChange>>,
     mut payload_rx: mpsc::Receiver<NewPayloadRequest<E>>,
     head_tx: watch::Sender<Option<HeadChange>>,
+    pow_provider: Arc<P>,
 ) where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: pharos_types::BeaconStateView,
@@ -666,9 +669,185 @@ pub async fn run_engine_driver_loop<E: EthSpec>(
                         use pharos_engine::types::PayloadStatusStatus;
                         match resp.status {
                             PayloadStatusStatus::Valid => {
-                                store
-                                    .write()
-                                    .mark_payload_status(req.block_root, PayloadStatus::Valid);
+                                // Per `consensus-specs/sync/optimistic.md:193-196`:
+                                // when a block transitions NOT_VALIDATED → VALID, all
+                                // ancestors MUST also transition NOT_VALIDATED → VALID.
+                                // Promote under the write lock so ancestor promotion and
+                                // the VALID mark are atomic from the lock's perspective.
+                                //
+                                // Per `consensus-specs/sync/optimistic.md:205-212`:
+                                // when a "merge block" is declared VALID (directly or
+                                // indirectly), `validate_merge_block` MUST be re-run.
+                                // On failure the merge block MUST be treated as
+                                // INVALIDATED (it and all descendants are invalidated).
+                                let needs_invalidation = {
+                                    let s = store.read();
+                                    // Determine if req.block_root is a merge-transition block.
+                                    // A merge-transition block is the first block with a
+                                    // non-default execution payload on a chain that was
+                                    // previously pre-merge.  We detect it by checking:
+                                    // (a) the block carries execution (block_is_execution_enabled)
+                                    // (b) its parent does NOT carry execution (parent is pre-merge).
+                                    // This is the structural definition independent of state.
+                                    let block = s.blocks.get(&req.block_root);
+                                    let is_exec = block
+                                        .map(|b| block_is_execution_enabled::<E>(b))
+                                        .unwrap_or(false);
+                                    let parent_root = block
+                                        .map(|b| b.parent_root())
+                                        .unwrap_or_default();
+                                    let parent_is_exec = s
+                                        .blocks
+                                        .get(&parent_root)
+                                        .map(|b| block_is_execution_enabled::<E>(b))
+                                        .unwrap_or(false);
+                                    is_exec && !parent_is_exec
+                                };
+
+                                if needs_invalidation {
+                                    // Re-run validate_merge_block as required by spec.
+                                    // Extract payload_parent_hash for the check.
+                                    //
+                                    // NOTE: For checkpoint-synced Pharos the anchor is
+                                    // always post-merge, so `is_exec && !parent_is_exec`
+                                    // is never true for any imported block (no merge
+                                    // transition block ever enters the store).  This code
+                                    // path is only reachable if Pharos syncs from genesis
+                                    // through the merge-transition itself (not the normal
+                                    // operational mode).  The hook is implemented for
+                                    // spec-correctness; see Task 4.2 finding in the phase
+                                    // completion report.
+                                    use pharos_stf::phase0::accessors::compute_epoch_at_slot;
+                                    let (payload_parent_hash, tbh, tbh_epoch, ttd, block_slot) = {
+                                        let s = store.read();
+                                        let block = s.blocks.get(&req.block_root);
+                                        (
+                                            block
+                                                .and_then(|b| {
+                                                    E::get_execution_payload_parent_hash(b)
+                                                })
+                                                .unwrap_or_default(),
+                                            s.terminal_block_hash,
+                                            s.terminal_block_hash_activation_epoch,
+                                            s.terminal_total_difficulty,
+                                            block.map(|b| b.slot()).unwrap_or_default(),
+                                        )
+                                    };
+                                    let current_epoch =
+                                        compute_epoch_at_slot(block_slot, E::SLOTS_PER_EPOCH).0;
+                                    let pow_clone = Arc::clone(&pow_provider);
+                                    let merge_result = tokio::task::spawn_blocking(move || {
+                                        validate_merge_block(
+                                            payload_parent_hash,
+                                            current_epoch,
+                                            tbh,
+                                            tbh_epoch,
+                                            ttd,
+                                            &*pow_clone,
+                                        )
+                                    })
+                                    .await;
+
+                                    // KNOWN LIMITATION (genesis-sync-through-merge only):
+                                    //
+                                    // (a) If re-validation returns PowBlockNotFound here
+                                    //     (pow block still unavailable despite the EL
+                                    //     reporting VALID — a contradictory/near-impossible
+                                    //     EL state), the merge block stays NotValidated with
+                                    //     no automatic retry.  newPayload fires once per
+                                    //     block, so there is no recovery path short of a
+                                    //     restart.  This edge is unreachable for checkpoint-
+                                    //     synced Pharos (no merge-transition block ever
+                                    //     enters the store in normal operation).
+                                    //
+                                    // (b) `promote_valid_ancestors` does NOT re-run
+                                    //     `validate_merge_block` when it INDIRECTLY promotes
+                                    //     a merge-transition block (i.e. when a descendant
+                                    //     gets VALID and the walk crosses the merge block).
+                                    //     Per spec, an indirect VALID of a merge block should
+                                    //     also trigger `validate_merge_block`.  This is not
+                                    //     implemented because it would require threading
+                                    //     `pow_provider` into `promote_valid_ancestors`, and
+                                    //     the path is unreachable for checkpoint-synced Pharos.
+                                    match merge_result {
+                                        Ok(Ok(())) => {
+                                            // Merge block passed re-validation.  Mark it
+                                            // explicitly Valid before promoting ancestors so the
+                                            // promotion does not rely on the wildcard arm of
+                                            // `promote_valid_ancestors` for the root itself.
+                                            let mut s = store.write();
+                                            s.mark_payload_status(
+                                                req.block_root,
+                                                PayloadStatus::Valid,
+                                            );
+                                            promote_valid_ancestors::<E>(&mut s, req.block_root);
+                                        }
+                                        Ok(Err(ValidateMergeBlockError::PowBlockNotFound {
+                                            hash,
+                                        })) => {
+                                            // Still unknown: leave NotValidated.
+                                            // See KNOWN LIMITATION (a) above.
+                                            warn!(
+                                                %hash,
+                                                block_root = %req.block_root,
+                                                "merge-transition VALID re-validation: \
+                                                 pow_block still unknown; leaving NotValidated"
+                                            );
+                                        }
+                                        Ok(Err(e)) => {
+                                            // Merge block re-validation FAILED → treat as
+                                            // INVALIDATED.  Per
+                                            // `consensus-specs/sync/optimistic.md:209-212`.
+                                            warn!(
+                                                error = %e,
+                                                block_root = %req.block_root,
+                                                "merge-transition VALID re-validation FAILED; \
+                                                 invalidating block and descendants"
+                                            );
+                                            let prev_head = {
+                                                let guard = head_rx.borrow();
+                                                guard
+                                                    .as_ref()
+                                                    .map(|hc| hc.head_root)
+                                                    .unwrap_or_default()
+                                            };
+                                            let new_head = {
+                                                let mut s = store.write();
+                                                apply_invalid_payload::<E>(
+                                                    &mut s,
+                                                    req.block_root,
+                                                    None,
+                                                );
+                                                get_head::<E>(&s)
+                                            };
+                                            maybe_emit_head_change::<E>(
+                                                &store,
+                                                new_head,
+                                                prev_head,
+                                                &head_tx,
+                                            );
+                                        }
+                                        Err(join_err) => {
+                                            error!(
+                                                error = %join_err,
+                                                "merge re-validation: spawn_blocking join error; \
+                                                 leaving NotValidated"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    // Non-merge-transition block: mark Valid explicitly
+                                    // then promote ancestors.  Explicit mark removes the
+                                    // dependency on the wildcard arm of
+                                    // `promote_valid_ancestors` for the root itself.
+                                    // Per `consensus-specs/sync/optimistic.md:193-196`.
+                                    let mut s = store.write();
+                                    s.mark_payload_status(
+                                        req.block_root,
+                                        PayloadStatus::Valid,
+                                    );
+                                    promote_valid_ancestors::<E>(&mut s, req.block_root);
+                                }
                             }
                             PayloadStatusStatus::Invalid
                             | PayloadStatusStatus::InvalidBlockHash => {

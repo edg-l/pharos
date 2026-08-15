@@ -18,7 +18,7 @@ use crate::get_head::{
     get_current_store_epoch, get_slot_component_duration_ms, slot_from_time, slot_start_time,
     time_into_current_slot_ms,
 };
-use crate::pow_block::{PowBlockProvider, validate_merge_block};
+use crate::pow_block::{PowBlockProvider, ValidateMergeBlockError, validate_merge_block};
 use crate::store::{LatestMessage, Store};
 
 // ── Checkpoint update helpers ─────────────────────────────────────────────────
@@ -343,14 +343,48 @@ where
         // TTD / TERMINAL_BLOCK_HASH constants come from the store's runtime config.
         // For conformance / test uses the defaults (zero TTD, zero TBH) are fine;
         // the production ingestion loop sets these from `RuntimeConfig`.
-        validate_merge_block(
+        // Optimistic relaxation per `consensus-specs/sync/optimistic.md:169-174`:
+        //
+        // > The `validate_merge_block` function MUST NOT raise an assertion if
+        // > both the `pow_block` and `pow_parent` are unknown to the execution
+        // > engine.
+        // > All other assertions in `validate_merge_block` (e.g.,
+        // > `TERMINAL_BLOCK_HASH`) MUST prevent an optimistic import.
+        //
+        // `PowBlockNotFound` means the terminal PoW block (pow_block) itself
+        // is absent from the provider.  When pow_block is absent it is never
+        // queried for its parent, so both pow_block and pow_parent are unknown
+        // per `consensus-specs/sync/optimistic.md` (~line 170): "both unknown"
+        // → MUST NOT raise; import optimistically.
+        //
+        // `PowParentNotFound` can ONLY occur when pow_block WAS found (known
+        // pow_block, unknown parent).  That is "known pow_block / unknown
+        // pow_parent", NOT "both unknown", so it does NOT qualify for the
+        // optimistic relaxation and still rejects the block.
+        //
+        // The block is inserted and marked `NotValidated` below; the EL
+        // re-validates via `newPayload`, and `promote_valid_ancestors` /
+        // `apply_invalid_payload` resolve its status later.
+        match validate_merge_block(
             payload_parent_hash,
             current_epoch,
             store.terminal_block_hash,
             store.terminal_block_hash_activation_epoch,
             store.terminal_total_difficulty,
             pow_provider,
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(ValidateMergeBlockError::PowBlockNotFound { hash }) => {
+                // `consensus-specs/sync/optimistic.md:170-171`: both pow_block
+                // and pow_parent unknown → MUST NOT raise; import optimistically.
+                tracing::warn!(
+                    ?hash,
+                    "merge-transition block: terminal PoW unavailable; \
+                     importing optimistically (NotValidated)"
+                );
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
 
     // Insert block and post-state (supplied by the caller after running STF).

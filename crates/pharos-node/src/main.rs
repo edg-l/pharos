@@ -817,6 +817,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn engine driver loop + block ingestion loop when the engine is active.
     if let Some(engine_handle) = engine_handle_opt {
+        // Build production execution-engine bridge (EngineHandle → ExecutionEngine).
+        let exec_engine = Arc::new(ExecutionEngineHandle::new(engine_handle.clone()));
+
+        // Build production PoW-block provider for the merge-transition guard.
+        // Constructed before the engine driver so the driver can hold a clone
+        // for merge-transition VALID re-validation per
+        // `consensus-specs/sync/optimistic.md:205-212` (Task 4.2).
+        let pow_provider = Arc::new(EnginePowBlockProvider::new(engine_handle.clone()));
+
         // Spawn engine driver: listens for HeadChange watch and NewPayloadRequest mpsc.
         // A clone of head_tx is given so the driver can emit a HeadChange on INVALID
         // resolution (recomputed head after transitive invalidation).
@@ -824,24 +833,20 @@ async fn main() -> anyhow::Result<()> {
             let fc = Arc::clone(&fork_choice);
             let eng = engine_handle.clone();
             let head_tx_driver = head_tx.clone();
+            let pow_driver = Arc::clone(&pow_provider);
             tokio::spawn(async move {
-                run_engine_driver_loop::<MainnetEthSpec>(
+                run_engine_driver_loop::<MainnetEthSpec, EnginePowBlockProvider>(
                     eng,
                     fc,
                     head_rx,
                     payload_rx,
                     head_tx_driver,
+                    pow_driver,
                 )
                 .await;
             });
             info!("engine driver loop started");
         }
-
-        // Build production execution-engine bridge (EngineHandle → ExecutionEngine).
-        let exec_engine = Arc::new(ExecutionEngineHandle::new(engine_handle.clone()));
-
-        // Build production PoW-block provider for the merge-transition guard.
-        let pow_provider = Arc::new(EnginePowBlockProvider::new(engine_handle.clone()));
 
         // Shared Notify: fired by ingestion when an orphan is deferred, wakes
         // the backfill loop for tip re-convergence.

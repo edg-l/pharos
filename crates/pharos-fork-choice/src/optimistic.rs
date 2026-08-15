@@ -196,6 +196,64 @@ where
     }
 }
 
+// ── promote_valid_ancestors ───────────────────────────────────────────────────
+
+/// Promote `root` and all `NOT_VALIDATED` ancestors to `PayloadStatus::Valid`.
+///
+/// When a block transitions `NOT_VALIDATED` → `VALID`, all ancestors MUST also
+/// transition from `NOT_VALIDATED` → `VALID` per
+/// `consensus-specs/sync/optimistic.md:193-196`:
+///
+/// > When a block transitions from `NOT_VALIDATED` -> `VALID`, all *ancestors* of
+/// > the block MUST also transition from `NOT_VALIDATED` -> `VALID`. Such a block
+/// > and any previously `NOT_VALIDATED` ancestors are no longer considered
+/// > "optimistically imported".
+///
+/// Walk from `root` toward genesis via `parent_root`, setting every block that is
+/// currently `NotValidated` (and `root` itself) to `Valid`.  The walk stops at the
+/// first ancestor that is already `Valid` (its own ancestors are already promoted)
+/// or at the anchor / `Root::default()` parent sentinel.
+///
+/// If an `Invalid` ancestor is encountered the walk stops immediately without
+/// overwriting the `Invalid` status — this indicates a store inconsistency (a
+/// VALID chain should never contain an Invalid ancestor) and a warning is logged.
+///
+/// Per `consensus-specs/sync/optimistic.md:193-196`.
+pub fn promote_valid_ancestors<E: EthSpec>(store: &mut Store<E>, root: Root) {
+    let mut cur = root;
+    loop {
+        match store.payload_statuses.get(&cur) {
+            // Already Valid: stop — its ancestors are already promoted.
+            Some(PayloadStatus::Valid) => break,
+            // Inconsistency: should never occur on a VALID chain; log + stop.
+            Some(PayloadStatus::Invalid) => {
+                tracing::warn!(
+                    %cur,
+                    "promote_valid_ancestors: encountered Invalid ancestor; \
+                     stopping promotion (store inconsistency)"
+                );
+                break;
+            }
+            // NotValidated (or absent entry): promote.
+            _ => {
+                store.mark_payload_status(cur, PayloadStatus::Valid);
+            }
+        }
+
+        // Walk to parent.
+        let parent = match store.blocks.get(&cur) {
+            Some(b) => b.parent_root(),
+            // Block not in store (e.g. pre-anchor parent): stop.
+            None => break,
+        };
+        if parent == Root::default() || parent == cur {
+            // Reached anchor sentinel; stop.
+            break;
+        }
+        cur = parent;
+    }
+}
+
 // ── apply_invalid_payload ─────────────────────────────────────────────────────
 
 /// Mark `block_in_question` and all its descendants as `PayloadStatus::Invalid`.
@@ -437,6 +495,68 @@ mod tests {
         assert_ne!(
             store.payload_statuses.get(&genesis_root),
             Some(&PayloadStatus::Invalid)
+        );
+    }
+
+    // ── promote_valid_ancestors tests ─────────────────────────────────────────
+
+    /// Chain: anchor(Valid) → A(NotValidated) → B(NotValidated).
+    /// `promote_valid_ancestors(B)` MUST mark both A and B Valid and stop at anchor.
+    ///
+    /// Per `consensus-specs/sync/optimistic.md:193-196`.
+    #[test]
+    fn promote_valid_ancestors_marks_chain_and_stops_at_valid() {
+        use pharos_ssz::TreeHash;
+        use pharos_types::{
+            PayloadStatus,
+            phase0::{BeaconBlock, Slot},
+        };
+
+        let mut store = make_store();
+        let anchor_root = store.finalized_checkpoint.root;
+
+        // Seed anchor as Valid (mirrors the checkpoint-sync anchor invariant).
+        store.mark_payload_status(anchor_root, PayloadStatus::Valid);
+
+        // block A: slot 1, child of anchor.
+        let mut raw_a = BeaconBlock::default();
+        raw_a.slot = Slot(1);
+        raw_a.parent_root = anchor_root;
+        let block_a: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+            pharos_types::BeaconBlock::Phase0(raw_a);
+        let root_a = block_a.tree_hash_root();
+        store.blocks.insert(root_a, block_a);
+        store.mark_payload_status(root_a, PayloadStatus::NotValidated);
+
+        // block B: slot 2, child of A.
+        let mut raw_b = BeaconBlock::default();
+        raw_b.slot = Slot(2);
+        raw_b.parent_root = root_a;
+        let block_b: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+            pharos_types::BeaconBlock::Phase0(raw_b);
+        let root_b = block_b.tree_hash_root();
+        store.blocks.insert(root_b, block_b);
+        store.mark_payload_status(root_b, PayloadStatus::NotValidated);
+
+        // Promote from B.
+        promote_valid_ancestors::<MinimalEthSpec>(&mut store, root_b);
+
+        // B and A must be Valid.
+        assert_eq!(
+            store.payload_statuses.get(&root_b),
+            Some(&PayloadStatus::Valid),
+            "block B must be promoted to Valid"
+        );
+        assert_eq!(
+            store.payload_statuses.get(&root_a),
+            Some(&PayloadStatus::Valid),
+            "block A must be promoted to Valid"
+        );
+        // Anchor must still be Valid (not re-visited to become something else).
+        assert_eq!(
+            store.payload_statuses.get(&anchor_root),
+            Some(&PayloadStatus::Valid),
+            "anchor must remain Valid (walk stops at first already-Valid)"
         );
     }
 }

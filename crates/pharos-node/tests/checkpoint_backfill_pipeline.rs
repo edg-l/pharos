@@ -445,12 +445,13 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         let eng = engine_handle.clone();
         let head_tx_driver = head_tx.clone();
         tokio::spawn(async move {
-            run_engine_driver_loop::<MinimalEthSpec>(
+            run_engine_driver_loop::<MinimalEthSpec, pharos_fork_choice::NoopPowBlockProvider>(
                 eng,
                 fc_clone,
                 head_rx,
                 payload_rx,
                 head_tx_driver,
+                Arc::new(pharos_fork_choice::NoopPowBlockProvider),
             )
             .await;
         });
