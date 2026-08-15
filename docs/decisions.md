@@ -54,6 +54,10 @@ numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
   - D-bellatrix-reqresp-both-paths
 - [M5 — Full block-following over gossip](#m5-decisions)
   - D-following-via-range-reconvergence D-byroot-lookup-deferred
+- [M7-BeaconAPI](#m7-beaconapi)
+  - D-api-chain-accessor D-api-dto-serde D-api-content-negotiation
+  - D-api-fork-tag-envelope D-api-id-resolution D-api-sse-broadcast
+  - D-api-axum-state D-api-validator-auth D-api-node-identity-cache
 
 ## M1 — Phase 0 STF + fork choice
 
@@ -2604,3 +2608,138 @@ boundary was ever crossed live (M4d/M5-follow were bellatrix-at-genesis, no tran
 before spawning the loops. The store already carried `runtime_cfg` (set alongside
 `set_fork_epochs`); the loops simply use it instead of a default. Falls back to default
 semantics naturally when `--config-dir` is absent (store defaults to `RuntimeConfig::default()`).
+
+## M7-BeaconAPI
+
+**Status of this section**: PROPOSED (to be finalized at Phase 6 after the
+Kurtosis interop gate). Plan: `docs/m7-plan.md`. Spec:
+`~/dev/beacon-APIs/beacon-node-oapi.yaml` + per-namespace YAML files under
+`~/dev/beacon-APIs/apis/`.
+
+### D-api-chain-accessor — read-only `ChainStateApi` trait over existing shared state
+
+**Status**: Proposed.
+
+A thin `ChainStateApi<E>` trait implemented by `NodeChainState<E>`, which
+holds `Arc<RocksStore>`, `Arc<RwLock<pharos_fork_choice::Store<E>>>`, and a
+`NodeIdentityCache` snapshot. All reads are synchronous and executed behind
+`tokio::task::spawn_blocking`; the axum handler acquires a read guard, extracts
+the needed data, drops the guard, then serializes. No API-specific actor or
+channel is introduced for reads, because reads have no ordering requirements and
+an actor would add a hop for zero benefit. This mirrors `D-store-trait` (sync
+core, async at edges) exactly.
+
+### D-api-dto-serde — in-house DTO structs with `quoted_int` / `hex_bytes` helpers
+
+**Status**: Proposed.
+
+`pharos-types` carries zero serde derives; the API layer owns all JSON
+serialization via dedicated DTO structs in `pharos-api`. Two in-house helper
+modules handle the beacon-API wire quirks: `quoted_int` (serialize/deserialize
+`u64` as a quoted decimal string, e.g. `"slot": "10"`) and `hex_bytes`
+(serialize `[u8; N]`, `Vec<u8>`, and `Root` as `0x`-prefixed lowercase hex).
+This avoids coupling canonical SSZ types to a JSON wire format that diverges
+per fork-tag/version envelope, and keeps the rejected-dep boundary clean
+(`ethereum_serde_utils` stays out).
+
+### D-api-content-negotiation — single response extractor branching on `Accept`
+
+**Status**: Proposed.
+
+A single `ApiResponse<T>` axum `IntoResponse` type inspects the `Accept`
+request header: `application/octet-stream` produces a raw SSZ body via
+`pharos_ssz::Encode` on the canonical inner type, with
+`Content-Type: application/octet-stream`; any other value (or absent `Accept`)
+produces a JSON body via the DTO. Fork-tagged SSZ responses still set the
+`Eth-Consensus-Version` response header. A 406 is returned when the client
+sends an explicit `Accept` for a format the endpoint does not support. The
+SSZ path reuses the canonical type's `Encode` directly; no DTO is involved
+in the SSZ branch.
+
+### D-api-fork-tag-envelope — `/eth/v2` responses wrap data in a version envelope
+
+**Status**: Proposed.
+
+Endpoints under `/eth/v2` (and `/eth/v3`) whose payload is fork-dependent
+wrap the response DTO in `{ version, execution_optimistic, finalized, data }`
+and set the `Eth-Consensus-Version` response header. The `version` string is
+derived from the block or state's `fork_variant()` (e.g. `"capella"`); it is
+never recomputed from the post-state. A `ForkTagged<T>` envelope DTO in
+`pharos-api/src/fork_tag.rs` handles both the body wrapping and the header
+injection in its `IntoResponse` impl. Non-fork-dependent v1 endpoints emit
+`{ data: <T> }` with optional `execution_optimistic` and `finalized` where
+the spec mandates them, but no `version` field.
+
+### D-api-id-resolution — `resolve_state_id` / `resolve_block_id` helper module
+
+**Status**: Proposed.
+
+A `resolve.rs` module maps the six beacon-API id forms
+(`head`, `genesis`, `finalized`, `justified`, `<slot>`, `0x<root>`) to a
+`(Root, Slot, optimistic: bool, finalized: bool)` tuple. Resolution order:
+in-memory fork-choice store first (covers head, recent slots, all checkpoints),
+then `RocksStore` for cold slots and historical roots. Returns 400 on a
+malformed id and 404 on an unknown root or pruned slot. `justified` is
+resolved identically to `finalized` for state reads (both yield the
+checkpoint block/state). The same helper is shared across all beacon, block,
+and debug handlers.
+
+### D-api-sse-broadcast — `tokio::sync::broadcast` bus with `watch`-to-broadcast adapter
+
+**Status**: Proposed.
+
+A single `tokio::sync::broadcast::Sender<ApiEvent>` is held in `ApiState`.
+A `run_api_event_adapter` task clones the existing
+`watch::Receiver<Option<HeadChange>>` from the block-ingestion loop and the
+`Arc<RwLock<pharos_fork_choice::Store<E>>>`. On each head change it reads
+`fork_choice.read().finalized_checkpoint` to derive `finalized_checkpoint`
+events without adding a separate finalized channel. It emits `head`, `block`,
+`chain_reorg` (via `get_ancestor` walk), and `finalized_checkpoint` events.
+`broadcast` (not `watch`) is chosen because SSE needs every event delivered
+to every subscriber independently; lagged receivers skip missed events and
+continue. Accepted-but-never-emitted topics (e.g. `payload_attributes`) are
+not 400-rejected at the subscription endpoint; the filter simply produces no
+frames for them.
+
+### D-api-axum-state — `Arc<ApiState<E>>` via `axum::extract::State`
+
+**Status**: Proposed.
+
+`ApiState<E>` is the single axum application state, injected via
+`axum::extract::State(Arc<ApiState<E>>)`. It holds the `ChainStateApi`
+implementation and the `EventBus`. One router is built per concrete `EthSpec`
+(only `MainnetEthSpec` is wired in the node binary at M7); the
+`Arc<ApiState<E>>` is cheaply clonable across handlers. No separate actor or
+channel is introduced for API reads; read handlers acquire a short-lived
+`fork_choice.read()` guard inside a `spawn_blocking` closure, extract data,
+drop the guard, then serialize.
+
+### D-api-validator-auth — opt-in bearer token middleware on `/eth/v1/validator/*` only
+
+**Status**: Proposed.
+
+A `tower`/axum middleware layer (`validator_auth_layer(token: Option<String>)`)
+is applied only to the `/eth/v1/validator/*` nested sub-router. When a token
+path is provided via `--validator-api-token <path>`, the middleware requires
+`Authorization: Bearer <token>` and returns 401 on missing credentials or 403
+on a wrong token; when no path is given (default), the middleware is a no-op
+pass-through. Auth is scoped strictly to the validator sub-router; node,
+config, beacon, debug, and events namespaces are never gated. The token file
+is read once at startup in trimmed form (lighthouse-compatible); rotation
+requires a restart.
+
+### D-api-node-identity-cache — `NodeIdentityCache` snapshot instead of `NetworkHandle`
+
+**Status**: Proposed.
+
+`NetworkHandle` is not `Clone` (it owns a single `mpsc::Receiver<NetworkEvent>`
+already consumed by the node binary at startup) and cannot be embedded in the
+(sync, `spawn_blocking`) API state. Instead, the binary builds a
+`NodeIdentityCache` once at startup, after `handle.wait_for_local_enr()` and
+`handle.wait_for_listen_addr()` resolve (both are `async fn &mut self`; they
+must be called before the receiver is moved into the ingestion loop). The
+cache holds `peer_id`, `enr`, `listen_addrs`, `discovery_addrs`, and
+`metadata: Arc<ArcSwap<AltairMetaData>>`. A new
+`NetworkHandle::metadata_ref()` accessor exposes the live metadata `ArcSwap`
+clone so the `node/identity` handler can read the current metadata sequence
+number without a stale snapshot.

@@ -683,29 +683,309 @@ withdrawals are EIP-4895; the CL side is `specs/capella/*`.
 - `engine_getBlobsV1` Engine API call for blob retrieval.
 
 ### M7 — Beacon API
-- `/eth/v1/beacon/*`, validator endpoints.
-- Enough surface for an external VC to drive Pharos.
-- **SSE event stream** at `/eth/v1/events` (server-sent events).
-  Internal event bus → HTTP SSE multiplexing for subscribed clients.
-  Topics: `head`, `chain_reorg`, `finalized_checkpoint`, `block`,
-  `attestation`, `voluntary_exit`, `bls_to_execution_change`,
-  `light_client_finality_update`, etc.
-- **SSZ-encoded response support**: clients that send
-  `Accept: application/octet-stream` get the SSZ payload directly
-  (faster than JSON round-trip). All response types must support both.
-- **API versioning**: endpoints split across `/eth/v1/` and `/eth/v2/`
-  (post-altair). E.g. `/eth/v2/beacon/blocks/{id}` returns the
-  fork-tagged block.
-- **Validator-namespace authentication**: opt-in token (read from
-  `--validator-api-token <path>`) for the
-  `/eth/v1/validator/*` endpoints. Default off; lighthouse-compatible.
-- **Kurtosis `ethereum-package` integration**: once the Beacon API
-  Tier 1 health probes ship (`/eth/v1/node/{identity,syncing,version}`,
-  `/eth/v1/beacon/{genesis,headers/head}`, `/eth/v1/config/spec`),
-  upstream pharos to `ethpandaops/ethereum-package` (or run as a
-  custom Kurtosis service definition) so pharos becomes drivable in
-  Kurtosis enclaves. Kurtosis replaces M4d's hand-rolled bash devnet
-  as the recurring cross-client harness for M7 onward.
+
+Bring `pharos-api` from its stub to a VC-drivable, Kurtosis-runnable HTTP
+surface on `axum 0.8`. Read endpoints over fork-choice + storage,
+fork-tagged `/eth/v2` blocks, dual JSON/SSZ content-negotiation, an SSE
+event stream fed by the existing `HeadChange` plumbing, and opt-in
+validator-token auth. Plan: `docs/m7-plan.md`. Conformance gate: Kurtosis
+`ethereum-package` cross-client interop (replaces M4d hand-rolled bash).
+
+#### Task 0.1 — Per-namespace endpoint table
+
+Endpoints cross-referenced against `~/dev/beacon-APIs/apis/`. For each:
+M7 scope (IN) vs deferred (OUT, with target milestone), and the
+state/block id-resolution semantics it needs.
+
+State/block id forms: `head`, `genesis`, `finalized`, `justified`,
+`<slot>` (decimal), `0x<root>` (32-byte hex). `head` and `finalized`
+are resolved against the fork-choice in-memory store; `genesis` is the
+hard-coded anchor; `<slot>` and `0x<root>` first probe the store then
+fall back to `RocksStore`. The `justified` keyword is treated the same
+as `finalized` for state resolution (both return the corresponding
+checkpoint block/state). All state reads carry `execution_optimistic`
+and `finalized` booleans in the response envelope.
+
+##### `node` namespace
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| GET | `/eth/v1/node/identity` | IN | none (static cache) |
+| GET | `/eth/v1/node/version` | IN (v1, deprecated form; satisfies Kurtosis probes) | none |
+| GET | `/eth/v2/node/version` | OUT (M8) (structured CL+EL version info, non-deprecated form) | none |
+| GET | `/eth/v1/node/syncing` | IN | none (live fc-store read) |
+| GET | `/eth/v1/node/health` | IN | none (bare 200/206/503) |
+| GET | `/eth/v1/node/peers` | OUT (M8) | none |
+| GET | `/eth/v1/node/peers/{peer_id}` | OUT (M8) | none |
+| GET | `/eth/v1/node/peer_count` | OUT (M8) | none |
+
+##### `config` namespace
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| GET | `/eth/v1/config/spec` | IN | none (static EthSpec constants + RuntimeConfig) |
+| GET | `/eth/v1/config/fork_schedule` | IN | none (RuntimeConfig fork epochs) |
+| GET | `/eth/v1/config/deposit_contract` | IN | none (RuntimeConfig fields) |
+
+##### `beacon` — genesis
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| GET | `/eth/v1/beacon/genesis` | IN | none (store genesis_time + genesis_validators_root) |
+
+##### `beacon` — headers and blocks
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| GET | `/eth/v1/beacon/headers` | IN | `head`/`<slot>`/`parent_root` query |
+| GET | `/eth/v1/beacon/headers/{block_id}` | IN | all id forms |
+| GET | `/eth/v1/beacon/blocks/{block_id}/root` | IN | all id forms |
+| GET | `/eth/v2/beacon/blocks/{block_id}` | IN | all id forms; fork-tagged (v2) |
+| GET | `/eth/v2/beacon/blocks/{block_id}/attestations` | IN | all id forms |
+| POST | `/eth/v2/beacon/blocks` | OUT (M8) | n/a (block submission) |
+| POST | `/eth/v2/beacon/blinded_blocks` | OUT (M8) | n/a (block submission) |
+| GET | `/eth/v1/beacon/blobs/{block_id}` | OUT (Deneb/M6-Deneb) | blob sidecars |
+| GET | `/eth/v1/beacon/blinded_blocks/{block_id}` | OUT (M8) | blinded block |
+| GET | `/eth/v1/beacon/execution_payload_bid` | OUT (M8) | builder bid |
+| GET | `/eth/v1/beacon/execution_payload_envelope/{block_id}` | OUT (M8/ePBS) | envelope |
+
+##### `beacon` — states
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| GET | `/eth/v1/beacon/states/{state_id}/root` | IN | all id forms |
+| GET | `/eth/v1/beacon/states/{state_id}/fork` | IN | all id forms |
+| GET | `/eth/v1/beacon/states/{state_id}/finality_checkpoints` | IN | all id forms |
+| GET | `/eth/v1/beacon/states/{state_id}/validators` | IN | all id forms |
+| GET | `/eth/v1/beacon/states/{state_id}/validators/{validator_id}` | IN | all id forms |
+| GET | `/eth/v1/beacon/states/{state_id}/validator_balances` | IN | all id forms |
+| GET | `/eth/v1/beacon/states/{state_id}/committees` | IN | all id forms |
+| GET | `/eth/v1/beacon/states/{state_id}/sync_committees` | IN | all id forms (altair+) |
+| GET | `/eth/v1/beacon/states/{state_id}/randao` | IN | all id forms |
+| GET | `/eth/v1/beacon/states/{state_id}/validator_identities` | OUT (M9/Electra) | Electra-only |
+| GET | `/eth/v1/beacon/states/{state_id}/pending_consolidations` | OUT (M9/Electra) | Electra-only |
+| GET | `/eth/v1/beacon/states/{state_id}/pending_deposits` | OUT (M9/Electra) | Electra-only |
+| GET | `/eth/v1/beacon/states/{state_id}/pending_partial_withdrawals` | OUT (M9/Electra) | Electra-only |
+| GET | `/eth/v1/beacon/states/{state_id}/proposer_lookahead` | OUT (M9/Electra) | Electra-only |
+
+##### `beacon` — pool (GET reads and POST mutations)
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| GET | `/eth/v2/beacon/pool/attestations` | OUT (M8) | none (pending pool read; needs pool plumbing) |
+| POST | `/eth/v2/beacon/pool/attestations` | OUT (M8) | n/a |
+| GET | `/eth/v2/beacon/pool/attester_slashings` | OUT (M8) | none (pending pool read) |
+| POST | `/eth/v2/beacon/pool/attester_slashings` | OUT (M8) | n/a |
+| GET | `/eth/v1/beacon/pool/proposer_slashings` | OUT (M8) | none (pending pool read) |
+| POST | `/eth/v1/beacon/pool/proposer_slashings` | OUT (M8) | n/a |
+| POST | `/eth/v1/beacon/pool/sync_committees` | OUT (M8) | n/a |
+| GET | `/eth/v1/beacon/pool/voluntary_exits` | OUT (M8) | none (pending pool read) |
+| POST | `/eth/v1/beacon/pool/voluntary_exits` | OUT (M8) | n/a |
+| GET | `/eth/v1/beacon/pool/bls_to_execution_changes` | OUT (M8) | none (pending pool read) |
+| POST | `/eth/v1/beacon/pool/bls_to_execution_changes` | OUT (M8) | n/a |
+| GET | `/eth/v1/beacon/pool/payload_attestations` | OUT (M9/Electra) | none (Electra-only pool) |
+| POST | `/eth/v1/beacon/pool/payload_attestations` | OUT (M9/Electra) | n/a |
+
+##### `beacon` — rewards
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| POST | `/eth/v1/beacon/rewards/attestations/{epoch}` | OUT (M8) | epoch |
+| POST | `/eth/v1/beacon/rewards/sync_committee/{block_id}` | OUT (M8) | block id |
+| GET | `/eth/v1/beacon/rewards/blocks/{block_id}` | OUT (M8) | block id |
+
+##### `beacon` — light client REST
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| GET | `/eth/v1/beacon/light_client/bootstrap/{block_root}` | OUT (deferred) | block root |
+| GET | `/eth/v1/beacon/light_client/updates` | OUT (deferred) | query range |
+| GET | `/eth/v1/beacon/light_client/finality_update` | OUT (deferred) | none |
+| GET | `/eth/v1/beacon/light_client/optimistic_update` | OUT (deferred) | none |
+
+LC gossip already ships (M3b/M4c); REST mirror is not VC-critical.
+
+##### `validator` namespace
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| GET | `/eth/v2/validator/duties/proposer/{epoch}` | IN | epoch (resolved to state) |
+| POST | `/eth/v1/validator/duties/attester/{epoch}` | IN | epoch (resolved to state) |
+| POST | `/eth/v1/validator/duties/sync/{epoch}` | IN | epoch (resolved to state) |
+| GET | `/eth/v3/validator/blocks/{slot}` | OUT (M8) | block production |
+| GET | `/eth/v1/validator/attestation_data` | OUT (M8) | attestation data |
+| GET | `/eth/v2/validator/aggregate_attestation` | OUT (M8) | n/a |
+| POST | `/eth/v2/validator/aggregate_and_proofs` | OUT (M8) | n/a |
+| POST | `/eth/v1/validator/beacon_committee_subscriptions` | OUT (M8) | n/a |
+| POST | `/eth/v1/validator/sync_committee_subscriptions` | OUT (M8) | n/a |
+| POST | `/eth/v1/validator/beacon_committee_selections` | OUT (M8) | n/a |
+| POST | `/eth/v1/validator/sync_committee_selections` | OUT (M8) | n/a |
+| GET | `/eth/v1/validator/sync_committee_contribution` | OUT (M8) | n/a |
+| POST | `/eth/v1/validator/contribution_and_proofs` | OUT (M8) | n/a |
+| POST | `/eth/v1/validator/prepare_beacon_proposer` | OUT (M8) | n/a |
+| POST | `/eth/v1/validator/register_validator` | OUT (M8) | n/a |
+| POST | `/eth/v1/validator/liveness/{epoch}` | OUT (M8) | n/a |
+| GET | `/eth/v1/validator/execution_payload_bid/{slot}/{builder_index}` | OUT (M8) | n/a |
+| GET | `/eth/v1/validator/duties/ptc/{epoch}` | OUT (M9/Electra) | Electra-only |
+| GET | `/eth/v1/validator/payload_attestation_data/{slot}` | OUT (M9/Electra) | Electra-only |
+
+##### `debug` namespace
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| GET | `/eth/v1/debug/fork_choice` | IN (Phase 5) | none |
+| GET | `/eth/v2/debug/beacon/heads` | IN (Phase 5) | none |
+| GET | `/eth/v2/debug/beacon/states/{state_id}` | IN (Phase 5) | all id forms; fork-tagged (v2) |
+| GET | `/eth/v1/debug/beacon/data_column_sidecars/{block_id}` | OUT (Fulu/M10) | Fulu-only |
+
+##### `events`
+
+| Method | Path | M7 scope | Id-resolution |
+|--------|------|----------|---------------|
+| GET | `/eth/v1/events` | IN | none; `?topics=` filter |
+
+#### Task 0.2 — `/eth/v1` vs `/eth/v2` fork-tagging split
+
+**Version split rule**: `/eth/v1` paths return unversioned or simply
+structured JSON; `/eth/v2` (and `/eth/v3`) paths return a fork-tagged
+envelope whenever the response payload is fork-dependent.
+
+Fork-tagged endpoints at M7:
+- `GET /eth/v2/beacon/blocks/{block_id}`: full `SignedBeaconBlock`,
+  JSON + SSZ, envelope `{ version, execution_optimistic, finalized, data }`.
+- `GET /eth/v2/beacon/blocks/{block_id}/attestations`: attestations
+  from the block body, envelope `{ version, execution_optimistic, finalized, data }`.
+- `GET /eth/v2/debug/beacon/states/{state_id}`: full `BeaconState`,
+  JSON + SSZ, same envelope.
+- `GET /eth/v2/debug/beacon/heads`: fork-tagged list of head candidates.
+- `GET /eth/v2/validator/duties/proposer/{epoch}`: proposer duties +
+  `dependent_root`; the v2 path supersedes the deprecated v1 path.
+
+What the envelope carries:
+- `version` body field: lowercase fork string, one of `"phase0"`,
+  `"altair"`, `"bellatrix"`, `"capella"` (derived from `fork_variant()`
+  on the concrete block or state, never recomputed).
+- `Eth-Consensus-Version` response header: same string.
+- `execution_optimistic` (bool): true if the payload has not been
+  fully verified by the EL.
+- `finalized` (bool): true if the block/state is at or below the
+  finalized checkpoint.
+
+Non-fork-tagged (v1) paths emit `{ data: <T> }` with optional
+`execution_optimistic` + `finalized` at the top level where the spec
+mandates them, but no `version` field.
+
+#### Task 0.3 — Internal event bus and SSE multiplexing design
+
+**Source**: the existing `HeadChange` watch channel in
+`crates/pharos-node/src/engine_driver.rs`. `HeadChange` is pushed on
+every head advance from `block_ingestion.rs`.
+
+**Pipeline**:
+1. `run_api_event_adapter` task (spawned by `main.rs` when `--http` is
+   set) owns a `watch::Receiver<Option<HeadChange>>` clone and an
+   `Arc<RwLock<pharos_fork_choice::Store<E>>>` clone. On each head
+   change it reads `fork_choice.read().finalized_checkpoint` for the
+   current beacon finalized checkpoint (no separate finalized channel
+   is added; finalized moves only on epoch boundaries, which accompany
+   head advances).
+2. The adapter emits `ApiEvent`s onto a `tokio::sync::broadcast::Sender<ApiEvent>`
+   held in `ApiState`. Using `broadcast` rather than `watch` because SSE
+   requires every event to reach every subscriber; lagged-receiver
+   semantics handle slow clients (they skip missed events and continue).
+3. Each `/eth/v1/events` connection subscribes via
+   `broadcast::Sender::subscribe()`, filters by the `?topics=` query,
+   and streams `event: <topic>\ndata: <json>\n\n` SSE frames.
+
+**Emitted topics** (M7):
+- `head`: on every head advance; fields `slot`, `block`, `state`,
+  `epoch_transition`, `execution_optimistic`, `previous_duty_dependent_root`,
+  `current_duty_dependent_root`.
+- `block`: on every block import; fields `slot`, `block`, `execution_optimistic`.
+- `chain_reorg`: when the new head is not a descendant of the previous
+  head (detected via `get_ancestor` walk); fields `slot`, `depth`,
+  `old_head_block`, `new_head_block`, `old_head_state`, `new_head_state`,
+  `epoch`, `execution_optimistic`.
+- `finalized_checkpoint`: when the finalized checkpoint advances (read
+  from fc-store after each head change); fields `block`, `state`,
+  `epoch`, `execution_optimistic`.
+
+**Accepted-but-never-emitted topics** (M7): `payload_attributes`,
+`attestation`, `voluntary_exit`, `bls_to_execution_change`,
+`light_client_finality_update`, `light_client_optimistic_update`. A
+client subscribing to any of these (e.g. `?topics=head,payload_attributes`)
+MUST receive a valid stream that delivers only the topics pharos emits.
+The server MUST NOT return 400 on an unrecognised-but-spec-listed topic.
+
+#### Task 0.4 — Dual JSON/SSZ content-negotiation and validator-auth model
+
+**Content-negotiation**:
+- Default (`Accept` absent or `application/json`): JSON response with
+  `Content-Type: application/json`. Integer fields are quoted decimal
+  strings; byte arrays and roots are `0x`-prefixed lowercase hex. These
+  are in-house `serde` helpers in `pharos-api` (rejected dep:
+  `ethereum_serde_utils`).
+- SSZ (`Accept: application/octet-stream`): SSZ-encoded canonical type
+  via `pharos_ssz::Encode`, `Content-Type: application/octet-stream`.
+  Fork-tagged SSZ responses still set `Eth-Consensus-Version` in the
+  response header. 406 is returned if the client sends an explicit
+  `Accept` for a format the endpoint does not support.
+- Endpoints that support both formats are noted as "JSON + SSZ" in the
+  table above; endpoints that are JSON-only (e.g. `node/identity`,
+  `config/spec`) return 406 on an SSZ `Accept`.
+
+**Validator-namespace auth**:
+- Opt-in bearer token loaded from `--validator-api-token <path>` at
+  startup (trimmed file contents, lighthouse-compatible format).
+- When configured, a `tower`/axum middleware layer on the
+  `/eth/v1/validator/*` sub-router requires
+  `Authorization: Bearer <token>`; returns 401 on missing and 403 on
+  wrong token.
+- Default off (no token path given = no auth on any route).
+- Auth is scoped ONLY to the validator sub-router; the node, config,
+  beacon, debug, and events namespaces are never gated.
+- Token file is read once at startup; rotation requires a restart.
+
+#### Task 0.5 — M7 scope vs deferred summary
+
+**IN scope at M7**:
+- Kurtosis Tier-1 readiness probes: `GET /eth/v1/node/{identity,version,syncing,health}`,
+  `GET /eth/v1/beacon/genesis`, `GET /eth/v1/beacon/headers/head`,
+  `GET /eth/v1/config/spec`.
+- Core config: `GET /eth/v1/config/{spec,fork_schedule,deposit_contract}`.
+- Core beacon reads: genesis, block headers, block root, full fork-tagged
+  blocks and their attestations, all state fields listed in the table
+  above (root, fork, finality_checkpoints, validators, balances,
+  committees, sync_committees, randao).
+- Events: `GET /eth/v1/events` with head/block/chain_reorg/finalized_checkpoint.
+- Fork-tagged v2 blocks: `GET /eth/v2/beacon/blocks/{id}` + attestations.
+- Validator duties (reads only, no signing): proposer.v2, attester,
+  sync duties with `dependent_root`.
+- Debug namespace: `GET /eth/v1/debug/fork_choice`,
+  `GET /eth/v2/debug/beacon/heads`,
+  `GET /eth/v2/debug/beacon/states/{state_id}`.
+- CLI flags: `--http`, `--http-port`, `--http-address`,
+  `--validator-api-token`.
+- Dual JSON/SSZ content-negotiation on all typed response endpoints.
+
+**OUT at M7 (with target milestone)**:
+- Block and attestation production, `block.v3`, `attestation_data`,
+  `aggregate_attestation`, `*_selections`, `sync_committee_contribution`,
+  `prepare_beacon_proposer`, `register_validator`, `liveness` -> **M8**.
+- POST submission endpoints that mutate chain state: `POST beacon/blocks`,
+  `POST beacon/pool/*` -> **M8** (need VC + gossip publish path).
+- Blobs and data-column sidecars (`beacon/blobs`,
+  `debug/data_column_sidecars`) -> **Deneb (M6-Deneb) / Fulu (M10)**.
+- Electra-only state endpoints (`pending_deposits`,
+  `pending_consolidations`, `pending_partial_withdrawals`,
+  `proposer_lookahead`, `validator_identities`, `ptc` duties,
+  `payload_attestation_data`) -> **M9**.
+- Builder/MEV API surface -> **later**.
+- Light-client REST endpoints (`beacon/light_client/*`) -> **deferred**
+  (gossip LC already ships from M3b/M4c; REST mirror is not VC-critical).
+- Peer listing: `GET /eth/v1/node/{peers,peer_count}` -> **M8**.
+- Rewards endpoints (`beacon/rewards/*`) -> **M8**.
+- `beacon/execution_payload_*` (ePBS) -> **deferred**.
 
 ### M8 — Validator client (separate binary)
 - Duties, signing, EIP-3076 slashing protection interchange.
