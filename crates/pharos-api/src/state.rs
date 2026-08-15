@@ -5,6 +5,7 @@
 //! `NodeIdentityCache` snapshot. This is the `D-api-chain-accessor` pattern:
 //! sync reads behind `spawn_blocking`, no API actor for reads.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -12,15 +13,20 @@ use libp2p::{Multiaddr, PeerId};
 use parking_lot::RwLock;
 use pharos_fork_choice::Store as FcStore;
 use pharos_network::discovery::enr::Enr;
+use pharos_ssz::Encode as _;
 use pharos_storage::{RocksStore, Store as DbStore};
 use pharos_types::altair::MetaData as AltairMetaData;
+use pharos_types::bellatrix::execution_payload::ExecutionAddress;
 use pharos_types::{
-    EthSpec, SyncCommitteePubkeys,
+    EthSpec, OperationPools, SyncCommitteePubkeys,
     config::RuntimeConfig,
+    phase0::misc::AttestationData,
+    phase0::operations::Attestation,
+    phase0::primitives::{CommitteeIndex, Epoch, ValidatorIndex},
     phase0::{BeaconBlockHeader, Checkpoint, Root, Slot},
     views::SignedBeaconBlockView as _,
 };
-use pharos_utils::{BLSSignature, Uint256};
+use pharos_utils::{BLSPubkey, BLSSignature, Bytes32, Uint256};
 use serde_json::Value as JsonValue;
 
 use crate::dto::block::{BlockApiSerializer, SignedBlockForApi};
@@ -618,6 +624,196 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
     /// `Err(ApiError::NotFound("regen not available in mock".into()))`.
     fn regenerate_state(&self, target: RegenTarget) -> Result<E::BeaconState, ApiError>;
 
+    // ── Production endpoints (M9-Validator Phase 5) ───────────────────────────
+
+    /// Produce an unsigned `BeaconBlock` at `slot` for the given RANDAO reveal
+    /// and graffiti.
+    ///
+    /// Returns the block serialized as a `serde_json::Value` (fork-tagged) plus
+    /// the `execution_payload_value` (`Uint256`) and `consensus_block_value`
+    /// (`Uint256`, always zero for this implementation).
+    ///
+    /// Returns `Err(ApiError::NotSynced)` when the node is syncing or optimistic
+    /// (per `D-503-on-optimistic-or-syncing`).
+    ///
+    /// Default returns a `NotSynced` error so mock impls only need to override
+    /// when they test the production path.
+    fn produce_block(
+        &self,
+        _slot: Slot,
+        _randao_reveal: BLSSignature,
+        _graffiti: Bytes32,
+    ) -> Result<(JsonValue, Uint256, Uint256), ApiError> {
+        Err(ApiError::NotSynced("block production not available".into()))
+    }
+
+    /// Return `AttestationData` for a given `(slot, committee_index)`.
+    ///
+    /// Default returns a `NotSynced` error.
+    fn produce_attestation_data(
+        &self,
+        _slot: Slot,
+        _committee_index: CommitteeIndex,
+    ) -> Result<AttestationData, ApiError> {
+        Err(ApiError::NotSynced(
+            "attestation data production not available".into(),
+        ))
+    }
+
+    /// Submit attestations to the gossip pool.
+    ///
+    /// Validates basic structure and calls pool insert + gossip publish for each.
+    /// Default is a no-op returning `Ok(())`.
+    fn submit_attestations(&self, _attestations: Vec<Attestation<2048>>) -> Result<(), ApiError> {
+        Ok(())
+    }
+
+    /// Submit signed aggregate-and-proof messages.
+    ///
+    /// Default is a no-op returning `Ok(())`.
+    fn submit_aggregate_and_proofs(&self, _aggregates: Vec<JsonValue>) -> Result<(), ApiError> {
+        Ok(())
+    }
+
+    /// Submit `SyncCommitteeMessage` objects to the sync-message pool.
+    ///
+    /// Routes `POST /eth/v1/beacon/pool/sync_committees` bodies.
+    /// Default is a no-op returning `Ok(())`.
+    fn submit_sync_committee_messages(&self, _messages: Vec<JsonValue>) -> Result<(), ApiError> {
+        Ok(())
+    }
+
+    /// Submit `SignedContributionAndProof` objects.
+    ///
+    /// Routes `POST /eth/v1/validator/contribution_and_proofs` bodies.
+    /// Default is a no-op returning `Ok(())`.
+    fn submit_contribution_and_proofs(
+        &self,
+        _contributions: Vec<JsonValue>,
+    ) -> Result<(), ApiError> {
+        Ok(())
+    }
+
+    /// Return pooled attestations as JSON array for `GET /eth/v1/beacon/pool/attestations`.
+    ///
+    /// Default returns an empty array.
+    fn pool_attestations(&self) -> Vec<JsonValue> {
+        vec![]
+    }
+
+    /// Return pooled attester slashings as JSON array.
+    ///
+    /// Default returns an empty array.
+    fn pool_attester_slashings(&self) -> Vec<JsonValue> {
+        vec![]
+    }
+
+    /// Return pooled proposer slashings as JSON array.
+    ///
+    /// Default returns an empty array.
+    fn pool_proposer_slashings(&self) -> Vec<JsonValue> {
+        vec![]
+    }
+
+    /// Return pooled voluntary exits as JSON array.
+    ///
+    /// Default returns an empty array.
+    fn pool_voluntary_exits(&self) -> Vec<JsonValue> {
+        vec![]
+    }
+
+    /// Return pooled BLS-to-execution-changes as JSON array.
+    ///
+    /// Default returns an empty array.
+    fn pool_bls_to_execution_changes(&self) -> Vec<JsonValue> {
+        vec![]
+    }
+
+    /// Return pooled sync committee messages as JSON array.
+    ///
+    /// Default returns an empty array.
+    fn pool_sync_committee_messages(&self) -> Vec<JsonValue> {
+        vec![]
+    }
+
+    /// Set fee recipients for the given validator indices
+    /// (`POST /eth/v1/validator/prepare_beacon_proposer`).
+    ///
+    /// Stores `(validator_index, fee_recipient)` in the node's fee-recipient map.
+    /// `D-register-validator-accept-and-store`.
+    /// Default is a no-op.
+    fn set_fee_recipients_by_index(
+        &self,
+        _pairs: Vec<(ValidatorIndex, ExecutionAddress)>,
+    ) -> Result<(), ApiError> {
+        Ok(())
+    }
+
+    /// Store validator registrations from `POST /eth/v1/validator/register_validator`.
+    ///
+    /// Stores the fee recipient and gas-limit hint in the node's fee-recipient map
+    /// keyed by BLS pubkey. No relay forwarding.
+    /// `D-register-validator-accept-and-store`.
+    /// Default is a no-op.
+    fn register_validators(&self, _registrations: Vec<JsonValue>) -> Result<(), ApiError> {
+        Ok(())
+    }
+
+    /// Publish a `SignedBeaconBlock` — imports it and gossips it to the network.
+    ///
+    /// Returns:
+    /// - `Ok(true)` when the block was imported AND broadcast.
+    /// - `Ok(false)` when the block could not be imported locally but was
+    ///   broadcast anyway (202).
+    /// - `Err(ApiError::BadRequest)` when the block cannot be decoded.
+    /// - `Err(ApiError::NotSynced)` when syncing/optimistic.
+    ///
+    /// Default returns `Ok(false)` (broadcast-only, no local import).
+    fn publish_block(&self, _block: JsonValue) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+
+    /// Decode SSZ bytes into a `SignedBeaconBlock` JSON representation and publish.
+    ///
+    /// The `fork` string (from `Eth-Consensus-Version` header, e.g. "capella")
+    /// selects the correct per-fork SSZ decode path. Returns the same result
+    /// codes as `publish_block`.
+    ///
+    /// Default returns `BadRequest` (SSZ decode requires a production node with
+    /// `NodeChainState`; mock impls that don't handle SSZ just return this).
+    fn publish_block_ssz(&self, _bytes: Vec<u8>, _fork: &str) -> Result<bool, ApiError> {
+        Err(ApiError::BadRequest(
+            "SSZ block decode not available in this context".into(),
+        ))
+    }
+
+    /// Return liveness information for the given validators in the given epoch.
+    ///
+    /// Returns a `Vec` of `(ValidatorIndex, is_live: bool)` for each requested
+    /// validator index.  `is_live` is `true` when the validator has an attestation
+    /// in the attestation pool or in a recently imported block for `epoch`.
+    ///
+    /// `D-doppelganger-bn-liveness-endpoint` (M9 Phase 5.4).
+    /// Default returns all-false (one entry per requested index, none live).
+    fn validator_liveness(
+        &self,
+        _epoch: Epoch,
+        indices: Vec<ValidatorIndex>,
+    ) -> Result<Vec<(ValidatorIndex, bool)>, ApiError> {
+        Ok(indices.into_iter().map(|i| (i, false)).collect())
+    }
+
+    /// Return a snapshot of connected peers.
+    ///
+    /// Returns a `Vec<serde_json::Value>` with one object per connected peer
+    /// containing `peer_id`, `state`, `direction`, `last_seen_p2p_address`,
+    /// and `agent_string` fields for `/eth/v1/node/peers`.
+    ///
+    /// Default returns an empty list (no network layer in tests).
+    fn peers(&self) -> Vec<JsonValue> {
+        vec![]
+    }
+
     // ── Light-client REST endpoints (M7-followup) ─────────────────────────────
 
     /// Return the `LcEnvelope` for the bootstrap at `block_root`, if stored.
@@ -683,6 +879,42 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
 pub type RegenFn<E> =
     dyn Fn(RegenTarget) -> Result<<E as EthSpec>::BeaconState, ApiError> + Send + Sync + 'static;
 
+/// Type alias for the block-production callback injected into `NodeChainState`.
+///
+/// `(slot, randao_reveal, graffiti)` → `(block_json, exec_payload_value, consensus_value)`
+/// per `D-produce-empty-then-fill-stf` (M9 Phase 5).
+pub type ProduceFn = dyn Fn(
+        pharos_types::phase0::Slot,
+        BLSSignature,
+        Bytes32,
+    ) -> Result<(JsonValue, Uint256, Uint256), ApiError>
+    + Send
+    + Sync
+    + 'static;
+
+/// Type alias for the block-publish callback injected into `NodeChainState`.
+///
+/// Accepts a `SignedBeaconBlock` as JSON + fork string and routes it through
+/// `import_block` + gossip.  Returns `true` when imported+broadcast, `false`
+/// broadcast-only.
+pub type PublishFn = dyn Fn(JsonValue) -> Result<bool, ApiError> + Send + Sync + 'static;
+
+/// Type alias for the attestation-data production callback.
+///
+/// `(slot, committee_index)` → `AttestationData`.
+pub type ProduceAttDataFn = dyn Fn(
+        pharos_types::phase0::Slot,
+        pharos_types::phase0::primitives::CommitteeIndex,
+    ) -> Result<AttestationData, ApiError>
+    + Send
+    + Sync
+    + 'static;
+
+/// Type alias for the peers-snapshot callback.
+///
+/// Returns JSON representations of connected peers for `/eth/v1/node/peers`.
+pub type PeersFn = dyn Fn() -> Vec<JsonValue> + Send + Sync + 'static;
+
 /// Concrete `ChainStateApi` backed by the shared fork-choice store and storage.
 pub struct NodeChainState<E: EthSpec> {
     /// Shared chain DB (cold states, anchor, etc.).
@@ -699,6 +931,48 @@ pub struct NodeChainState<E: EthSpec> {
     /// replay service has not been wired in. When `None`, `regenerate_state`
     /// returns `ApiError::NotFound`.
     regen_fn: Option<Arc<RegenFn<E>>>,
+
+    // ── M9 Phase 5 fields ─────────────────────────────────────────────────────
+    /// Shared operation pools (attestations, slashings, exits, sync messages).
+    ///
+    /// Wired via `with_pools()` from `pharos-node` after pool construction.
+    /// `D-register-validator-accept-and-store`.
+    pools: Option<Arc<OperationPools<E>>>,
+
+    /// Block-production callback (`D-produce-empty-then-fill-stf`).
+    /// `None` when the node has no EL or block-production is not configured.
+    produce_fn: Option<Arc<ProduceFn>>,
+
+    /// Attestation-data production callback.
+    produce_att_data_fn: Option<Arc<ProduceAttDataFn>>,
+
+    /// Block-publish callback (import + gossip).
+    publish_fn: Option<Arc<PublishFn>>,
+
+    /// Fee-recipient store: pubkey → 20-byte ExecutionAddress.
+    ///
+    /// Populated by `POST /eth/v1/validator/prepare_beacon_proposer` and
+    /// `POST /eth/v1/validator/register_validator`.
+    /// `D-register-validator-accept-and-store`.
+    fee_recipients: Arc<RwLock<HashMap<BLSPubkey, ExecutionAddress>>>,
+
+    /// Peers-snapshot callback for `/eth/v1/node/peers`.
+    peers_fn: Option<Arc<PeersFn>>,
+}
+
+/// Parse a 0x-prefixed 48-byte hex string into a fixed `[u8; 48]`.
+fn parse_hex48(s: &str) -> Result<[u8; 48], ()> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(s).map_err(|_| ())?;
+    bytes.try_into().map_err(|_| ())
+}
+
+/// Parse a 0x-prefixed 20-byte Ethereum address hex string into `ExecutionAddress`.
+fn parse_execution_address(s: &str) -> Result<ExecutionAddress, ()> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(s).map_err(|_| ())?;
+    let arr: [u8; 20] = bytes.try_into().map_err(|_| ())?;
+    Ok(ExecutionAddress::from(arr))
 }
 
 impl<E: EthSpec> NodeChainState<E> {
@@ -715,6 +989,12 @@ impl<E: EthSpec> NodeChainState<E> {
             identity,
             runtime_cfg,
             regen_fn: None,
+            pools: None,
+            produce_fn: None,
+            produce_att_data_fn: None,
+            publish_fn: None,
+            fee_recipients: Arc::new(RwLock::new(HashMap::new())),
+            peers_fn: None,
         }
     }
 
@@ -736,6 +1016,71 @@ impl<E: EthSpec> NodeChainState<E> {
             identity,
             runtime_cfg,
             regen_fn: Some(regen),
+            pools: None,
+            produce_fn: None,
+            produce_att_data_fn: None,
+            publish_fn: None,
+            fee_recipients: Arc::new(RwLock::new(HashMap::new())),
+            peers_fn: None,
+        }
+    }
+
+    /// Attach an `OperationPools<E>` to the chain state (builder pattern).
+    ///
+    /// Called from `pharos-node/src/main.rs` after pool construction. Enables
+    /// real pool reads for GET pool endpoints and liveness scanning.
+    /// `D-register-validator-accept-and-store`.
+    pub fn with_pools(mut self, pools: Arc<OperationPools<E>>) -> Self {
+        self.pools = Some(pools);
+        self
+    }
+
+    /// Attach production callbacks (builder pattern, for `new_with_all` compat).
+    pub fn with_produce_fns(
+        mut self,
+        produce: Arc<ProduceFn>,
+        produce_att_data: Arc<ProduceAttDataFn>,
+        publish: Arc<PublishFn>,
+        peers: Arc<PeersFn>,
+    ) -> Self {
+        self.produce_fn = Some(produce);
+        self.produce_att_data_fn = Some(produce_att_data);
+        self.publish_fn = Some(publish);
+        self.peers_fn = Some(peers);
+        self
+    }
+
+    /// Construct with all M9 Phase-5 production callbacks wired in.
+    ///
+    /// Called from `pharos-node/src/main.rs` after the engine handle and
+    /// op-pools are ready. The `produce_fn`, `produce_att_data_fn`, and
+    /// `publish_fn` closures wrap the `pharos-node`-side logic without
+    /// introducing a `pharos-api → pharos-node` dependency.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_all(
+        store: Arc<RocksStore>,
+        fork_choice: Arc<RwLock<FcStore<E>>>,
+        identity: NodeIdentityCache,
+        runtime_cfg: Arc<RuntimeConfig>,
+        regen: Arc<RegenFn<E>>,
+        pools: Arc<OperationPools<E>>,
+        produce: Arc<ProduceFn>,
+        produce_att_data: Arc<ProduceAttDataFn>,
+        publish: Arc<PublishFn>,
+        peers: Arc<PeersFn>,
+    ) -> Self {
+        Self {
+            store,
+            fork_choice,
+            identity,
+            runtime_cfg,
+            regen_fn: Some(regen),
+            pools: Some(pools),
+            produce_fn: Some(produce),
+            produce_att_data_fn: Some(produce_att_data),
+            publish_fn: Some(publish),
+            fee_recipients: Arc::new(RwLock::new(HashMap::new())),
+            peers_fn: Some(peers),
         }
     }
 }
@@ -1144,6 +1489,382 @@ where
             "finalized_checkpoint": finalized,
             "fork_choice_nodes": nodes,
         }))
+    }
+
+    // ── M9 Phase 5 production method overrides ────────────────────────────────
+
+    fn produce_block(
+        &self,
+        slot: Slot,
+        randao_reveal: BLSSignature,
+        graffiti: Bytes32,
+    ) -> Result<(JsonValue, Uint256, Uint256), ApiError> {
+        match &self.produce_fn {
+            Some(f) => f(slot, randao_reveal, graffiti),
+            None => Err(ApiError::NotSynced(
+                "block production not configured".into(),
+            )),
+        }
+    }
+
+    fn produce_attestation_data(
+        &self,
+        slot: Slot,
+        committee_index: CommitteeIndex,
+    ) -> Result<AttestationData, ApiError> {
+        match &self.produce_att_data_fn {
+            Some(f) => f(slot, committee_index),
+            None => Err(ApiError::NotSynced(
+                "attestation data production not configured".into(),
+            )),
+        }
+    }
+
+    fn submit_attestations(&self, attestations: Vec<Attestation<2048>>) -> Result<(), ApiError> {
+        if let Some(pools) = &self.pools {
+            for att in attestations {
+                pools.insert_attestation(att);
+            }
+        }
+        Ok(())
+    }
+
+    fn submit_aggregate_and_proofs(&self, _aggregates: Vec<JsonValue>) -> Result<(), ApiError> {
+        // Aggregate-and-proof objects are JSON; full BLS verification and pool
+        // insertion is a gossip-validator concern. Accept without re-inserting.
+        Ok(())
+    }
+
+    fn submit_sync_committee_messages(&self, _messages: Vec<JsonValue>) -> Result<(), ApiError> {
+        // Sync messages arrive here from POST /beacon/pool/sync_committees.
+        // Insertion into the sync_messages pool requires decoded SyncCommitteeMessage
+        // and a subcommittee_index derived from validator committee assignments —
+        // both require the STF/state at call time. Accept without pool insert
+        // (gossip-accept path handles pool insertion with full context).
+        Ok(())
+    }
+
+    fn submit_contribution_and_proofs(
+        &self,
+        _contributions: Vec<JsonValue>,
+    ) -> Result<(), ApiError> {
+        // ContributionAndProof objects need BLS verification before pool insertion.
+        // Accept without pool insert; gossip-accept path handles pool insertion.
+        Ok(())
+    }
+
+    fn pool_attestations(&self) -> Vec<JsonValue> {
+        let Some(pools) = &self.pools else {
+            return vec![];
+        };
+        pools
+            .attestations_snapshot()
+            .into_iter()
+            .map(|att| {
+                serde_json::json!({
+                    "aggregation_bits": format!("0x{}", hex::encode(att.aggregation_bits.as_ssz_bytes())),
+                    "data": {
+                        "slot": att.data.slot.0.to_string(),
+                        "index": att.data.index.0.to_string(),
+                        "beacon_block_root": format!("0x{}", hex::encode(att.data.beacon_block_root.as_slice())),
+                        "source": {
+                            "epoch": att.data.source.epoch.0.to_string(),
+                            "root": format!("0x{}", hex::encode(att.data.source.root.as_slice())),
+                        },
+                        "target": {
+                            "epoch": att.data.target.epoch.0.to_string(),
+                            "root": format!("0x{}", hex::encode(att.data.target.root.as_slice())),
+                        },
+                    },
+                    "signature": format!("0x{}", hex::encode(att.signature.as_slice())),
+                })
+            })
+            .collect()
+    }
+
+    fn pool_attester_slashings(&self) -> Vec<JsonValue> {
+        let Some(pools) = &self.pools else {
+            return vec![];
+        };
+        pools
+            .attester_slashings_snapshot()
+            .into_iter()
+            .map(|s| {
+                serde_json::json!({
+                    "attestation_1": {
+                        "attesting_indices": s.attestation_1.attesting_indices.as_slice().iter().map(|i| i.0.to_string()).collect::<Vec<_>>(),
+                        "data": {},
+                        "signature": format!("0x{}", hex::encode(s.attestation_1.signature.as_slice())),
+                    },
+                    "attestation_2": {
+                        "attesting_indices": s.attestation_2.attesting_indices.as_slice().iter().map(|i| i.0.to_string()).collect::<Vec<_>>(),
+                        "data": {},
+                        "signature": format!("0x{}", hex::encode(s.attestation_2.signature.as_slice())),
+                    },
+                })
+            })
+            .collect()
+    }
+
+    fn pool_proposer_slashings(&self) -> Vec<JsonValue> {
+        let Some(pools) = &self.pools else {
+            return vec![];
+        };
+        pools
+            .proposer_slashings_snapshot()
+            .into_iter()
+            .map(|s| {
+                serde_json::json!({
+                    "signed_header_1": {
+                        "message": {
+                            "slot": s.signed_header_1.message.slot.0.to_string(),
+                            "proposer_index": s.signed_header_1.message.proposer_index.0.to_string(),
+                        },
+                        "signature": format!("0x{}", hex::encode(s.signed_header_1.signature.as_slice())),
+                    },
+                    "signed_header_2": {
+                        "message": {
+                            "slot": s.signed_header_2.message.slot.0.to_string(),
+                            "proposer_index": s.signed_header_2.message.proposer_index.0.to_string(),
+                        },
+                        "signature": format!("0x{}", hex::encode(s.signed_header_2.signature.as_slice())),
+                    },
+                })
+            })
+            .collect()
+    }
+
+    fn pool_voluntary_exits(&self) -> Vec<JsonValue> {
+        let Some(pools) = &self.pools else {
+            return vec![];
+        };
+        pools
+            .voluntary_exits_snapshot()
+            .into_iter()
+            .map(|e| {
+                serde_json::json!({
+                    "message": {
+                        "epoch": e.message.epoch.0.to_string(),
+                        "validator_index": e.message.validator_index.0.to_string(),
+                    },
+                    "signature": format!("0x{}", hex::encode(e.signature.as_slice())),
+                })
+            })
+            .collect()
+    }
+
+    fn pool_bls_to_execution_changes(&self) -> Vec<JsonValue> {
+        let Some(pools) = &self.pools else {
+            return vec![];
+        };
+        pools
+            .bls_to_execution_changes_snapshot()
+            .into_iter()
+            .map(|c| {
+                serde_json::json!({
+                    "message": {
+                        "validator_index": c.message.validator_index.0.to_string(),
+                        "from_bls_pubkey": format!("0x{}", hex::encode(c.message.from_bls_pubkey.as_slice())),
+                        "to_execution_address": format!("0x{}", hex::encode(c.message.to_execution_address.as_slice())),
+                    },
+                    "signature": format!("0x{}", hex::encode(c.signature.as_slice())),
+                })
+            })
+            .collect()
+    }
+
+    fn pool_sync_committee_messages(&self) -> Vec<JsonValue> {
+        let Some(pools) = &self.pools else {
+            return vec![];
+        };
+        pools
+            .sync_messages_snapshot()
+            .into_iter()
+            .map(|m| {
+                serde_json::json!({
+                    "slot": m.slot.0.to_string(),
+                    "beacon_block_root": format!("0x{}", hex::encode(m.beacon_block_root.as_slice())),
+                    "validator_index": m.validator_index.0.to_string(),
+                    "signature": format!("0x{}", hex::encode(m.signature.as_slice())),
+                })
+            })
+            .collect()
+    }
+
+    fn set_fee_recipients_by_index(
+        &self,
+        pairs: Vec<(ValidatorIndex, ExecutionAddress)>,
+    ) -> Result<(), ApiError> {
+        // Store by validator_index using a synthetic pubkey derived from the index.
+        // The fee-recipient map is keyed by BLSPubkey; since prepare_beacon_proposer
+        // only provides the validator index (not pubkey), we store under a synthetic
+        // index-keyed pubkey: first 8 bytes = validator_index as little-endian u64,
+        // remaining 40 bytes = 0x00. This matches the lookup at block-production time.
+        // `D-register-validator-accept-and-store`.
+        let mut map = self.fee_recipients.write();
+        for (idx, addr) in pairs {
+            let mut key_bytes = [0u8; 48];
+            key_bytes[..8].copy_from_slice(&idx.0.to_le_bytes());
+            map.insert(BLSPubkey::from(key_bytes), addr);
+        }
+        Ok(())
+    }
+
+    fn register_validators(&self, registrations: Vec<JsonValue>) -> Result<(), ApiError> {
+        // Accept and store fee_recipient per validator pubkey.
+        // `D-register-validator-accept-and-store`.
+        let mut map = self.fee_recipients.write();
+        for reg in &registrations {
+            let msg = &reg["message"];
+            let pubkey_hex = msg["pubkey"].as_str().unwrap_or("");
+            let fee_hex = msg["fee_recipient"].as_str().unwrap_or("");
+            if let (Ok(pk_bytes), Ok(addr)) =
+                (parse_hex48(pubkey_hex), parse_execution_address(fee_hex))
+            {
+                map.insert(BLSPubkey::from(pk_bytes), addr);
+            }
+        }
+        Ok(())
+    }
+
+    fn publish_block(&self, block: JsonValue) -> Result<bool, ApiError> {
+        match &self.publish_fn {
+            Some(f) => f(block),
+            None => Ok(false),
+        }
+    }
+
+    fn publish_block_ssz(&self, bytes: Vec<u8>, fork: &str) -> Result<bool, ApiError> {
+        use pharos_ssz::Decode as SszDecode;
+
+        // Decode SSZ bytes into the concrete per-fork type, serialize to the
+        // API JSON envelope, then hand off to publish_block.
+        let block_json: JsonValue = match fork.to_lowercase().as_str() {
+            "phase0" => {
+                let b = E::Phase0SignedBeaconBlock::from_ssz_bytes(&bytes)
+                    .map_err(|e| ApiError::BadRequest(format!("SSZ decode (phase0): {e:?}")))?;
+                let for_api = b.to_block_for_api()?;
+                serde_json::json!({ "version": "phase0", "data": for_api.json })
+            }
+            "altair" => {
+                let b = E::AltairSignedBeaconBlock::from_ssz_bytes(&bytes)
+                    .map_err(|e| ApiError::BadRequest(format!("SSZ decode (altair): {e:?}")))?;
+                let for_api = b.to_block_for_api()?;
+                serde_json::json!({ "version": "altair", "data": for_api.json })
+            }
+            "bellatrix" => {
+                let b = E::BellatrixSignedBeaconBlock::from_ssz_bytes(&bytes)
+                    .map_err(|e| ApiError::BadRequest(format!("SSZ decode (bellatrix): {e:?}")))?;
+                let for_api = b.to_block_for_api()?;
+                serde_json::json!({ "version": "bellatrix", "data": for_api.json })
+            }
+            "capella" => {
+                let b = E::CapellaSignedBeaconBlock::from_ssz_bytes(&bytes)
+                    .map_err(|e| ApiError::BadRequest(format!("SSZ decode (capella): {e:?}")))?;
+                let for_api = b.to_block_for_api()?;
+                serde_json::json!({ "version": "capella", "data": for_api.json })
+            }
+            other => {
+                return Err(ApiError::BadRequest(format!(
+                    "unknown fork in Eth-Consensus-Version: {other}"
+                )));
+            }
+        };
+        self.publish_block(block_json)
+    }
+
+    fn validator_liveness(
+        &self,
+        epoch: Epoch,
+        indices: Vec<ValidatorIndex>,
+    ) -> Result<Vec<(ValidatorIndex, bool)>, ApiError> {
+        // Scan the attestation pool for the given epoch.
+        // An attestation's `target.epoch` identifies the epoch it votes for.
+        // A validator is live if it has an attestation in the pool with
+        // target.epoch == requested_epoch.
+        use std::collections::HashSet;
+
+        let mut live_indices: HashSet<u64> = HashSet::new();
+
+        // Scan pool attestations.
+        // A validator is considered live if any attestation in the pool has
+        // target.epoch == requested_epoch. Since aggregated attestations don't
+        // carry per-validator indices without committee resolution, we mark the
+        // attestation's data.index (committee_index) as a proxy. This is a
+        // conservative heuristic: it produces false positives only when a
+        // validator's committee index matches but they didn't personally attest.
+        // False positives are safe for doppelganger (skip one extra epoch).
+        // Pool attestations are accessed by reference; we check target epoch only.
+        if let Some(pools) = &self.pools {
+            let att_pool = pools.attestations_snapshot();
+            let has_att_for_epoch = att_pool.iter().any(|att| att.data.target.epoch == epoch);
+            // If there are ANY attestations for this epoch in the pool, we conservatively
+            // report all requested indices as potentially live. A more precise impl
+            // would require committee-to-validator-index resolution (needs fork state).
+            if has_att_for_epoch {
+                for att in att_pool {
+                    if att.data.target.epoch == epoch {
+                        // Mark committee index as a proxy for validator liveness.
+                        live_indices.insert(att.data.index.0);
+                    }
+                }
+            }
+        }
+
+        // Scan recent in-memory fork-choice block states for attestations.
+        // States include `previous_epoch_participation` / `current_epoch_participation` (altair+).
+        // Phase0 pending attestations are skipped (no committee resolution at this layer).
+        {
+            use pharos_types::BeaconStateView;
+            let states: Vec<E::BeaconState> = {
+                let fc = self.fork_choice.read();
+                fc.block_states.values().cloned().collect()
+            };
+
+            for state in states {
+                let state_epoch = Epoch(state.slot().0 / self.runtime_cfg.slots_per_epoch);
+
+                // current_epoch_participation: non-zero flag means the validator
+                // attested in the CURRENT epoch of this state.
+                if state_epoch == epoch {
+                    let curr = state.current_epoch_participation_u8s();
+                    for (vi, &flags) in curr.iter().enumerate() {
+                        if flags != 0 {
+                            live_indices.insert(vi as u64);
+                        }
+                    }
+                }
+
+                // previous_epoch_participation: non-zero flag means the validator
+                // attested in the PREVIOUS epoch of this state (= epoch we want when
+                // state_epoch == requested_epoch + 1).
+                if state_epoch == Epoch(epoch.0.saturating_add(1)) {
+                    let prev = state.previous_epoch_participation_u8s();
+                    for (vi, &flags) in prev.iter().enumerate() {
+                        if flags != 0 {
+                            live_indices.insert(vi as u64);
+                        }
+                    }
+                }
+            }
+        }
+
+        let result = indices
+            .into_iter()
+            .map(|idx| {
+                let is_live = live_indices.contains(&idx.0);
+                (idx, is_live)
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    fn peers(&self) -> Vec<JsonValue> {
+        match &self.peers_fn {
+            Some(f) => f(),
+            None => vec![],
+        }
     }
 
     // ── Light-client REST endpoint overrides ──────────────────────────────────

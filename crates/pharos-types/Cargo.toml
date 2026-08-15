@@ -12,6 +12,8 @@ pharos-utils.workspace = true
 pharos-ssz.workspace = true
 pharos-ssz-derive.workspace = true
 thiserror.workspace = true
+lru.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]
 snap.workspace = true

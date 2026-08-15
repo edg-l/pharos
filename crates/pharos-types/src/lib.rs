@@ -60,6 +60,7 @@ pub mod eth_spec;
 pub mod fork;
 pub mod payload_status;
 pub mod phase0;
+pub mod pools;
 pub mod shuffling;
 pub mod state;
 pub mod views;
@@ -67,6 +68,7 @@ pub mod views;
 pub use config::{ConfigError, RuntimeConfig, load_config_dir};
 pub use eth_spec::{EthSpec, MainnetEthSpec, MinimalEthSpec};
 pub use payload_status::PayloadStatus;
+pub use pools::{BlockOperations, OperationPools};
 pub use state::{BeaconBlock, BeaconBlockBody, BeaconState, SignedBeaconBlock};
 pub use views::{
     BeaconBlockBodyView, BeaconBlockView, BeaconStateView, ExecutionPayloadHeaderRaw,

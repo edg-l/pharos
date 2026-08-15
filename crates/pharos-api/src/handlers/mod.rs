@@ -1,6 +1,8 @@
 //! Beacon API HTTP handler modules.
 
 pub mod beacon_basic;
+pub mod beacon_blocks_publish;
+pub mod beacon_pool;
 pub mod blocks;
 pub mod config;
 pub mod config_extra;
@@ -9,4 +11,7 @@ pub mod events;
 pub mod light_client;
 pub mod node;
 pub mod states;
+pub mod sync_committee;
 pub mod validator_duties;
+pub mod validator_liveness;
+pub mod validator_production;

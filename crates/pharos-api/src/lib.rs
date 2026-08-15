@@ -21,6 +21,6 @@ pub use events::{ApiEvent, EventBus, KnownTopic};
 pub use router::{build_router, build_router_with_auth};
 pub use server::{serve, serve_with_auth};
 pub use state::{
-    ApiState, ChainStateApi, NodeChainState, NodeIdentityCache, RegenFn, RegenTarget,
-    beacon_state_to_json_full,
+    ApiState, ChainStateApi, NodeChainState, NodeIdentityCache, PeersFn, ProduceAttDataFn,
+    ProduceFn, PublishFn, RegenFn, RegenTarget, beacon_state_to_json_full,
 };

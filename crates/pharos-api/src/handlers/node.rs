@@ -195,3 +195,73 @@ pub async fn get_health<E: EthSpec>(State(state): State<Arc<ApiState<E>>>) -> Re
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
+
+// ── Peer DTOs ─────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct PeerCountData {
+    #[serde(with = "crate::serde_helpers::quoted_u64")]
+    pub connected: u64,
+    #[serde(with = "crate::serde_helpers::quoted_u64")]
+    pub disconnecting: u64,
+    #[serde(with = "crate::serde_helpers::quoted_u64")]
+    pub disconnected: u64,
+    #[serde(with = "crate::serde_helpers::quoted_u64")]
+    pub connecting: u64,
+}
+
+#[derive(Serialize)]
+pub struct PeerCountResponse {
+    pub data: PeerCountData,
+}
+
+#[derive(Serialize)]
+pub struct PeersResponse {
+    pub data: Vec<serde_json::Value>,
+}
+
+// ── Peer handlers ──────────────────────────────────────────────────────────────
+
+/// `GET /eth/v1/node/peers`
+///
+/// Returns a list of connected peers.
+/// Per `~/dev/beacon-APIs/apis/node/peers.yaml`.
+pub async fn get_peers<E: EthSpec>(
+    State(state): State<Arc<ApiState<E>>>,
+) -> Result<Json<PeersResponse>, ApiError> {
+    let chain = Arc::clone(&state.chain);
+    let peers = tokio::task::spawn_blocking(move || chain.peers())
+        .await
+        .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")))?;
+    Ok(Json(PeersResponse { data: peers }))
+}
+
+/// `GET /eth/v1/node/peer_count`
+///
+/// Returns counts of peers in each state.
+/// Per `~/dev/beacon-APIs/apis/node/peer_count.yaml`.
+pub async fn get_peer_count<E: EthSpec>(
+    State(state): State<Arc<ApiState<E>>>,
+) -> Result<Json<PeerCountResponse>, ApiError> {
+    let chain = Arc::clone(&state.chain);
+    let peers = tokio::task::spawn_blocking(move || chain.peers())
+        .await
+        .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")))?;
+
+    // Count peers by state field.
+    let mut connected: u64 = 0;
+    for peer in &peers {
+        if peer.get("state").and_then(|s| s.as_str()) == Some("connected") {
+            connected += 1;
+        }
+    }
+
+    Ok(Json(PeerCountResponse {
+        data: PeerCountData {
+            connected,
+            disconnecting: 0,
+            disconnected: 0,
+            connecting: 0,
+        },
+    }))
+}

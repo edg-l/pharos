@@ -1,4 +1,4 @@
-//! Beacon API router: wires all Phase-1 through Phase-5 routes.
+//! Beacon API router: wires all Phase-1 through M9-Phase-5 routes.
 
 use std::sync::Arc;
 
@@ -8,6 +8,8 @@ use pharos_types::EthSpec;
 
 use crate::auth::validator_auth_layer;
 use crate::handlers::beacon_basic;
+use crate::handlers::beacon_blocks_publish;
+use crate::handlers::beacon_pool;
 use crate::handlers::blocks as blocks_handlers;
 use crate::handlers::config as config_handlers;
 use crate::handlers::config_extra;
@@ -16,10 +18,13 @@ use crate::handlers::events as events_handlers;
 use crate::handlers::light_client as lc_handlers;
 use crate::handlers::node;
 use crate::handlers::states;
+use crate::handlers::sync_committee as sync_committee_handlers;
 use crate::handlers::validator_duties;
+use crate::handlers::validator_liveness;
+use crate::handlers::validator_production;
 use crate::state::ApiState;
 
-/// Build the Beacon API router (Phase 1 through Phase 5).
+/// Build the Beacon API router (Phase 1 through M9-Phase-5).
 ///
 /// Routes wired:
 /// **Phase 1 — Tier-1 probes**
@@ -27,8 +32,9 @@ use crate::state::ApiState;
 /// - `GET /eth/v1/node/version`
 /// - `GET /eth/v1/node/syncing`
 /// - `GET /eth/v1/node/health`
+/// - `GET /eth/v1/node/peers`
+/// - `GET /eth/v1/node/peer_count`
 /// - `GET /eth/v1/beacon/genesis`
-/// - `GET /eth/v1/beacon/headers/head`
 /// - `GET /eth/v1/config/spec`
 ///
 /// **Phase 2 — State reads**
@@ -62,8 +68,37 @@ use crate::state::ApiState;
 /// - `GET  /eth/v2/debug/beacon/heads`
 /// - `GET  /eth/v2/debug/beacon/states/{state_id}`
 ///
+/// **M9 Phase 5 — Validator production + beacon pool + publish**
+/// - `GET  /eth/v3/validator/blocks/{slot}`             (auth-gated)
+/// - `GET  /eth/v1/validator/attestation_data`          (auth-gated)
+/// - `GET  /eth/v2/validator/aggregate_attestation`     (auth-gated)
+/// - `POST /eth/v2/validator/aggregate_and_proofs`      (auth-gated)
+/// - `POST /eth/v1/validator/prepare_beacon_proposer`   (auth-gated)
+/// - `POST /eth/v1/validator/register_validator`        (auth-gated)
+/// - `POST /eth/v1/validator/beacon_committee_subscriptions`   (auth-gated)
+/// - `POST /eth/v1/validator/sync_committee_subscriptions`     (auth-gated)
+/// - `GET  /eth/v1/validator/sync_committee_contribution`      (auth-gated)
+/// - `POST /eth/v1/validator/contribution_and_proofs`          (auth-gated)
+/// - `POST /eth/v1/validator/beacon_committee_selections`      (auth-gated)
+/// - `POST /eth/v1/validator/sync_committee_selections`        (auth-gated)
+/// - `POST /eth/v1/validator/liveness/{epoch}`                 (auth-gated)
+/// - `POST /eth/v1/beacon/blocks`                    (public)
+/// - `POST /eth/v2/beacon/blocks`                    (public)
+/// - `GET  /eth/v1/beacon/pool/attestations`         (public)
+/// - `POST /eth/v1/beacon/pool/attestations`         (public)
+/// - `GET  /eth/v1/beacon/pool/attester_slashings`   (public)
+/// - `POST /eth/v1/beacon/pool/attester_slashings`   (public)
+/// - `GET  /eth/v1/beacon/pool/proposer_slashings`   (public)
+/// - `POST /eth/v1/beacon/pool/proposer_slashings`   (public)
+/// - `GET  /eth/v1/beacon/pool/voluntary_exits`      (public)
+/// - `POST /eth/v1/beacon/pool/voluntary_exits`      (public)
+/// - `GET  /eth/v1/beacon/pool/bls_to_execution_changes`  (public)
+/// - `POST /eth/v1/beacon/pool/bls_to_execution_changes`  (public)
+/// - `GET  /eth/v1/beacon/pool/sync_committees`      (public)
+/// - `POST /eth/v1/beacon/pool/sync_committees`      (public)
+///
 /// The validator sub-router has `validator_auth_layer` applied; `None` means
-/// no auth (default).  The debug routes are unauthenticated.
+/// no auth (default).  The debug and pool routes are unauthenticated.
 pub fn build_router<E: EthSpec>(state: Arc<ApiState<E>>) -> Router {
     build_router_with_auth::<E>(state, None)
 }
@@ -79,6 +114,7 @@ pub fn build_router_with_auth<E: EthSpec>(
 ) -> Router {
     // ── Validator sub-router (auth-gated) ─────────────────────────────────
     let validator_router = Router::new()
+        // Duties (Phase 5)
         .route(
             "/eth/v1/validator/duties/proposer/{epoch}",
             get(validator_duties::get_proposer_duties::<E>),
@@ -91,15 +127,72 @@ pub fn build_router_with_auth<E: EthSpec>(
             "/eth/v1/validator/duties/sync/{epoch}",
             post(validator_duties::post_sync_duties::<E>),
         )
+        // M9 Phase 5 — production + signing (Task 5.2)
+        .route(
+            "/eth/v3/validator/blocks/{slot}",
+            get(validator_production::get_produce_block_v3::<E>),
+        )
+        .route(
+            "/eth/v1/validator/attestation_data",
+            get(validator_production::get_attestation_data::<E>),
+        )
+        .route(
+            "/eth/v2/validator/aggregate_attestation",
+            get(validator_production::get_aggregate_attestation::<E>),
+        )
+        .route(
+            "/eth/v2/validator/aggregate_and_proofs",
+            post(validator_production::post_aggregate_and_proofs::<E>),
+        )
+        .route(
+            "/eth/v1/validator/prepare_beacon_proposer",
+            post(validator_production::post_prepare_beacon_proposer::<E>),
+        )
+        .route(
+            "/eth/v1/validator/register_validator",
+            post(validator_production::post_register_validator::<E>),
+        )
+        .route(
+            "/eth/v1/validator/beacon_committee_subscriptions",
+            post(validator_production::post_beacon_committee_subscriptions::<E>),
+        )
+        .route(
+            "/eth/v1/validator/sync_committee_subscriptions",
+            post(validator_production::post_sync_committee_subscriptions::<E>),
+        )
+        // M9 Phase 5 — sync-committee (Task 5.3)
+        .route(
+            "/eth/v1/validator/sync_committee_contribution",
+            get(sync_committee_handlers::get_sync_committee_contribution::<E>),
+        )
+        .route(
+            "/eth/v1/validator/contribution_and_proofs",
+            post(sync_committee_handlers::post_contribution_and_proofs::<E>),
+        )
+        .route(
+            "/eth/v1/validator/beacon_committee_selections",
+            post(sync_committee_handlers::post_beacon_committee_selections::<E>),
+        )
+        .route(
+            "/eth/v1/validator/sync_committee_selections",
+            post(sync_committee_handlers::post_sync_committee_selections::<E>),
+        )
+        // M9 Phase 5 — liveness (Task 5.4)
+        .route(
+            "/eth/v1/validator/liveness/{epoch}",
+            post(validator_liveness::post_validator_liveness::<E>),
+        )
         .layer(validator_auth_layer(validator_token))
         .with_state(Arc::clone(&state));
 
     Router::new()
-        // Node namespace (Phase 1)
+        // Node namespace (Phase 1 + M9 Phase 5 peers)
         .route("/eth/v1/node/identity", get(node::get_identity::<E>))
         .route("/eth/v1/node/version", get(node::get_version::<E>))
         .route("/eth/v1/node/syncing", get(node::get_syncing::<E>))
         .route("/eth/v1/node/health", get(node::get_health::<E>))
+        .route("/eth/v1/node/peers", get(node::get_peers::<E>))
+        .route("/eth/v1/node/peer_count", get(node::get_peer_count::<E>))
         // Beacon basic namespace (Phase 1; migrated to ApiResponse in Phase 2)
         .route(
             "/eth/v1/beacon/genesis",
@@ -210,6 +303,46 @@ pub fn build_router_with_auth<E: EthSpec>(
         .route(
             "/eth/v1/beacon/light_client/optimistic_update",
             get(lc_handlers::get_optimistic_update::<E>),
+        )
+        // M9 Phase 5 — beacon block publish (Task 5.5, public)
+        .route(
+            "/eth/v1/beacon/blocks",
+            post(beacon_blocks_publish::post_beacon_block_v1::<E>),
+        )
+        .route(
+            "/eth/v2/beacon/blocks",
+            post(beacon_blocks_publish::post_beacon_block_v2::<E>),
+        )
+        // M9 Phase 5 — beacon pool (Task 5.6, public)
+        .route(
+            "/eth/v1/beacon/pool/attestations",
+            get(beacon_pool::get_pool_attestations::<E>)
+                .post(beacon_pool::post_pool_attestations::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/pool/attester_slashings",
+            get(beacon_pool::get_pool_attester_slashings::<E>)
+                .post(beacon_pool::post_pool_attester_slashings::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/pool/proposer_slashings",
+            get(beacon_pool::get_pool_proposer_slashings::<E>)
+                .post(beacon_pool::post_pool_proposer_slashings::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/pool/voluntary_exits",
+            get(beacon_pool::get_pool_voluntary_exits::<E>)
+                .post(beacon_pool::post_pool_voluntary_exits::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/pool/bls_to_execution_changes",
+            get(beacon_pool::get_pool_bls_to_execution_changes::<E>)
+                .post(beacon_pool::post_pool_bls_to_execution_changes::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/pool/sync_committees",
+            get(beacon_pool::get_pool_sync_committees::<E>)
+                .post(beacon_pool::post_pool_sync_committees::<E>),
         )
         .with_state(Arc::clone(&state))
         // Merge validator sub-router (has its own auth layer + state)

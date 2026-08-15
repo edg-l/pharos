@@ -3216,6 +3216,8 @@ dependencies = [
 name = "pharos-types"
 version = "0.12.0"
 dependencies = [
+ "lru",
+ "parking_lot",
  "pharos-ssz",
  "pharos-ssz-derive",
  "pharos-utils",
