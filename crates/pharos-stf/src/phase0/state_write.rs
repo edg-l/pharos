@@ -77,6 +77,27 @@ pub trait BeaconStateWrite: BeaconStateView {
     fn justification_bits(&self) -> Bitvector<4>;
     /// Read `historical_roots` length.
     fn historical_roots_len(&self) -> usize;
+
+    // ── Slot processing mutations ─────────────────────────────────────────────
+
+    /// Write `state_roots[idx] = root`.
+    ///
+    /// `idx` is always `state.slot % SLOTS_PER_HISTORICAL_ROOT`; the caller
+    /// computes the index before calling so this method stays index-typed.
+    fn set_state_root(
+        &mut self,
+        idx: usize,
+        root: pharos_types::phase0::Root,
+    ) -> Result<(), StateTransitionError>;
+
+    /// Write `block_roots[idx] = root`.
+    ///
+    /// `idx` is always `state.slot % SLOTS_PER_HISTORICAL_ROOT`.
+    fn set_block_root(
+        &mut self,
+        idx: usize,
+        root: pharos_types::phase0::Root,
+    ) -> Result<(), StateTransitionError>;
 }
 
 impl<
@@ -285,5 +306,29 @@ where
 
     fn historical_roots_len(&self) -> usize {
         self.historical_roots.len()
+    }
+
+    fn set_state_root(
+        &mut self,
+        idx: usize,
+        root: pharos_types::phase0::Root,
+    ) -> Result<(), StateTransitionError> {
+        self.state_roots = self
+            .state_roots
+            .with_set(idx, root)
+            .map_err(StateTransitionError::Ssz)?;
+        Ok(())
+    }
+
+    fn set_block_root(
+        &mut self,
+        idx: usize,
+        root: pharos_types::phase0::Root,
+    ) -> Result<(), StateTransitionError> {
+        self.block_roots = self
+            .block_roots
+            .with_set(idx, root)
+            .map_err(StateTransitionError::Ssz)?;
+        Ok(())
     }
 }

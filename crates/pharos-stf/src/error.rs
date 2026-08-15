@@ -31,6 +31,24 @@ pub enum StateTransitionError {
     #[error("slot out of range for block roots lookup")]
     SlotOutOfRange,
 
+    #[error("target slot {target} is not after current slot {current}")]
+    TargetSlotNotAfterCurrent {
+        current: pharos_types::phase0::Slot,
+        target: pharos_types::phase0::Slot,
+    },
+
+    #[error("invalid block signature")]
+    InvalidBlockSignature,
+
+    #[error("state root mismatch: expected {expected:?}, got {actual:?}")]
+    StateRootMismatch {
+        expected: pharos_types::phase0::Root,
+        actual: pharos_types::phase0::Root,
+    },
+
+    #[error("invalid deposit count in block body")]
+    InvalidDepositCount,
+
     #[error("invalid randao reveal: invalid signature")]
     InvalidRandaoReveal,
 
