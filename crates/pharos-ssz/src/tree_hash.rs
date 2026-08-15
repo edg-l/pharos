@@ -69,6 +69,19 @@ pub trait TreeHash {
     /// Identifies the Merkleization strategy for this type.
     const TREE_HASH_TYPE: TreeHashType;
 
+    /// True for `Basic` types whose packed encoding occupies exactly one
+    /// 32-byte chunk on its own, and whose `tree_hash_root` equals that chunk.
+    ///
+    /// Only `FixedBytes<32>` (and its aliases `Hash256` / `Root` / `Bytes32`)
+    /// override this to `true`. Other basics (`u64`, `u8`, `bool`,
+    /// `FixedBytes<N<32>`) pack multiple-per-chunk and the override stays
+    /// `false`.
+    ///
+    /// Used by the tree-backed `SszList` / `SszVector` to admit `FixedBytes<32>`
+    /// element types while still rejecting genuinely packed basics that would
+    /// produce divergent roots in the path-copy tree (see `from_vec_tree`).
+    const PACKED_AS_FULL_CHUNK: bool = false;
+
     /// Compute the SSZ `hash_tree_root` of this value.
     fn tree_hash_root(&self) -> Hash256;
 
@@ -335,6 +348,10 @@ impl<const N: usize> TreeHash for FixedBytes<N> {
     } else {
         TreeHashType::Vector
     };
+
+    /// `FixedBytes<32>` (the only basic FixedBytes that occupies a full chunk
+    /// on its own) is admissible as a tree-backend leaf type.
+    const PACKED_AS_FULL_CHUNK: bool = N == 32;
 
     fn tree_hash_root(&self) -> Hash256 {
         let chunks = pack_bytes_to_chunks(self.as_ref());

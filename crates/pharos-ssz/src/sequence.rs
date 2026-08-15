@@ -445,9 +445,9 @@ impl<T, const N: u64> SszList<T, N> {
     where
         T: Clone + TreeHash,
     {
-        if T::TREE_HASH_TYPE == TreeHashType::Basic {
+        if T::TREE_HASH_TYPE == TreeHashType::Basic && !T::PACKED_AS_FULL_CHUNK {
             return Err(SszError::Custom(
-                "tree backend requires composite element type".into(),
+                "tree backend rejects multi-per-chunk basic element types".into(),
             ));
         }
         if v.len() as u64 > N {
@@ -473,8 +473,8 @@ impl<T, const N: u64> SszList<T, N> {
         T: TreeHash,
     {
         assert!(
-            T::TREE_HASH_TYPE != TreeHashType::Basic,
-            "tree backend requires composite element type",
+            T::TREE_HASH_TYPE != TreeHashType::Basic || T::PACKED_AS_FULL_CHUNK,
+            "tree backend rejects multi-per-chunk basic element types",
         );
         let depth = depth_for_limit(N);
         let root = Arc::new(Node::ZeroSubtree(depth));
@@ -711,9 +711,9 @@ impl<T, const N: u64> SszVector<T, N> {
     where
         T: Clone + TreeHash,
     {
-        if T::TREE_HASH_TYPE == TreeHashType::Basic {
+        if T::TREE_HASH_TYPE == TreeHashType::Basic && !T::PACKED_AS_FULL_CHUNK {
             return Err(SszError::Custom(
-                "tree backend requires composite element type".into(),
+                "tree backend rejects multi-per-chunk basic element types".into(),
             ));
         }
         if v.len() != N as usize {
@@ -1642,33 +1642,61 @@ mod tests {
     }
 
     #[test]
-    fn from_vec_tree_rejects_basic_element_list() {
+    fn from_vec_tree_rejects_multi_per_chunk_basic_list() {
         let v: Vec<u64> = (0..4).collect();
         let err = SszList::<u64, 16>::from_vec_tree(v).unwrap_err();
         match err {
             SszError::Custom(msg) => {
-                assert!(msg.contains("composite"), "got: {msg}");
+                assert!(msg.contains("multi-per-chunk"), "got: {msg}");
             }
             other => panic!("expected Custom, got {other:?}"),
         }
     }
 
     #[test]
-    fn from_vec_tree_rejects_basic_element_vector() {
+    fn from_vec_tree_rejects_multi_per_chunk_basic_vector() {
         let v: Vec<u64> = vec![0; 4];
         let err = SszVector::<u64, 4>::from_vec_tree(v).unwrap_err();
         match err {
             SszError::Custom(msg) => {
-                assert!(msg.contains("composite"), "got: {msg}");
+                assert!(msg.contains("multi-per-chunk"), "got: {msg}");
             }
             other => panic!("expected Custom, got {other:?}"),
         }
     }
 
     #[test]
-    #[should_panic(expected = "tree backend requires composite element type")]
-    fn empty_tree_rejects_basic_element() {
+    #[should_panic(expected = "tree backend rejects multi-per-chunk basic element types")]
+    fn empty_tree_rejects_multi_per_chunk_basic() {
         let _ = SszList::<u64, 16>::empty_tree();
+    }
+
+    // ── FixedBytes<32> carveout: PACKED_AS_FULL_CHUNK admits Root/Hash256 ───
+
+    #[test]
+    fn from_vec_tree_accepts_fixed_bytes_32_list() {
+        use pharos_utils::Hash256;
+        let v: Vec<Hash256> = (0u8..8).map(|i| Hash256::from_array([i; 32])).collect();
+        let tree = SszList::<Hash256, 1024>::from_vec_tree(v.clone()).unwrap();
+        let naive = SszList::<Hash256, 1024>::from_vec(v).unwrap();
+        assert_eq!(tree.tree_hash_root(), naive.tree_hash_root());
+    }
+
+    #[test]
+    fn from_vec_tree_accepts_fixed_bytes_32_vector() {
+        use pharos_utils::Hash256;
+        let v: Vec<Hash256> = (0u8..8).map(|i| Hash256::from_array([i; 32])).collect();
+        let tree = SszVector::<Hash256, 8>::from_vec_tree(v.clone()).unwrap();
+        let naive = SszVector::<Hash256, 8>::from_vec(v).unwrap();
+        assert_eq!(tree.tree_hash_root(), naive.tree_hash_root());
+    }
+
+    #[test]
+    fn empty_tree_accepts_fixed_bytes_32() {
+        use pharos_utils::Hash256;
+        let tree = SszList::<Hash256, 1024>::empty_tree();
+        let naive: SszList<Hash256, 1024> = SszList::new();
+        assert_eq!(tree.tree_hash_root(), naive.tree_hash_root());
     }
 
     // ── Task 1.10: with_set path-copy preserves shared subtrees ─────────────
