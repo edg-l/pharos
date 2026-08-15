@@ -7,6 +7,10 @@ license.workspace = true
 authors.workspace = true
 description = "Pharos validator-client binary."
 
+[lib]
+name = "pharos_validator"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pharos-vc"
 path = "src/main.rs"
@@ -45,5 +49,13 @@ scrypt.workspace = true
 sha2.workspace = true
 unicode-normalization.workspace = true
 
+clap.workspace = true
+tracing-subscriber.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
+axum.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+serde_json.workspace = true

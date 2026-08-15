@@ -114,6 +114,17 @@ pub struct SqliteSlashingProtection {
 }
 
 impl SqliteSlashingProtection {
+    /// Acquire the internal connection lock.
+    ///
+    /// Used by the interchange helpers in `interchange.rs` to access the raw
+    /// `Connection` for multi-statement transactions (import/export).
+    /// Returns `SlashingError::Sqlite("mutex poisoned")` on lock failure.
+    pub fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, SlashingError> {
+        self.conn
+            .lock()
+            .map_err(|_| SlashingError::Sqlite("mutex poisoned".into()))
+    }
+
     /// Open (or create) the slashing protection database at `path`.
     ///
     /// Runs schema migrations synchronously on open. Thread-safe via `Mutex<Connection>`.

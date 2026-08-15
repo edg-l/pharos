@@ -12,7 +12,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::discovery::enr::Enr;
 use crate::error::NetworkError;
-use pharos_ssz::Encode as _;
+use pharos_ssz::{Bitvector, Encode as _};
+use pharos_types::altair::constants::SYNC_COMMITTEE_SUBNET_COUNT;
 use pharos_types::phase0::ENRForkID;
 
 // ── DiscoveryCommand ──────────────────────────────────────────────────────────
@@ -26,6 +27,17 @@ pub(crate) enum DiscoveryCommand {
     /// Per `specs/phase0/p2p-interface.md:1654-1656`.
     UpdateEth2 {
         fork_id: ENRForkID,
+        reply: oneshot::Sender<Result<(), NetworkError>>,
+    },
+    /// Update the `syncnets` ENR field with a new `Bitvector[SYNC_COMMITTEE_SUBNET_COUNT]`.
+    ///
+    /// SSZ-encodes the bitvector and calls `discv5.enr_insert("syncnets", ...)`.
+    /// Per `specs/altair/p2p-interface.md:540-549`.
+    /// Called by the BN `POST /eth/v1/validator/sync_committee_subscriptions` handler
+    /// so the local ENR advertises which sync-committee subnets the VC has subscribed to.
+    /// (`D-syncnets-enr-on-subscription`)
+    UpdateSyncnets {
+        syncnets: Bitvector<{ SYNC_COMMITTEE_SUBNET_COUNT }>,
         reply: oneshot::Sender<Result<(), NetworkError>>,
     },
     /// Read the current local ENR. Used by tests and operational diagnostics
@@ -73,6 +85,30 @@ impl DiscoveryHandle {
         reply_rx.await.map_err(|_| NetworkError::ChannelClosed)?
     }
 
+    /// Update the `syncnets` ENR field.
+    ///
+    /// Writes a `Bitvector[SYNC_COMMITTEE_SUBNET_COUNT]` to the local ENR under
+    /// the `syncnets` key, increments the ENR sequence number, and re-publishes.
+    /// Called by the BN `POST /eth/v1/validator/sync_committee_subscriptions`
+    /// handler so peers discovering us see which sync-committee subnets we
+    /// subscribe to.
+    ///
+    /// Per `specs/altair/p2p-interface.md:540-549`. (`D-syncnets-enr-on-subscription`)
+    pub async fn update_enr_syncnets(
+        &self,
+        syncnets: Bitvector<{ SYNC_COMMITTEE_SUBNET_COUNT }>,
+    ) -> Result<(), NetworkError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(DiscoveryCommand::UpdateSyncnets {
+                syncnets,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        reply_rx.await.map_err(|_| NetworkError::ChannelClosed)?
+    }
+
     /// Read the current local ENR via the discovery service.
     ///
     /// Round-trips through the discovery actor so the caller sees the live
@@ -107,6 +143,15 @@ impl DiscoveryService {
                 let result = self
                     .discv5
                     .enr_insert("eth2", &bytes.as_slice())
+                    .map(|_| ())
+                    .map_err(|e| NetworkError::Discv5(e.to_string()));
+                let _ = reply.send(result);
+            }
+            DiscoveryCommand::UpdateSyncnets { syncnets, reply } => {
+                let bytes = syncnets.as_ssz_bytes();
+                let result = self
+                    .discv5
+                    .enr_insert("syncnets", &bytes.as_slice())
                     .map(|_| ())
                     .map_err(|e| NetworkError::Discv5(e.to_string()));
                 let _ = reply.send(result);

@@ -74,6 +74,38 @@ pub struct SyncingResponse {
     pub data: SyncingData,
 }
 
+// ── State validators (index lookup) ───────────────────────────────────────────
+
+/// One entry from `GET /eth/v1/beacon/states/{state_id}/validators`.
+#[derive(Debug, Deserialize)]
+pub struct StateValidatorEntry {
+    pub index: String,
+    pub validator: StateValidatorInner,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StateValidatorInner {
+    pub pubkey: String,
+}
+
+// ── Fork ──────────────────────────────────────────────────────────────────────
+
+/// Fork data from `GET /eth/v1/beacon/states/{state_id}/fork`.
+#[derive(Debug, Deserialize)]
+pub struct ForkDataDto {
+    pub previous_version: String,
+    pub current_version: String,
+    pub epoch: String,
+}
+
+// ── Block header ──────────────────────────────────────────────────────────────
+
+/// Block header data from `GET /eth/v1/beacon/headers/{block_id}`.
+#[derive(Debug, Deserialize)]
+pub struct BlockHeaderDto {
+    pub root: String,
+}
+
 /// Generic BN data wrapper.
 #[derive(Debug, Deserialize)]
 pub struct DataResponse<T> {
@@ -95,7 +127,7 @@ pub struct ProposerDuty {
 
 // ── Attester duty ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AttesterDuty {
     pub pubkey: String,
     pub validator_index: String,
@@ -108,7 +140,7 @@ pub struct AttesterDuty {
 
 // ── Sync duty ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SyncDuty {
     pub pubkey: String,
     pub validator_index: String,
@@ -320,6 +352,45 @@ impl BnClient {
             }
         }
         Err(BnError::AllFailed(last_err))
+    }
+
+    // ── Genesis ───────────────────────────────────────────────────────────────
+
+    /// `GET /eth/v1/beacon/genesis` — returns genesis info.
+    pub async fn get_genesis(&self) -> Result<serde_json::Value, BnError> {
+        let resp = self.get("eth/v1/beacon/genesis").await?;
+        Ok(resp.json().await?)
+    }
+
+    // ── State validators / fork / head ──────────────────────────────────────────
+
+    /// `GET /eth/v1/beacon/states/head/validators?id=<pubkey0>,<pubkey1>,...`
+    ///
+    /// Resolves on-chain validator indices for the given pubkeys. Validators not
+    /// yet deposited/activated are simply absent from the response.
+    pub async fn get_state_validators(
+        &self,
+        pubkeys_hex: &[String],
+    ) -> Result<Vec<StateValidatorEntry>, BnError> {
+        let ids = pubkeys_hex.join(",");
+        let path = format!("eth/v1/beacon/states/head/validators?id={ids}");
+        let resp = self.get(&path).await?;
+        let parsed: DataResponse<Vec<StateValidatorEntry>> = resp.json().await?;
+        Ok(parsed.data)
+    }
+
+    /// `GET /eth/v1/beacon/states/head/fork` — current fork data (for signing domains).
+    pub async fn get_fork(&self) -> Result<ForkDataDto, BnError> {
+        let resp = self.get("eth/v1/beacon/states/head/fork").await?;
+        let parsed: DataResponse<ForkDataDto> = resp.json().await?;
+        Ok(parsed.data)
+    }
+
+    /// `GET /eth/v1/beacon/headers/head` — canonical head block root.
+    pub async fn get_head_block_root(&self) -> Result<String, BnError> {
+        let resp = self.get("eth/v1/beacon/headers/head").await?;
+        let parsed: DataResponse<BlockHeaderDto> = resp.json().await?;
+        Ok(parsed.data.root)
     }
 
     // ── Health / syncing ──────────────────────────────────────────────────────

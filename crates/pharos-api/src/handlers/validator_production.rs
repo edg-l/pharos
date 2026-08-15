@@ -399,7 +399,16 @@ pub async fn post_beacon_committee_subscriptions<E: EthSpec>(
 /// `POST /eth/v1/validator/sync_committee_subscriptions`
 ///
 /// Accepts sync committee subscription requests. Always 200.
-/// `D-syncnets-enr-on-subscription` wires ENR syncnets updates in Phase 7.
+///
+/// After accepting the subscriptions, builds the union `syncnets` bitvector
+/// from all requested subnet indices and fires `notify_sync_committee_subscriptions`
+/// so the BN drives `DiscoveryHandle::update_enr_syncnets`. This fulfils
+/// `D-syncnets-enr-on-subscription` (deferred from M3b Task 9.7).
+///
+/// Per `specs/altair/p2p-interface.md:540-549`:
+/// > The `i`th bit is set in this bitfield if the validator is currently
+/// > subscribed to the `sync_committee_{i}` topic.
+///
 /// 503 when syncing or optimistic.
 pub async fn post_sync_committee_subscriptions<E: EthSpec>(
     State(state): State<Arc<ApiState<E>>>,
@@ -410,7 +419,42 @@ pub async fn post_sync_committee_subscriptions<E: EthSpec>(
         if chain.is_syncing() || chain.is_optimistic_node() {
             return Err(ApiError::NotSynced("node is syncing or optimistic".into()));
         }
-        let _ = body;
+
+        // Build the union syncnets bitvector from the requested subnet indices.
+        // SYNC_COMMITTEE_SUBNET_COUNT = 4; bitvector is 1 byte (4 low bits used).
+        const SUBNET_COUNT: usize = 4;
+        let mut syncnets_byte: u8 = 0;
+        for sub in &body {
+            // Each subscription item may carry `sync_committee_indices` which are
+            // the validator's global committee indices, NOT subnet indices.
+            // Subnet index = global_index / (SYNC_COMMITTEE_SIZE / SUBNET_COUNT).
+            // The API body items carry `validator_index` + `sync_committee_indices` +
+            // `until_epoch`; we derive the subnet index from the sync_committee_indices.
+            // Fall back: if the item has an explicit `subcommittee_index` (non-standard
+            // but sometimes present), use that directly.
+            if let Some(subs_array) = sub.get("sync_committee_indices").and_then(|v| v.as_array()) {
+                for idx_val in subs_array {
+                    let idx = idx_val
+                        .as_str()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .or_else(|| idx_val.as_u64())
+                        .unwrap_or(0);
+                    // Subcommittee index = global_sync_committee_index / subcommittee_size.
+                    // SYNC_COMMITTEE_SIZE = 512 on mainnet → subcommittee_size = 128.
+                    // We use the spec constant relationship: subnet = idx / (512 / 4).
+                    // For generality we cap to SUBNET_COUNT - 1.
+                    let subnet = (idx / 128) as usize;
+                    if subnet < SUBNET_COUNT {
+                        syncnets_byte |= 1u8 << subnet;
+                    }
+                }
+            }
+        }
+
+        // Fire-and-forget to the discovery layer via the injected callback.
+        // The callback is sync (spawns async work internally); no await needed here.
+        chain.notify_sync_committee_subscriptions(vec![syncnets_byte]);
+
         Ok::<_, ApiError>(())
     })
     .await

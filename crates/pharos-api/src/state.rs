@@ -787,6 +787,17 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
         ))
     }
 
+    /// Update the ENR `syncnets` bitvector on behalf of a VC subscription.
+    ///
+    /// Called by `POST /eth/v1/validator/sync_committee_subscriptions` with the
+    /// union of all subscribed sync-committee subnet indices. The raw SSZ bytes of
+    /// the `Bitvector[SYNC_COMMITTEE_SUBNET_COUNT]` (1 byte on mainnet, padded to
+    /// 4 bits) are passed so `pharos-api` does not depend on `pharos-network`.
+    ///
+    /// Default is a no-op (no discovery layer in tests).
+    /// (`D-syncnets-enr-on-subscription`)
+    fn notify_sync_committee_subscriptions(&self, _syncnets_ssz: Vec<u8>) {}
+
     /// Return liveness information for the given validators in the given epoch.
     ///
     /// Returns a `Vec` of `(ValidatorIndex, is_live: bool)` for each requested
@@ -915,6 +926,20 @@ pub type ProduceAttDataFn = dyn Fn(
 /// Returns JSON representations of connected peers for `/eth/v1/node/peers`.
 pub type PeersFn = dyn Fn() -> Vec<JsonValue> + Send + Sync + 'static;
 
+/// Type alias for the syncnets ENR update callback.
+///
+/// Called by `POST /eth/v1/validator/sync_committee_subscriptions` with the
+/// union of all subscribed sync-committee subnet indices (0..SYNC_COMMITTEE_SUBNET_COUNT).
+/// Drives `DiscoveryHandle::update_enr_syncnets` on the BN side so the local
+/// ENR advertises the subscribed `syncnets` bitvector.
+///
+/// Per `specs/altair/p2p-interface.md:540-549`. (`D-syncnets-enr-on-subscription`)
+///
+/// The callback is async under the hood but is exposed here as a sync closure
+/// returning `()` (fire-and-forget) to keep `ChainStateApi` sync. The BN-side
+/// implementation spawns a `tokio` task to drive the async `DiscoveryHandle`.
+pub type SyncnetsFn = dyn Fn(Vec<u8>) + Send + Sync + 'static;
+
 /// Concrete `ChainStateApi` backed by the shared fork-choice store and storage.
 pub struct NodeChainState<E: EthSpec> {
     /// Shared chain DB (cold states, anchor, etc.).
@@ -958,6 +983,13 @@ pub struct NodeChainState<E: EthSpec> {
 
     /// Peers-snapshot callback for `/eth/v1/node/peers`.
     peers_fn: Option<Arc<PeersFn>>,
+
+    /// Syncnets ENR update callback. (`D-syncnets-enr-on-subscription`)
+    ///
+    /// Fired by `POST /eth/v1/validator/sync_committee_subscriptions` with the
+    /// SSZ-encoded `Bitvector[SYNC_COMMITTEE_SUBNET_COUNT]` (4 bytes).
+    /// `None` when the discovery layer is not available (e.g. tests without network).
+    syncnets_fn: Option<Arc<SyncnetsFn>>,
 }
 
 /// Parse a 0x-prefixed 48-byte hex string into a fixed `[u8; 48]`.
@@ -995,6 +1027,7 @@ impl<E: EthSpec> NodeChainState<E> {
             publish_fn: None,
             fee_recipients: Arc::new(RwLock::new(HashMap::new())),
             peers_fn: None,
+            syncnets_fn: None,
         }
     }
 
@@ -1022,6 +1055,7 @@ impl<E: EthSpec> NodeChainState<E> {
             publish_fn: None,
             fee_recipients: Arc::new(RwLock::new(HashMap::new())),
             peers_fn: None,
+            syncnets_fn: None,
         }
     }
 
@@ -1081,7 +1115,19 @@ impl<E: EthSpec> NodeChainState<E> {
             publish_fn: Some(publish),
             fee_recipients: Arc::new(RwLock::new(HashMap::new())),
             peers_fn: Some(peers),
+            syncnets_fn: None,
         }
+    }
+
+    /// Attach the syncnets ENR update callback (builder pattern).
+    ///
+    /// Called from `pharos-node/src/main.rs` after the discovery handle is
+    /// available. Enables `POST /eth/v1/validator/sync_committee_subscriptions`
+    /// to drive `DiscoveryHandle::update_enr_syncnets`.
+    /// (`D-syncnets-enr-on-subscription`)
+    pub fn with_syncnets_fn(mut self, f: Arc<SyncnetsFn>) -> Self {
+        self.syncnets_fn = Some(f);
+        self
     }
 }
 
@@ -1864,6 +1910,12 @@ where
         match &self.peers_fn {
             Some(f) => f(),
             None => vec![],
+        }
+    }
+
+    fn notify_sync_committee_subscriptions(&self, syncnets_ssz: Vec<u8>) {
+        if let Some(f) = &self.syncnets_fn {
+            f(syncnets_ssz);
         }
     }
 

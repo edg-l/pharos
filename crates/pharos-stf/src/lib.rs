@@ -48,9 +48,9 @@ pub use phase0::slot::process_slots;
 // `pharos-stf::phase0::accessors` directly.
 pub use phase0::accessors::{
     compute_domain, compute_epoch_at_slot, compute_signing_root, compute_start_slot_at_epoch,
-    get_active_validator_indices, get_beacon_committee, get_beacon_proposer_index,
-    get_block_root, get_block_root_at_slot, get_committee_count_per_slot, get_current_epoch,
-    get_domain, get_randao_mix,
+    get_active_validator_indices, get_beacon_committee, get_beacon_proposer_index, get_block_root,
+    get_block_root_at_slot, get_committee_count_per_slot, get_current_epoch, get_domain,
+    get_randao_mix,
 };
 
 // ── Signing-domain constants ──────────────────────────────────────────────────
@@ -81,9 +81,7 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView, ForkVariant, SignedBeaconBlockView},
 };
 
-use phase0::{
-    state_write::BeaconStateWrite,
-};
+use phase0::state_write::BeaconStateWrite;
 
 // ── ForkEpochs ────────────────────────────────────────────────────────────────
 

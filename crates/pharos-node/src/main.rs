@@ -739,13 +739,35 @@ async fn main() -> anyhow::Result<()> {
             })
         };
 
+        // Build the syncnets ENR callback that wires
+        // `POST /eth/v1/validator/sync_committee_subscriptions` through to
+        // `DiscoveryHandle::update_enr_syncnets` (`D-syncnets-enr-on-subscription`).
+        let syncnets_fn: Arc<pharos_api::SyncnetsFn> = {
+            use pharos_ssz::{Bitvector, Decode as SszDecode};
+            use pharos_types::altair::constants::SYNC_COMMITTEE_SUBNET_COUNT;
+
+            let disc = discovery_handle.clone();
+            Arc::new(move |syncnets_ssz: Vec<u8>| {
+                let bv =
+                    Bitvector::<{ SYNC_COMMITTEE_SUBNET_COUNT }>::from_ssz_bytes(&syncnets_ssz)
+                        .unwrap_or_default();
+                let disc2 = disc.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = disc2.update_enr_syncnets(bv).await {
+                        tracing::warn!(?e, "syncnets ENR update failed");
+                    }
+                });
+            })
+        };
+
         let chain_state = pharos_api::NodeChainState::new_with_regen(
             Arc::clone(&store_arc),
             Arc::clone(&fork_choice),
             identity,
             Arc::new(runtime_cfg.clone()),
             regen_fn,
-        );
+        )
+        .with_syncnets_fn(syncnets_fn);
 
         // Build the SSE event bus and spawn the adapter task.
         let event_bus = pharos_api::EventBus::new();

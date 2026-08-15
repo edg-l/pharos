@@ -66,7 +66,7 @@ futures = "0.3"
 
 # HTTP
 axum = "0.8"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots", "stream"] }
 url = "2"
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 
@@ -99,6 +99,8 @@ proptest = "1"
 criterion = "0.8"
 tempfile = "3"
 serial_test = "3"
+clap = { version = "4", features = ["derive"] }
+tokio-util = { version = "0.7", features = ["io", "compat"] }
 
 [profile.release]
 opt-level = 3

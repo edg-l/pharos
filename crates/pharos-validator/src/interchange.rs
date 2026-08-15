@@ -257,6 +257,40 @@ pub fn export_interchange(
     })
 }
 
+// ── Convenience wrappers for SqliteSlashingProtection ────────────────────────
+
+use crate::slashing::SqliteSlashingProtection;
+
+/// Import an interchange file into a `SqliteSlashingProtection` database.
+///
+/// Acquires the internal mutex lock, then delegates to `import_interchange`.
+/// `expected_genesis_validators_root` is the chain's genesis validators root
+/// (from the BN); the file's root is verified against it (EIP-3076 precondition).
+pub fn import_slashing_protection(
+    db: &SqliteSlashingProtection,
+    interchange: &InterchangeFile,
+    expected_genesis_validators_root: &str,
+) -> Result<(), InterchangeError> {
+    let conn = db.lock_conn()?;
+    import_interchange(&conn, interchange, expected_genesis_validators_root)
+}
+
+/// Export slashing protection from a `SqliteSlashingProtection` database.
+///
+/// Only pubkeys present in `pubkeys_hex` are exported (others are ignored).
+pub fn export_slashing_protection(
+    db: &SqliteSlashingProtection,
+    pubkeys_hex: &[String],
+    genesis_validators_root: &str,
+) -> Result<InterchangeFile, InterchangeError> {
+    let conn = db.lock_conn()?;
+    let mut full = export_interchange(&conn, genesis_validators_root)?;
+    if !pubkeys_hex.is_empty() {
+        full.data.retain(|e| pubkeys_hex.contains(&e.pubkey));
+    }
+    Ok(full)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
