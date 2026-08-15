@@ -37,7 +37,10 @@ use pharos_ssz::Encode;
 use pharos_stf::altair::upgrade::upgrade_to_altair;
 use pharos_stf::bellatrix::upgrade::upgrade_to_bellatrix;
 use pharos_stf::capella::upgrade::upgrade_to_capella;
-use pharos_stf::{AltairProcessSlotsDispatch, BellatrixProcessSlotsDispatch};
+use pharos_stf::{
+    AltairProcessSlotsDispatch, AltairUpgradeDispatch, BellatrixProcessSlotsDispatch,
+    BellatrixUpgradeDispatch, CapellaProcessSlotsDispatch, Phase0UpgradeDispatch,
+};
 use pharos_types::{
     EthSpec, MainnetEthSpec, MinimalEthSpec,
     phase0::{Epoch, Slot},
@@ -457,16 +460,21 @@ fn run_bellatrix_transition_blocks<E, F>(
 where
     E: EthSpec,
     E::BeaconState: BeaconStateView,
-    E::AltairBeaconState: pharos_ssz::Decode,
-    E::BellatrixBeaconState: pharos_ssz::Decode,
+    E::AltairBeaconState: pharos_ssz::Decode
+        + pharos_types::views::BeaconStateView
+        + pharos_stf::AltairDispatch<E>
+        + AltairProcessSlotsDispatch<E>
+        + AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: pharos_ssz::Decode
+        + pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
     E::AltairSignedBeaconBlock: pharos_ssz::Decode,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
-    E::AltairBeaconState: pharos_types::views::BeaconStateView
-        + pharos_stf::AltairDispatch<E>
-        + pharos_stf::AltairProcessSlotsDispatch<E>,
-    E::BellatrixBeaconState:
-        pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::BeaconState:
         pharos_stf::phase0::BeaconStateWrite + pharos_ssz::TreeHash + pharos_ssz::Encode,
     E::Phase0BeaconBlock: pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
@@ -628,8 +636,11 @@ fn run_case_blocks<E, F>(
 where
     E: EthSpec,
     E::BeaconState: BeaconStateView,
-    E::Phase0BeaconState: pharos_ssz::Decode,
-    E::AltairBeaconState: pharos_ssz::Decode,
+    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
+    E::AltairBeaconState: pharos_ssz::Decode
+        + pharos_stf::AltairDispatch<E>
+        + AltairProcessSlotsDispatch<E>
+        + AltairUpgradeDispatch<E>,
     E::AltairSignedBeaconBlock: pharos_ssz::Decode,
     E::Phase0BeaconBlock: pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: pharos_ssz::TreeHash
@@ -640,10 +651,12 @@ where
         >,
     E::Phase0SignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
-    E::BellatrixBeaconState:
-        pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine> + pharos_ssz::TreeHash,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>,
     E::BeaconState:
         pharos_stf::phase0::BeaconStateWrite + pharos_ssz::TreeHash + pharos_ssz::Encode,
     F: Fn(
@@ -942,16 +955,20 @@ fn run_capella_transition_blocks<E, F>(
 where
     E: EthSpec,
     E::BeaconState: BeaconStateView,
-    E::BellatrixBeaconState: pharos_ssz::Decode,
-    E::CapellaBeaconState: pharos_ssz::Decode,
-    E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
-    E::CapellaSignedBeaconBlock: pharos_ssz::Decode,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>,
-    E::BellatrixBeaconState: pharos_types::views::BeaconStateView
+    E::AltairBeaconState:
+        pharos_stf::AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: pharos_ssz::Decode
+        + pharos_types::views::BeaconStateView
         + pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
         + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
         + pharos_ssz::TreeHash,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>,
+    E::CapellaBeaconState: pharos_ssz::Decode
+        + pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>,
+    E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
+    E::CapellaSignedBeaconBlock: pharos_ssz::Decode,
+    E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::BeaconState:
         pharos_stf::phase0::BeaconStateWrite + pharos_ssz::TreeHash + pharos_ssz::Encode,
     E::Phase0BeaconBlock: pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody>,

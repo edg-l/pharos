@@ -163,7 +163,9 @@ where
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
 {
-    let cfg = E::default_runtime_config();
+    // Loaded runtime config from the store: carries the real fork epochs so the
+    // STF can trigger live fork upgrades across a boundary (see block_ingestion).
+    let cfg = fc_store.read().runtime_cfg.clone();
     let seconds_per_slot = cfg.seconds_per_slot;
 
     loop {
@@ -711,6 +713,12 @@ mod tests {
     ) -> TestBackfillHarness {
         let anchor_root: Root = anchor_block.tree_hash_root();
         let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+        // Populate the store's runtime_cfg with the minimal-preset config, exactly
+        // as `main.rs` does from the loaded `--config-dir` in production. The
+        // backfill loop reads `fc_store.runtime_cfg` (seconds_per_slot, fork epochs);
+        // `get_forkchoice_store` defaults it to the mainnet `RuntimeConfig::default()`,
+        // which would give the wrong (12s) slot timing for these minimal-spec tests.
+        fc.runtime_cfg = MinimalEthSpec::default_runtime_config();
         // Advance store time past genesis so on_block future-slot guard passes.
         fc.time = 10_000_000;
         // Set terminal_block_hash override so the merge-transition guard passes.

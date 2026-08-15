@@ -86,6 +86,19 @@ impl ForkEpochs {
             capella: u64::MAX,
         }
     }
+
+    /// Construct from a `RuntimeConfig`, reading the three fork epoch fields.
+    ///
+    /// Used by the live `state_transition` entry point so it can fire irregular
+    /// fork upgrades when the state crosses a fork boundary on the way to the
+    /// block's slot (`D-live-fork-upgrade-trigger`).
+    pub fn from_runtime_cfg(cfg: &RuntimeConfig) -> Self {
+        Self {
+            altair: cfg.altair_fork_epoch,
+            bellatrix: cfg.bellatrix_fork_epoch,
+            capella: cfg.capella_fork_epoch,
+        }
+    }
 }
 
 // ── Upgrade dispatch traits ───────────────────────────────────────────────────
@@ -356,9 +369,14 @@ where
 /// - `Capella` → unwraps state and block to capella inner types, calls the
 ///   capella STF via `CapellaDispatch`, wraps result back into the fork-enum.
 ///
-/// Advances `state` to `signed_block.message.slot` via `process_slots`,
-/// optionally verifies the block signature and final state root, then
-/// applies the block. Returns the updated state.
+/// Before dispatching, advances `state` through any fork boundaries to the
+/// block's slot via `process_slots_fork` using fork epochs from `runtime_cfg`
+/// (`D-live-fork-upgrade-trigger`). On a bellatrix→capella crossing, the
+/// pre-state is bellatrix and the block is capella: `process_slots_fork`
+/// upgrades the state to capella before the dispatch match, so the block's
+/// fork variant matches the post-upgrade state variant and the per-fork STF arm
+/// applies cleanly. The per-fork `process_slots` inside each arm is then a
+/// no-op (target == state.slot).
 ///
 /// When `validate_result` is `false`, the BLS block-signature check and the
 /// `block.state_root == hash_tree_root(state)` post-condition are both skipped
@@ -384,10 +402,31 @@ where
             AttesterSlashing = AttesterSlashing<2048>,
             Deposit = Deposit<33>,
         >,
-    E::AltairBeaconState: AltairDispatch<E>,
-    E::BellatrixBeaconState: BellatrixDispatch<E, EE> + TreeHash,
-    E::CapellaBeaconState: CapellaDispatch<E, EE> + TreeHash,
+    E::AltairBeaconState:
+        AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: BellatrixDispatch<E, EE>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + TreeHash,
+    E::CapellaBeaconState: CapellaDispatch<E, EE> + CapellaProcessSlotsDispatch<E> + TreeHash,
+    E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
+    // Advance the state through any fork boundaries to the block's target slot.
+    // This is the `D-live-fork-upgrade-trigger` mechanism: on a fork-crossing
+    // block (e.g. bellatrix state → capella block), `process_slots_fork` upgrades
+    // the state in-place before the fork-variant dispatch below, so the match arm
+    // for the block's fork variant is reached instead of returning UnsupportedFork.
+    // For same-fork blocks, the advance is a no-op (state is already at the right
+    // fork variant and `process_slots_fork` exits immediately on the first loop iter
+    // when there is no boundary between state.slot and target_slot).
+    let target_slot = E::signed_block_slot(signed_block);
+    process_slots_fork::<E>(
+        &mut state,
+        target_slot,
+        ForkEpochs::from_runtime_cfg(runtime_cfg),
+        runtime_cfg,
+    )?;
+
     // Fork dispatch via `fork_variant()`. Cannot pattern-match on a concrete
     // enum variant through the opaque `E::BeaconState` associated type;
     // `fork_variant()` provides the required discriminant.
@@ -959,5 +998,147 @@ mod fork_upgrade_tests {
             "state must upgrade altair→bellatrix→capella across both boundaries"
         );
         assert_eq!(state.slot(), target);
+    }
+
+    /// Regression test for the live bellatrix→capella fork-transition bug.
+    ///
+    /// Before the fix, `state_transition` dispatched on the PRE-STATE's fork
+    /// variant, so a bellatrix pre-state + capella block returned
+    /// `UnsupportedFork` and the node froze at the fork.
+    ///
+    /// The fix: `process_slots_fork` (with `ForkEpochs::from_runtime_cfg`) is
+    /// called before the fork-dispatch match, upgrading the state in-place so
+    /// the dispatch lands in the `ForkVariant::Capella` arm.
+    ///
+    /// Scenario (MinimalEthSpec, SLOTS_PER_EPOCH = 8):
+    /// - pre-state : Bellatrix, slot 7 (last slot of epoch 0), one active validator
+    /// - block     : Capella, slot 8 (first slot of epoch 1)
+    /// - cfg       : capella_fork_epoch = 1
+    #[test]
+    fn state_transition_crosses_bellatrix_to_capella() {
+        use pharos_ssz::TreeHash as _;
+        use pharos_types::{
+            BeaconStateView as _, EthSpec as _, MinimalEthSpec as E,
+            phase0::{Epoch, Slot, Validator},
+        };
+        use pharos_utils::Gwei;
+
+        let spe = E::SLOTS_PER_EPOCH;
+        let capella_epoch = 1u64;
+        let block_slot = Slot(capella_epoch * spe);
+
+        let runtime_cfg = RuntimeConfig {
+            capella_fork_version: E::CAPELLA_FORK_VERSION,
+            capella_fork_epoch: capella_epoch,
+            altair_fork_epoch: u64::MAX,
+            bellatrix_fork_epoch: u64::MAX,
+            // Use MinimalEthSpec slot duration so the execution_payload
+            // timestamp check passes: expected = genesis_time + slot * secs_per_slot.
+            seconds_per_slot: E::SLOT_DURATION_MS / 1000,
+            ..RuntimeConfig::default()
+        };
+        let fork_epochs = ForkEpochs {
+            altair: u64::MAX,
+            bellatrix: u64::MAX,
+            capella: capella_epoch,
+        };
+
+        // Pre-state: bellatrix at slot 7 (last slot of epoch 0), with one active
+        // validator so that block_header validation (proposer lookup, proposer
+        // index computation) succeeds even with `validate_result = false`.
+        // `validate_result = false` skips BLS and state-root checks only; block
+        // header structural checks (parent_root, proposer lookup) always run.
+        #[allow(clippy::field_reassign_with_default)]
+        let pre_state = {
+            let mut inner = <E as pharos_types::EthSpec>::BellatrixBeaconState::default();
+            inner.slot = Slot(capella_epoch * spe - 1);
+            // Add one active validator with non-zero effective_balance.
+            // activation_epoch=0, exit_epoch=u64::MAX keeps it active for epoch 1.
+            let v = Validator {
+                activation_epoch: Epoch(0),
+                exit_epoch: Epoch(u64::MAX),
+                effective_balance: Gwei(E::MAX_EFFECTIVE_BALANCE),
+                ..Default::default()
+            };
+            inner.validators = pharos_ssz::SszList::from_items(std::iter::once(v))
+                .expect("one validator fits in VALIDATOR_REGISTRY_LIMIT");
+            // balances must have the same length as validators for the STF
+            // (increase/decrease_balance both index into balances by validator index).
+            inner.balances =
+                pharos_ssz::SszList::from_items(std::iter::once(Gwei(E::MAX_EFFECTIVE_BALANCE)))
+                    .expect("one balance fits");
+            <E as pharos_types::EthSpec>::bellatrix_into_state(inner)
+        };
+        assert_eq!(pre_state.fork_variant(), ForkVariant::Bellatrix);
+
+        // Compute the parent_root the block must carry: the hash of the
+        // state's latest_block_header after process_slots_fork advances the
+        // state to block_slot. We run process_slots_fork on a clone so
+        // state_transition can operate on the unmodified pre_state.
+        let parent_root = {
+            let mut state_for_root = pre_state.clone();
+            process_slots_fork::<E>(&mut state_for_root, block_slot, fork_epochs, &runtime_cfg)
+                .expect("process_slots_fork on clone must succeed");
+            // process_block_header: if latest_block_header.state_root == default,
+            // it fills in tree_hash_root(state) before computing the header hash.
+            let mut hdr = state_for_root.latest_block_header().clone();
+            if hdr.state_root == pharos_types::phase0::Root::default() {
+                hdr.state_root = state_for_root.tree_hash_root();
+            }
+            hdr.tree_hash_root()
+        };
+
+        // Block: capella at slot 8, proposer_index=0 (the single active validator),
+        // parent_root computed above, and execution_payload.timestamp matching
+        // compute_time_at_slot: genesis_time(0) + slot * seconds_per_slot.
+        let expected_timestamp = block_slot.0 * runtime_cfg.seconds_per_slot;
+        let mut capella_inner = <E as pharos_types::EthSpec>::CapellaSignedBeaconBlock::default();
+        capella_inner.message.slot = block_slot;
+        capella_inner.message.parent_root = parent_root;
+        // proposer_index=0: the only validator in the set; get_proposer_index
+        // returns ValidatorIndex(0) for any slot with a single active validator.
+        capella_inner.message.proposer_index = pharos_types::phase0::ValidatorIndex(0);
+        capella_inner.message.body.execution_payload.timestamp = expected_timestamp;
+        let signed_block = E::capella_into_signed_block(capella_inner);
+
+        let result =
+            super::state_transition::<E, super::bellatrix::execution_engine::NullExecutionEngine>(
+                pre_state,
+                &signed_block,
+                &super::bellatrix::execution_engine::NullExecutionEngine,
+                false,
+                &runtime_cfg,
+            );
+
+        // The core assertion: state_transition must NOT return UnsupportedFork.
+        // Before the fix it returned UnsupportedFork because the pre-state was
+        // Bellatrix but the block was Capella. After the fix, process_slots_fork
+        // upgrades the state before dispatch so the Capella arm is entered.
+        //
+        // A fully populated state (validators + balances + sync_committee etc.)
+        // would be needed to drive the Capella STF to completion; the test uses a
+        // minimal single-validator state that satisfies block-header validation but
+        // may hit other STF invariants deeper in. We accept any result other than
+        // UnsupportedFork as proof the fork-dispatch bug is fixed.
+        match result {
+            Err(super::StateTransitionError::UnsupportedFork) => {
+                panic!(
+                    "state_transition returned UnsupportedFork on a bellatrix→capella crossing \
+                     — the D-live-fork-upgrade-trigger fix is not working"
+                );
+            }
+            Ok(post_state) => {
+                assert_eq!(
+                    post_state.fork_variant(),
+                    ForkVariant::Capella,
+                    "post-state must be Capella after crossing the fork boundary"
+                );
+            }
+            Err(_) => {
+                // Any other STF error means the dispatch reached the Capella arm
+                // (the fork-crossing fix works); the error is from a deeper STF
+                // invariant that the minimal test state doesn't satisfy.
+            }
+        }
     }
 }

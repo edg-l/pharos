@@ -580,6 +580,15 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         signed: &Self::SignedBeaconBlock,
     ) -> Option<Self::CapellaExecutionPayload>;
 
+    /// Extract the slot from a fork-enum `SignedBeaconBlock` without knowing the fork.
+    ///
+    /// The fork-enum `SignedBeaconBlockView::message()` is intentionally unimplemented
+    /// (it cannot return a reference to a fork-enum `BeaconBlock` from a reference to the
+    /// inner concrete type). This method matches on each variant directly so callers can
+    /// obtain the block slot in a fork-agnostic way — necessary for `state_transition` to
+    /// advance the pre-state to the target slot before dispatch (`D-live-fork-upgrade-trigger`).
+    fn signed_block_slot(signed: &Self::SignedBeaconBlock) -> crate::phase0::Slot;
+
     // -- Container associated types (D7) --
     // These allow STF code to be generic over `<E: EthSpec>` and reference
     // `E::BeaconState`, `E::BeaconBlock`, etc. without naming the concrete
@@ -1533,6 +1542,15 @@ impl EthSpec for MainnetEthSpec {
         }
     }
 
+    fn signed_block_slot(signed: &Self::SignedBeaconBlock) -> crate::phase0::Slot {
+        match signed {
+            crate::state::MainnetSignedBeaconBlock::Phase0(b) => b.message.slot,
+            crate::state::MainnetSignedBeaconBlock::Altair(b) => b.message.slot,
+            crate::state::MainnetSignedBeaconBlock::Bellatrix(b) => b.message.slot,
+            crate::state::MainnetSignedBeaconBlock::Capella(b) => b.message.slot,
+        }
+    }
+
     fn capella_into_state(s: Self::CapellaBeaconState) -> Self::BeaconState {
         crate::state::MainnetBeaconState::Capella(s)
     }
@@ -2144,6 +2162,15 @@ impl EthSpec for MinimalEthSpec {
             crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
             crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
             crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn signed_block_slot(signed: &Self::SignedBeaconBlock) -> crate::phase0::Slot {
+        match signed {
+            crate::state::MinimalSignedBeaconBlock::Phase0(b) => b.message.slot,
+            crate::state::MinimalSignedBeaconBlock::Altair(b) => b.message.slot,
+            crate::state::MinimalSignedBeaconBlock::Bellatrix(b) => b.message.slot,
+            crate::state::MinimalSignedBeaconBlock::Capella(b) => b.message.slot,
         }
     }
 

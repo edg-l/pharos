@@ -206,7 +206,9 @@ where
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
 {
-    let cfg = E::default_runtime_config();
+    // Loaded runtime config from the store: carries the real fork epochs so the
+    // STF can trigger live fork upgrades across a boundary (see block_ingestion).
+    let cfg = fc_store.read().runtime_cfg.clone();
 
     loop {
         tokio::select! {

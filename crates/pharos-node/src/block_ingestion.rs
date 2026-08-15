@@ -189,7 +189,12 @@ where
     E::CapellaExecutionPayload: PayloadToWireV2,
     EE: ExecutionEngine + 'static,
 {
-    let cfg = pharos_types::config::RuntimeConfig::default();
+    // Use the node's loaded runtime config (carries the real fork epochs) so
+    // `state_transition` -> `process_slots_fork` can trigger live fork upgrades
+    // (e.g. bellatrix -> capella). A hardcoded default has CAPELLA_FORK_EPOCH =
+    // u64::MAX, which silently suppresses the upgrade and freezes the node at
+    // the fork boundary with `UnsupportedFork`.
+    let cfg = fc_store.read().runtime_cfg.clone();
 
     loop {
         // Pull the next block to import from either the network (fresh gossip)
