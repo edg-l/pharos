@@ -11,3 +11,29 @@ description = "libp2p + discv5 networking glue: gossip, req-resp, peer scoring."
 pharos-types.workspace = true
 pharos-ssz.workspace = true
 pharos-utils.workspace = true
+
+libp2p = { workspace = true, features = [
+    "tokio",
+    "tcp",
+    "quic",
+    "noise",
+    "yamux",
+    "gossipsub",
+    "dns",
+    "identify",
+    "ping",
+    "macros",
+    "secp256k1",
+    "request-response",
+] }
+discv5.workspace = true
+tokio.workspace = true
+snap.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+metrics.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true

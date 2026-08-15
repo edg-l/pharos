@@ -36,3 +36,9 @@ pub type DomainType = pharos_utils::Bytes4;
 /// `DepositIndex` — a deposit contract index (uint64).
 /// Used in `BeaconState::eth1_deposit_index`.
 pub type DepositIndex = u64;
+
+/// Number of attestation subnets per `specs/phase0/p2p-interface.md:382-387`.
+///
+/// `Bitvector<N>` uses `u64` const generics (B4 resolution), so this constant
+/// is `u64`. Value is 64 for both mainnet and minimal presets.
+pub const ATTESTATION_SUBNET_COUNT: u64 = 64;

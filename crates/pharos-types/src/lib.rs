@@ -5,6 +5,7 @@
 //! `EthSpec` trait (`MainnetEthSpec`, `MinimalEthSpec`, ...).
 
 pub mod eth_spec;
+pub mod fork;
 pub mod phase0;
 pub mod views;
 

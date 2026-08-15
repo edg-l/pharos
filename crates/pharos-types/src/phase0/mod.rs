@@ -29,9 +29,10 @@ pub use misc::{
     PendingAttestation, Validator,
 };
 pub use operations::{
-    AggregateAndProof, Attestation, AttesterSlashing, BeaconBlockHeader, Deposit, DepositData,
-    DepositMessage, Eth1Block, ProposerSlashing, SignedAggregateAndProof, SignedBeaconBlockHeader,
-    SignedVoluntaryExit, SigningData, VoluntaryExit,
+    AggregateAndProof, Attestation, AttesterSlashing, BeaconBlockHeader,
+    BeaconBlocksByRangeRequest, BeaconBlocksByRootRequest, Deposit, DepositData, DepositMessage,
+    ENRForkID, ErrorMessage, Eth1Block, MetaData, ProposerSlashing, SignedAggregateAndProof,
+    SignedBeaconBlockHeader, SignedVoluntaryExit, SigningData, Status, VoluntaryExit,
 };
 pub use primitives::*;
 pub use state::BeaconState;

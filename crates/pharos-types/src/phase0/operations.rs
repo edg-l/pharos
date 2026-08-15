@@ -1,13 +1,14 @@
-//! Phase 0 beacon operation containers.
+//! Phase 0 beacon operation containers and networking wire types.
 //!
-//! Defined in `specs/phase0/beacon-chain.md:489-532` (Beacon operations
-//! section) and `specs/phase0/beacon-chain.md:590-614` (Signed envelopes).
+//! Beacon operations defined in `specs/phase0/beacon-chain.md:489-532` and
+//! `specs/phase0/beacon-chain.md:590-614` (Signed envelopes).
+//! Networking wire types defined in `specs/phase0/p2p-interface.md`.
 
-use pharos_ssz::{Bitlist, Decode, Encode, SszVector, TreeHash};
+use pharos_ssz::{Bitlist, Bitvector, Decode, Encode, SszList, SszVector, TreeHash};
 use pharos_utils::{BLSPubkey, BLSSignature, Bytes32};
 
 use crate::phase0::misc::{AttestationData, IndexedAttestation};
-use crate::phase0::primitives::{Epoch, Gwei, Root, Slot, ValidatorIndex};
+use crate::phase0::primitives::{Epoch, ForkDigest, Gwei, Root, Slot, ValidatorIndex, Version};
 
 // ── DepositMessage ────────────────────────────────────────────────────────────
 
@@ -227,4 +228,208 @@ pub struct SignedVoluntaryExit {
     pub message: VoluntaryExit,
     /// `signature: BLSSignature` — `specs/phase0/beacon-chain.md:597`.
     pub signature: BLSSignature,
+}
+
+// ── Networking wire types ─────────────────────────────────────────────────────
+//
+// The following types are p2p interface containers, defined in
+// `specs/phase0/p2p-interface.md`.
+
+// ── ENRForkID ─────────────────────────────────────────────────────────────────
+
+/// `ENRForkID` per `specs/phase0/p2p-interface.md:1677-1683`.
+///
+/// Encoded in the `eth2` ENR key as SSZ bytes.
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct ENRForkID {
+    /// `fork_digest: ForkDigest` — `p2p-interface.md:1679`.
+    pub fork_digest: ForkDigest,
+    /// `next_fork_version: Version` — `p2p-interface.md:1680`.
+    pub next_fork_version: Version,
+    /// `next_fork_epoch: Epoch` — `p2p-interface.md:1681`.
+    pub next_fork_epoch: Epoch,
+}
+
+// ── Status ────────────────────────────────────────────────────────────────────
+
+/// `Status` per `specs/phase0/p2p-interface.md:1325-1333`.
+///
+/// Exchanged on initial connection to verify fork compatibility.
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct Status {
+    /// `fork_digest: ForkDigest` — `p2p-interface.md:1327`.
+    pub fork_digest: ForkDigest,
+    /// `finalized_root: Root` — `p2p-interface.md:1328`.
+    pub finalized_root: Root,
+    /// `finalized_epoch: Epoch` — `p2p-interface.md:1329`.
+    pub finalized_epoch: Epoch,
+    /// `head_root: Root` — `p2p-interface.md:1330`.
+    pub head_root: Root,
+    /// `head_slot: Slot` — `p2p-interface.md:1331`.
+    pub head_slot: Slot,
+}
+
+// ── BeaconBlocksByRangeRequest ────────────────────────────────────────────────
+
+/// `BeaconBlocksByRangeRequest` per `specs/phase0/p2p-interface.md:1413-1417`.
+///
+/// Note: `step` is deprecated and SHOULD be set to 1
+/// (`p2p-interface.md:1415`).
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct BeaconBlocksByRangeRequest {
+    /// `start_slot: Slot` — `p2p-interface.md:1414`.
+    pub start_slot: Slot,
+    /// `count: uint64` — `p2p-interface.md:1415`.
+    pub count: u64,
+    /// `step: uint64` — `p2p-interface.md:1416` (deprecated; always 1).
+    pub step: u64,
+}
+
+// ── BeaconBlocksByRootRequest ─────────────────────────────────────────────────
+
+/// `BeaconBlocksByRootRequest` per `specs/phase0/p2p-interface.md:1496-1502`.
+///
+/// SSZ-encoded as the inner list per the single-field rule
+/// (`p2p-interface.md:1308-1309`). `MAX_REQUEST_BLOCKS` caps the list length.
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct BeaconBlocksByRootRequest<const MAX_REQUEST_BLOCKS: u64> {
+    /// The list of block roots requested — `p2p-interface.md:1498`.
+    pub block_roots: SszList<Root, MAX_REQUEST_BLOCKS>,
+}
+
+// ── MetaData ──────────────────────────────────────────────────────────────────
+
+/// `MetaData` per `specs/phase0/p2p-interface.md:382-387`.
+///
+/// Advertised via the MetaData req-resp method and encoded in the ENR
+/// `attnets` key.
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct MetaData {
+    /// `seq_number: uint64` — `p2p-interface.md:384`.
+    pub seq_number: u64,
+    /// `attnets: Bitvector[ATTESTATION_SUBNET_COUNT]` — `p2p-interface.md:385`.
+    pub attnets: Bitvector<{ super::primitives::ATTESTATION_SUBNET_COUNT }>,
+}
+
+// ── ErrorMessage ──────────────────────────────────────────────────────────────
+
+/// `ErrorMessage` per `specs/phase0/p2p-interface.md:1220-1224`.
+///
+/// A UTF-8 string (up to 256 bytes) carried in RPC error responses.
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct ErrorMessage {
+    /// Raw UTF-8 bytes of the error string — `p2p-interface.md:1222`.
+    pub message: SszList<u8, 256>,
+}
+
+impl ErrorMessage {
+    /// Returns the message bytes as a lossy UTF-8 string.
+    pub fn as_utf8_lossy(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(self.message.as_slice())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pharos_ssz::{Decode, Encode, TreeHash};
+    use pharos_utils::{Bytes4, Epoch, Hash256, Slot};
+
+    // ── ENRForkID ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn enr_fork_id_ssz_roundtrip() {
+        let original = ENRForkID {
+            fork_digest: Bytes4::from_array([0x01, 0x02, 0x03, 0x04]),
+            next_fork_version: Bytes4::from_array([0xde, 0xad, 0xbe, 0xef]),
+            next_fork_epoch: Epoch(42),
+        };
+        let encoded = original.as_ssz_bytes();
+        // Fixed size: 4 (fork_digest) + 4 (next_fork_version) + 8 (epoch) = 16 bytes.
+        assert_eq!(encoded.len(), 16);
+        let decoded = ENRForkID::from_ssz_bytes(&encoded).expect("decode ENRForkID");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn enr_fork_id_tree_hash_deterministic() {
+        let a = ENRForkID {
+            fork_digest: Bytes4::from_array([0xaa, 0xbb, 0xcc, 0xdd]),
+            next_fork_version: Bytes4::from_array([0x00, 0x00, 0x00, 0x01]),
+            next_fork_epoch: Epoch(100),
+        };
+        let root1 = a.tree_hash_root();
+        let root2 = a.tree_hash_root();
+        assert_eq!(root1, root2, "tree_hash_root must be deterministic");
+        // Mutated copy must differ.
+        let b = ENRForkID {
+            fork_digest: Bytes4::from_array([0x00, 0x00, 0x00, 0x00]),
+            ..a
+        };
+        assert_ne!(
+            root1,
+            b.tree_hash_root(),
+            "different ENRForkID must hash differently"
+        );
+    }
+
+    // ── Status ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn status_ssz_roundtrip() {
+        let original = Status {
+            fork_digest: Bytes4::from_array([0xde, 0xad, 0xbe, 0xef]),
+            finalized_root: Hash256::from_array([0x11u8; 32]),
+            finalized_epoch: Epoch(99),
+            head_root: Hash256::from_array([0x22u8; 32]),
+            head_slot: Slot(800),
+        };
+        let encoded = original.as_ssz_bytes();
+        // Fixed size: 4 + 32 + 8 + 32 + 8 = 84 bytes.
+        assert_eq!(encoded.len(), 84);
+        let decoded = Status::from_ssz_bytes(&encoded).expect("decode Status");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn status_tree_hash_deterministic() {
+        let s = Status {
+            fork_digest: Bytes4::from_array([0x01, 0x00, 0x00, 0x00]),
+            finalized_root: Hash256::default(),
+            finalized_epoch: Epoch(0),
+            head_root: Hash256::default(),
+            head_slot: Slot(0),
+        };
+        assert_eq!(s.tree_hash_root(), s.tree_hash_root());
+        let s2 = Status {
+            head_slot: Slot(1),
+            ..s
+        };
+        assert_ne!(s.tree_hash_root(), s2.tree_hash_root());
+    }
+
+    // ── MetaData ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn metadata_ssz_roundtrip() {
+        let mut m = MetaData {
+            seq_number: 7,
+            ..MetaData::default()
+        };
+        m.attnets.set(0, true);
+        m.attnets.set(63, true);
+        let encoded = m.as_ssz_bytes();
+        // Fixed size: 8 (seq_number) + 8 (attnets bitvector = 64 bits / 8) = 16 bytes.
+        assert_eq!(encoded.len(), 16);
+        let decoded = MetaData::from_ssz_bytes(&encoded).expect("decode MetaData");
+        assert_eq!(m.seq_number, decoded.seq_number);
+        assert_eq!(m.attnets.get(0), decoded.attnets.get(0));
+        assert_eq!(m.attnets.get(63), decoded.attnets.get(63));
+    }
+
+    #[test]
+    fn metadata_tree_hash_deterministic() {
+        let m = MetaData::default();
+        assert_eq!(m.tree_hash_root(), m.tree_hash_root());
+    }
 }

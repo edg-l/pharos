@@ -8,12 +8,14 @@
 
 use pharos_ssz::TreeHash;
 use pharos_types::phase0::{
-    Attestation, AttestationData, Domain, Epoch, ForkData, IndexedAttestation, Root, SigningData,
-    Slot, ValidatorIndex,
+    Attestation, AttestationData, Domain, Epoch, IndexedAttestation, Root, SigningData, Slot,
+    ValidatorIndex,
 };
 use pharos_types::{BeaconStateView, EthSpec, views::BeaconBlockBodyView};
 use pharos_utils::hash::hash;
 use pharos_utils::{Bytes4, Gwei, Hash256};
+
+pub use pharos_types::fork::compute_fork_data_root;
 
 use crate::error::StateTransitionError;
 use crate::phase0::helpers::{GENESIS_EPOCH, uint_to_bytes};
@@ -247,15 +249,6 @@ pub fn get_total_active_balance<E: EthSpec>(state: &E::BeaconState) -> Gwei {
 
 // ── Domain / crypto helpers ───────────────────────────────────────────────────
 
-/// `compute_fork_data_root` per `specs/phase0/beacon-chain.md:936-948`.
-pub fn compute_fork_data_root(current_version: [u8; 4], genesis_validators_root: &Root) -> Root {
-    ForkData {
-        current_version: Bytes4::from_array(current_version),
-        genesis_validators_root: *genesis_validators_root,
-    }
-    .tree_hash_root()
-}
-
 /// `compute_domain` per `specs/phase0/beacon-chain.md:951-967`.
 pub fn compute_domain(
     domain_type: [u8; 4],
@@ -263,7 +256,8 @@ pub fn compute_domain(
     genesis_validators_root: &Root,
 ) -> Domain {
     use pharos_utils::Bytes32;
-    let fork_data_root = compute_fork_data_root(fork_version, genesis_validators_root);
+    let fork_data_root =
+        compute_fork_data_root(Bytes4::from_array(fork_version), genesis_validators_root);
     let mut out = [0u8; 32];
     out[..4].copy_from_slice(&domain_type);
     out[4..32].copy_from_slice(&fork_data_root.as_slice()[..28]);

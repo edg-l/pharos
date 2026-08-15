@@ -1,5 +1,24 @@
-//! Networking layer.
+//! Pharos networking layer.
 //!
 //! Built on raw `libp2p` + `discv5`. Owns the CL-specific surface: gossipsub
 //! topic schemes, message validation, req-resp protocol IDs, peer scoring,
 //! ENR / fork-digest handling.
+
+pub mod codec;
+pub mod discovery;
+pub mod error;
+pub mod gossip;
+pub mod handle;
+pub mod host;
+pub mod metadata;
+pub mod network;
+pub mod peer;
+pub mod rpc;
+pub mod scoring;
+pub mod topics;
+pub mod types;
+
+pub use error::NetworkError;
+pub use handle::NetworkHandle;
+pub use network::{Network, NetworkBuilder};
+pub use scoring::{NoopScorer, PeerScorer, ScoreEvent};
