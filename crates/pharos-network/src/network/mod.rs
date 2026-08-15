@@ -10,18 +10,19 @@
 pub mod behaviour;
 pub mod transport;
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use futures::StreamExt as _;
-use libp2p::gossipsub::{self, MessageAuthenticity};
+use libp2p::gossipsub::{self, IdentTopic, MessageAcceptance, TopicHash};
 use libp2p::identify;
 use libp2p::identity::Keypair;
 use libp2p::noise;
 use libp2p::ping;
 use libp2p::request_response::{self, ProtocolSupport};
-use libp2p::{Swarm, SwarmBuilder};
+use libp2p::{PeerId, Swarm, SwarmBuilder};
 use pharos_ssz::Bitvector;
 use pharos_types::EthSpec;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
@@ -30,14 +31,18 @@ use tokio::time::{Interval, interval};
 
 use discv5::enr::EnrKey as _;
 
+use crate::codec::snappy_frame::encode_snappy_frame;
 use crate::discovery::enr::Enr;
 use crate::discovery::service::{DiscoveryConfig, DiscoveryService};
 use crate::discovery::subnets::compute_subscribed_subnets;
 use crate::error::NetworkError;
+use crate::gossip::config::gossipsub_behaviour;
+use crate::gossip::{dispatch_gossip_message, subscribe_phase0_topics};
 use crate::handle::NetworkHandle;
-use crate::host::Host;
+use crate::host::{GossipVerdict, Host};
 use crate::peer::manager::PeerManager;
-use crate::scoring::PeerScorer;
+use crate::scoring::{PeerScorer, ScoreEvent};
+use crate::topics::GossipTopic;
 
 use behaviour::{PharosBehaviour, PharosBehaviourEvent, RpcProtocol};
 
@@ -69,10 +74,10 @@ pub enum NetworkEvent {}
 pub struct Network<E: EthSpec, H: Host<E>, S: PeerScorer> {
     swarm: Swarm<PharosBehaviour>,
     discovery: DiscoveryService,
-    #[allow(dead_code)]
     peer_manager: PeerManager<S>,
-    #[allow(dead_code)]
     host: Arc<H>,
+    /// Maps subscribed topic hashes to their parsed `GossipTopic` for dispatch.
+    topic_map: HashMap<TopicHash, GossipTopic>,
     command_rx: mpsc::Receiver<NetworkCommand>,
     #[allow(dead_code)]
     event_tx: mpsc::Sender<NetworkEvent>,
@@ -112,9 +117,125 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
         Ok(())
     }
 
-    async fn on_swarm_event(&mut self, _event: libp2p::swarm::SwarmEvent<PharosBehaviourEvent>) {
-        // Phase 4 wires gossip; Phase 5 wires req-resp; Phase 6 wires
-        // identify and scoring.
+    async fn on_swarm_event(&mut self, event: libp2p::swarm::SwarmEvent<PharosBehaviourEvent>) {
+        match event {
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::Gossipsub(gs_event)) => {
+                self.on_gossip_event(gs_event).await;
+            }
+            _ => {
+                tracing::debug!("swarm event: {:?}", event);
+            }
+        }
+    }
+
+    /// Handle an incoming gossipsub event.
+    async fn on_gossip_event(&mut self, event: gossipsub::Event) {
+        match event {
+            gossipsub::Event::Message {
+                propagation_source,
+                message_id,
+                message,
+            } => {
+                self.on_gossip_message(propagation_source, message_id, message)
+                    .await;
+            }
+            gossipsub::Event::Subscribed { peer_id, topic } => {
+                tracing::debug!(%peer_id, ?topic, "peer subscribed");
+            }
+            gossipsub::Event::Unsubscribed { peer_id, topic } => {
+                tracing::debug!(%peer_id, ?topic, "peer unsubscribed");
+            }
+            gossipsub::Event::GossipsubNotSupported { peer_id } => {
+                tracing::debug!(%peer_id, "gossipsub not supported");
+            }
+            gossipsub::Event::SlowPeer { peer_id, .. } => {
+                tracing::debug!(%peer_id, "slow peer");
+            }
+        }
+    }
+
+    /// Dispatch a received gossipsub `Message` through the validation pipeline.
+    async fn on_gossip_message(
+        &mut self,
+        propagation_source: PeerId,
+        message_id: gossipsub::MessageId,
+        message: gossipsub::Message,
+    ) {
+        // Look up the parsed topic from our subscription table.
+        let topic = match self.topic_lookup(&message.topic) {
+            Some(t) => t,
+            None => {
+                tracing::debug!(
+                    ?message.topic,
+                    "received gossip on unknown topic; ignoring"
+                );
+                return;
+            }
+        };
+
+        // Decode and validate via the host.
+        let verdict = dispatch_gossip_message::<E, H>(self.host.as_ref(), &topic, &message.data);
+
+        // Convert verdict to gossipsub MessageAcceptance.
+        let score_event;
+        let acceptance = match &verdict {
+            GossipVerdict::Accept => {
+                score_event = ScoreEvent::GossipAccept {
+                    topic: message.topic.clone(),
+                };
+                MessageAcceptance::Accept
+            }
+            GossipVerdict::Reject(reason) => {
+                score_event = ScoreEvent::GossipReject {
+                    topic: message.topic.clone(),
+                    reason: reason.clone(),
+                };
+                MessageAcceptance::Reject
+            }
+            GossipVerdict::Ignore(reason) => {
+                score_event = ScoreEvent::GossipIgnore {
+                    topic: message.topic.clone(),
+                    reason: reason.clone(),
+                };
+                MessageAcceptance::Ignore
+            }
+        };
+
+        // Report validation result to gossipsub.
+        if !self
+            .swarm
+            .behaviour_mut()
+            .gossipsub
+            .report_message_validation_result(&message_id, &propagation_source, acceptance)
+        {
+            tracing::debug!(%message_id, "report_message_validation_result returned false (message not in cache)");
+        }
+
+        // Record score event for the peer.
+        self.peer_manager
+            .record_event(propagation_source, score_event);
+    }
+
+    /// Look up a parsed `GossipTopic` by its `TopicHash`.
+    fn topic_lookup(&self, hash: &TopicHash) -> Option<GossipTopic> {
+        self.topic_map.get(hash).cloned()
+    }
+
+    /// Snappy-frame-encode `ssz_payload` and publish it to the given topic.
+    ///
+    /// Returns the `MessageId` assigned by gossipsub on success.
+    pub fn on_publish_command(
+        &mut self,
+        topic: GossipTopic,
+        ssz_payload: Vec<u8>,
+    ) -> Result<gossipsub::MessageId, NetworkError> {
+        let framed = encode_snappy_frame(&ssz_payload)?;
+        let ident = IdentTopic::new(topic.topic_str());
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(ident, framed)
+            .map_err(|e| NetworkError::Libp2p(format!("gossipsub publish error: {e}")))
     }
 
     #[allow(dead_code)]
@@ -235,8 +356,9 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
     /// 2. Compute initial subnet subscriptions from the node-id.
     /// 3. Start `DiscoveryService`.
     /// 4. Build the libp2p swarm via `SwarmBuilder`.
-    /// 5. Add TCP listener; optionally add QUIC listener.
-    /// 6. Wire mpsc channels and oneshot shutdown signal.
+    /// 5. Subscribe to Phase-0 gossipsub topics; build the topic lookup map.
+    /// 6. Add TCP listener; optionally add QUIC listener.
+    /// 7. Wire mpsc channels and oneshot shutdown signal.
     pub async fn build(self) -> Result<(Network<E, H, S>, NetworkHandle), NetworkError> {
         // ── Step 1: bridge libp2p keypair → discv5 CombinedKey ───────────────
         //
@@ -263,6 +385,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
 
         // ── Step 3: start DiscoveryService ───────────────────────────────────
         let fork_id = self.host.enr_fork_id();
+        let fork_digest = self.host.current_fork_digest();
         let discovery = DiscoveryService::start(DiscoveryConfig {
             listen_addr: self.discv5_addr,
             tcp_port: self.tcp_listen_port,
@@ -270,7 +393,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             bootnodes: self.bootnodes,
             local_key: combined_key,
             fork_id,
-            attnets,
+            attnets: attnets.clone(),
         })
         .await?;
 
@@ -278,14 +401,8 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
         let local_key = self.local_key.clone();
         let public_key = local_key.public();
 
-        let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .build()
-            .map_err(|e| NetworkError::Libp2p(e.to_string()))?;
-        let gossipsub = gossipsub::Behaviour::new(
-            MessageAuthenticity::Signed(local_key.clone()),
-            gossipsub_config,
-        )
-        .map_err(|e| NetworkError::Libp2p(e.to_string()))?;
+        // Use the spec-conforming gossipsub config (Phase 4).
+        let gossipsub = gossipsub_behaviour::<E>()?;
 
         let rr = request_response::Behaviour::new(
             [(RpcProtocol, ProtocolSupport::Full)],
@@ -316,9 +433,12 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             .with_swarm_config(|c| c.with_idle_connection_timeout(transport::idle_timeout()))
             .build();
 
-        // ── Step 5: add listeners ─────────────────────────────────────────────
+        // ── Step 5: subscribe to Phase-0 topics and build lookup map ─────────
         let mut swarm = swarm;
+        let topic_map =
+            subscribe_phase0_topics(&mut swarm.behaviour_mut().gossipsub, fork_digest, &attnets)?;
 
+        // ── Step 6: add listeners ─────────────────────────────────────────────
         let tcp_addr: libp2p::Multiaddr =
             format!("/ip4/{}/tcp/{}", self.listen_ip, self.tcp_listen_port)
                 .parse()
@@ -337,7 +457,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
                 .map_err(|e| NetworkError::Libp2p(e.to_string()))?;
         }
 
-        // ── Step 6: wire channels ─────────────────────────────────────────────
+        // ── Step 7: wire channels ─────────────────────────────────────────────
         let (cmd_tx, command_rx) = mpsc::channel::<NetworkCommand>(64);
         let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(1024);
         let (shutdown_tx, shutdown_signal) = oneshot::channel::<()>();
@@ -352,6 +472,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             discovery,
             peer_manager,
             host: self.host,
+            topic_map,
             command_rx,
             event_tx,
             discovery_tick,

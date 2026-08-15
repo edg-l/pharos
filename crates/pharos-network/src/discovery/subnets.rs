@@ -119,7 +119,6 @@ mod tests {
     /// Output:
     ///   Vector 1: [49, 50]
     ///   Vector 2: [0, 1]
-
     /// Vector 1: node_id = 0x0102...20 (bytes 1..=32), epoch = 100.
     ///
     /// node_id_prefix = raw[0] >> 2 = 0x01 >> 2 = 0.

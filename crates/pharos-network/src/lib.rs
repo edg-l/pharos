@@ -23,4 +23,5 @@ pub use handle::NetworkHandle;
 pub use host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict, Host};
 pub use network::{Network, NetworkBuilder};
 pub use scoring::{NoopScorer, PeerScorer, ScoreEvent};
+pub use topics::{GossipTopic, GossipTopicKind};
 pub use types::{ConnectionDirection, DisconnectReason, ForkDigest, PeerInfo, SubnetId};
