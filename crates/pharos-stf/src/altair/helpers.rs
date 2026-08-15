@@ -1168,6 +1168,7 @@ where
             .clone();
         v.slashed = true;
         v.withdrawable_epoch = new_withdrawable_epoch;
+        v.invalidate_cache();
         state.validators = state
             .validators
             .with_set(slashed_index.0 as usize, v)
@@ -1495,6 +1496,7 @@ pub(crate) fn initiate_validator_exit_altair_pub<
         .clone();
     v.exit_epoch = final_exit_epoch;
     v.withdrawable_epoch = withdrawable_epoch;
+    v.invalidate_cache();
     state.validators = state
         .validators
         .with_set(index.0 as usize, v)

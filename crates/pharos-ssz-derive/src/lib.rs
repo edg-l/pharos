@@ -21,6 +21,11 @@
 //!
 //! TreeHash: `TREE_HASH_TYPE = Container`. Root =
 //! `merkleize(&[f1.tree_hash_root(), f2.tree_hash_root(), ...])`.
+//!
+//! # Field attributes
+//!
+//! `#[ssz(skip)]` — exclude a field from SSZ encoding and decoding. The field
+//! must implement `Default`; it is set to `Default::default()` on decode.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -32,6 +37,26 @@ use syn::{Data, DeriveInput, Fields, parse_macro_input};
 struct NamedField {
     ident: syn::Ident,
     ty: syn::Type,
+    /// True when the field is annotated with `#[ssz(skip)]`.
+    skip: bool,
+}
+
+/// Parse `#[ssz(skip)]` from a field's attributes. Returns `true` if found.
+fn has_ssz_skip(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("ssz") {
+            return false;
+        }
+        // Parse the contents as a parenthesised list of idents.
+        let mut found = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("skip") {
+                found = true;
+            }
+            Ok(())
+        });
+        found
+    })
 }
 
 fn named_fields(input: &DeriveInput) -> syn::Result<Vec<NamedField>> {
@@ -51,6 +76,7 @@ fn named_fields(input: &DeriveInput) -> syn::Result<Vec<NamedField>> {
             .map(|f| NamedField {
                 ident: f.ident.clone().expect("named field has ident"),
                 ty: f.ty.clone(),
+                skip: has_ssz_skip(&f.attrs),
             })
             .collect()),
         _ => Err(syn::Error::new_spanned(
@@ -97,7 +123,7 @@ fn named_fields(input: &DeriveInput) -> syn::Result<Vec<NamedField>> {
 ///     fn ssz_append(&self, buf: &mut Vec<u8>) { ... }
 /// }
 /// ```
-#[proc_macro_derive(Encode)]
+#[proc_macro_derive(Encode, attributes(ssz))]
 pub fn derive_encode(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match derive_encode_impl(&input) {
@@ -111,10 +137,13 @@ fn derive_encode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let fields = named_fields(input)?;
 
-    let field_types: Vec<&syn::Type> = fields.iter().map(|f| &f.ty).collect();
-    let field_idents: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
+    // Only non-skipped fields participate in SSZ encoding.
+    let wire_fields: Vec<&NamedField> = fields.iter().filter(|f| !f.skip).collect();
 
-    // IS_FIXED_SIZE = AND of all field IS_FIXED_SIZE consts.
+    let field_types: Vec<&syn::Type> = wire_fields.iter().map(|f| &f.ty).collect();
+    let field_idents: Vec<&syn::Ident> = wire_fields.iter().map(|f| &f.ident).collect();
+
+    // IS_FIXED_SIZE = AND of all wire field IS_FIXED_SIZE consts.
     let is_fixed_size = if field_types.is_empty() {
         quote! { true }
     } else {
@@ -223,7 +252,7 @@ fn derive_encode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 ///
 /// Generates `Decode` for a struct with named fields using `SszDecoder` to
 /// split the byte slice into per-field slices.
-#[proc_macro_derive(Decode)]
+#[proc_macro_derive(Decode, attributes(ssz))]
 pub fn derive_decode(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match derive_decode_impl(&input) {
@@ -237,10 +266,14 @@ fn derive_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let fields = named_fields(input)?;
 
-    let field_types: Vec<&syn::Type> = fields.iter().map(|f| &f.ty).collect();
-    let field_idents: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
+    // Separate wire fields (participate in SSZ) from skipped fields.
+    let wire_fields: Vec<&NamedField> = fields.iter().filter(|f| !f.skip).collect();
+    let skip_fields: Vec<&NamedField> = fields.iter().filter(|f| f.skip).collect();
 
-    // IS_FIXED_SIZE: AND of all field IS_FIXED_SIZE.
+    let field_types: Vec<&syn::Type> = wire_fields.iter().map(|f| &f.ty).collect();
+    let field_idents: Vec<&syn::Ident> = wire_fields.iter().map(|f| &f.ident).collect();
+
+    // IS_FIXED_SIZE: AND of all wire field IS_FIXED_SIZE.
     let is_fixed_size = if field_types.is_empty() {
         quote! { true }
     } else {
@@ -270,7 +303,7 @@ fn derive_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         })
         .collect();
 
-    // Decode calls: one per field.
+    // Decode calls: one per wire field.
     let decode_calls: Vec<TokenStream2> = field_idents
         .iter()
         .zip(field_types.iter())
@@ -281,10 +314,23 @@ fn derive_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         })
         .collect();
 
-    // Struct construction.
+    // Skipped fields are initialised with Default::default().
+    let skip_defaults: Vec<TokenStream2> = skip_fields
+        .iter()
+        .map(|f| {
+            let id = &f.ident;
+            let ty = &f.ty;
+            quote! {
+                let #id: #ty = Default::default();
+            }
+        })
+        .collect();
+
+    // Struct construction includes all fields (wire + skipped).
+    let all_idents: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
     let construction = quote! {
         #name {
-            #(#field_idents),*
+            #(#all_idents),*
         }
     };
 
@@ -293,6 +339,7 @@ fn derive_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             if !bytes.is_empty() {
                 return Err(::pharos_ssz::SszError::ExtraBytes { extra: bytes.len() });
             }
+            #(#skip_defaults)*
             Ok(#construction)
         }
     } else {
@@ -301,6 +348,7 @@ fn derive_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             #(#register_calls)*
             #(#decode_calls)*
             decoder.finish()?;
+            #(#skip_defaults)*
             Ok(#construction)
         }
     };
@@ -335,7 +383,9 @@ fn derive_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 /// - `TREE_HASH_TYPE = TreeHashType::Container`.
 /// - `tree_hash_root` = `merkleize(&[f1.tree_hash_root(), f2.tree_hash_root(), ...])`.
 /// - `tree_hash_packed_encoding` = `unreachable!()` (containers are never packed).
-#[proc_macro_derive(TreeHash)]
+///
+/// Fields annotated with `#[ssz(skip)]` are excluded from the Merkle root computation.
+#[proc_macro_derive(TreeHash, attributes(ssz))]
 pub fn derive_tree_hash(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match derive_tree_hash_impl(&input) {
@@ -349,7 +399,9 @@ fn derive_tree_hash_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let fields = named_fields(input)?;
 
-    let field_idents: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
+    // Only non-skipped fields participate in Merkleization.
+    let wire_fields: Vec<&NamedField> = fields.iter().filter(|f| !f.skip).collect();
+    let field_idents: Vec<&syn::Ident> = wire_fields.iter().map(|f| &f.ident).collect();
 
     // Build the array of field roots.
     let field_root_exprs: Vec<TokenStream2> = field_idents

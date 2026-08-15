@@ -151,7 +151,10 @@ where
         self.eth1_deposit_index += 1;
     }
 
-    fn set_validator(&mut self, idx: usize, v: Validator) -> Result<(), StateTransitionError> {
+    fn set_validator(&mut self, idx: usize, mut v: Validator) -> Result<(), StateTransitionError> {
+        // Any direct field mutations on a cloned validator leave `cached_root`
+        // stale.  Reset it so the leaf node recomputes on the next hash walk.
+        v.invalidate_cache();
         self.validators = self
             .validators
             .with_set(idx, v)

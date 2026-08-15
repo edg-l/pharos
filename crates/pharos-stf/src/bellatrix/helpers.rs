@@ -474,6 +474,7 @@ pub(crate) fn initiate_validator_exit_bellatrix<
         .clone();
     v.exit_epoch = final_exit_epoch;
     v.withdrawable_epoch = pharos_types::phase0::Epoch(withdrawable_epoch_raw);
+    v.invalidate_cache();
     state.validators = state
         .validators
         .with_set(index.0 as usize, v)
@@ -578,6 +579,7 @@ where
             .clone();
         v.slashed = true;
         v.withdrawable_epoch = new_withdrawable_epoch;
+        v.invalidate_cache();
         state.validators = state
             .validators
             .with_set(slashed_index.0 as usize, v)

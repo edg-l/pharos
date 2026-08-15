@@ -31,6 +31,7 @@ fn make_validator(pubkey_byte: u8) -> Validator {
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
+        ..Validator::default()
     }
 }
 

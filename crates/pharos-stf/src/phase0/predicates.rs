@@ -118,6 +118,7 @@ mod tests {
             activation_epoch: Epoch(0),
             exit_epoch: Epoch(FAR_FUTURE_EPOCH),
             withdrawable_epoch: Epoch(FAR_FUTURE_EPOCH),
+            ..Validator::default()
         }
     }
 

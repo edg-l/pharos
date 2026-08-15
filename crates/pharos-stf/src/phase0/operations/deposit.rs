@@ -107,6 +107,7 @@ where
                 activation_epoch: Epoch(FAR_FUTURE_EPOCH),
                 exit_epoch: Epoch(FAR_FUTURE_EPOCH),
                 withdrawable_epoch: Epoch(FAR_FUTURE_EPOCH),
+                ..Validator::default()
             };
             state.push_validator(validator)?;
             state.push_balance(Gwei(amount))?;

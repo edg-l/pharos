@@ -747,6 +747,7 @@ mod tests {
             activation_epoch: Epoch(0),
             exit_epoch: Epoch(u64::MAX),
             withdrawable_epoch: Epoch(u64::MAX),
+            ..Validator::default()
         };
         state.push_validator(v).unwrap();
         state

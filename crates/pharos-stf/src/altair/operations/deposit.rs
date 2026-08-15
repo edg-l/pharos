@@ -182,6 +182,7 @@ fn apply_deposit_altair<
                 activation_epoch: Epoch(FAR_FUTURE_EPOCH),
                 exit_epoch: Epoch(FAR_FUTURE_EPOCH),
                 withdrawable_epoch: Epoch(FAR_FUTURE_EPOCH),
+                ..Validator::default()
             };
             state.validators = state
                 .validators

@@ -224,6 +224,7 @@ where
     fn set_validator_effective_balance(&mut self, idx: usize, val: Gwei) {
         let mut v = self.validators.get(idx).unwrap().clone();
         v.effective_balance = val;
+        v.invalidate_cache();
         self.validators = self
             .validators
             .with_set(idx, v)
@@ -233,6 +234,7 @@ where
     fn set_validator_activation_eligibility_epoch(&mut self, idx: usize, epoch: Epoch) {
         let mut v = self.validators.get(idx).unwrap().clone();
         v.activation_eligibility_epoch = epoch;
+        v.invalidate_cache();
         self.validators = self
             .validators
             .with_set(idx, v)
@@ -242,6 +244,7 @@ where
     fn set_validator_activation_epoch(&mut self, idx: usize, epoch: Epoch) {
         let mut v = self.validators.get(idx).unwrap().clone();
         v.activation_epoch = epoch;
+        v.invalidate_cache();
         self.validators = self
             .validators
             .with_set(idx, v)

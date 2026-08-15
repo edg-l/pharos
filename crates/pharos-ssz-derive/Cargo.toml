@@ -14,3 +14,7 @@ proc-macro = true
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
+
+[dev-dependencies]
+pharos-ssz.workspace = true
+pharos-utils.workspace = true
