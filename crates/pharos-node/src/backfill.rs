@@ -276,12 +276,15 @@ where
 
             let block_root: Root = extract_block_root::<E>(&signed);
 
-            // Task 3.2(a): on_block is idempotent (HashMap::insert semantics);
-            // no BlockKnown variant exists, so any Err is a real failure.
+            // on_block is idempotent on re-insertion (HashMap::insert semantics).
+            // A JoinError (panic) is fatal; a fork-choice rejection is NOT — a
+            // block momentarily ahead of the slot-clock's on_tick cursor would
+            // otherwise kill the follower permanently. Back off and retry from
+            // the recomputed head on the next iteration.
             let fc_clone = Arc::clone(&fc_store);
             let block_for_on_block = signed.clone();
             let pow_clone = Arc::clone(&pow_provider);
-            tokio::task::spawn_blocking(move || {
+            let on_block_res = tokio::task::spawn_blocking(move || {
                 let mut store = fc_clone.write();
                 pharos_fork_choice::on_block::<E, PP>(
                     &mut store,
@@ -291,7 +294,15 @@ where
                     &pow_clone,
                 )
             })
-            .await??;
+            .await?;
+            if let Err(e) = on_block_res {
+                warn!(%block_root, error = %e, "backfill: on_block rejected; backing off and retrying");
+                if *shutdown_rx.borrow() {
+                    return Ok(());
+                }
+                tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
+                break;
+            }
 
             // Forward execution payload to the engine driver for newPayloadV1.
             if let Some(payload) = E::get_execution_payload(&signed) {

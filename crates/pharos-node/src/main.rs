@@ -348,6 +348,38 @@ async fn main() -> anyhow::Result<()> {
 
     let fork_choice = Arc::new(RwLock::new(fc_store_mut));
 
+    // Slot-clock driver: advance the fork-choice store's time cursor every
+    // second so `on_block`'s future-slot guard tracks wall-clock. Without this
+    // the cursor is frozen at startup and every block past the startup slot is
+    // rejected as a "future block", stalling both backfill and gossip follow.
+    // Mirrors the per-slot `on_tick` every CL client runs.
+    {
+        let fc = Arc::clone(&fork_choice);
+        let mut shutdown_rx = pharos_node_shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let mut store = fc.write();
+                        on_tick::<MainnetEthSpec>(&mut store, now);
+                    }
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        info!("slot-clock on_tick driver started");
+    }
+
     // ── Step 4: Construct Engine API client + actor ───────────────────────
 
     // Build `watch` and `mpsc` channels for the engine driver loop.
