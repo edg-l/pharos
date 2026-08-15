@@ -2388,13 +2388,16 @@ verbatim and not imported).
 
 ## M6-Capella decisions
 
-**Status of this section**: PROPOSED stubs frozen at Phase 0. Each is finalized
-to ACCEPTED (with final rationale + any deviations found during implementation)
-in Phase 8. Plan: `docs/m6-capella-plan.md`. Spec: `~/dev/consensus-specs/specs/capella/*`.
+**Status of this section**: ACCEPTED (finalized at Phase 8 after the
+Bellatrix→Capella devnet acceptance). Plan: `docs/m6-capella-plan.md`. Spec:
+`~/dev/consensus-specs/specs/capella/*`. Two correctness ADRs
+(`D-live-fork-trigger-in-state-transition`, `D-runtime-cfg-threading-live-loops`)
+were added from devnet findings — see the "M6-Capella devnet correctness
+decisions" subsection at the end.
 
 ### D-capella-state-shape — Capella `BeaconState` field additions, `historical_roots` frozen
 
-**Status**: Proposed. **Date**: 2026-05-29.
+**Status**: Accepted. **Date**: 2026-05-29 (finalized 2026-05-30).
 
 Capella `BeaconState` adds `next_withdrawal_index: u64`,
 `next_withdrawal_validator_index: ValidatorIndex (u64)`, and
@@ -2409,7 +2412,7 @@ state with the clone-resets semantics from `D-validator-cache-clone-resets` /
 
 ### D-withdrawals-stf-shape — `process_withdrawals` native on Capella state
 
-**Status**: Proposed. **Date**: 2026-05-29.
+**Status**: Accepted. **Date**: 2026-05-29 (finalized 2026-05-30).
 
 `process_withdrawals(state, payload)` runs natively on the Capella state (not via
 projection — it touches Capella-only fields). `get_expected_withdrawals` returns the
@@ -2422,7 +2425,7 @@ unused). The spec's `assert payload.withdrawals == expected` becomes
 
 ### D-bls-to-exec-change-domain — fork-agnostic signing domain
 
-**Status**: Proposed. **Date**: 2026-05-29.
+**Status**: Accepted. **Date**: 2026-05-29 (finalized 2026-05-30).
 
 `DOMAIN_BLS_TO_EXECUTION_CHANGE = 0x0A000000`. `process_bls_to_execution_change`
 verifies the signature with a FORK-AGNOSTIC domain:
@@ -2433,7 +2436,7 @@ are valid across forks). Credential flip: `BLS_WITHDRAWAL_PREFIX` →
 
 ### D-engine-v2-dispatch — Engine API V2 method dispatch
 
-**Status**: Proposed. **Date**: 2026-05-29.
+**Status**: Accepted. **Date**: 2026-05-29 (finalized 2026-05-30).
 
 Add a `V2` arm to the existing `NewPayloadVersion` / `ForkchoiceUpdatedVersion` /
 `GetPayloadVersion` enums (per `D-engine-method-dispatch` from M4a). New wire types
@@ -2445,7 +2448,7 @@ fork-conditional (Capella head/block → V2, else V1). Wire casing verified agai
 
 ### D-capella-getpayload-deferral — `engine_getPayloadV2` live wiring deferred to M8
 
-**Status**: Proposed. **Date**: 2026-05-29.
+**Status**: Accepted. **Date**: 2026-05-29 (finalized 2026-05-30).
 
 `engine_getPayloadV2` wire type + version arm are added, but the live
 block-production driver path is NOT wired (Pharos is follow-only through M6).
@@ -2455,7 +2458,7 @@ deferred to M8. A TODO marks the deferral in `handle.rs`.
 
 ### D-historical-summaries-field — `historical_summaries` stays Naive backend
 
-**Status**: Proposed. **Date**: 2026-05-29.
+**Status**: Accepted. **Date**: 2026-05-29 (finalized 2026-05-30).
 
 `historical_summaries` is appended at most once per `SLOTS_PER_HISTORICAL_ROOT /
 SLOTS_PER_EPOCH` epochs (rare; not a hot per-block field), so it uses the `Naive`
@@ -2465,7 +2468,7 @@ hot-field list (`D-tree-backend-fields`) was re-checked for Capella and is uncha
 
 ### D-capella-fork-digest — Capella fork version + schedule growth
 
-**Status**: Proposed. **Date**: 2026-05-29.
+**Status**: Accepted. **Date**: 2026-05-29 (finalized 2026-05-30).
 
 Capella fork version `0x03000000` (mainnet; minimal `0x03000001` — confirm against
 preset/config). `ForkSchedule.fork_table()` grows from length 2 to length 3 with the
@@ -2476,7 +2479,7 @@ LC req-resp methods gain Capella arms; `fork_from_context` recognises the Capell
 
 ### D-capella-lc-header — Capella `LightClientHeader` execution payload + branch
 
-**Status**: Proposed. **Date**: 2026-05-29.
+**Status**: Accepted. **Date**: 2026-05-29 (finalized 2026-05-30).
 
 Capella `LightClientHeader` adds `execution: capella::ExecutionPayloadHeader` and
 `execution_branch: SszVector<Bytes32, 4>` (`floorlog2(EXECUTION_PAYLOAD_GINDEX=25)=4`).
@@ -2487,7 +2490,7 @@ are STF-verified (per M4c `D-bellatrix-lc-header-uses-state-root` precedent).
 
 ### D-folded-phase0-validators — implement the 3 deferred phase0 gossip validators
 
-**Status**: Proposed. **Date**: 2026-05-29.
+**Status**: Accepted. **Date**: 2026-05-29 (finalized 2026-05-30).
 
 `validate_voluntary_exit`, `validate_proposer_slashing`, `validate_attester_slashing`
 (currently `Accept` stubs in `host_impl.rs`) implemented in this milestone alongside
@@ -2537,10 +2540,67 @@ networks use distinct epochs). The `current_slot < boundary` guard is intentiona
 
 ### D-bls-to-exec-seen-cache — seen-cache key for bls_to_execution_change gossip
 
-**Status**: Proposed. **Date**: 2026-05-29.
+**Status**: Accepted. **Date**: 2026-05-29 (finalized 2026-05-30).
 
 The gossip seen-cache gains `bls_to_execution_change_indices: HashSet<ValidatorIndex>`
 (spec: IGNORE a second change for an already-seen validator index). Marked seen only
 AFTER an Accept verdict (per M4e `D-seen-cache-after-accept`). `validate_bls_to_execution_change`
 = 2 IGNORE (pre-CAPELLA_FORK_EPOCH; already-seen index) + 4 REJECT (index out of range;
 not a BLS withdrawal credential; pubkey-hash mismatch; bad signature).
+
+## M6-Capella devnet correctness decisions
+
+Two bugs surfaced ONLY on the live Bellatrix→Capella transition devnet (lighthouse
+v8.1.3 + ethrex v13, `CAPELLA_FORK_EPOCH=1`), not by any conformance category — the
+M6 analogue of the M5-follow live-only findings. Conformance is green because the
+`transition` runner drives the upgrade itself and the capella `sanity`/`operations`
+categories start from a capella anchor state; a real bellatrix→capella crossing only
+happens on a live network. Both fixed and re-verified live (pharos followed head 49
+capella slots past the fork, head==wall±1, 0 bans, 0 panics, ethrex `newPayloadV2`
+VALID, over 10 minutes).
+
+### D-live-fork-trigger-in-state-transition — wire `process_slots_fork` into the live STF entry
+
+**Status**: Accepted. **Date**: 2026-05-30.
+
+**Gap**: `D-live-fork-upgrade-trigger` (Phase 2) built and unit-tested
+`process_slots_fork` (cross-fork advance + irregular `upgrade_to_*` at the boundary)
+but never called it from the live STF entry point. `crates/pharos-stf/src/lib.rs::state_transition`
+dispatched purely on the PRE-STATE's `fork_variant()`: a bellatrix pre-state (slot 31)
++ a capella block (slot 32) entered the Bellatrix arm, `unwrap_bellatrix_signed_block`
+returned `None`, and the node returned `StateTransitionError::UnsupportedFork` and froze
+at the fork, retrying the first capella block forever.
+
+**Fix**: `state_transition` now calls
+`process_slots_fork(&mut state, E::signed_block_slot(signed_block), ForkEpochs::from_runtime_cfg(runtime_cfg), runtime_cfg)`
+BEFORE the per-fork dispatch. The block's slot is read fork-agnostically via a new
+`EthSpec::signed_block_slot` accessor (the block's fork never changes with the state).
+After the advance+upgrade the state matches the block's fork, and the per-fork
+`apply_signed_block`'s internal `process_slots_*(block.slot)` is a no-op because
+`process_slots_*` tolerate `target == state.slot` (they only error on `target < state.slot`).
+`ForkEpochs::from_runtime_cfg` derives the three fork epochs from `RuntimeConfig`, so no
+signature change. The `process_slots_fork` `*ProcessSlotsDispatch`/`*UpgradeDispatch`
+where-clause bounds were propagated to `state_transition` and the generic conformance
+runners (`finality`/`random`/`sanity`/`transition`); concrete-`EthSpec` callers satisfy
+them via blanket impls. No double-upgrade in the conformance transition runners: after a
+manual `upgrade_to_*` the state is already at the target fork, so `process_slots_fork`'s
+boundary check returns `None`. Regression test:
+`state_transition_crosses_bellatrix_to_capella`.
+
+### D-runtime-cfg-threading-live-loops — live import loops must use the loaded `RuntimeConfig`
+
+**Status**: Accepted. **Date**: 2026-05-30.
+
+**Gap**: even with `D-live-fork-trigger-in-state-transition` in place, the live import
+loops fed `state_transition` a DEFAULT `RuntimeConfig` (mainnet defaults have
+`CAPELLA_FORK_EPOCH = u64::MAX`), so `ForkEpochs::from_runtime_cfg` saw "never" and no
+upgrade fired — the node still froze at the fork. The three live import paths each
+hardcoded a default: `block_ingestion.rs` (`RuntimeConfig::default()`), `backfill.rs` and
+`lookup.rs` (`E::default_runtime_config()`). This was latent until M6 because no fork
+boundary was ever crossed live (M4d/M5-follow were bellatrix-at-genesis, no transition).
+
+**Fix**: all three loops now read the node's loaded config from the fork-choice store
+(`fc_store.read().runtime_cfg.clone()`), which `main.rs` populates from `--config-dir`
+before spawning the loops. The store already carried `runtime_cfg` (set alongside
+`set_fork_epochs`); the loops simply use it instead of a default. Falls back to default
+semantics naturally when `--config-dir` is absent (store defaults to `RuntimeConfig::default()`).
