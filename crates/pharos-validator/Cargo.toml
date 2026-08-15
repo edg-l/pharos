@@ -12,6 +12,38 @@ name = "pharos-vc"
 path = "src/main.rs"
 
 [dependencies]
+# Internal crates
 pharos-types.workspace = true
 pharos-ssz.workspace = true
 pharos-utils.workspace = true
+pharos-stf.workspace = true
+
+# HTTP client for BN
+reqwest.workspace = true
+url.workspace = true
+tokio.workspace = true
+
+# Slashing protection DB
+rusqlite.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Observability / errors
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+hex.workspace = true
+
+# EIP-2335 keystore crypto
+aes.workspace = true
+ctr.workspace = true
+hmac.workspace = true
+pbkdf2.workspace = true
+scrypt.workspace = true
+sha2.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

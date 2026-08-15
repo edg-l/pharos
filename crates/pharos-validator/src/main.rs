@@ -1,3 +1,9 @@
+pub mod bn_client;
+pub mod interchange;
+pub mod keystore;
+pub mod signing;
+pub mod slashing;
+
 // ── Optimistic-sync contract ──────────────────────────────────────────────────
 //
 // Per `consensus-specs/sync/optimistic.md` "Validator assignments":
