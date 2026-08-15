@@ -34,15 +34,13 @@ use pharos_engine::{EngineClient, JwtSecret, spawn_engine_actor};
 use pharos_fork_choice::{get_forkchoice_store, get_head};
 use pharos_network::network::NetworkEvent;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
-use pharos_ssz::{Encode, SszList, SszSequence as _, TreeHash};
+use pharos_ssz::{Encode, TreeHash};
 use pharos_stf::{NullExecutionEngine, state_transition};
 use pharos_types::bellatrix::{
-    MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
+    MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalSignedBeaconBlock,
     execution_payload::MinimalExecutionPayload,
 };
-use pharos_types::phase0::misc::{Fork, Validator};
-use pharos_types::phase0::operations::BeaconBlockHeader;
-use pharos_types::phase0::primitives::{Epoch, Gwei, Root, Slot, ValidatorIndex, Version};
+use pharos_types::phase0::primitives::{Root, Slot, ValidatorIndex, Version};
 use pharos_types::state::{
     BeaconBlock as ForkBeaconBlock, MinimalBeaconState as ForkMinimalBeaconState,
     SignedBeaconBlock as ForkSignedBeaconBlock,
@@ -60,6 +58,11 @@ use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_drive
 use pharos_node::host_impl::HostImpl;
 use pharos_node::pow_block::EnginePowBlockProvider;
 
+mod common;
+use common::checkpoint_helpers::{
+    TERMINAL_BLOCK_HASH_BYTES as CP_TERMINAL_HASH, build_anchor_bellatrix,
+};
+
 // ── Fixture constants ─────────────────────────────────────────────────────────
 
 /// Number of blocks to generate in the chain.
@@ -70,9 +73,8 @@ const N_BLOCKS: u64 = 4;
 const INVALID_BLOCK_SLOT: u64 = 3;
 
 /// `TERMINAL_BLOCK_HASH` for the merge-transition override mode.
-/// Block 1's `payload.parent_hash` is set to this value so the fork-choice
-/// merge-transition guard passes without consulting an EL.
-const TERMINAL_BLOCK_HASH_BYTES: [u8; 32] = [0x01u8; 32];
+/// Alias to the shared constant in `common::checkpoint_helpers`.
+const TERMINAL_BLOCK_HASH_BYTES: [u8; 32] = CP_TERMINAL_HASH;
 
 // ── Mock Engine API server ────────────────────────────────────────────────────
 
@@ -197,74 +199,18 @@ async fn spawn_mock() -> Mock {
 
 /// Build a minimal Bellatrix genesis state + anchor block pair.
 ///
-/// Sets `genesis_state.latest_block_header.body_root = anchor_body_root` so that
-/// `anchor_block.tree_hash_root() == latest_block_header.tree_hash_root()` after
-/// process_slot patches `state_root`.  This ensures the block-ingestion loop can
-/// look up the parent state from `block_states[block.parent_root]`.
-///
-/// Adds one active validator (index 0) with `effective_balance = MAX_EFFECTIVE_BALANCE`
-/// so that `get_beacon_proposer_index` can select a proposer (it asserts non-empty
-/// active-validator set).
+/// Delegates to `common::checkpoint_helpers::build_anchor_bellatrix` and wraps
+/// the concrete inner types into the fork-enum variants used by this test.
 fn build_genesis() -> (
     ForkMinimalBeaconState,
     ForkBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>,
 ) {
-    // Build the anchor body first so we can compute its root for latest_block_header.
-    let anchor_body = MinimalBeaconBlockBody::default();
-    let anchor_body_root: Root = anchor_body.tree_hash_root();
+    let (state_inner, signed_block_inner) = build_anchor_bellatrix(Slot(0), 0);
 
-    // One active validator at index 0.  `exit_epoch = u64::MAX` and `activation_epoch = 0`
-    // ensure it is active at any epoch.  `effective_balance = MAX_EFFECTIVE_BALANCE` ensures
-    // it is always selected by `compute_proposer_index` (the only validator in the set).
-    let validator = Validator {
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
-        activation_epoch: Epoch(0),
-        exit_epoch: Epoch(u64::MAX),
-        withdrawable_epoch: Epoch(u64::MAX),
-        slashed: false,
-        ..Validator::default()
-    };
+    let genesis_state = ForkMinimalBeaconState::Bellatrix(state_inner);
 
-    // Build genesis state.  `latest_block_header` must have `body_root = anchor_body_root`
-    // so that `anchor_block.tree_hash_root() == tree_hash_root(patched_latest_block_header)`.
-    let genesis_bellatrix = MinimalBeaconState {
-        genesis_time: 0,
-        slot: Slot(0),
-        fork: Fork {
-            previous_version: Version::from_array([0x01, 0x00, 0x00, 0x01]),
-            current_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
-            epoch: Epoch(0),
-        },
-        latest_block_header: BeaconBlockHeader {
-            slot: Slot(0),
-            proposer_index: ValidatorIndex(0),
-            parent_root: Root::default(),
-            state_root: Root::default(), // patched by process_slot when slot advances
-            body_root: anchor_body_root,
-        },
-        validators: SszList::with_push(&SszList::default(), validator).unwrap(),
-        balances: SszList::with_push(
-            &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
-        )
-        .unwrap(),
-        previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
-        current_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
-        inactivity_scores: SszList::with_push(&SszList::default(), 0u64).unwrap(),
-        ..MinimalBeaconState::default()
-    };
-
-    let genesis_state = ForkMinimalBeaconState::Bellatrix(genesis_bellatrix);
-    let state_root: Root = genesis_state.tree_hash_root();
-
-    // Anchor block at slot 0; state_root must equal genesis_state.tree_hash_root().
-    let anchor_block = ForkBeaconBlock::Bellatrix(MinimalBeaconBlock {
-        slot: Slot(0),
-        proposer_index: ValidatorIndex(0),
-        parent_root: Root::default(),
-        state_root,
-        body: anchor_body,
-    });
+    // Unwrap the signed block to get the unsigned ForkBeaconBlock.
+    let anchor_block = ForkBeaconBlock::Bellatrix(signed_block_inner.message);
 
     (genesis_state, anchor_block)
 }
