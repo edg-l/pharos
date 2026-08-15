@@ -6,16 +6,18 @@
 
 A from-scratch Rust Ethereum proof-of-stake consensus client.
 
-**Status: pre-alpha, M3b done.** Not usable as a node yet. Phase 0 and
-Altair conformance are both at 100% (all `phase0` and `altair` categories,
-zero failures) on both `mainnet` and `minimal` presets. State transition,
+**Status: pre-alpha, M4a done.** Not usable as a node yet. Phase 0,
+Altair, and Bellatrix conformance are all at 100% (all categories, zero
+failures) on both `mainnet` and `minimal` presets. State transition,
 LMD-GHOST + FFG fork choice, the M2 networking baseline (`discv5`, `libp2p`
 gossipsub + req-resp, peer manager, Status/Goodbye handshake), the M3a
 infrastructure (`pharos-storage` + RocksDB, real `Host<E>`, persistent
-restart), and M3b (Altair STF, enum-of-forks state, sync committees,
+restart), M3b (Altair STF, enum-of-forks state, sync committees,
 light-client server, MetaDataV2, context-bytes codec, cross-fork ENR
-migration, subnet rotation, YAML preset loader) are complete. Engine API
-client, Beacon API, and validator client are on the M4+ roadmap.
+migration, subnet rotation, YAML preset loader), and M4a (Engine API client
+with JWT auth, Bellatrix STF, fork-choice invalid-payload tracking, engine
+driver loop, in-process pipeline integration test) are complete. Beacon API
+and validator client are on the M4b+ roadmap.
 
 ## Philosophy
 
@@ -47,7 +49,7 @@ crates/
   pharos-storage       # Store trait + rocksdb backend
   pharos-fork-choice   # LMD-GHOST + FFG Casper
   pharos-stf           # process_block / process_epoch (phase0 + altair)
-  pharos-engine        # Engine API client (CL -> EL)    (skeleton)
+  pharos-engine        # Engine API client (CL -> EL)    (M4a)
   pharos-network       # libp2p + discv5 + gossip + req-resp
   pharos-api           # Beacon API HTTP server          (skeleton)
   pharos-node          # beacon-node binary `pharos`
@@ -77,7 +79,13 @@ boundary.
 - **M3b — Altair.** Sync committees, light-client server, MetaDataV2,
   context-aware req-resp codec, cross-fork ENR migration, subnet rotation,
   YAML preset loader. All `altair` conformance categories green. **Done.**
-- **M4 — Bellatrix + Engine API.** First merged sync against a devnet.
+- **M4a — Bellatrix + Engine API (in-process).** Engine API client (JWT,
+  `newPayloadV1`, `forkchoiceUpdatedV1`, `getPayloadV1`,
+  `exchangeCapabilities`), Bellatrix STF, invalid-payload tracking in fork
+  choice, engine driver loop, in-process pipeline integration test. All
+  `bellatrix` conformance categories green. **Done.**
+- **M4b–M4d — Checkpoint sync, backfill, devnet acceptance gate.** First
+  merged sync against a real ethrex devnet.
 - **M5–M10 — Capella, Deneb, Beacon API, validator client, Electra,
   Fulu (PeerDAS).**
 - **M11 — Productionization.** Checkpoint sync, weak subjectivity, backfill,

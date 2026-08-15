@@ -396,48 +396,42 @@ ship code with in-process integration tests against mocks; M4d is the
 single cross-client acceptance gate that validates the full M4 surface
 against real ethrex + Lighthouse processes in a hand-rolled devnet.
 
-#### M4a — Engine API + Bellatrix STF + in-process integration test
-- **`pharos-engine` real impl** (currently 7 LOC of `lib.rs`):
-  - Per-method endpoints at Bellatrix level: `engine_newPayloadV1`,
-    `engine_forkchoiceUpdatedV1`, `engine_getPayloadV1`,
-    `engine_exchangeCapabilities`. (Capella V2/V3, Deneb V3/V4, Electra V4
-    land in M5/M6/M9 respectively.) Method-version dispatch designed to
-    extend cleanly.
-  - Auxiliary `eth_*` endpoints the CL calls: `eth_chainId`,
-    `eth_getBlockByHash`, `eth_getBlockByNumber`,
-    `eth_syncing` (for EL health probes).
-  - JWT auth: HMAC-SHA256 token signing per the
-    `~/dev/execution-apis/src/engine/authentication.md` spec.
-    Secret loaded from `--jwt-secret <path>` (32 random bytes hex).
-  - EL health monitoring + simple failover for multi-EL setups
-    (full failover policy is M11).
-- **Bellatrix STF**: `process_execution_payload`, `BeaconBlockBodyBellatrix`,
-  `ExecutionPayload`, `upgrade_to_bellatrix`. Spec tests `bellatrix` green
-  (`transition`, `ssz_static`, `operations`, `epoch_processing`, `sanity`,
-  `finality`, `random`, `rewards`, `fork_choice`).
-- **fork-choice ↔ EL link**: every `on_block` that promotes the head
-  triggers `engine_forkchoiceUpdated` to the EL with
-  `(head_block_hash, safe_block_hash, finalized_block_hash)`. Reorgs
-  trigger fresh fcU.
-- **Invalid-payload tracking**: EL returns `{status: "INVALID"}` →
-  CL marks the block invalid in fork choice (new flag on
-  `ProtoArrayNode`) so it never re-becomes head.
-- **Backpressure on network event channel**: M2 uses `try_send` which
-  silently drops events under load. Bellatrix + Engine API load (every
-  slot drives fcU + payload validation) needs bounded-but-non-dropping
-  semantics. Bound the channel; switch to `send().await` with timeout
-  where slow consumer is acceptable; document the choice per channel.
-- **Engine API conformance scaffold**: add an `engine` category to
-  `pharos-conformance`, walking `~/dev/execution-apis/src/engine/*.yaml`.
-  M4a wires the runner + bellatrix YAML subset; later forks extend.
-- **In-process pipeline integration test**: fixture-driven test in
-  `crates/pharos-node/tests/engine_pipeline.rs` drives ~16 bellatrix
-  fixture blocks through `block_ingestion_loop` → STF → fork-choice →
-  engine driver → axum Engine API mock; asserts head advances per block,
-  `engine_newPayloadV1` is called per block, fcU is called per head
-  change, INVALID path tested via one INVALID-responding fixture. This
-  replaces the M4a-internal "first merged sync" gate; real-process
-  acceptance lives in M4d.
+#### M4a — Engine API + Bellatrix STF + in-process integration test (DONE)
+
+Delivered via commits `676984c` (EthSpec Bellatrix consts + ForkSchedule extension)
+→ `abffd78` (Bellatrix containers + fork-enum third variant)
+→ `c0c6ecd` (Bellatrix STF + `process_execution_payload` + `upgrade_to_bellatrix`)
+→ `170995b` (pharos-engine real impl: JSON-RPC + JWT + Bellatrix Engine methods)
+→ `a885d5e` (fork-choice ↔ engine wiring + invalid-payload tracking + head driver)
+→ `b2a234f` (Bellatrix conformance + Engine API conformance scaffold)
+→ `2f60ef8` (bounded backpressure on network event channel).
+
+- [x] **`pharos-engine` real impl**: `engine_newPayloadV1`,
+  `engine_forkchoiceUpdatedV1`, `engine_getPayloadV1`,
+  `engine_exchangeCapabilities`, `engine_exchangeTransitionConfigurationV1`.
+  JWT HS256 auth (`load_jwt_secret`, `sign_token`). Per-method version enums
+  (`NewPayloadVersion`, `ForkchoiceUpdatedVersion`, `GetPayloadVersion`).
+  `EngineHandle` actor + `EngineClient` HTTP transport. See ADR
+  `D-engine-method-dispatch`.
+- [x] **Bellatrix STF**: `process_execution_payload`, `BeaconBlockBodyBellatrix`,
+  `ExecutionPayload`, `upgrade_to_bellatrix`. All `bellatrix` spec-test
+  categories green (`transition`, `ssz_static`, `operations`, `epoch_processing`,
+  `sanity`, `finality`, `random`, `fork_choice`). See ADR `D-bellatrix-state-shape`.
+- [x] **fork-choice ↔ EL link**: `run_engine_driver_loop` via `tokio::watch`.
+  See ADR `D-engine-head-driver`.
+- [x] **Invalid-payload tracking**: `payload_statuses` map in
+  `pharos-fork-choice::Store`, `CF_PAYLOAD_STATUS` RocksDB column family,
+  `filter_block_tree` exclusion. See ADR `D-payload-status-store`.
+- [x] **Backpressure**: `send().await` + 1-second timeout on `NetworkEvent`
+  channel. See ADR `D-network-backpressure`.
+- [x] **Engine API conformance scaffold**: `pharos-conformance/src/engine.rs`,
+  axum mock runner. See ADR `D-engine-conformance-runner`.
+- [x] **In-process pipeline integration test**:
+  `crates/pharos-node/tests/engine_pipeline.rs`.
+
+Deferred from M4a: `get_safe_execution_block_hash` reorg-aware walk (M11),
+`engine_exchangeCapabilities` 60-second polling loop (M4b/M11), LC gossip
+validation bodies (M4c).
 
 #### M4b — Checkpoint sync + forward backfill (code + mock integration)
 - **Checkpoint sync** (moved here from M11): mainnet has 11M+ slots;
@@ -455,6 +449,23 @@ against real ethrex + Lighthouse processes in a hand-rolled devnet.
   sibling test) with a mock CL Beacon API serving a known finalized
   state; pharos jumps fork choice to it; backfills against the axum
   Engine API mock. No real ethrex required.
+- **`exchange_transition_configuration` TTD mismatch warning** (deferred from
+  M4a spec audit Task 7.6, paris.md:289): CL SHOULD log a user-visible error
+  when the EL's `terminalTotalDifficulty` value in the response mismatches the
+  locally configured value. Wire the comparison in `pharos-node` after calling
+  `exchange_transition_configuration` on startup.
+- **`exchange_transition_configuration` 60-second polling** (deferred from M4a
+  spec audit Task 7.6, paris.md:291): CL SHOULD poll
+  `engine_exchangeTransitionConfigurationV1` every 60 seconds. Currently called
+  once on startup (cached per `Q-exchange-capabilities-cadence`). Wire a
+  `tokio::time::interval(60s)` loop in the engine driver or a separate
+  keepalive task.
+- **Automatic `jwt.hex` generation** (deferred from M4a spec audit Task 7.6,
+  authentication.md:38): CL SHOULD generate and store a random 32-byte
+  `jwt.hex` when `--jwt-secret` is not supplied, rather than running without
+  authentication. Wire `OsRng::fill_bytes` + `std::fs::write` in
+  `pharos-node/src/main.rs` when `args.jwt_secret.is_none()` and an EL endpoint
+  is configured.
 
 #### M4c — LC gossip carry-ins + perf bench baseline
 - **LC gossip validation bodies** (deferred from M3b spec audit Task 9.7):

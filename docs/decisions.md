@@ -28,6 +28,9 @@ numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
   - D-altair-state-shape D-context-bytes-codec D-metadata-v2-dual-handle
   - D-light-client-server-only D-ethspec-yaml-loader
   - D-altair-transition-test-strategy D-sync-aggregate-bls D-fork-schedule-source
+- [M4a — Engine API + Bellatrix STF](#m4a-decisions)
+  - D-engine-method-dispatch D-engine-head-driver D-payload-status-store
+  - D-network-backpressure D-engine-conformance-runner D-bellatrix-state-shape
 
 ## M1 — Phase 0 STF + fork choice
 
@@ -1074,6 +1077,40 @@ Enforced in: `crates/pharos-types/src/fork.rs` (struct + accessors),
 
 ## M4a decisions
 
+### D-engine-method-dispatch — One `EngineClient`, per-method version enum, per-fork driver picks
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+`EngineClient` is a single struct; its public surface is one method per JSON-RPC operation
+(`fn new_payload`, `fn forkchoice_updated`, `fn get_payload`, `fn exchange_capabilities`,
+`fn exchange_transition_configuration`). Each method takes a version enum:
+
+```rust
+pub enum NewPayloadVersion { V1 /* M5: V2, M6: V3, M9: V4 */ }
+pub enum ForkchoiceUpdatedVersion { V1 /* M5: V2, M6: V3, M9: V4 */ }
+pub enum GetPayloadVersion { V1 /* M5: V2, M6: V3, M9: V4 */ }
+```
+
+The version determines the JSON-RPC method name (`engine_newPayloadV1` vs
+`engine_newPayloadV2`) and the input/output type. Inputs and outputs are
+enum-of-versions. The fork-driver picks the version from the current fork:
+Bellatrix → `V1`. Capella will add `V2`, Deneb `V3`, Electra `V4` with no
+`EngineClient` rewrite; the driver's match on `current_fork` grows arms. This
+avoids a per-fork trait (which would explode at four forks) and keeps the JSON-RPC
+plumbing in one struct.
+
+Rejected alternative: trait `EngineApi` with one impl per fork (e.g.
+`BellatrixEngine`, `CapellaEngine`). Would duplicate the HTTP transport, JWT
+signing, retry logic, and capabilities cache per fork; would force a
+trait-object indirection at the call site.
+
+Rejected alternative: dynamic JSON-RPC dispatch (build the method name from a
+`&str` and serialise an arbitrary value). Would lose compile-time type safety on
+request/response pairs.
+
+Enforced in: `crates/pharos-engine/src/client.rs:32-46` (version enums),
+`crates/pharos-engine/src/client.rs:143-207` (per-method dispatch).
+
 ### D-engine-head-driver — Head changes flow through a `tokio::watch` channel; sync fork choice never blocks on HTTP
 
 **Status**: Accepted. **Date**: 2026-05-25.
@@ -1118,3 +1155,105 @@ conservative and correct for a non-reorg-aware head driver.
 Enforced in: `crates/pharos-node/src/engine_driver.rs` (driver loop + types),
 `crates/pharos-node/src/block_ingestion.rs` (publisher),
 `crates/pharos-node/src/main.rs` (wiring).
+
+### D-payload-status-store — `Store<E>.payload_statuses` map; persisted alongside block bodies
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+`pharos-fork-choice::Store<E>` (in-memory) gains
+`payload_statuses: HashMap<Root, PayloadStatus>` and a setter
+`mark_payload_status(root, status)`. The fork-choice filter (`filter_block_tree`
+in `get_head.rs`) skips any root marked `Invalid`.
+
+`SYNCING` and `ACCEPTED` are reported by the EL when it hasn't validated the
+payload yet or has accepted but not made it canonical. These are modelled as
+`PayloadStatus::NotValidated`; fork choice continues to treat the block as
+eligible (does not exclude it).
+
+Persistence: the in-memory store is reconstructed from RocksDB at startup per
+the M3a `rehydrate_fork_choice_store` flow. `payload_statuses` are persisted
+as a new column family `CF_PAYLOAD_STATUS` (per-root mapping, `Root` → `u8`
+discriminant), written by an extended `BlockTransition` that takes an
+`Option<PayloadStatus>`. On rehydrate, the column is read into the in-memory map.
+
+Rejected alternative: keep invalid roots only in memory and re-query the EL on
+restart. Slow (potentially thousands of EL calls on startup) and the EL may not
+remember.
+
+Enforced in: `crates/pharos-fork-choice/src/store.rs:110-138` (`payload_statuses`
+field + `mark_payload_status`), `crates/pharos-fork-choice/src/get_head.rs:274-276`
+(`filter_block_tree` exclusion), `crates/pharos-storage/src/db.rs:133-310`
+(`CF_PAYLOAD_STATUS` column family + encode/decode helpers).
+
+### D-network-backpressure — `send().await` with 1-second timeout, drop after timeout, log loudly
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+The M2 `try_send`-then-drop policy (`D-channels`) was a placeholder. M4a replaces
+it with `send().await` wrapped in `tokio::time::timeout(Duration::from_secs(1), ...)`.
+On timeout the event is dropped but logged at `WARN` with the event variant name and
+the queue depth; the channel is left intact. The 1-second budget is slot_duration / 12
+— large enough that legitimate consumer hiccups don't trip it, small enough that a stuck
+consumer doesn't stall the event loop.
+
+Per channel:
+
+- `NetworkEvent` (consumer is the node block-ingestion loop): timeout + drop. Acceptable
+  because event loss is bounded; the network state is reconciled on the next peer interaction.
+- `NetworkCommand` (producer is the node, consumer is the network task): `send().await`
+  with no timeout. The node MUST wait; commands are authoritative and re-issuing complicates
+  state (e.g. `UpdateMetaData` carries a fresh `seq_number`).
+- `oneshot` reply channels (per-command result): unchanged.
+
+Enforced in: `crates/pharos-network/src/network/mod.rs:1191-1224` (back-pressure policy
+doc comment + `tokio::time::timeout` send in `emit_event`),
+`crates/pharos-network/src/network/mod.rs:188-210` (`NetworkEvent::variant_name()`).
+
+### D-engine-conformance-runner — In-process axum mock; `EngineClient` drives it; assert JSON equality
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+`crates/pharos-conformance/src/engine.rs` implements a YAML-driven runner. For each
+request/response example in `execution-apis/src/engine/openrpc/methods/*.yaml`:
+
+1. Spin up an axum HTTP server on `127.0.0.1:0` (OS-assigned port).
+2. Register a handler that stores the incoming JSON-RPC body in a shared `MockState`
+   and replies with the YAML `result` field verbatim.
+3. Build an `EngineClient` pointing at the loopback port with a known JWT secret.
+4. Invoke the method through `EngineClient`; assert the parsed response matches the
+   YAML example shape.
+5. Tear down the server after each example.
+
+This avoids running a real EL and gives a deterministic fixture loop. Future forks
+(Capella, Deneb, Electra) get YAML coverage for free once the runner is in place.
+The runner runs in tokio via `tokio::runtime::Runtime::new` in the conformance
+dispatcher.
+
+Enforced in: `crates/pharos-conformance/src/engine.rs:81-350` (`run_engine_yaml_suite`
+at 81, `run_method_examples` at 191, `mock_handler` at 254, `run_single_example` at 287),
+`crates/pharos-conformance/src/lib.rs:1632` (engine row wiring).
+
+### D-bellatrix-state-shape — Third enum variant, no `Box`; const-generic params extended
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+`pharos_types::state::BeaconState<...>` adds a `Bellatrix(_)` variant carrying
+`bellatrix::BeaconState<...>`. New const-generic parameters
+(`MAX_BYTES_PER_TRANSACTION`, `MAX_TRANSACTIONS_PER_PAYLOAD`,
+`BYTES_PER_LOGS_BLOOM`, `MAX_EXTRA_DATA_BYTES`) are added to the enum header so
+the Bellatrix variant compiles. The Phase 0 and Altair arms carry `PhantomData`
+over the new params (they don't use them).
+
+The variant size grows: Bellatrix carries `latest_execution_payload_header` (a
+fixed-size struct of ~700 bytes) plus all Altair fields. The R-state-bloat edge
+case in the M4a plan tracks the pad cost across the enum.
+
+Rejected alternative: `Box<bellatrix::BeaconState<...>>` to keep the enum small.
+Loses the M3b "zero indirection in STF hot path" rule. Bellatrix STF is no hotter
+than Altair; we accept the pad. Box-vs-inline trade-off re-evaluated in M11 alongside
+the persistent-tree swap.
+
+Enforced in: `crates/pharos-types/src/state.rs:36-90` (`BeaconState` enum definition
+with Bellatrix variant), `crates/pharos-types/src/bellatrix/state.rs` (Bellatrix inner
+state struct), `crates/pharos-stf/src/lib.rs` (outer fork dispatch for Bellatrix),
+`crates/pharos-stf/src/bellatrix/` (Bellatrix STF modules).
