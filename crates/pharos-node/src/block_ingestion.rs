@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use thiserror::Error;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tracing::{debug, warn};
 
 use pharos_fork_choice::Store as FcStore;
@@ -80,11 +80,17 @@ pub enum IngestionError {
 /// Bundles the head-change watch sender, new-payload mpsc sender, and the
 /// clonable network command sender so the ingestion loop can publish LC gossip
 /// updates without holding a non-`Clone` `NetworkHandle<E>`.
+///
+/// `notify_backfill` is fired via `notify_one()` whenever ingestion defers an
+/// orphan block (missing parent state), waking the backfill loop so it can
+/// heal the tip gap via range re-convergence.
 pub struct IngestionEgress<E: EthSpec> {
     pub head_tx: watch::Sender<Option<HeadChange>>,
     pub payload_tx: mpsc::Sender<NewPayloadRequest<E>>,
     /// Clonable command sender for publishing gossip messages.
     pub network: NetworkCommandSender<E>,
+    /// Wakes the backfill loop when an orphan block is deferred.
+    pub notify_backfill: std::sync::Arc<Notify>,
 }
 
 // ── run_block_ingestion_loop ──────────────────────────────────────────────────
@@ -168,36 +174,31 @@ where
         // (b) Decode SSZ bytes by the topic's fork-digest. Gossip beacon_block
         // carries raw per-fork SSZ with no discriminant prefix — the fork is
         // determined by the topic's fork-digest, not a leading byte.
-        let signed_block: E::SignedBeaconBlock =
-            match host.fork_from_context(&topic.fork_digest.into_inner()) {
-                Some(Fork::Bellatrix) => {
-                    match E::BellatrixSignedBeaconBlock::from_ssz_bytes(&data) {
-                        Ok(inner) => E::bellatrix_into_signed_block(inner),
-                        Err(e) => {
-                            warn!(error = ?e, "block_ingestion: bellatrix SSZ decode failed; dropping");
-                            continue;
-                        }
-                    }
+        let signed_block: E::SignedBeaconBlock = match host
+            .fork_from_context(&topic.fork_digest.into_inner())
+        {
+            Some(Fork::Bellatrix) => match E::BellatrixSignedBeaconBlock::from_ssz_bytes(&data) {
+                Ok(inner) => E::bellatrix_into_signed_block(inner),
+                Err(e) => {
+                    warn!(error = ?e, "block_ingestion: bellatrix SSZ decode failed; dropping");
+                    continue;
                 }
-                Some(Fork::Altair) => {
-                    match E::AltairSignedBeaconBlock::from_ssz_bytes(&data) {
-                        Ok(inner) => E::altair_into_signed_block(inner),
-                        Err(e) => {
-                            warn!(error = ?e, "block_ingestion: altair SSZ decode failed; dropping");
-                            continue;
-                        }
-                    }
+            },
+            Some(Fork::Altair) => match E::AltairSignedBeaconBlock::from_ssz_bytes(&data) {
+                Ok(inner) => E::altair_into_signed_block(inner),
+                Err(e) => {
+                    warn!(error = ?e, "block_ingestion: altair SSZ decode failed; dropping");
+                    continue;
                 }
-                Some(Fork::Phase0) | None => {
-                    match E::Phase0SignedBeaconBlock::from_ssz_bytes(&data) {
-                        Ok(inner) => E::phase0_into_signed_block(inner),
-                        Err(e) => {
-                            warn!(error = ?e, "block_ingestion: phase0 SSZ decode failed; dropping");
-                            continue;
-                        }
-                    }
+            },
+            Some(Fork::Phase0) | None => match E::Phase0SignedBeaconBlock::from_ssz_bytes(&data) {
+                Ok(inner) => E::phase0_into_signed_block(inner),
+                Err(e) => {
+                    warn!(error = ?e, "block_ingestion: phase0 SSZ decode failed; dropping");
+                    continue;
                 }
-            };
+            },
+        };
 
         // (c) Fetch pre_state from the fork-choice store.
         let pre_state = {
@@ -208,7 +209,8 @@ where
             match store.block_states.get(&parent_root).cloned() {
                 Some(s) => s,
                 None => {
-                    warn!(%parent_root, "block_ingestion: missing parent state; dropping block");
+                    debug!(%parent_root, "block_ingestion: missing parent; deferring to backfill");
+                    egress.notify_backfill.notify_one();
                     continue;
                 }
             }

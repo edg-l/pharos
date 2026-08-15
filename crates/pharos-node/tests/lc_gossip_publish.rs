@@ -19,10 +19,12 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use pharos_engine::spawn_engine_actor;
 use pharos_fork_choice::get_forkchoice_store;
+use pharos_network::host::ForkContext as _;
 use pharos_network::host::LightClientProvider as _;
 use pharos_network::network::NetworkCommand;
 use pharos_network::network::NetworkEvent;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
+use pharos_network::types::Fork as NetworkFork;
 use pharos_ssz::{Bitvector, SszList, SszSequence as _, SszVector, TreeHash};
 use pharos_stf::NullExecutionEngine;
 use pharos_types::altair::{
@@ -35,9 +37,7 @@ use pharos_types::altair::{
 use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::misc::{Fork, Validator};
 use pharos_types::phase0::operations::BeaconBlockHeader;
-use pharos_types::phase0::primitives::{
-    Epoch, ForkDigest, Gwei, Root, Slot, ValidatorIndex, Version,
-};
+use pharos_types::phase0::primitives::{Epoch, Gwei, Root, Slot, ValidatorIndex, Version};
 use pharos_types::phase0::{
     BeaconBlock as Phase0MinimalBeaconBlock, BeaconBlockBody as Phase0MinimalBeaconBlockBody,
     SignedBeaconBlock as Phase0MinimalSignedBeaconBlock,
@@ -301,6 +301,7 @@ async fn snapshots_written_after_altair_block() {
         head_tx,
         payload_tx,
         network: net_sender,
+        notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
     };
 
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(4);
@@ -321,9 +322,16 @@ async fn snapshots_written_after_altair_block() {
     });
 
     // SSZ-encode the fork-enum signed block and send as a GossipMessage.
+    // Use the host's real Altair fork-digest so the by-fork-digest decode in
+    // run_block_ingestion_loop (commit 211fd00) resolves to Altair, not Phase0.
     use pharos_ssz::Encode as _;
-    let ssz_bytes = signed_block.as_ssz_bytes();
-    let fork_digest = ForkDigest::from_array([0u8; 4]);
+    // Real gossip carries the raw per-fork SSZ (no fork-enum discriminant), so
+    // encode the inner per-fork block directly, matching the network wire format.
+    let ssz_bytes = match &signed_block {
+        ForkMinimalSignedBeaconBlock::Altair(inner) => inner.as_ssz_bytes(),
+        _ => unreachable!("build_altair_signed_block always yields an Altair block"),
+    };
+    let fork_digest = host.fork_digest_for(NetworkFork::Altair);
     let topic = GossipTopic {
         fork_digest,
         kind: GossipTopicKind::BeaconBlock,
@@ -376,6 +384,7 @@ async fn publish_called_after_head_change() {
         head_tx,
         payload_tx,
         network: net_sender,
+        notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
     };
 
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(4);
@@ -396,8 +405,14 @@ async fn publish_called_after_head_change() {
     });
 
     use pharos_ssz::Encode as _;
-    let ssz_bytes = signed_block.as_ssz_bytes();
-    let fork_digest = ForkDigest::from_array([0u8; 4]);
+    // Real gossip carries the raw per-fork SSZ (no fork-enum discriminant), so
+    // encode the inner per-fork block directly, matching the network wire format.
+    let ssz_bytes = match &signed_block {
+        ForkMinimalSignedBeaconBlock::Altair(inner) => inner.as_ssz_bytes(),
+        _ => unreachable!("build_altair_signed_block always yields an Altair block"),
+    };
+    // Real Altair fork-digest so the by-fork-digest decode resolves to Altair.
+    let fork_digest = host.fork_digest_for(NetworkFork::Altair);
     let topic = GossipTopic {
         fork_digest,
         kind: GossipTopicKind::BeaconBlock,
@@ -619,6 +634,7 @@ async fn no_publish_for_phase0_block() {
         head_tx,
         payload_tx,
         network: net_sender,
+        notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
     };
 
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(4);
@@ -639,8 +655,13 @@ async fn no_publish_for_phase0_block() {
     });
 
     use pharos_ssz::Encode as _;
-    let ssz_bytes = p0_signed.as_ssz_bytes();
-    let fork_digest = ForkDigest::from_array([0u8; 4]);
+    // Encode the inner Phase0 block directly (raw gossip carries no discriminant).
+    let ssz_bytes = match &p0_signed {
+        ForkMinimalSignedBeaconBlock::Phase0(inner) => inner.as_ssz_bytes(),
+        _ => unreachable!("this test constructs a Phase0 block"),
+    };
+    // Real Phase0 fork-digest (round-trips to Phase0 via fork_from_context).
+    let fork_digest = host.fork_digest_for(NetworkFork::Phase0);
     let topic = GossipTopic {
         fork_digest,
         kind: GossipTopicKind::BeaconBlock,

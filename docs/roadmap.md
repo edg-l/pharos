@@ -459,8 +459,9 @@ pipeline integration test â€” `checkpoint_backfill_pipeline.rs`, 10-run green) â
   tamper flag. See ADRs `D-checkpoint-sync-source`, `D-anchor-state-on-disk`,
   `D-anchor-as-weak-subj-root`.
 - [x] **Forward backfill**: `run_backfill_loop` in `pharos-node/src/backfill.rs`.
-  `BeaconBlocksByRange` chunks of 64, STF + fork-choice advance, exits within
-  `BACKFILL_TAIL_LAG_SLOTS`. See ADR `D-backfill-driver`.
+  `BeaconBlocksByRange` chunks of 64, STF + fork-choice advance. Long-running
+  re-converging loop that heals to `wall_slot - 1` and parks on a `Notify`
+  (M5). See ADRs `D-backfill-driver`, `D-following-via-range-reconvergence`.
 - [x] **Engine API conformance extension**: `engine/yaml` row `pass=6 fail=0`.
 - [x] **Mock pipeline integration test**:
   `crates/pharos-node/tests/checkpoint_backfill_pipeline.rs`, axum mocks for

@@ -469,10 +469,12 @@ async fn main() -> anyhow::Result<()> {
         genesis_validators_root,
     });
 
-    // Genesis time: for a production node this would be read from the chain
-    // database or the genesis state's `genesis_time` field. For now, use
-    // wall clock as a conservative approximation (cold-start scenario).
-    let genesis_time_secs = wall_clock_secs;
+    // genesis_time is populated by every startup branch (cold, checkpoint, warm).
+    let (genesis_time_secs, anchored_slot) = {
+        let s = fork_choice.read();
+        (s.genesis_time, pharos_fork_choice::get_current_slot(&s))
+    };
+    info!(genesis_time = genesis_time_secs, current_slot = %anchored_slot, "slot clock anchored");
 
     // Wrap in Arc so we can retain a handle for record_attnets_change after
     // passing a clone into the network builder. Arc<HostImpl<E>> satisfies
@@ -566,6 +568,10 @@ async fn main() -> anyhow::Result<()> {
         // Build production PoW-block provider for the merge-transition guard.
         let pow_provider = Arc::new(EnginePowBlockProvider::new(engine_handle.clone()));
 
+        // Shared Notify: fired by ingestion when an orphan is deferred, wakes
+        // the backfill loop for tip re-convergence.
+        let notify_backfill = std::sync::Arc::new(tokio::sync::Notify::new());
+
         // Take the network event receiver and spawn the block-ingestion loop.
         let event_rx = handle.take_event_receiver();
         {
@@ -579,6 +585,7 @@ async fn main() -> anyhow::Result<()> {
                 head_tx: head_tx_clone,
                 payload_tx: payload_tx_clone,
                 network: handle.command_sender(),
+                notify_backfill: notify_backfill.clone(),
             };
             tokio::spawn(async move {
                 if let Err(e) = run_block_ingestion_loop::<MainnetEthSpec, ExecutionEngineHandle>(
@@ -626,6 +633,7 @@ async fn main() -> anyhow::Result<()> {
                     payload_tx,
                     genesis_time_secs,
                     shutdown_rx,
+                    notify_backfill,
                 )
                 .await
                 {

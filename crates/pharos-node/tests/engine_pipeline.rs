@@ -32,8 +32,10 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use parking_lot::{Mutex, RwLock};
 use pharos_engine::{EngineClient, JwtSecret, spawn_engine_actor};
 use pharos_fork_choice::{get_forkchoice_store, get_head};
+use pharos_network::host::ForkContext as _;
 use pharos_network::network::NetworkEvent;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
+use pharos_network::types::Fork as NetworkFork;
 use pharos_ssz::{Encode, SszSequence, TreeHash};
 use pharos_stf::{NullExecutionEngine, state_transition};
 use pharos_types::bellatrix::{
@@ -504,6 +506,7 @@ async fn engine_pipeline_drives_bellatrix_chain() {
             head_tx: head_tx.clone(),
             payload_tx,
             network: dummy_net,
+            notify_backfill: std::sync::Arc::new(tokio::sync::Notify::new()),
         };
         tokio::spawn(async move {
             if let Err(e) = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
@@ -524,7 +527,9 @@ async fn engine_pipeline_drives_bellatrix_chain() {
 
     // 6. Send blocks through the gossip event channel.
     //    Flip the mock to INVALID before the INVALID_BLOCK_SLOT block's engine-driver call.
-    let fork_digest = pharos_types::phase0::primitives::ForkDigest::from_array([0u8; 4]);
+    //    Use the host's real Bellatrix fork-digest so the by-fork-digest decode in
+    //    run_block_ingestion_loop (commit 211fd00) resolves to Bellatrix, not Phase0.
+    let fork_digest = host.fork_digest_for(NetworkFork::Bellatrix);
     let topic = GossipTopic {
         fork_digest,
         kind: GossipTopicKind::BeaconBlock,
@@ -583,7 +588,12 @@ async fn engine_pipeline_drives_bellatrix_chain() {
             );
         }
 
-        let ssz_bytes = signed_block.as_ssz_bytes();
+        // Real gossip carries the raw per-fork SSZ (no fork-enum discriminant), so
+        // encode the inner Bellatrix block directly, matching the network wire format.
+        let ssz_bytes = match signed_block {
+            MinForkSignedBlock::Bellatrix(inner) => inner.as_ssz_bytes(),
+            _ => unreachable!("build_chain always yields Bellatrix blocks"),
+        };
         event_tx
             .send(NetworkEvent::GossipMessage {
                 topic: topic.clone(),

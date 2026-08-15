@@ -463,6 +463,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
                 pt,
                 backfill_genesis_time_secs,
                 shutdown_rx,
+                std::sync::Arc::new(tokio::sync::Notify::new()),
             )
             .await
         })

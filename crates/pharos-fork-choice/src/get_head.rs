@@ -562,3 +562,76 @@ where
 
     head_root
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use pharos_types::{
+        EthSpec, MinimalEthSpec,
+        phase0::{Checkpoint, Root},
+    };
+    use pharos_utils::{Hash256, Uint256};
+
+    use crate::store::Store;
+
+    /// Build a bare `Store<MinimalEthSpec>` with all maps empty and the given
+    /// `genesis_time`/`time`.  Only the fields consulted by `get_current_slot`
+    /// matter; everything else is zeroed/defaulted.
+    fn minimal_store(genesis_time: u64, time: u64) -> Store<MinimalEthSpec> {
+        let cp = Checkpoint::default();
+        Store {
+            time,
+            genesis_time,
+            justified_checkpoint: cp.clone(),
+            finalized_checkpoint: cp.clone(),
+            unrealized_justified_checkpoint: cp.clone(),
+            unrealized_finalized_checkpoint: cp,
+            proposer_boost_root: Root::default(),
+            equivocating_indices: HashSet::new(),
+            blocks: HashMap::new(),
+            block_states: HashMap::new(),
+            block_timeliness: HashMap::new(),
+            checkpoint_states: HashMap::new(),
+            latest_messages: HashMap::new(),
+            unrealized_justifications: HashMap::new(),
+            payload_statuses: HashMap::new(),
+            terminal_total_difficulty: Uint256::ZERO,
+            terminal_block_hash: Hash256::default(),
+            terminal_block_hash_activation_epoch: u64::MAX,
+        }
+    }
+
+    /// Pins the contract: `get_current_slot` derives the slot from the Store's
+    /// `genesis_time`, not from the wall clock.
+    ///
+    /// Two assertions:
+    /// 1. `genesis_time == wall_now` with `time == wall_now` → `Slot(0)`.
+    /// 2. `genesis_time == wall_now - N * seconds_per_slot` with `time == wall_now`
+    ///    → `Slot(N)`.
+    #[test]
+    fn current_slot_tracks_store_genesis_not_wallclock() {
+        use super::get_current_slot;
+        use pharos_types::phase0::Slot;
+
+        let wall_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_secs();
+
+        let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000;
+
+        // 1. genesis == now → slot 0.
+        let store = minimal_store(wall_now, wall_now);
+        assert_eq!(get_current_slot(&store), Slot(0));
+
+        // 2. genesis N slots ago → Slot(N).
+        const N: u64 = 100;
+        let genesis_time = wall_now - N * seconds_per_slot;
+        let store = minimal_store(genesis_time, wall_now);
+        assert_eq!(get_current_slot(&store), Slot(N));
+    }
+}

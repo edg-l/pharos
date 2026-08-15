@@ -4,8 +4,11 @@
 //! runs the STF on each returned block, and calls `on_block` to advance the
 //! fork-choice store toward the wall-clock head.
 //!
-//! The loop exits when `head_slot + BACKFILL_TAIL_LAG_SLOTS >= wall_slot`,
-//! meaning the chain is caught up within the configured lag window.
+//! The loop heals the chain to `wall_slot - 1` (tolerating the in-progress
+//! slot), then parks on a hybrid `tokio::select!` waiting for either a
+//! `tokio::sync::Notify` wake (fired by the ingestion loop when it defers an
+//! orphan) or a `BACKFILL_FOLLOW_FALLBACK` backstop timer.  The loop never
+//! exits while caught up — only when `shutdown_rx` fires.
 //!
 //! Design note: `BackfillBlockProvider` uses native `async fn` in trait (Rust
 //! 1.85 stable, no `async-trait` needed) because it is always used as a
@@ -18,8 +21,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
-use tokio::sync::{mpsc, watch};
-use tracing::{info, warn};
+use tokio::sync::{Notify, mpsc, watch};
+use tracing::{debug, info, warn};
 
 use pharos_fork_choice::Store as FcStore;
 use pharos_stf::{StateTransitionError, state_transition};
@@ -47,9 +50,13 @@ pub const BACKFILL_REQ_TIMEOUT: Duration = Duration::from_secs(15);
 /// Wait between retries when no peers are available or the provider fails.
 pub const BACKFILL_RETRY_DELAY: Duration = Duration::from_secs(5);
 
-/// The loop exits when `head_slot + BACKFILL_TAIL_LAG_SLOTS >= wall_slot`.
-/// Two-slot lag matches the network propagation slack used elsewhere.
-pub const BACKFILL_TAIL_LAG_SLOTS: u64 = 2;
+/// Backstop wake interval (~4 mainnet slots); the Notify is the primary wake.
+///
+/// When the ingestion loop defers an orphan it fires the `Notify` immediately,
+/// so normal tip-following wakes in under one gossip round-trip.  The fallback
+/// ensures the loop periodically re-checks even if no orphan arrives (e.g.
+/// when the node is behind and no gossip blocks are visible yet).
+pub const BACKFILL_FOLLOW_FALLBACK: Duration = Duration::from_secs(48);
 
 // ── BackfillError ─────────────────────────────────────────────────────────────
 
@@ -90,8 +97,11 @@ pub trait BackfillBlockProvider<E: EthSpec>: Send + Sync + 'static {
 /// Async forward-backfill loop.
 ///
 /// Repeatedly fetches chunks of blocks from `provider`, runs the STF, and
-/// calls `on_block` on each.  Exits when the head is within
-/// `BACKFILL_TAIL_LAG_SLOTS` of wall-clock, or when `shutdown_rx` fires.
+/// calls `on_block` on each.  Heals the chain up to `wall_slot - 1`, then
+/// parks on a hybrid `select!` that wakes on `notify` (fired by the ingestion
+/// loop when it defers an orphan block) or on `BACKFILL_FOLLOW_FALLBACK` as a
+/// backstop.  The loop never exits while caught up — only when `shutdown_rx`
+/// fires.
 ///
 /// Per Task 3.3 design (D-backfill-driver):
 /// - Head slot computed via `get_head` + `store.blocks` lookup (no `head_slot()`
@@ -109,7 +119,8 @@ pub async fn run_backfill_loop<E, P, EE, PP>(
     head_tx: watch::Sender<Option<HeadChange>>,
     payload_tx: mpsc::Sender<NewPayloadRequest<E>>,
     genesis_time_secs: u64,
-    shutdown_rx: watch::Receiver<bool>,
+    mut shutdown_rx: watch::Receiver<bool>,
+    notify: std::sync::Arc<Notify>,
 ) -> Result<(), BackfillError>
 where
     E: EthSpec,
@@ -167,18 +178,32 @@ where
 
         let wall_slot = current_slot(genesis_time_secs, seconds_per_slot);
 
-        // Exit condition: head is within BACKFILL_TAIL_LAG_SLOTS of wall clock.
-        if head_slot.0 + BACKFILL_TAIL_LAG_SLOTS >= wall_slot {
-            info!(
+        // Tolerate the in-progress slot: heal up to but not including the
+        // currently-building slot.
+        let fetch_target = wall_slot.saturating_sub(1);
+
+        // Caught-up: park until notified (orphan deferred by ingestion),
+        // a fallback timer fires, or shutdown is requested.
+        if head_slot.0 >= fetch_target {
+            debug!(
                 head = %head_slot,
                 wall = %wall_slot,
-                "backfill caught up; exiting"
+                "backfill: caught up; parking until notified"
             );
-            return Ok(());
+            tokio::select! {
+                _ = notify.notified() => {}
+                _ = tokio::time::sleep(BACKFILL_FOLLOW_FALLBACK) => {}
+                _ = shutdown_rx.changed() => {}
+            }
+            if *shutdown_rx.borrow() {
+                info!("backfill: shutdown; exiting");
+                return Ok(());
+            }
+            continue;
         }
 
         let start = Slot(head_slot.0 + 1);
-        let remaining = wall_slot.saturating_sub(start.0) + 1;
+        let remaining = fetch_target.saturating_sub(start.0) + 1;
         let count = remaining.min(BACKFILL_CHUNK_SIZE);
 
         let blocks = match provider.blocks_by_range(start, count).await {
@@ -198,7 +223,12 @@ where
         };
 
         if blocks.is_empty() {
-            // Peer returned no blocks; back off before retrying.
+            // Peer returned no blocks; back off before retrying. Honor shutdown
+            // first so a node teardown isn't stalled for BACKFILL_RETRY_DELAY
+            // (mirrors the NoUsablePeers path above).
+            if *shutdown_rx.borrow() {
+                return Ok(());
+            }
             tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
             continue;
         }
@@ -222,7 +252,7 @@ where
             let pre_state = match pre_state {
                 Some(s) => s,
                 None => {
-                    warn!(
+                    debug!(
                         %parent_root,
                         "backfill: missing parent state; aborting chunk"
                     );
@@ -354,7 +384,7 @@ mod tests {
     };
     use pharos_utils::bls::BLS_DST;
     use pharos_utils::{BLSPubkey, BLSSignature, Hash256};
-    use tokio::sync::{mpsc, watch};
+    use tokio::sync::{Notify, mpsc, watch};
 
     use crate::engine_driver::{HeadChange, NewPayloadRequest};
     use crate::host_impl::HostImpl;
@@ -749,31 +779,38 @@ mod tests {
 
     // ── Tests ─────────────────────────────────────────────────────────────────
 
-    /// Verify the backfill loop exits immediately when `head_slot` is already
-    /// within `BACKFILL_TAIL_LAG_SLOTS` of wall-clock.
+    /// Verify the backfill loop parks (does NOT exit) when `head_slot` is
+    /// already caught up with `wall_slot - 1`.
     ///
-    /// We set `genesis_time_secs` to wall-clock, making `wall_slot = 0`.
-    /// The anchor is also at slot 0, so `0 + 2 >= 0` is true and the loop
-    /// exits on the first iteration with `Ok(())`.
+    /// Setup: `genesis_time_secs` = wall-clock → `wall_slot = 0` →
+    /// `fetch_target = 0`.  The anchor is at slot 0, so `head_slot(0) >=
+    /// fetch_target(0)` is true on the first iteration.  The loop must
+    /// park (not return) because only a shutdown signal exits it.
+    ///
+    /// Assertion: a `timeout(800 ms)` does NOT complete (the future is still
+    /// pending, meaning the loop is parked).  Then we send `shutdown_tx.send(true)`
+    /// and assert the handle yields `Ok(())` promptly.
     #[tokio::test]
-    async fn backfill_exits_when_caught_up() {
+    async fn backfill_idles_when_caught_up() {
         let _ = tracing_subscriber::fmt::try_init();
 
         let (genesis_state, anchor_block) = build_genesis_for_test();
         let (fc, host, exec_engine, pow_provider, head_tx, _head_rx, payload_tx, _payload_rx) =
             build_test_components(genesis_state, anchor_block);
 
-        // genesis_time_secs = current wall clock → wall_slot = 0.
+        // genesis_time_secs = current wall clock → wall_slot = 0 → fetch_target = 0.
         let genesis_time_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let provider = FixtureBlockProvider::empty();
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(3),
+        let notify = Arc::new(Notify::new());
+        let fc_for_assert = Arc::clone(&fc);
+
+        let mut handle = tokio::spawn(async move {
             run_backfill_loop::<
                 MinimalEthSpec,
                 _,
@@ -789,17 +826,38 @@ mod tests {
                 payload_tx,
                 genesis_time_secs,
                 shutdown_rx,
-            ),
-        )
-        .await;
+                notify,
+            )
+            .await
+        });
 
-        assert!(
-            result.is_ok(),
-            "backfill loop should complete within timeout"
+        // The loop must NOT complete within 800 ms — it should be parked.
+        let timed_out = tokio::time::timeout(Duration::from_millis(800), &mut handle)
+            .await
+            .is_err();
+        assert!(timed_out, "backfill loop must be parked (idle), not exited");
+
+        // Head must be unchanged (still at slot 0).
+        let head_slot = {
+            let s = fc_for_assert.read();
+            let root = get_head::<MinimalEthSpec>(&s);
+            s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
+        };
+        assert_eq!(
+            head_slot,
+            Slot(0),
+            "head must remain at slot 0 while parked"
         );
+
+        // Send shutdown — loop must exit promptly.
+        let _ = shutdown_tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("loop must exit after shutdown signal");
+        assert!(result.is_ok(), "task must not panic: {result:?}");
         assert!(
             result.unwrap().is_ok(),
-            "backfill loop should return Ok(()) when already caught up"
+            "loop must return Ok(()) on shutdown"
         );
     }
 
@@ -851,6 +909,7 @@ mod tests {
                 payload_tx,
                 genesis_time_secs,
                 shutdown_rx,
+                Arc::new(Notify::new()),
             )
             .await
         });
@@ -976,6 +1035,7 @@ mod tests {
                 payload_tx,
                 genesis_time_secs,
                 shutdown_rx,
+                Arc::new(Notify::new()),
             )
             .await
         });

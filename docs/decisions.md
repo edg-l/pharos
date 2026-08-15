@@ -52,6 +52,8 @@ numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
   - D-epoch-driven-fork-digest D-bellatrix-migration-startup-no-op
   - D-bellatrix-startup-topic-set D-gossip-block-decode-by-digest
   - D-bellatrix-reqresp-both-paths
+- [M5 — Full block-following over gossip](#m5-decisions)
+  - D-following-via-range-reconvergence D-byroot-lookup-deferred
 
 ## M1 — Phase 0 STF + fork choice
 
@@ -2179,3 +2181,67 @@ Bellatrix-genesis devnet.
 Enforced in: `crates/pharos-network/src/rpc/codec.rs:224` (receive path
 `Some(Fork::Bellatrix)` arm), `crates/pharos-network/src/rpc/codec.rs:436-438`
 (send path `unwrap_bellatrix_signed_block` dispatch and `Fork::Bellatrix` context bytes).
+
+---
+
+## M5 decisions
+
+### D-following-via-range-reconvergence — Long-running backfill loop heals to wall_slot-1; parks on hybrid Notify+fallback select!
+
+**Status**: Accepted. **Date**: 2026-05-29.
+
+The forward-backfill loop never returns when caught up. Instead, it heals the
+chain to `wall_slot - 1` (tolerating the in-progress slot), then parks on a
+`tokio::select!` that wakes on (a) a `tokio::sync::Notify` fired by the ingestion
+loop when it defers an orphan block; (b) a `BACKFILL_FOLLOW_FALLBACK` backstop
+timer (48 s, ~4 mainnet slots); or (c) a `shutdown_rx` change. The `Notify` path
+is the primary wake; the 48-second fallback ensures the loop also catches up if
+the node is behind and no gossip blocks arrive.
+
+The orphan deferral path in `run_block_ingestion_loop`: when `block_states.get(&parent_root)`
+returns `None`, the loop logs a `debug!` message and calls `egress.notify_backfill.notify_one()`,
+then `continue`s. No orphan buffer exists; if the backfill loop heals the parent before the
+gossip peer retransmits, the next retransmission will succeed.
+
+`BACKFILL_TAIL_LAG_SLOTS` (the old 2-slot lag constant) is removed entirely.
+The old early-exit on caught-up left a permanent 2-slot tip gap and gossip alone
+cannot heal a gap because dropped orphans are never returned by the gossip mesh.
+
+Rejected alternative: an in-memory orphan buffer — would require eviction policy,
+bounded memory, re-processing on every backfill advance, and synchronisation
+between the ingestion and backfill loops; the range-reconvergence approach avoids
+all of this because the backfill loop already has the machinery to fetch and apply
+a range of blocks.
+
+Rejected alternative: `BeaconBlocksByRoot` fetch for the unknown parent at the
+orphan-defer site — see `D-byroot-lookup-deferred`.
+
+Enforced in: `crates/pharos-node/src/backfill.rs` (`run_backfill_loop` caught-up
+arm, `BACKFILL_FOLLOW_FALLBACK` const, `notify` parameter), `crates/pharos-node/src/block_ingestion.rs`
+(`IngestionEgress::notify_backfill` field, missing-parent `notify_one()` call),
+`crates/pharos-node/src/main.rs` (shared `Arc<Notify>` creation and threading to
+both ingestion and backfill). Verified by `backfill_idles_when_caught_up` (in-module)
+and `orphan_defers_and_backfill_heals` (integration test in
+`crates/pharos-node/tests/orphan_backfill_recovery.rs`).
+
+### D-byroot-lookup-deferred — BeaconBlocksByRoot unknown-parent import is future work
+
+**Status**: Accepted. **Date**: 2026-05-29.
+
+When the ingestion loop receives a gossip block whose parent state is absent from
+the fork-choice store, a `BeaconBlocksByRoot` lookup of the unknown parent is
+NOT attempted. The block is deferred to the range-reconvergence path
+(`D-following-via-range-reconvergence`) instead.
+
+Rationale: `BeaconBlocksByRoot` unknown-parent import is required for side-branch
+and reorg correctness (fetching a sibling block that the canonical backfill range
+would never reach), not for canonical-following correctness.  The canonical-following
+M5 goal is fully satisfied by range re-convergence: the backfill loop heals to
+`wall_slot - 1` which covers the canonical chain tip.  Adding `BeaconBlocksByRoot`
+lookup at the orphan-defer site would require multi-fork test scenarios (the
+fetched block might be on a side fork), a parent-chain walk, and careful integration
+with the fork-choice's block-validity pipeline.  These are distinct engineering
+requirements that belong in a dedicated milestone (reorg handling / side-branch sync).
+
+Enforced by absence: `rg 'BeaconBlocksByRoot' crates/pharos-node/src/block_ingestion.rs`
+returns empty; the orphan-defer site calls `notify_one()` only.

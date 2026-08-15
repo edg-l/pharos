@@ -306,17 +306,15 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
         let mut booted = 0u32;
         for enr in &self.bootnodes.clone() {
             match enr_to_dial_multiaddr(enr) {
-                Some(addr) => {
-                    match self.swarm.dial(addr.clone()) {
-                        Ok(()) => {
-                            booted += 1;
-                            tracing::debug!(addr = %addr, "dialing bootnode");
-                        }
-                        Err(e) => {
-                            tracing::debug!(addr = %addr, err = %e, "bootnode dial failed");
-                        }
+                Some(addr) => match self.swarm.dial(addr.clone()) {
+                    Ok(()) => {
+                        booted += 1;
+                        tracing::debug!(addr = %addr, "dialing bootnode");
                     }
-                }
+                    Err(e) => {
+                        tracing::debug!(addr = %addr, err = %e, "bootnode dial failed");
+                    }
+                },
                 None => {
                     tracing::debug!(enr = %enr, "bootnode ENR has no dialable address; skipping");
                 }
@@ -463,12 +461,20 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                 self.on_request_response_event(rr_event).await;
             }
             libp2p::swarm::SwarmEvent::ConnectionEstablished {
-                peer_id, endpoint, ..
+                peer_id,
+                endpoint,
+                num_established,
+                ..
             } => {
-                self.on_swarm_connection_established(peer_id, endpoint);
+                self.on_swarm_connection_established(peer_id, endpoint, num_established);
             }
-            libp2p::swarm::SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-                self.on_swarm_connection_closed(peer_id, cause.as_ref())
+            libp2p::swarm::SwarmEvent::ConnectionClosed {
+                peer_id,
+                cause,
+                num_established,
+                ..
+            } => {
+                self.on_swarm_connection_closed(peer_id, cause.as_ref(), num_established)
                     .await;
             }
             libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } => {
@@ -1102,46 +1108,69 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
     ///   and sends a `Status` request. The response is handled in
     ///   `on_request_response_event` via `pending_status_checks`.
     ///   Per `p2p-interface.md:1352`.
-    pub fn on_swarm_connection_established(&mut self, peer_id: PeerId, endpoint: ConnectedPoint) {
-        let dir = if endpoint.is_dialer() {
-            ConnectionDirection::Outbound
+    ///
+    /// Gated on `num_established == 1`: libp2p may open redundant connections
+    /// to the same peer (e.g. simultaneous dial). Re-registering on the second
+    /// connection would overwrite `last_status` and corrupt the peer table.
+    /// `num_established` from `SwarmEvent::ConnectionEstablished` includes the
+    /// just-opened connection, so `.get() == 1` means this is the first.
+    ///
+    /// NOTE: ban()/Goodbye-driven removal lives in `on_request_response_event`
+    /// and is intentionally OUTSIDE this num_established gate — a fork-mismatch
+    /// ban must drop the peer unconditionally regardless of remaining connections.
+    pub fn on_swarm_connection_established(
+        &mut self,
+        peer_id: PeerId,
+        endpoint: ConnectedPoint,
+        num_established: std::num::NonZeroU32,
+    ) {
+        if num_established.get() == 1 {
+            let dir = if endpoint.is_dialer() {
+                ConnectionDirection::Outbound
+            } else {
+                ConnectionDirection::Inbound
+            };
+
+            let addrs = vec![endpoint.get_remote_address().clone()];
+            self.peer_manager.on_connected(peer_id, dir, addrs);
+
+            if endpoint.is_dialer() {
+                self.peer_manager.on_handshaking(peer_id);
+
+                let (finalized_root, finalized_epoch) = {
+                    let cp = self.host.finalized_checkpoint();
+                    (cp.root, cp.epoch)
+                };
+                let (head_root, head_slot) = self.host.head();
+                let local_status = BeaconStatus {
+                    fork_digest: self.host.current_fork_digest(),
+                    finalized_root,
+                    finalized_epoch,
+                    head_root,
+                    head_slot,
+                };
+
+                // Send the Status request; track only via pending_status_checks.
+                // The response handler uses that map to run fork-digest validation.
+                // Do not insert into pending_rpc — there is no oneshot to resolve.
+                let request_id = self.send_rpc_request(
+                    &peer_id,
+                    crate::rpc::types::RpcRequest::Status(local_status),
+                );
+                self.pending_status_checks.insert(request_id, peer_id);
+            } else {
+                // Inbound connection: do NOT emit PeerConnected here.
+                // PeerConnected is emitted only after successful Status handshake
+                // (see on_inbound_status_request). Emitting early would surface a
+                // peer that may be on a wrong fork digest and get Goodbye'd seconds
+                // later. Symmetry with outbound: both sides emit only post-handshake.
+            }
         } else {
-            ConnectionDirection::Inbound
-        };
-
-        let addrs = vec![endpoint.get_remote_address().clone()];
-        self.peer_manager.on_connected(peer_id, dir, addrs);
-
-        if endpoint.is_dialer() {
-            self.peer_manager.on_handshaking(peer_id);
-
-            let (finalized_root, finalized_epoch) = {
-                let cp = self.host.finalized_checkpoint();
-                (cp.root, cp.epoch)
-            };
-            let (head_root, head_slot) = self.host.head();
-            let local_status = BeaconStatus {
-                fork_digest: self.host.current_fork_digest(),
-                finalized_root,
-                finalized_epoch,
-                head_root,
-                head_slot,
-            };
-
-            // Send the Status request; track only via pending_status_checks.
-            // The response handler uses that map to run fork-digest validation.
-            // Do not insert into pending_rpc — there is no oneshot to resolve.
-            let request_id = self.send_rpc_request(
-                &peer_id,
-                crate::rpc::types::RpcRequest::Status(local_status),
+            tracing::trace!(
+                %peer_id,
+                n = num_established.get(),
+                "redundant connection established; not re-registering"
             );
-            self.pending_status_checks.insert(request_id, peer_id);
-        } else {
-            // Inbound connection: do NOT emit PeerConnected here.
-            // PeerConnected is emitted only after successful Status handshake
-            // (see on_inbound_status_request). Emitting early would surface a
-            // peer that may be on a wrong fork digest and get Goodbye'd seconds
-            // later. Symmetry with outbound: both sides emit only post-handshake.
         }
     }
 
@@ -1151,27 +1180,47 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
     /// If a disconnect reason was pre-registered via
     /// `peer_manager.note_disconnect_reason` (e.g., Goodbye plumbing), that
     /// reason takes precedence over the libp2p `ConnectionError`.
+    ///
+    /// Gated on `num_established == 0`: libp2p may close one of several
+    /// connections to the same peer. `num_established` from
+    /// `SwarmEvent::ConnectionClosed` is the REMAINING connection count after
+    /// this close, so `== 0` means this was the last connection to the peer.
+    /// Removing the peer on a non-last close would wipe `last_status` while
+    /// the peer is still reachable on the other connection.
+    ///
+    /// NOTE: ban()/Goodbye-driven removal lives in `on_request_response_event`
+    /// and is intentionally OUTSIDE this num_established gate — a fork-mismatch
+    /// ban must drop the peer unconditionally regardless of remaining connections.
     pub async fn on_swarm_connection_closed(
         &mut self,
         peer_id: PeerId,
         reason: Option<&ConnectionError>,
+        num_established: u32,
     ) {
-        use crate::types::DisconnectReason;
-        // Pre-registered reason wins (set before issuing the disconnect so the
-        // Goodbye/fork-mismatch semantics are preserved even when libp2p delivers
-        // a generic clean-close error).
-        let dr = self
-            .peer_manager
-            .take_disconnect_reason(&peer_id)
-            .unwrap_or_else(|| match reason {
-                // No error means a clean (graceful) close initiated by either side.
-                None => DisconnectReason::Other("clean close".into()),
-                Some(e) => DisconnectReason::Other(e.to_string()),
-            });
-        // on_disconnected records ScoreEvent::PeerDisconnected with the resolved reason.
-        self.peer_manager.on_disconnected(peer_id, dr.clone());
-        self.emit_event(NetworkEvent::PeerDisconnected(peer_id, dr))
-            .await;
+        if num_established == 0 {
+            use crate::types::DisconnectReason;
+            // Pre-registered reason wins (set before issuing the disconnect so the
+            // Goodbye/fork-mismatch semantics are preserved even when libp2p delivers
+            // a generic clean-close error).
+            let dr = self
+                .peer_manager
+                .take_disconnect_reason(&peer_id)
+                .unwrap_or_else(|| match reason {
+                    // No error means a clean (graceful) close initiated by either side.
+                    None => DisconnectReason::Other("clean close".into()),
+                    Some(e) => DisconnectReason::Other(e.to_string()),
+                });
+            // on_disconnected records ScoreEvent::PeerDisconnected with the resolved reason.
+            self.peer_manager.on_disconnected(peer_id, dr.clone());
+            self.emit_event(NetworkEvent::PeerDisconnected(peer_id, dr))
+                .await;
+        } else {
+            tracing::trace!(
+                %peer_id,
+                remaining = num_established,
+                "non-last connection closed; peer retained"
+            );
+        }
     }
 
     /// Send a `Ping` keepalive to every `Connected` peer.
@@ -1832,6 +1881,35 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
             }
         });
         Ok((handle, discovery_handle))
+    }
+}
+
+// ── Test helpers ──────────────────────────────────────────────────────────────
+//
+// These methods are unconditionally `pub` so that integration tests in
+// `tests/` (which are separate crates) can access them.  The `test_` prefix
+// and `#[doc(hidden)]` make the intent clear: these are NOT production API.
+
+impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S: PeerScorer>
+    Network<E, H, S>
+{
+    /// Returns `true` if `peer_id` is in the peer table and has a known
+    /// `last_status` (i.e. completed the Status handshake).
+    ///
+    /// Only for test use; not part of the production API.
+    #[doc(hidden)]
+    pub fn test_peer_has_status(&self, peer_id: &PeerId) -> bool {
+        self.peer_manager
+            .connected_peers_with_status()
+            .any(|(id, _)| id == *peer_id)
+    }
+
+    /// Returns `true` if `peer_id` is present in the peer table (any state).
+    ///
+    /// Only for test use; not part of the production API.
+    #[doc(hidden)]
+    pub fn test_peer_is_registered(&self, peer_id: &PeerId) -> bool {
+        self.peer_manager.peer_state(peer_id).is_some()
     }
 }
 

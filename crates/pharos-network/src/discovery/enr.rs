@@ -185,8 +185,7 @@ pub fn enr_to_dial_multiaddr(enr: &Enr) -> Option<Multiaddr> {
             CombinedPublicKey::Secp256k1(_) => combined_pk.encode(), // 33 bytes compressed
             CombinedPublicKey::Ed25519(_) => return None,
         };
-        let secp_pk =
-            libp2p::identity::secp256k1::PublicKey::try_from_bytes(&compressed).ok()?;
+        let secp_pk = libp2p::identity::secp256k1::PublicKey::try_from_bytes(&compressed).ok()?;
         let identity_pk = libp2p::identity::PublicKey::from(secp_pk);
         libp2p::PeerId::from_public_key(&identity_pk)
     };
