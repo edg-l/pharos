@@ -267,3 +267,5 @@ follow established inter-client practice.
 
 Enforced in: `crates/pharos-network/src/discovery/enr.rs`
 (`build_local_enr`, `read_quic_port`, `read_quic6_port`).
+
+<!-- TODO M2 Phase 9.1: D-trait-boundaries — Host<E> trait owns inbound RPC; NetworkEvent does NOT include an RpcRequest variant. See docs/m2-plan.md amendments. -->

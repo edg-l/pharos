@@ -21,3 +21,9 @@ pharos-stf.workspace = true
 pharos-storage.workspace = true
 pharos-types.workspace = true
 pharos-utils.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+libp2p.workspace = true
+clap = { version = "4", features = ["derive"] }

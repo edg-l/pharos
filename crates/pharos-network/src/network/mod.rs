@@ -55,20 +55,58 @@ use behaviour::{PharosBehaviour, PharosBehaviourEvent};
 // ── Commands and Events ───────────────────────────────────────────────────────
 
 /// Commands sent from `NetworkHandle` to the `Network` event loop.
-///
-/// Phase 7 expands this with dial, gossip-publish, subnet-subscribe, and
-/// status-update variants.
-pub enum NetworkCommand {
+pub enum NetworkCommand<E: EthSpec> {
+    /// Publish an SSZ+snappy-encoded payload to the given gossipsub topic.
+    Publish {
+        topic: GossipTopic,
+        /// Raw SSZ bytes; the network task snappy-frames before publishing.
+        ssz_payload: Vec<u8>,
+        /// Resolves with the assigned `MessageId` or an error.
+        reply: oneshot::Sender<Result<gossipsub::MessageId, NetworkError>>,
+    },
+    /// Subscribe to an additional gossipsub topic at runtime.
+    Subscribe {
+        topic: GossipTopic,
+        reply: oneshot::Sender<Result<(), NetworkError>>,
+    },
+    /// Dial a remote peer by multiaddr.
+    Dial {
+        addr: libp2p::Multiaddr,
+        reply: oneshot::Sender<Result<(), NetworkError>>,
+    },
+    /// Disconnect from a peer.
+    Disconnect { peer_id: PeerId },
+    /// Send an outbound RPC request; resolves via `reply`.
+    OutgoingRequest {
+        peer: PeerId,
+        req: RpcRequest,
+        reply: oneshot::Sender<Result<RpcResponse<E>, NetworkError>>,
+    },
     /// Request a clean shutdown of the network task.
     Shutdown,
 }
 
 /// Events emitted from the `Network` event loop to external consumers.
 ///
-/// Phase 4, 5, and 6 add gossip-received, rpc-request, and peer-status
-/// variants.  An empty enum cannot be constructed; the channel field is
-/// present for the type system only.
-pub enum NetworkEvent {}
+/// Note: inbound RPC requests are NOT forwarded as events. The `Host<E>` trait
+/// owns inbound RPC dispatch (see `rpc::handler::handle_request`). Forwarding
+/// inbound requests as events would couple the network task to a consumer queue
+/// and require reworking the Phase 5/6/8 architecture. Amendment recorded in
+/// `docs/m2-plan.md` (Amendment 2026-05-22).
+pub enum NetworkEvent {
+    /// A peer connected and completed the handshake.
+    PeerConnected(PeerId),
+    /// A peer disconnected.
+    PeerDisconnected(PeerId, crate::types::DisconnectReason),
+    /// A gossip message was received and accepted.
+    GossipMessage {
+        topic: GossipTopic,
+        peer: PeerId,
+        data: Vec<u8>,
+    },
+    /// The network task has shut down.
+    Shutdown,
+}
 
 // ── Network ───────────────────────────────────────────────────────────────────
 
@@ -84,8 +122,7 @@ pub struct Network<E: EthSpec, H: Host<E>, S: PeerScorer> {
     host: Arc<H>,
     /// Maps subscribed topic hashes to their parsed `GossipTopic` for dispatch.
     topic_map: HashMap<TopicHash, GossipTopic>,
-    command_rx: mpsc::Receiver<NetworkCommand>,
-    #[allow(dead_code)]
+    command_rx: mpsc::Receiver<NetworkCommand<E>>,
     event_tx: mpsc::Sender<NetworkEvent>,
     discovery_tick: Interval,
     shutdown_signal: oneshot::Receiver<()>,
@@ -136,8 +173,8 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                 }
                 cmd = self.command_rx.recv() => {
                     match cmd {
-                        Some(NetworkCommand::Shutdown) => break,
-                        None => break, // channel closed
+                        Some(NetworkCommand::Shutdown) | None => break,
+                        Some(cmd) => self.on_command(cmd),
                     }
                 }
                 _ = self.discovery_tick.tick() => {
@@ -157,6 +194,10 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                 }
             }
         }
+        if let Err(err) = self.event_tx.try_send(NetworkEvent::Shutdown) {
+            tracing::warn!(error = %err, "network event channel send failed; event dropped");
+        }
+        tracing::info!("network event loop exited; Shutdown emitted");
         Ok(())
     }
 
@@ -267,6 +308,15 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             tracing::debug!(%message_id, "report_message_validation_result returned false (message not in cache)");
         }
 
+        // Emit accepted messages to the event channel.
+        if matches!(&verdict, GossipVerdict::Accept) {
+            self.emit_event(NetworkEvent::GossipMessage {
+                topic,
+                peer: propagation_source,
+                data: message.data,
+            });
+        }
+
         // Record score event for the peer.
         self.peer_manager
             .record_event(propagation_source, score_event);
@@ -291,6 +341,8 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                 } => {
                     // Determine the method for scoring before moving `request`.
                     let method = rpc_method_from_request(&request);
+                    // Track whether this is an inbound Status before moving `request`.
+                    let is_inbound_status = matches!(request, RpcRequest::Status(_));
 
                     let host = Arc::clone(&self.host);
                     // Handle synchronously to avoid lifetime complexity with &mut self.
@@ -301,6 +353,18 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                         &mut self.peer_manager,
                     )
                     .await;
+
+                    // Emit PeerConnected for inbound Status after a successful handshake.
+                    //
+                    // Symmetry with outbound: `on_status_response` emits PeerConnected only
+                    // after fork-digest validation succeeds. For inbound, `handle_request`
+                    // calls `peer_manager.on_inbound_status` which transitions the peer to
+                    // `Connected` iff the fork digest matches. Emit here before sending the
+                    // response so consumers see the peer as ready before the remote sees
+                    // the Status reply.
+                    if is_inbound_status && matches!(response, RpcResponse::Status(_)) {
+                        self.emit_event(NetworkEvent::PeerConnected(peer));
+                    }
 
                     if self
                         .swarm
@@ -518,6 +582,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             self.swarm.disconnect_peer_id(peer_id).ok();
         } else {
             self.peer_manager.on_handshake_complete(peer_id);
+            self.emit_event(NetworkEvent::PeerConnected(peer_id));
         }
     }
 
@@ -562,10 +627,17 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
                 crate::rpc::types::RpcRequest::Status(local_status),
             );
             self.pending_status_checks.insert(request_id, peer_id);
+        } else {
+            // Inbound connection: do NOT emit PeerConnected here.
+            // PeerConnected is emitted only after successful Status handshake
+            // (see on_inbound_status_request). Emitting early would surface a
+            // peer that may be on a wrong fork digest and get Goodbye'd seconds
+            // later. Symmetry with outbound: both sides emit only post-handshake.
         }
     }
 
-    /// Handle a closed libp2p connection, informing the peer manager.
+    /// Handle a closed libp2p connection, informing the peer manager and
+    /// emitting a `PeerDisconnected` event.
     pub fn on_swarm_connection_closed(
         &mut self,
         peer_id: PeerId,
@@ -577,7 +649,8 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             None => DisconnectReason::Other("clean close".into()),
             Some(e) => DisconnectReason::Other(e.to_string()),
         };
-        self.peer_manager.on_disconnected(peer_id, dr);
+        self.peer_manager.on_disconnected(peer_id, dr.clone());
+        self.emit_event(NetworkEvent::PeerDisconnected(peer_id, dr));
     }
 
     /// Send a `Ping` keepalive to every `Connected` peer.
@@ -618,9 +691,57 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
         }
     }
 
-    #[allow(dead_code)]
-    async fn on_command(&mut self, _cmd: NetworkCommand) {
-        // Phase 7 adds dial, publish, and subnet-subscribe handling.
+    /// Emit a `NetworkEvent` to the consumer channel.
+    ///
+    /// Uses `try_send` to avoid blocking the event loop. Logs a warning when
+    /// the channel is full and the event is dropped (back-pressure via drop
+    /// per D-channels).
+    fn emit_event(&self, ev: NetworkEvent) {
+        if let Err(err) = self.event_tx.try_send(ev) {
+            tracing::warn!(error = %err, "network event channel send failed; event dropped");
+        }
+    }
+
+    fn on_command(&mut self, cmd: NetworkCommand<E>) {
+        match cmd {
+            NetworkCommand::Publish {
+                topic,
+                ssz_payload,
+                reply,
+            } => {
+                let result = self.on_publish_command(topic, ssz_payload);
+                let _ = reply.send(result);
+            }
+            NetworkCommand::Subscribe { topic, reply } => {
+                let ident = libp2p::gossipsub::IdentTopic::new(topic.topic_str());
+                let result = self
+                    .swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .subscribe(&ident)
+                    .map(|_| ())
+                    .map_err(|e| NetworkError::Libp2p(format!("subscribe failed: {e}")));
+                if result.is_ok() {
+                    self.topic_map.insert(topic.topic_hash(), topic);
+                }
+                let _ = reply.send(result);
+            }
+            NetworkCommand::Dial { addr, reply } => {
+                let result = self
+                    .swarm
+                    .dial(addr)
+                    .map_err(|e| NetworkError::Libp2p(e.to_string()));
+                let _ = reply.send(result);
+            }
+            NetworkCommand::Disconnect { peer_id } => {
+                self.swarm.disconnect_peer_id(peer_id).ok();
+            }
+            NetworkCommand::OutgoingRequest { peer, req, reply } => {
+                self.on_outgoing_request_command(peer, req, reply);
+            }
+            // Shutdown is handled in the run() select loop before on_command is called.
+            NetworkCommand::Shutdown => {}
+        }
     }
 }
 
@@ -743,7 +864,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
         }
     }
 
-    /// Construct the `Network` and return `(Network, NetworkHandle)`.
+    /// Construct the `Network` and return `(Network, NetworkHandle<E>)`.
     ///
     /// Steps:
     /// 1. Derive the discv5 `CombinedKey` from the libp2p secp256k1 keypair.
@@ -753,7 +874,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
     /// 5. Subscribe to Phase-0 gossipsub topics; build the topic lookup map.
     /// 6. Add TCP listener; optionally add QUIC listener.
     /// 7. Wire mpsc channels and oneshot shutdown signal.
-    pub async fn build(self) -> Result<(Network<E, H, S>, NetworkHandle), NetworkError> {
+    pub async fn build(self) -> Result<(Network<E, H, S>, NetworkHandle<E>), NetworkError> {
         // ── Step 1: bridge libp2p keypair → discv5 CombinedKey ───────────────
         //
         // Extract the secp256k1 secret bytes from the libp2p keypair and
@@ -861,7 +982,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
         }
 
         // ── Step 7: wire channels ─────────────────────────────────────────────
-        let (cmd_tx, command_rx) = mpsc::channel::<NetworkCommand>(64);
+        let (cmd_tx, command_rx) = mpsc::channel::<NetworkCommand<E>>(64);
         let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(1024);
         let (shutdown_tx, shutdown_signal) = oneshot::channel::<()>();
 
@@ -871,6 +992,8 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
         let discovery_tick = interval(std::time::Duration::from_secs(30));
         let ping_tick = interval(std::time::Duration::from_secs(15));
         let score_prune_tick = interval(std::time::Duration::from_secs(30));
+
+        let local_peer_id = *swarm.local_peer_id();
 
         let network = Network {
             swarm,
@@ -891,9 +1014,30 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             _phantom: PhantomData,
         };
 
-        let handle = NetworkHandle::new(cmd_tx, event_rx, shutdown_tx);
+        let handle = NetworkHandle::new(cmd_tx, event_rx, shutdown_tx, local_peer_id);
 
         Ok((network, handle))
+    }
+
+    /// Build, spawn the network task on the current Tokio runtime, and return
+    /// the `NetworkHandle<E>`.
+    ///
+    /// The spawned task owns the `Network` and drives its `run()` loop.
+    /// The returned handle is the single owner of the event-receiver side.
+    pub async fn spawn(self) -> Result<NetworkHandle<E>, NetworkError>
+    where
+        H: 'static,
+        S: 'static,
+    {
+        let (network, handle) = self.build().await?;
+        tokio::spawn(async move {
+            if let Err(e) = network.run().await {
+                tracing::error!("network task exited with error: {e}");
+            } else {
+                tracing::info!("network shutdown complete");
+            }
+        });
+        Ok(handle)
     }
 }
 
@@ -1000,7 +1144,7 @@ mod tests {
 
         let task = tokio::spawn(async move { network.run().await });
 
-        handle.shutdown().await.expect("shutdown failed");
+        handle.shutdown().await;
 
         let result = task.await.expect("network task panicked");
         assert!(result.is_ok(), "Network::run returned an error: {result:?}");

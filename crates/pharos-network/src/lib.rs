@@ -19,9 +19,10 @@ pub mod topics;
 pub mod types;
 
 pub use error::NetworkError;
-pub use handle::NetworkHandle;
+pub use handle::{NetworkCommandSender, NetworkHandle};
 pub use host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict, Host};
-pub use network::{Network, NetworkBuilder};
+pub use network::{Network, NetworkBuilder, NetworkCommand, NetworkEvent};
+pub use rpc::types::{RpcRequest, RpcResponse};
 pub use scoring::{NoopScorer, PeerScorer, ScoreEvent};
 pub use topics::{GossipTopic, GossipTopicKind};
 pub use types::{ConnectionDirection, DisconnectReason, ForkDigest, PeerInfo, SubnetId};
