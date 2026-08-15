@@ -13,6 +13,7 @@ use crate::handlers::config as config_handlers;
 use crate::handlers::config_extra;
 use crate::handlers::debug as debug_handlers;
 use crate::handlers::events as events_handlers;
+use crate::handlers::light_client as lc_handlers;
 use crate::handlers::node;
 use crate::handlers::states;
 use crate::handlers::validator_duties;
@@ -192,6 +193,23 @@ pub fn build_router_with_auth<E: EthSpec>(
         .route(
             "/eth/v2/debug/beacon/states/{state_id}",
             get(debug_handlers::get_debug_state::<E>),
+        )
+        // Light-client namespace (M7-followup)
+        .route(
+            "/eth/v1/beacon/light_client/bootstrap/{block_root}",
+            get(lc_handlers::get_bootstrap::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/light_client/updates",
+            get(lc_handlers::get_updates::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/light_client/finality_update",
+            get(lc_handlers::get_finality_update::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/light_client/optimistic_update",
+            get(lc_handlers::get_optimistic_update::<E>),
         )
         .with_state(Arc::clone(&state))
         // Merge validator sub-router (has its own auth layer + state)

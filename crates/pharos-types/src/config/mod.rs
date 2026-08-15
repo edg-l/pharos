@@ -123,6 +123,13 @@ pub struct RuntimeConfig {
     /// Mainnet: `1` (Ethereum mainnet). Consumed by the
     /// `config/deposit_contract` Beacon API endpoint.
     pub deposit_chain_id: u64,
+
+    // -- Phase 0 preset constants --
+    /// `SLOTS_PER_EPOCH` from `presets/{mainnet,minimal}/phase0.yaml`.
+    ///
+    /// Mainnet: 32. Minimal: 8. Used by `pharos-api` to derive the fork variant
+    /// for light-client envelope tagging without needing `E::SLOTS_PER_EPOCH`.
+    pub slots_per_epoch: u64,
 }
 
 impl Default for RuntimeConfig {

@@ -5,3 +5,4 @@
 //! derives are added to `pharos-types` structs.
 
 pub mod block;
+pub mod light_client;

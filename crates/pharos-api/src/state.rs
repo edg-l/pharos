@@ -24,8 +24,38 @@ use pharos_utils::{BLSSignature, Uint256};
 use serde_json::Value as JsonValue;
 
 use crate::dto::block::{BlockApiSerializer, SignedBlockForApi};
+use crate::dto::light_client::{LcApiSerializer, LcEnvelope};
 use crate::error::ApiError;
 use crate::events::EventBus;
+use crate::fork_tag::fork_variant_at_slot;
+
+// ── Light-client envelope builder (Task 1.6) ──────────────────────────────────
+
+/// Build a `LcEnvelope` from a concrete LC object implementing `LcApiSerializer`.
+///
+/// - `variant`: derived from `fork_variant_at_slot(cfg, attested_slot, cfg.slots_per_epoch)`.
+///   `slots_per_epoch` is carried directly in `RuntimeConfig` so `pharos-api` does not
+///   need to be generic over `E`. See `D-api-lc-fork-tag-by-attested-slot`.
+/// - `ssz_bytes`: raw (unframed) bytes via `LcApiSerializer::to_ssz_bytes()`.
+/// - `json`: hand-built DTO via `LcApiSerializer::to_lc_json()`.
+///
+/// Per `D-api-lc-bridge`: NEVER length-prefix here; single-object endpoints
+/// use raw bytes; `get_updates` length-frames per item in the handler.
+fn make_lc_envelope<T: LcApiSerializer>(
+    obj: &T,
+    cfg: &RuntimeConfig,
+) -> Result<LcEnvelope, ApiError> {
+    let attested_slot = obj.attested_slot();
+    let variant = fork_variant_at_slot(cfg, attested_slot, cfg.slots_per_epoch);
+    let json = obj.to_lc_json()?;
+    let ssz_bytes = obj.to_ssz_bytes();
+    Ok(LcEnvelope {
+        variant,
+        json,
+        ssz_bytes,
+        attested_slot,
+    })
+}
 
 // ── Serialization helpers ─────────────────────────────────────────────────────
 
@@ -587,6 +617,59 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
     /// Mock implementations (tests that don't exercise regen) should return
     /// `Err(ApiError::NotFound("regen not available in mock".into()))`.
     fn regenerate_state(&self, target: RegenTarget) -> Result<E::BeaconState, ApiError>;
+
+    // ── Light-client REST endpoints (M7-followup) ─────────────────────────────
+
+    /// Return the `LcEnvelope` for the bootstrap at `block_root`, if stored.
+    ///
+    /// Tries the capella CF first, then falls back to the altair CF.
+    /// Returns `Ok(None)` when no bootstrap is stored for that root.
+    ///
+    /// Default body returns `Ok(None)` so the five existing mock impls need
+    /// no changes. `NodeChainState` overrides with the real storage call.
+    ///
+    /// Per `D-api-lc-trait-defaults`.
+    fn light_client_bootstrap(
+        &self,
+        _block_root: Root,
+    ) -> Result<Option<crate::dto::light_client::LcEnvelope>, ApiError> {
+        Ok(None)
+    }
+
+    /// Return `LcEnvelope`s for all stored updates with period in
+    /// `[start_period, start_period + count)`.
+    ///
+    /// Count is clamped to `MAX_REQUEST_LC_UPDATES` by the handler before
+    /// this is called.  Returns an empty `Vec` when no updates are stored.
+    ///
+    /// Default body returns `Ok(vec![])`. Per `D-api-lc-trait-defaults`.
+    fn light_client_updates(
+        &self,
+        _start_period: u64,
+        _count: u64,
+    ) -> Result<Vec<crate::dto::light_client::LcEnvelope>, ApiError> {
+        Ok(vec![])
+    }
+
+    /// Return the latest `LcEnvelope` for the finality update, if any.
+    ///
+    /// Tries the capella CF first, then the altair CF.
+    /// Default body returns `Ok(None)`. Per `D-api-lc-trait-defaults`.
+    fn light_client_finality_update(
+        &self,
+    ) -> Result<Option<crate::dto::light_client::LcEnvelope>, ApiError> {
+        Ok(None)
+    }
+
+    /// Return the latest `LcEnvelope` for the optimistic update, if any.
+    ///
+    /// Tries the capella CF first, then the altair CF.
+    /// Default body returns `Ok(None)`. Per `D-api-lc-trait-defaults`.
+    fn light_client_optimistic_update(
+        &self,
+    ) -> Result<Option<crate::dto::light_client::LcEnvelope>, ApiError> {
+        Ok(None)
+    }
 }
 
 // ── NodeChainState ────────────────────────────────────────────────────────────
@@ -663,6 +746,14 @@ where
     E::AltairSignedBeaconBlock: BlockApiSerializer,
     E::BellatrixSignedBeaconBlock: BlockApiSerializer,
     E::CapellaSignedBeaconBlock: BlockApiSerializer,
+    E::AltairLightClientBootstrap: LcApiSerializer,
+    E::AltairLightClientUpdate: LcApiSerializer,
+    E::AltairLightClientFinalityUpdate: LcApiSerializer,
+    E::AltairLightClientOptimisticUpdate: LcApiSerializer,
+    E::CapellaLightClientBootstrap: LcApiSerializer,
+    E::CapellaLightClientUpdate: LcApiSerializer,
+    E::CapellaLightClientFinalityUpdate: LcApiSerializer,
+    E::CapellaLightClientOptimisticUpdate: LcApiSerializer,
 {
     fn head_root(&self) -> Root {
         let fc = self.fork_choice.read();
@@ -1053,6 +1144,97 @@ where
             "finalized_checkpoint": finalized,
             "fork_choice_nodes": nodes,
         }))
+    }
+
+    // ── Light-client REST endpoint overrides ──────────────────────────────────
+
+    fn light_client_bootstrap(&self, block_root: Root) -> Result<Option<LcEnvelope>, ApiError> {
+        // Capella CF first; STF writes exactly ONE CF per root (altair XOR capella),
+        // so this try-then-fallback is the correct probe order. Per `D-api-lc-bridge`
+        // and the STF mutual-exclusion invariant in
+        // `pharos-stf/src/altair/light_client_dispatch.rs`.
+        let capella = <RocksStore as DbStore<E>>::get_light_client_bootstrap_capella(
+            &self.store,
+            &block_root,
+        )
+        .map_err(|e| ApiError::Internal(format!("lc bootstrap capella read: {e}")))?;
+        if let Some(b) = capella {
+            return Ok(Some(make_lc_envelope(&b, &self.runtime_cfg)?));
+        }
+        let altair =
+            <RocksStore as DbStore<E>>::get_light_client_bootstrap(&self.store, &block_root)
+                .map_err(|e| ApiError::Internal(format!("lc bootstrap altair read: {e}")))?;
+        altair
+            .map(|b| make_lc_envelope(&b, &self.runtime_cfg))
+            .transpose()
+    }
+
+    fn light_client_updates(
+        &self,
+        start_period: u64,
+        count: u64,
+    ) -> Result<Vec<LcEnvelope>, ApiError> {
+        // Build a period-indexed map. Altair updates go in first; capella updates
+        // overwrite (STF mutual-exclusion: exactly one CF written per period).
+        let mut by_period: std::collections::BTreeMap<u64, LcEnvelope> =
+            std::collections::BTreeMap::new();
+
+        let altair_updates = <RocksStore as DbStore<E>>::get_light_client_updates_by_range(
+            &self.store,
+            start_period,
+            count,
+        )
+        .map_err(|e| ApiError::Internal(format!("lc updates altair read: {e}")))?;
+        for (idx, upd) in altair_updates.into_iter().enumerate() {
+            let period = start_period + idx as u64;
+            by_period.insert(period, make_lc_envelope(&upd, &self.runtime_cfg)?);
+        }
+
+        // Probe capella per-period (no range getter exists in the Store trait).
+        for i in 0..count {
+            let period = start_period.saturating_add(i);
+            match <RocksStore as DbStore<E>>::get_light_client_update_capella(&self.store, period) {
+                Ok(Some(upd)) => {
+                    by_period.insert(period, make_lc_envelope(&upd, &self.runtime_cfg)?);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(ApiError::Internal(format!(
+                        "lc update capella period {period}: {e}"
+                    )));
+                }
+            }
+        }
+
+        Ok(by_period.into_values().collect())
+    }
+
+    fn light_client_finality_update(&self) -> Result<Option<LcEnvelope>, ApiError> {
+        let capella =
+            <RocksStore as DbStore<E>>::get_light_client_finality_update_capella(&self.store)
+                .map_err(|e| ApiError::Internal(format!("lc finality capella read: {e}")))?;
+        if let Some(u) = capella {
+            return Ok(Some(make_lc_envelope(&u, &self.runtime_cfg)?));
+        }
+        let altair = <RocksStore as DbStore<E>>::get_light_client_finality_update(&self.store)
+            .map_err(|e| ApiError::Internal(format!("lc finality altair read: {e}")))?;
+        altair
+            .map(|u| make_lc_envelope(&u, &self.runtime_cfg))
+            .transpose()
+    }
+
+    fn light_client_optimistic_update(&self) -> Result<Option<LcEnvelope>, ApiError> {
+        let capella =
+            <RocksStore as DbStore<E>>::get_light_client_optimistic_update_capella(&self.store)
+                .map_err(|e| ApiError::Internal(format!("lc optimistic capella read: {e}")))?;
+        if let Some(u) = capella {
+            return Ok(Some(make_lc_envelope(&u, &self.runtime_cfg)?));
+        }
+        let altair = <RocksStore as DbStore<E>>::get_light_client_optimistic_update(&self.store)
+            .map_err(|e| ApiError::Internal(format!("lc optimistic altair read: {e}")))?;
+        altair
+            .map(|u| make_lc_envelope(&u, &self.runtime_cfg))
+            .transpose()
     }
 
     fn fork_choice_heads(&self) -> Result<JsonValue, ApiError> {

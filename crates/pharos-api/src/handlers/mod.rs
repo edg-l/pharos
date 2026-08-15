@@ -6,6 +6,7 @@ pub mod config;
 pub mod config_extra;
 pub mod debug;
 pub mod events;
+pub mod light_client;
 pub mod node;
 pub mod states;
 pub mod validator_duties;

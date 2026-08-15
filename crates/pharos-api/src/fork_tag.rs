@@ -5,12 +5,17 @@
 //! - The `Eth-Consensus-Version` response header is set to the same version string
 //!   on BOTH the JSON and SSZ response paths.
 //! - The version string is derived from the block/state `fork_variant()`.
+//!
+//! Also contains `fork_variant_at_slot` and `render_lc_envelope` helpers used
+//! by the light-client REST handlers (per `D-api-lc-fork-tag-by-attested-slot`).
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use pharos_types::config::RuntimeConfig;
 use pharos_types::views::ForkVariant;
 use serde::Serialize;
 
+use crate::dto::light_client::LcEnvelope;
 use crate::error::ApiError;
 use crate::respond::AcceptFormat;
 
@@ -109,6 +114,83 @@ impl<T: Serialize> ForkTagged<T> {
                 None => ApiError::NotAcceptable("SSZ not available for this endpoint".to_string())
                     .into_response(),
             },
+        }
+    }
+}
+
+// ── Light-client fork helpers ─────────────────────────────────────────────────
+
+/// Determine the `ForkVariant` active at `slot`.
+///
+/// Converts `slot` to an epoch (`slot / SLOTS_PER_EPOCH`) and returns the
+/// highest fork that has activated at or before that epoch.
+///
+/// `slots_per_epoch` is passed directly (caller uses `E::SLOTS_PER_EPOCH`) so
+/// this function does not need to be generic over `E`.
+///
+/// Per `D-api-lc-fork-tag-by-attested-slot`.
+pub fn fork_variant_at_slot(cfg: &RuntimeConfig, slot: u64, slots_per_epoch: u64) -> ForkVariant {
+    let epoch = slot.checked_div(slots_per_epoch).unwrap_or(0);
+    // Walk forks from highest to lowest; return the first that has activated.
+    if cfg.capella_fork_epoch != u64::MAX && epoch >= cfg.capella_fork_epoch {
+        ForkVariant::Capella
+    } else if cfg.bellatrix_fork_epoch != u64::MAX && epoch >= cfg.bellatrix_fork_epoch {
+        ForkVariant::Bellatrix
+    } else if cfg.altair_fork_epoch != u64::MAX && epoch >= cfg.altair_fork_epoch {
+        ForkVariant::Altair
+    } else {
+        ForkVariant::Phase0
+    }
+}
+
+/// Render a single `LcEnvelope` as an HTTP response.
+///
+/// JSON: `{"version": "<fork>", "data": <json>}` — NO `execution_optimistic`
+/// or `finalized` fields (per the light-client beacon-APIs spec).
+/// SSZ: raw `ssz_bytes` (unframed; the caller does NOT length-prefix single
+/// endpoint responses).
+/// Both paths set the `Eth-Consensus-Version` response header.
+///
+/// Per `D-api-lc-bridge`: single LC endpoints use raw (unframed) SSZ bytes.
+pub fn render_lc_envelope(env: LcEnvelope, format: AcceptFormat) -> Response {
+    let version = fork_variant_str(env.variant);
+    let version_hval = match HeaderValue::from_str(version) {
+        Ok(v) => v,
+        Err(_) => {
+            return ApiError::Internal("invalid fork version string".to_string()).into_response();
+        }
+    };
+
+    match format {
+        AcceptFormat::Json => {
+            let body_val = serde_json::json!({ "version": version, "data": env.json });
+            let body = match serde_json::to_vec(&body_val) {
+                Ok(b) => b,
+                Err(e) => {
+                    return ApiError::Internal(format!("JSON serialization error: {e}"))
+                        .into_response();
+                }
+            };
+            let mut resp = (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response();
+            resp.headers_mut()
+                .insert(ETH_CONSENSUS_VERSION.clone(), version_hval);
+            resp
+        }
+        AcceptFormat::Ssz => {
+            let mut resp = (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/octet-stream")],
+                env.ssz_bytes,
+            )
+                .into_response();
+            resp.headers_mut()
+                .insert(ETH_CONSENSUS_VERSION.clone(), version_hval);
+            resp
         }
     }
 }

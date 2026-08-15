@@ -1351,6 +1351,7 @@ impl EthSpec for MainnetEthSpec {
             ],
             // configs/mainnet.yaml: DEPOSIT_CHAIN_ID: 1 (Ethereum mainnet)
             deposit_chain_id: 1,
+            slots_per_epoch: Self::SLOTS_PER_EPOCH,
         }
     }
 
@@ -1991,6 +1992,7 @@ impl EthSpec for MinimalEthSpec {
             ],
             // configs/minimal.yaml: DEPOSIT_CHAIN_ID: 1
             deposit_chain_id: 1,
+            slots_per_epoch: Self::SLOTS_PER_EPOCH,
         }
     }
 

@@ -113,8 +113,7 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         file: phase0_path.display().to_string(),
         source: e,
     })?;
-    // phase0_map loaded for validation; individual fields checked by assert_matches_preset.
-    let _phase0_map = parse_flat_yaml(&phase0_src);
+    let phase0_map = parse_flat_yaml(&phase0_src);
 
     // ── Step 3: load altair preset (<preset_dir>/altair.yaml) ─────────────
     let altair_path = preset_dir.join("altair.yaml");
@@ -152,6 +151,9 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
     let terminal_block_hash = extract_hash256(&config_map, "TERMINAL_BLOCK_HASH")?;
     let terminal_block_hash_activation_epoch =
         extract_u64(&config_map, "TERMINAL_BLOCK_HASH_ACTIVATION_EPOCH")?;
+
+    // From phase0 preset:
+    let slots_per_epoch = extract_u64(&phase0_map, "SLOTS_PER_EPOCH")?;
 
     // From altair preset:
     let sync_committee_size = extract_u64(&altair_map, "SYNC_COMMITTEE_SIZE")?;
@@ -223,6 +225,7 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         max_extra_data_bytes,
         deposit_contract_address,
         deposit_chain_id,
+        slots_per_epoch,
     })
 }
 

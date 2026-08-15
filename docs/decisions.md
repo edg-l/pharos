@@ -3100,3 +3100,71 @@ payload_status); the declared EL verdict is applied out-of-band keyed by an
 `promote_valid_ancestors` / `apply_invalid_payload` / `mark_payload_status`. STF
 or missing-parent errors fail the case (no silent skip). bellatrix + capella,
 mainnet + minimal, pass=2 fail=0 each.
+
+
+---
+
+## M7-followup: Light-client REST endpoints
+
+### D-api-lc-bridge — LcEnvelope raw bytes vs typed container
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+The `LcEnvelope` DTO in `pharos-api::dto::light_client` carries pre-built
+`ssz_bytes: Vec<u8>` (raw, unframed) and `json: serde_json::Value` (hand-built),
+instead of holding the typed container (`E::AltairLightClientBootstrap` etc.).
+Rationale: (1) the LC container types live behind the opaque `EthSpec` associated
+types; holding a `dyn`-object would require object-safe accessor methods for every
+field; (2) `LcEnvelope` is passed across a `spawn_blocking` boundary into the
+axum handler, which requires `Send + 'static` — erasing the concrete type is the
+simplest way to satisfy that constraint without additional bound proliferation;
+(3) `pharos-types` is serde-free per `D-api-dto-serde`, so JSON must be built in
+`pharos-api` anyway. The `LcApiSerializer` trait (analogous to `BlockApiSerializer`)
+is implemented for each concrete altair/capella preset alias in `dto/light_client.rs`.
+The STF mutual-exclusion invariant (exactly one of altair-CF or capella-CF is
+written per root per `pharos-stf/src/altair/light_client_dispatch.rs`) is exploited
+by `NodeChainState`: capella is probed first; if absent, the altair CF is tried.
+
+### D-api-lc-trait-defaults — default bodies on ChainStateApi, no mock edits
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+The four new LC methods on `ChainStateApi<E>` (`light_client_bootstrap`,
+`light_client_updates`, `light_client_finality_update`,
+`light_client_optimistic_update`) carry default bodies that return `Ok(None)` /
+`Ok(vec![])`. This deliberately deviates from the normal Rust style of requiring
+every impl to provide a body, for a documented reason: the five existing mock
+`ChainStateApi` impls in `pharos-api/tests/` must not be edited (they are large
+and correct). Default bodies serve that goal without loss of correctness —
+`NodeChainState` overrides all four with real storage reads. Any future mock that
+DOES need LC data simply overrides the relevant method.
+
+### D-api-lc-fork-tag-by-attested-slot — fork variant derived from the attested header slot
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+The `version` field and `Eth-Consensus-Version` header in light-client REST
+responses are derived from the LC object's attested-header slot, not from the
+current chain head. Per the beacon-APIs spec, the version tags the CONTENT of the
+object, not the node's current fork. Implementation: `fork_variant_at_slot(cfg,
+attested_slot, slots_per_epoch)` in `pharos-api::fork_tag`, returning the highest
+fork activated at `epoch = attested_slot / slots_per_epoch`. The `slots_per_epoch`
+is derived at runtime from `RuntimeConfig::update_timeout /
+epochs_per_sync_committee_period` (both fields exist) rather than via a new
+`slots_per_epoch` field or making `make_lc_envelope` generic over `E`, keeping the
+helper fork-agnostic. For `get_updates` SSZ framing, `fork_version_for_variant`
+maps the envelope's variant to the right fork-version bytes from `RuntimeConfig`.
+
+### D-api-lc-gvr-from-head-state — genesis_validators_root sourced from chain.genesis()
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+The `genesis_validators_root` (gvr) used for `compute_fork_digest` in SSZ
+`get_updates` framing is read from `chain.genesis()` — which in `NodeChainState`
+falls back to the head state's `genesis_validators_root()` field, NOT from
+`runtime_cfg.genesis_validators_root`. The `runtime_cfg` field stays zeroed on
+checkpoint-sync nodes until the first head state is loaded. Using the live head
+state value ensures the fork digest is correct for Ethereum mainnet and real
+devnets. This matches the same reasoning as the `get_genesis` endpoint fix
+(commit `4d1a2b3` in M7). Mock tests use a fixed non-zero `TEST_GVR` constant
+to exercise the digest computation path.
