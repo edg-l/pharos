@@ -62,8 +62,14 @@ pub struct ForkChoiceResult {
     pub failures: Vec<String>,
 }
 
+impl Default for ForkChoiceResult {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ForkChoiceResult {
-    fn new() -> Self {
+    pub fn new() -> Self {
         ForkChoiceResult {
             pass: 0,
             fail: 0,
@@ -72,7 +78,7 @@ impl ForkChoiceResult {
         }
     }
 
-    fn merge(&mut self, other: ForkChoiceResult) {
+    pub fn merge(&mut self, other: ForkChoiceResult) {
         self.pass += other.pass;
         self.fail += other.fail;
         self.skip += other.skip;

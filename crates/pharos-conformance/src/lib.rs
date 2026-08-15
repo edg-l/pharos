@@ -20,6 +20,7 @@ pub mod fork_choice;
 pub mod genesis;
 pub mod light_client;
 pub mod operations;
+pub mod optimistic;
 pub mod random;
 pub mod report;
 pub mod rewards;
@@ -1895,6 +1896,52 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("capella", "light_client", "minimal"));
     }
 
+    // ── sync/optimistic mainnet ───────────────────────────────────────────────
+    if filter.matches("sync", "optimistic", "mainnet") {
+        let result = optimistic::run_optimistic_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "sync",
+            "optimistic",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("sync", "optimistic", "mainnet"));
+    }
+
+    // ── sync/optimistic minimal ───────────────────────────────────────────────
+    if filter.matches("sync", "optimistic", "minimal") {
+        let result = optimistic::run_optimistic_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "sync",
+            "optimistic",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("sync", "optimistic", "minimal"));
+    }
+
     // ── engine/yaml ───────────────────────────────────────────────────────────
     if filter.matches("engine", "yaml", "-") {
         let specs_dir = dirs_engine_yaml();
@@ -2022,6 +2069,9 @@ fn fill_future_placeholders(report: &mut Report) {
         ("capella", "light_client", "minimal"),
         // Engine API YAML conformance
         ("engine", "yaml", "-"),
+        // sync/optimistic
+        ("sync", "optimistic", "mainnet"),
+        ("sync", "optimistic", "minimal"),
     ]
     .iter()
     .copied()
@@ -2123,6 +2173,9 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         // capella light_client
         ("capella", "light_client", "mainnet"),
         ("capella", "light_client", "minimal"),
+        // sync/optimistic conformance
+        ("sync", "optimistic", "mainnet"),
+        ("sync", "optimistic", "minimal"),
         // engine API YAML conformance
         ("engine", "yaml", "-"),
         // future forks (placeholders)
