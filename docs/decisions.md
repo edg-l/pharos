@@ -7,7 +7,9 @@ artifacts; this file is the canonical home for decisions once a milestone
 ships.
 
 For project-wide locked decisions, see `docs/roadmap.md` (workspace shape,
-runtime, deps philosophy). The Dx / Qx entries below are M1-scoped.
+runtime, deps philosophy). Entries are grouped by milestone; M1 uses
+numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
+`D-<topic>` / `Q-<topic>` keys.
 
 ## M1 — Phase 0 STF + fork choice
 
@@ -268,9 +270,93 @@ follow established inter-client practice.
 Enforced in: `crates/pharos-network/src/discovery/enr.rs`
 (`build_local_enr`, `read_quic_port`, `read_quic6_port`).
 
-<!-- M2 Phase 9.1 fills D-libp2p, D-discv5, D-runtime-ownership,
-     D-trait-boundaries (stub below), D-fork-digest-source, D-channels,
-     D-test-runner, D-peer-scoring. -->
+### D-libp2p — libp2p 0.56, TCP + QUIC, umbrella crate
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+The network crate consumes the libp2p umbrella crate at workspace
+version `0.56` (`Cargo.toml:51`) with the feature set
+`["tokio","tcp","quic","noise","yamux","gossipsub","dns","identify","ping","macros","secp256k1","request-response"]`.
+No per-crate libp2p sub-dependency is pulled in directly.
+
+Why the umbrella crate: a typed `SwarmBuilder` and a single semver
+pin avoid the per-crate API churn that hit `libp2p-quic`, `libp2p-noise`,
+and `libp2p-gossipsub` across 0.55–0.57. `quic` is a first-class flag
+on the umbrella crate from 0.56 onward and pulls in `libp2p-quic 0.13`
+(stable since June 2025).
+
+Why `secp256k1`: discv5 ENRs are secp256k1-signed; reusing the same key
+to derive the libp2p `PeerId` gives us a single identity across discv5
+and libp2p without an adapter layer.
+
+Why TCP + QUIC at M2 baseline: TCP is mandatory per
+`specs/phase0/p2p-interface.md`; QUIC is the cross-client de-facto
+upgrade path and is already deployed by Lighthouse, Prysm, and Teku.
+WebRTC and WebTransport are deferred to M11.
+
+Enforced in: `crates/pharos-network/Cargo.toml`,
+`crates/pharos-network/src/network/mod.rs` (`NetworkBuilder::spawn`
+`SwarmBuilder` chain),
+`crates/pharos-network/src/network/behaviour.rs` (`NetworkBehaviour`
+derives),
+`crates/pharos-network/src/network/transport.rs` (TCP + QUIC stack).
+
+### D-discv5 — discv5 0.10, no libp2p adapter, separate UDP port
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+Discovery uses `discv5 = 0.10.4` directly via `discv5::Discv5`, not the
+`libp2p-discv5` adapter. It runs on its own UDP socket on the configured
+discovery port (default `9000`), independent of the libp2p TCP/QUIC
+sockets. The discv5 event loop runs in its own `tokio::task` and feeds
+`Discv5Event::Discovered` peers into the peer manager via an internal
+channel.
+
+Why not the adapter: the libp2p discv5 adapter trails the upstream
+`sigp/discv5` release stream and historically lags new ENR features by
+several months. We need direct access to `Enr::add_value` (for the
+`"quic"`/`"quic6"` keys per Q-quic-enr) and to the raw `Discv5Event`
+stream for fork-digest-aware filtering in M3. Going through the adapter
+would lose both.
+
+API divergences captured during implementation (`mem_b7efb7d5`):
+`discv5::Enr` is a type alias to `enr::Enr<CombinedKey>` (not generic);
+`discv5::Discv5::new` returns `Result<Self, _>`; the configured
+listener address is read via `Discv5::local_enr().udp4_socket()`.
+
+Enforced in: `crates/pharos-network/src/discovery/service.rs`,
+`crates/pharos-network/src/discovery/enr.rs`.
+
+### D-runtime-ownership — Swarm owned by a single network task; NetworkHandle is a cheap command sender
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+`pharos-network::Network<E, H, S>` holds the libp2p `Swarm<Behaviour>`
+and runs `Swarm::select_next_some` in a single `tokio::task` driven by
+`Network::run` (`crates/pharos-network/src/network/mod.rs:180`).
+`NetworkHandle` (`crates/pharos-network/src/handle.rs`) is a clone-cheap
+struct holding `mpsc::Sender<NetworkCommand<E>>` plus an
+`mpsc::Receiver<NetworkEvent>` cursor. All outbound operations cross the
+command channel:
+
+- `Publish { topic, data }`
+- `Subscribe { topic, reply }`
+- `Dial { addr, reply }`
+- `Disconnect { peer_id }` (Goodbye reason carried via behaviour
+  bookkeeping, see Phase 6/8 work)
+- `OutgoingRequest { peer, req, reply }`
+- `Shutdown`
+
+Why: keeps the `Swarm` single-owner (no `Arc<Mutex<_>>`), matches
+canonical libp2p idioms, and gives `pharos-node` an ergonomic surface
+that does not require holding the runtime. The `_, H: Host<E>, S:
+PeerScorer` generics keep the network task plumbing-only; concrete
+host/scorer impls live in `pharos-node` (M2/M3).
+
+Enforced in: `crates/pharos-network/src/network/mod.rs`
+(`Network`, `NetworkCommand`, `on_command`),
+`crates/pharos-network/src/handle.rs`,
+`crates/pharos-network/src/network/mod.rs` (`NetworkBuilder::spawn`).
 
 ### D-trait-boundaries — Host<E> owns inbound RPC dispatch
 
@@ -294,6 +380,155 @@ Phase 8 tests (which preload `TestHost::BlockProvider`).
 Enforced in: `crates/pharos-network/src/network/mod.rs`
 (`on_request_response_event` → `handle_request` → `Host` method calls).
 `NetworkEvent` enum has no `RpcRequest` variant.
+
+### D-fork-digest-source — `pharos-types::fork`
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+`compute_fork_data_root` and the new `compute_fork_digest` both live in
+`crates/pharos-types/src/fork.rs` and are re-exported as
+`pharos_types::fork::{compute_fork_data_root, compute_fork_digest}`.
+`pharos-stf::phase0::accessors::compute_fork_data_root` is now a
+`pub use` re-export so STF callers are unchanged.
+
+Why: `pharos-network` needs the digest computation (ENR `eth2` field,
+gossipsub topic prefixes, Status handshake) and depending on
+`pharos-stf` from the network crate would invert the layering
+(net → stf → types is wrong; net → types is right). `pharos-utils` is
+the alternative home but `Root` and `Version` live in
+`pharos-types::phase0::primitives`, so the math belongs there.
+
+Spec refs are inlined: `compute_fork_data_root` →
+`specs/phase0/beacon-chain.md:936-948`; `compute_fork_digest` →
+`specs/phase0/p2p-interface.md:269-285`.
+
+Enforced in: `crates/pharos-types/src/fork.rs`,
+`crates/pharos-stf/src/phase0/accessors.rs` (re-export shim),
+`crates/pharos-network/src/discovery/enr.rs` (consumer for ENR `eth2`),
+`crates/pharos-network/src/topics.rs` (consumer for topic prefix).
+
+### D-channels — `tokio::sync::mpsc`, bounded, drop-on-full for inbound
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+The network task uses bounded `tokio::sync::mpsc` channels with explicit
+sizing tuned for ~2 slots of worst-case mainnet load:
+
+- **Outbound command channel** `NetworkHandle → Network`:
+  `mpsc::channel(64)`. Callers `.await` on full — back-pressure is
+  acceptable because commands are infrequent and the handle is in user
+  code paths that can yield.
+- **Outbound event channel** `Network → NetworkHandle`:
+  `mpsc::channel(1024)`. The Phase 7 design unified the M2-acceptance
+  event surface into one stream (`NetworkEvent`); per-domain channels
+  (gossip / req-resp / validator-result) sketched in the original
+  plan were collapsed because the consumer side does a single
+  `select!` over them.
+
+Inbound req-resp does NOT cross a channel: the `Host<E>` traits are
+called synchronously from the network task (see D-trait-boundaries),
+which removes a class of head-of-line stalls.
+
+Why bounded + drop / await: networking is naturally lossy. Unbounded
+channels are a memory-DoS surface against a hostile peer. Drop-on-full
+on the inbound path prevents head-of-line blocking; await on the
+outbound command path is fine because the publisher set is small and
+trusted (`pharos-node` + integration tests). Dedicated drop counters
+(`gossip_dropped_total{topic=…}`, `req_resp_dropped_total{method=…}`,
+`validator_result_dropped_total`) land with the metrics work in M11; the
+channels and overflow paths are wired today.
+
+Enforced in: `crates/pharos-network/src/network/mod.rs:1163-1164`
+(`mpsc::channel::<NetworkCommand<E>>(64)`,
+`mpsc::channel::<NetworkEvent>(1024)` inside `NetworkBuilder::spawn`),
+`crates/pharos-network/src/handle.rs`.
+
+### D-test-runner — integration tests live in `crates/pharos-network/tests/`
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+M2 wire-level behaviour is verified by hand-written integration tests
+under `crates/pharos-network/tests/`
+(`discovery.rs`, `goodbye.rs`, `gossip.rs`, `quic_connect.rs`, `rpc.rs`,
+plus a `common/` module for shared spin-up). Each test is a
+`#[tokio::test(flavor = "multi_thread")]` that:
+
+1. Builds a `MockHost` (in-memory `BlockProvider` + `ForkContext` +
+   `GossipValidator` returning fixed values).
+2. Spins up two `NetworkHandle`s on `127.0.0.1:0` (OS-assigned ports).
+3. Wires one peer's listen `Multiaddr` as the other's bootnode.
+4. Drives the public `NetworkHandle` API and asserts protocol-level
+   behaviour (subscription, message delivery, request/response,
+   goodbye reason routing).
+
+Per the gossipsub flake mitigation (`95785a5`), the gossip integration
+tests are annotated with `#[serial_test::serial]` to serialize them
+within the `gossip` test binary, because parallel libtest execution
+caused mesh-formation timing to race under CPU contention. Other test
+binaries (`discovery`, `rpc`, `quic_connect`, `goodbye`) remain
+parallel. `serial_test = "3"` is a `dev-dependency` of `pharos-network`
+only (`crates/pharos-network/Cargo.toml:41`).
+
+Why not a dedicated test crate: workspace lean-ness. The tests already
+need to import `pharos-network` internals (`MockHost`, `NetworkBuilder`,
+codec helpers) and a sibling crate would either re-export those as `pub`
+(polluting the public API) or be redundant. Why not consensus-specs
+fixtures: there are none for networking — see `M-networking-spec-source`.
+
+Enforced in: `crates/pharos-network/tests/*.rs`,
+`crates/pharos-network/tests/common/`,
+`crates/pharos-network/Cargo.toml` (`dev-dependencies`).
+
+### D-peer-scoring — `PeerScorer` trait, `ScoreEvent` enum, `NoopScorer` for M2
+
+**Status**: Accepted. **Date**: 2026-05-22.
+
+`crates/pharos-network/src/scoring.rs` defines:
+
+```rust
+pub trait PeerScorer: Send + Sync + 'static {
+    fn record(&mut self, peer: PeerId, event: ScoreEvent);
+    fn score(&self, peer: &PeerId) -> f64;
+    fn worst_peers(&self, n: usize) -> Vec<PeerId>;
+}
+
+pub enum ScoreEvent {
+    GossipAccept { topic: TopicHash },
+    GossipReject { topic: TopicHash, reason: String },
+    GossipIgnore { topic: TopicHash, reason: String },
+    RpcSuccess   { method: RpcMethod },
+    RpcError     { method: RpcMethod, kind: RpcErrorKind },
+    RpcTimeout   { method: RpcMethod },
+    PeerConnected,
+    PeerDisconnected { reason: DisconnectReason },
+    HandshakeFail    { kind: HandshakeFailKind },
+}
+```
+
+`Network<E, H, S: PeerScorer>` is generic over the scorer. M2 ships
+`NoopScorer`, which returns `0.0` from `score`, an empty `Vec` from
+`worst_peers`, and ignores `record`. Every call site that should emit a
+scoring event already calls `record(...)` with the correct variant; the
+real algorithm lands in M11 by swapping the scorer impl without
+touching network plumbing.
+
+Plan-deviation: the original m2-plan listed `RpcErrorKind::Timeout` as a
+nested variant; Phase 0 introduced a top-level `ScoreEvent::RpcTimeout
+{ method }` instead, because timeouts are transport-level (no protocol
+error code on the wire) and shoehorning them under `RpcErrorKind` would
+have leaked transport semantics into the protocol-error type. Captured
+in `mem_af337e8a`. The doc-comment at
+`crates/pharos-network/src/scoring.rs:55` records the rationale inline.
+
+Why pre-wire the trait now: avoids API churn in dependent crates when
+the real implementation lands. Every `Score{Event,r}` consumer (gossip
+validator dispatch, RPC handler, peer manager) is already in place.
+
+Enforced in: `crates/pharos-network/src/scoring.rs`,
+`crates/pharos-network/src/network/mod.rs`
+(`Network<E, H, S>`, `record` call sites),
+`crates/pharos-network/src/peer/`,
+`crates/pharos-network/src/rpc/`.
 
 ### D-network-event-surface — what NetworkEvent exposes (and what it doesn't)
 

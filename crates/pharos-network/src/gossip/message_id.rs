@@ -5,10 +5,14 @@
 //! - `SHA256(MESSAGE_DOMAIN_INVALID_SNAPPY || raw_data)` if snappy decode fails.
 //!
 //! Domain bytes per `p2p-interface.md:232-233`.
+//!
+//! Snappy format: gossip uses block (raw) compression per
+//! `p2p-interface.md:1038-1048`. The message-id decompression therefore tries
+//! block decompression.
 
 use pharos_utils::hash::hash_concat;
 
-use crate::codec::{MAX_PAYLOAD_SIZE, snappy_frame::decode_snappy_frame};
+use crate::codec::{MAX_PAYLOAD_SIZE, snappy_block::decode_snappy_block};
 
 /// Domain tag for messages that successfully decode as snappy framing.
 ///
@@ -31,7 +35,7 @@ pub fn compute_message_id(raw_data: &[u8]) -> [u8; 20] {
     let (domain, payload): ([u8; 4], &[u8]);
     // We need to store the decompressed data so its lifetime covers the hash call.
     let decompressed_storage;
-    match decode_snappy_frame(raw_data, MAX_PAYLOAD_SIZE) {
+    match decode_snappy_block(raw_data, MAX_PAYLOAD_SIZE) {
         Ok(decompressed) => {
             decompressed_storage = decompressed;
             domain = MESSAGE_DOMAIN_VALID_SNAPPY;
@@ -56,13 +60,13 @@ pub fn compute_message_id(raw_data: &[u8]) -> [u8; 20] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::snappy_frame::encode_snappy_frame;
+    use crate::codec::snappy_block::encode_snappy_block;
 
     /// Valid-snappy and invalid-snappy paths produce different ids for the same input.
     #[test]
     fn valid_vs_invalid_differ() {
         let payload = b"hello, ethereum";
-        let encoded = encode_snappy_frame(payload).expect("encode failed");
+        let encoded = encode_snappy_block(payload).expect("encode failed");
 
         let id_valid = compute_message_id(&encoded);
         let id_invalid = compute_message_id(payload); // not valid snappy framing
@@ -94,7 +98,7 @@ mod tests {
     #[test]
     fn valid_snappy_path_uses_valid_domain() {
         let payload = b"beacon block data";
-        let encoded = encode_snappy_frame(payload).expect("encode failed");
+        let encoded = encode_snappy_block(payload).expect("encode failed");
         let id = compute_message_id(&encoded);
         // Manually compute expected: SHA256(DOMAIN_VALID || payload)[..20]
         let expected_hash = hash_concat(&MESSAGE_DOMAIN_VALID_SNAPPY, payload);

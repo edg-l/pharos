@@ -6,13 +6,15 @@
 
 A from-scratch Rust Ethereum proof-of-stake consensus client.
 
-**Status: pre-alpha, M1 complete.** Not usable as a node yet. Currently
+**Status: pre-alpha, M2 complete.** Not usable as a node yet. Currently
 passes 100% of every Phase 0 conformance category (SSZ static + generic,
 operations, epoch processing, sanity, finality, random, rewards, genesis,
 shuffling, BLS) across both `mainnet` and `minimal` presets, with zero
-failures. State transition (`pharos-stf`) and LMD-GHOST + FFG fork choice
-(`pharos-fork-choice`) are in. Networking, Engine API client, Beacon API,
-and validator client are on the M2+ roadmap.
+failures. State transition (`pharos-stf`), LMD-GHOST + FFG fork choice
+(`pharos-fork-choice`), and the M2 networking baseline (`pharos-network`:
+discv5, libp2p gossipsub + req-resp, peer manager, Status/Goodbye
+handshake) are in. Engine API client, Beacon API, and validator client
+are on the M3+ roadmap.
 
 ## Philosophy
 
@@ -45,9 +47,9 @@ crates/
   pharos-fork-choice   # LMD-GHOST + FFG Casper
   pharos-stf           # process_block / process_epoch
   pharos-engine        # Engine API client (CL -> EL)    (skeleton)
-  pharos-network       # libp2p + discv5 + gossip        (skeleton)
+  pharos-network       # libp2p + discv5 + gossip + req-resp
   pharos-api           # Beacon API HTTP server          (skeleton)
-  pharos-node          # beacon-node binary `pharos`     (skeleton)
+  pharos-node          # beacon-node binary `pharos`
   pharos-validator     # validator-client binary `pharos-vc` (skeleton)
 ```
 
@@ -62,7 +64,10 @@ boundary.
 - **M1 — Phase 0 STF + fork choice.** `process_block`, `process_epoch`,
   LMD-GHOST, justification, finalization. All Phase 0 conformance
   categories green. **Done.**
-- **M2 — Networking baseline.** `discv5`, `libp2p` gossipsub, req-resp.
+- **M2 — Networking baseline.** `discv5`, `libp2p` gossipsub, req-resp,
+  Status/Goodbye, peer scoring stub. `NetworkHandle` + `NetworkBuilder`
+  public surface, `Host<E>` trait family for the node binary to plug
+  block-provider / fork-context / gossip-validator. **Done.**
 - **M3 — Altair.** Sync committees, light-client protocol.
 - **M4 — Bellatrix + Engine API.** First merged sync against a devnet.
 - **M5–M10 — Capella, Deneb, Beacon API, validator client, Electra,

@@ -34,7 +34,7 @@ use tokio::time::{Interval, interval};
 
 use discv5::enr::EnrKey as _;
 
-use crate::codec::snappy_frame::encode_snappy_frame;
+use crate::codec::snappy_block::{decode_snappy_block, encode_snappy_block};
 use crate::discovery::enr::Enr;
 use crate::discovery::service::{DiscoveryConfig, DiscoveryService};
 use crate::discovery::subnets::compute_subscribed_subnets;
@@ -309,8 +309,39 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             }
         };
 
-        // Decode and validate via the host.
-        let verdict = dispatch_gossip_message::<E, H>(self.host.as_ref(), &topic, &message.data);
+        // Snappy-block-decompress once. The decompressed bytes are reused on
+        // the Accept path for the event channel; the dispatcher sees them as
+        // already-decoded SSZ. Per `p2p-interface.md:1038-1048` gossip uses
+        // raw block compression.
+        let ssz_bytes = match decode_snappy_block(&message.data, crate::codec::MAX_PAYLOAD_SIZE) {
+            Ok(b) => b,
+            Err(_) => {
+                // Spec-required: report Reject to gossipsub and score the peer.
+                if !self
+                    .swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .report_message_validation_result(
+                        &message_id,
+                        &propagation_source,
+                        MessageAcceptance::Reject,
+                    )
+                {
+                    tracing::debug!(%message_id, "report_message_validation_result returned false (message not in cache)");
+                }
+                self.peer_manager.record_event(
+                    propagation_source,
+                    ScoreEvent::GossipReject {
+                        topic: message.topic,
+                        reason: "snappy decode".to_string(),
+                    },
+                );
+                return;
+            }
+        };
+
+        // SSZ-decode + validate via the host.
+        let verdict = dispatch_gossip_message::<E, H>(self.host.as_ref(), &topic, &ssz_bytes);
 
         // Convert verdict to gossipsub MessageAcceptance.
         let score_event;
@@ -347,20 +378,8 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             tracing::debug!(%message_id, "report_message_validation_result returned false (message not in cache)");
         }
 
-        // Emit accepted messages to the event channel with raw SSZ bytes.
-        // `message.data` contains snappy-framed bytes; we decode back to SSZ
-        // so consumers receive the wire-decoded payload, not the transport encoding.
+        // Move the decompressed bytes into the event on Accept (no second decompress).
         if matches!(&verdict, GossipVerdict::Accept) {
-            let ssz_bytes = match crate::codec::snappy_frame::decode_snappy_frame(
-                &message.data,
-                crate::codec::MAX_PAYLOAD_SIZE,
-            ) {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(?e, "failed to decompress gossip payload for event emission");
-                    message.data
-                }
-            };
             self.emit_event(NetworkEvent::GossipMessage {
                 topic,
                 peer: propagation_source,
@@ -601,7 +620,10 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
         self.topic_map.get(hash).cloned()
     }
 
-    /// Snappy-frame-encode `ssz_payload` and publish it to the given topic.
+    /// Snappy-block-encode `ssz_payload` and publish it to the given topic.
+    ///
+    /// Gossip uses snappy block (raw) compression per
+    /// `specs/phase0/p2p-interface.md:1038-1048`.
     ///
     /// Returns the `MessageId` assigned by gossipsub on success.
     pub fn on_publish_command(
@@ -609,12 +631,12 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
         topic: GossipTopic,
         ssz_payload: Vec<u8>,
     ) -> Result<gossipsub::MessageId, NetworkError> {
-        let framed = encode_snappy_frame(&ssz_payload)?;
+        let compressed = encode_snappy_block(&ssz_payload)?;
         let ident = IdentTopic::new(topic.topic_str());
         self.swarm
             .behaviour_mut()
             .gossipsub
-            .publish(ident, framed)
+            .publish(ident, compressed)
             .map_err(|e| NetworkError::Libp2p(format!("gossipsub publish error: {e}")))
     }
 

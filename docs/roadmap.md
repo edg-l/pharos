@@ -282,11 +282,36 @@ layer forks on top of them.
 - Run `consensus-specs` reference tests for `phase0` until green.
 - No networking yet; drive STF from test vectors.
 
-### M2 — Networking baseline
-- discv5 peer discovery.
-- libp2p gossipsub topics for Phase 0.
-- SSZ-snappy req-resp domain.
-- Peer scoring stub.
+### M2 — Networking baseline — **Done**
+Deliverables 1–4 shipped in commits `7af7321` (ENR) → `d2db994` (discv5
++ peer manager) → `651f21c` (libp2p transport + Behaviour) → `dc32730`
+(gossipsub + SSZ-snappy + validation hook) → `a2e3029` (req-resp +
+codec) → `dcd4957` (Phase 6 peer manager status handshake + scoring
+wiring) → `95c2503` (Phase 7 `NetworkHandle` + node integration) →
+`7036da1` (Phase 8 integration tests) → `95785a5` (gossip flake
+mitigation via `serial_test`).
+
+- [x] **discv5 peer discovery.** `crates/pharos-network/src/discovery/`
+  (`service.rs`, `enr.rs`, `subnets.rs`); see ADR `D-discv5`.
+- [x] **libp2p gossipsub topics for Phase 0.** SSZ-snappy framing with
+  StrictNoSign per `p2p-interface.md:482-484`; topics defined in
+  `crates/pharos-network/src/topics.rs`; validation hook routed through
+  `host::GossipValidator` per ADR `D-trait-boundaries`.
+- [x] **SSZ-snappy req-resp domain.** Five Phase-0 methods (Status,
+  Goodbye, Ping, MetaData, BeaconBlocksByRange/Root) in
+  `crates/pharos-network/src/rpc/`; varint length-prefix codec validated
+  against `p2p-interface.md:1264-1267`; per-method `request_response::Codec`
+  impls.
+- [x] **Peer scoring stub.** `PeerScorer` trait + `NoopScorer` in
+  `crates/pharos-network/src/scoring.rs`; M11 swaps the impl per ADR
+  `D-peer-scoring`.
+
+M2 follow-ups (deferred via Phase 9 audits, owned by M3 / M11): see
+`D-network-event-surface` in `docs/decisions.md` for the catchall list
+and milestone assignment. Public surface (`NetworkBuilder`,
+`NetworkHandle`, `Host<E>`, `PeerScorer`) summarised in
+`docs/m2-plan.md` Section "Acceptance Criteria" and `docs/decisions.md`
+M2 section.
 
 ### M3 — Altair
 - Sync committees, light-client gossip + req-resp.

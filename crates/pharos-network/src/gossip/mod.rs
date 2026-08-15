@@ -1,9 +1,17 @@
 //! Gossipsub topic subscription, message dispatch, and validation bridge.
 //!
 //! - `subscribe_phase0_topics`: subscribe to the standard Phase-0 gossip topics.
-//! - `dispatch_gossip_message`: decode + validate an incoming gossip message.
+//! - `dispatch_gossip_message`: SSZ-decode + validate an already-decompressed
+//!   gossip payload. Snappy decompression is the caller's responsibility (the
+//!   network task pulls it out of `message.data` so the decompressed bytes
+//!   can be reused for the event channel without a second decompress).
 //!
 //! Topic list per `specs/phase0/p2p-interface.md:507-514`.
+//!
+//! Encoding note: gossip uses snappy **block** (raw) compression per
+//! `p2p-interface.md:1038-1048`. Req/resp uses snappy frames. The
+//! `snappy_block` module in `codec/` owns gossip encode/decode and is
+//! called from `network::on_gossip_message` before this dispatcher runs.
 
 pub mod config;
 pub mod message_id;
@@ -19,7 +27,6 @@ use pharos_types::phase0::{
     Attestation, AttesterSlashing, ProposerSlashing, SignedAggregateAndProof, SignedVoluntaryExit,
 };
 
-use crate::codec::{MAX_PAYLOAD_SIZE, snappy_frame::decode_snappy_frame};
 use crate::error::NetworkError;
 use crate::host::{GossipVerdict, Host};
 use crate::topics::{GossipTopic, GossipTopicKind};
@@ -75,56 +82,47 @@ pub fn subscribe_phase0_topics(
 
 // ── dispatch_gossip_message ───────────────────────────────────────────────────
 
-/// Decode and validate an incoming gossip message, returning a `GossipVerdict`.
+/// SSZ-decode an already-decompressed gossip payload and dispatch to the
+/// host validator, returning a `GossipVerdict`.
 ///
-/// Steps:
-/// 1. Snappy-decompress `raw_data` with `MAX_PAYLOAD_SIZE` cap.
-/// 2. SSZ-decode by `topic.kind` and dispatch to the appropriate `host` validator.
-/// 3. Return the host's verdict.
+/// Callers MUST snappy-block-decompress the wire payload (per
+/// `specs/phase0/p2p-interface.md:1038-1048`) before invoking this. The
+/// network task does this in `on_gossip_message` so the decompressed bytes
+/// can be reused on the Accept path without a second decompress.
 ///
-/// Failures at step 1 return `GossipVerdict::Reject("snappy decode")`.
-/// Failures at step 2 return `GossipVerdict::Reject("ssz decode")`.
+/// SSZ-decode failures return `GossipVerdict::Reject("ssz decode")`.
 pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
     host: &H,
     topic: &GossipTopic,
-    raw_data: &[u8],
+    ssz_bytes: &[u8],
 ) -> GossipVerdict {
-    let decompressed = match decode_snappy_frame(raw_data, MAX_PAYLOAD_SIZE) {
-        Ok(d) => d,
-        Err(_) => return GossipVerdict::Reject("snappy decode".to_string()),
-    };
-
     match &topic.kind {
-        GossipTopicKind::BeaconBlock => match E::SignedBeaconBlock::from_ssz_bytes(&decompressed) {
+        GossipTopicKind::BeaconBlock => match E::SignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
             Ok(block) => host.validate_beacon_block(&block),
             Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
         },
         GossipTopicKind::BeaconAggregateAndProof => {
-            match SignedAggregateAndProof::<2048>::from_ssz_bytes(&decompressed) {
+            match SignedAggregateAndProof::<2048>::from_ssz_bytes(ssz_bytes) {
                 Ok(saap) => host.validate_aggregate_and_proof(&saap.message),
                 Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
             }
         }
         GossipTopicKind::BeaconAttestation(subnet) => {
-            match Attestation::<2048>::from_ssz_bytes(&decompressed) {
+            match Attestation::<2048>::from_ssz_bytes(ssz_bytes) {
                 Ok(att) => host.validate_attestation(*subnet, &att),
                 Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
             }
         }
-        GossipTopicKind::VoluntaryExit => {
-            match SignedVoluntaryExit::from_ssz_bytes(&decompressed) {
-                Ok(sve) => host.validate_voluntary_exit(&sve),
-                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
-            }
-        }
-        GossipTopicKind::ProposerSlashing => {
-            match ProposerSlashing::from_ssz_bytes(&decompressed) {
-                Ok(ps) => host.validate_proposer_slashing(&ps),
-                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
-            }
-        }
+        GossipTopicKind::VoluntaryExit => match SignedVoluntaryExit::from_ssz_bytes(ssz_bytes) {
+            Ok(sve) => host.validate_voluntary_exit(&sve),
+            Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+        },
+        GossipTopicKind::ProposerSlashing => match ProposerSlashing::from_ssz_bytes(ssz_bytes) {
+            Ok(ps) => host.validate_proposer_slashing(&ps),
+            Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+        },
         GossipTopicKind::AttesterSlashing => {
-            match AttesterSlashing::<2048>::from_ssz_bytes(&decompressed) {
+            match AttesterSlashing::<2048>::from_ssz_bytes(ssz_bytes) {
                 Ok(as_slash) => host.validate_attester_slashing(&as_slash),
                 Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
             }
@@ -147,7 +145,6 @@ mod tests {
     };
     use pharos_utils::{Bytes4, Epoch};
 
-    use crate::codec::snappy_frame::encode_snappy_frame;
     use crate::gossip::config::gossipsub_config;
     use crate::host::{BlockProvider, ForkContext, GossipValidator, GossipVerdict};
     use crate::types::SubnetId;
@@ -277,7 +274,9 @@ mod tests {
 
     // ── dispatch_gossip_message tests ─────────────────────────────────────────
 
-    /// A valid `ProposerSlashing` SSZ+snappy payload dispatches as `Accept`.
+    /// A valid `ProposerSlashing` SSZ payload dispatches as `Accept`.
+    /// Snappy decompression is the caller's responsibility and is exercised
+    /// by `codec::snappy_block::tests::*` plus the gossip integration tests.
     #[test]
     fn dispatch_proposer_slashing_accept() {
         let host = MockHost;
@@ -289,18 +288,17 @@ mod tests {
 
         let slashing = ProposerSlashing::default();
         let ssz = slashing.as_ssz_bytes();
-        let raw = encode_snappy_frame(&ssz).expect("encode failed");
 
-        let verdict = dispatch_gossip_message::<MainnetEthSpec, MockHost>(&host, &topic, &raw);
+        let verdict = dispatch_gossip_message::<MainnetEthSpec, MockHost>(&host, &topic, &ssz);
         assert!(
             matches!(verdict, GossipVerdict::Accept),
             "expected Accept, got {verdict:?}"
         );
     }
 
-    /// Garbage bytes (not valid snappy) return `Reject("snappy decode")`.
+    /// Garbage bytes (not valid SSZ) return `Reject("ssz decode")`.
     #[test]
-    fn dispatch_snappy_decode_failure() {
+    fn dispatch_ssz_decode_failure() {
         let host = MockHost;
         let fork_digest = ForkDigest::from_array([0u8; 4]);
         let topic = GossipTopic {
@@ -308,11 +306,11 @@ mod tests {
             kind: GossipTopicKind::ProposerSlashing,
         };
 
-        let garbage = b"this is not snappy framed data at all!!!!";
+        let garbage = b"not a valid ssz payload";
         let verdict = dispatch_gossip_message::<MainnetEthSpec, MockHost>(&host, &topic, garbage);
         assert!(
-            matches!(&verdict, GossipVerdict::Reject(r) if r == "snappy decode"),
-            "expected Reject(snappy decode), got {verdict:?}"
+            matches!(&verdict, GossipVerdict::Reject(r) if r == "ssz decode"),
+            "expected Reject(ssz decode), got {verdict:?}"
         );
     }
 }
