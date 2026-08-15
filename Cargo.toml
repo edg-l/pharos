@@ -85,6 +85,7 @@ anyhow = "1"
 proptest = "1"
 criterion = "0.8"
 tempfile = "3"
+serial_test = "3"
 
 [profile.release]
 opt-level = 3

@@ -2682,6 +2682,7 @@ dependencies = [
  "pharos-storage",
  "pharos-types",
  "pharos-utils",
+ "serial_test",
  "tempfile",
  "tokio",
  "tracing",
