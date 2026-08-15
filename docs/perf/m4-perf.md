@@ -40,3 +40,38 @@ Notes:
   between two loopback libp2p `Network<E>` instances after a
   Status handshake; the responder returns `Vec::new()`, so this is
   request-frame + response-frame + decode, not block body retrieval.
+
+## M4e — gossip validation baseline
+
+M4e adds three real gossip validators (beacon_block, attestation,
+aggregate_and_proof) and one cache-warm micro-bench. SHA `821f5ef`.
+Recorded `2026-05-28T13:58Z`. Source: `bench-history/821f5ef.json`.
+
+Host: AMD Ryzen 5 5600 (6c/12t), Debian 13. Toolchain: rustc 1.95.0
+stable. Preset: `MinimalEthSpec` (8 validators, 6-second slots).
+
+| bench                                            | mean       | stderr      |
+| ------------------------------------------------ | ----------:| -----------:|
+| gossip_validation/beacon_block                   |  11.755 µs | 188 ns      |
+| gossip_validation/attestation_unaggregated       |  3.8625 ms | 214 µs      |
+| gossip_validation/aggregate_and_proof            |  3.7032 ms | 206 µs      |
+| gossip_validation/attestation_cache_warm         |  822.72 ns | 1.2 ns      |
+
+Notes:
+- `beacon_block` uses a slot counter (201 unique slots pre-computed)
+  so every sample exercises the full Accept path: proposer lookup
+  (process_slots + get_beacon_proposer_index) + 1× BLS verify.
+  The proposer_cache is cold per sample (each slot is a unique key).
+- `attestation_unaggregated` uses a slot counter (201 unique slots)
+  so every sample exercises the full Accept path: committee compute
+  (process_slots + get_beacon_committee) + 1× BLS verify.
+  The committee_cache is cold per sample.
+- `aggregate_and_proof` uses a slot counter (201 unique slots) so
+  every sample exercises the full Accept path: committee compute
+  + 3× BLS verify (selection proof + aggregator sig + aggregate sig).
+- `attestation_cache_warm` pre-populates both `committee_cache` and
+  `seen_attestation_validators` with one pre-warm call before the
+  bench loop. Every sample returns IGNORE after committee_cache hit
+  + seen-validators hit; this is the steady-state dedup-overhead cost.
+  Difference from `attestation_unaggregated` isolates committee
+  compute + BLS verify: ~3.86 ms − 823 ns ≈ 3.86 ms.

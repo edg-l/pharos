@@ -1,0 +1,68 @@
+{
+  "sha": "821f5ef",
+  "host": "debian",
+  "toolchain": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "date": "2026-05-28T13:58:41Z",
+  "benches": [
+    {
+      "name": "gossip_validation_aggregate_and_proof",
+      "ns": 3703188.6009090906,
+      "stderr_ns": 206174.028341698
+    },
+    {
+      "name": "gossip_validation_attestation_cache_warm",
+      "ns": 822.3750116960532,
+      "stderr_ns": 1.1566443168030622
+    },
+    {
+      "name": "gossip_validation_attestation_unaggregated",
+      "ns": 3862515.415,
+      "stderr_ns": 214193.7262062253
+    },
+    {
+      "name": "gossip_validation_beacon_block",
+      "ns": 12536.938355503304,
+      "stderr_ns": 188.49135399793155
+    },
+    {
+      "name": "gossip_validation_lc_finality_update",
+      "ns": 18249.7937905865,
+      "stderr_ns": 114.32745108057674
+    },
+    {
+      "name": "process_block_altair",
+      "ns": 1834518.881155198,
+      "stderr_ns": 14315.191460757307
+    },
+    {
+      "name": "process_block_bellatrix",
+      "ns": 1931764.8426682588,
+      "stderr_ns": 12811.066732353936
+    },
+    {
+      "name": "process_block_phase0",
+      "ns": 1671529.98086778,
+      "stderr_ns": 10306.8869692297
+    },
+    {
+      "name": "rpc_roundtrip_blocks_by_range_count_1",
+      "ns": 176693.85628974088,
+      "stderr_ns": 1048.1788689482626
+    },
+    {
+      "name": "tree_hash_beacon_state_altair_mainnet",
+      "ns": 1545569.3525468293,
+      "stderr_ns": 8608.506757186811
+    },
+    {
+      "name": "tree_hash_beacon_state_bellatrix_cold",
+      "ns": 3316176.2833333337,
+      "stderr_ns": 26923.639306315632
+    },
+    {
+      "name": "tree_hash_beacon_state_bellatrix_mainnet",
+      "ns": 1520879.8345949904,
+      "stderr_ns": 8617.828889183498
+    }
+  ]
+}
