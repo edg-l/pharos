@@ -51,6 +51,10 @@ pub enum RpcMethod {
 }
 
 /// Kinds of RPC error that affect scoring.
+///
+/// Timeout is modelled as the top-level [`ScoreEvent::RpcTimeout`] variant,
+/// not as a `Timeout` kind here, deviating from the M2 plan. Do not add a
+/// `Timeout` variant; emit `RpcTimeout` instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcErrorKind {
     InvalidRequest,
