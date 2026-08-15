@@ -390,11 +390,14 @@ state-transition entry) → `784d75b` (Altair conformance + spec-tests v1.7.0-al
 
 ### M4 — Bellatrix + Engine API
 
-M4 is split into four slices. Every item from the original M4 scope is
-allocated to exactly one slice; nothing is deferred out of M4. M4a/M4b/M4c
-ship code with in-process integration tests against mocks; M4d is the
-single cross-client acceptance gate that validates the full M4 surface
-against real ethrex + Lighthouse processes in a hand-rolled devnet.
+M4 is split into four slices plus a perf interlude. Every item from the
+original M4 scope is allocated to exactly one slice; nothing is deferred
+out of M4. M4a/M4b/M4c ship code with in-process integration tests
+against mocks; M4-perf swaps the `Vec`-backed SSZ collections for the
+tree-backed CoW design promised in CLAUDE.md (see "Persistent collections
+(in-house)" below); M4d is the single cross-client acceptance gate that
+validates the full M4 surface against real ethrex + Lighthouse processes
+in a hand-rolled devnet.
 
 #### M4a — Engine API + Bellatrix STF + in-process integration test (DONE)
 
@@ -466,6 +469,60 @@ validation bodies (M4c).
   authentication. Wire `OsRng::fill_bytes` + `std::fs::write` in
   `pharos-node/src/main.rs` when `args.jwt_secret.is_none()` and an EL endpoint
   is configured.
+
+#### M4-perf — Tree-backed persistent SSZ collections + tree-hash parallelism
+
+Why this slice: the conformance suite and STF are both dominated by
+`BeaconState::tree_hash_root` — sha2 is ~90% of the writer's CPU per
+flamegraph (`docs/perf/m4-perf-baseline-flamegraph.svg` once recorded).
+The `Vec`-backed `SszList` / `SszVector` we shipped at M0c rebuilds the
+entire Merkle tree per call; the tree-backed CoW design (see "Persistent
+collections (in-house)" further down) caches per-node hashes and only
+re-hashes the path on mutation. This unlocks 5–10× on hot paths and
+compounds with the existing rayon parallelism.
+
+- **Tree-backed `SszList<T, N>` / `SszVector<T, N>`**: swap the
+  `Backend::Tree(Arc<Node>)` placeholder in
+  `crates/pharos-ssz/src/sequence.rs` for a real implementation:
+  `Node::{Branch { left, right, hash: OnceCell<Hash256> }, Leaf(T),
+  ZeroSubtree(depth)}`. Const-generic depth derived from `N`. CoW `set`,
+  `push`, `get`, `iter`, `len`. SSZ encode/decode must be byte-identical
+  to the `Vec` backend; cached `tree_hash_root` must produce identical
+  roots. Property tests (proptest) randomized state surgery against the
+  `Vec` backend: any divergence = consensus bug.
+- **Validator-level caching**: `Validator::tree_hash_root` cached via
+  `OnceCell` on the struct. Validators barely change once active;
+  rehashing every slot is the single biggest per-call waste in
+  `process_slots`.
+- **Derive-macro field-level parallelism**: emit `rayon::scope` (or
+  fixed-width `rayon::join` nesting) in `#[derive(TreeHash)]` so a
+  container with N fields hashes them in parallel. Independent fields
+  → embarrassingly parallel. `BeaconState` has ~25 fields, mostly
+  independent.
+- **`lib.rs::run` top-level category parallelism**: refactor the
+  1718-line `if filter.matches(...)` ladder in
+  `crates/pharos-conformance/src/lib.rs::run` to `par_iter` over the
+  (fork, category, preset) triples and merge results. Categories
+  currently run strictly sequentially even though each is independent.
+- **Conformance regression**: the `docs/conformance.md` row counts MUST
+  not change. A `diff conformance.md.before conformance.md.after` of
+  zero is a hard gate.
+- **Bench reporting**: criterion benches for `tree_hash_root` on
+  `BeaconState` (mainnet + minimal), `process_slots` (1 slot, 32 slots,
+  1 epoch), and the full conformance writer wall-clock. Before/after
+  numbers committed to `docs/perf/`. Target: full conformance writer
+  drops from ~657 s (sequential baseline) to under 60 s on a 12-core
+  machine.
+
+Deferred from M4-perf to later (M11ish):
+- LRU cache for repeated `tree_hash_root` calls on stable Validators
+  (e.g. validators not yet active or fully exited) — defer.
+- Custom SHA-256 path via `sha2-asm` or AVX-512 intrinsics — defer.
+- Cross-thread tree sharing via lock-free `Arc<Node>` interning — defer.
+
+Expected cost: 4–6 implementer-days. Sequenced before M4c so the perf
+bench baseline (M4c) records the post-tree-backed numbers, not the
+pre-tree-backed ones.
 
 #### M4c — LC gossip carry-ins + perf bench baseline
 - **LC gossip validation bodies** (deferred from M3b spec audit Task 9.7):
