@@ -1551,28 +1551,154 @@ in code (the rejected refactor never landed).
 
 ### D-lc-gossip-validation-full-node-arm — Full-node IGNORE rule for LC gossip: exact local match
 
-**Status**: Draft. **Date**: 2026-05-27.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+The `light_client_finality_update` and `light_client_optimistic_update` gossip topics
+have two compliance arms in `specs/altair/light-client/p2p-interface.md`: a light-client
+arm (accept any spec-valid update, including supermajority exceptions and re-org skips)
+and a full-node arm (accept only updates that match the node's own canonical snapshot).
+Pharos is a full node serving the LC, not a consuming LC, so it follows the full-node
+arm: after the snapshot-lookup, monotonic-slot, and clock-window steps, the validator
+compares `tree_hash_root(msg)` against `tree_hash_root(local_snapshot)`. Any mismatch
+returns `IGNORE` with a diagnostic string (`"lc_finality: snapshot mismatch"`,
+`"lc_optimistic: snapshot mismatch"`). Rejected alternatives: re-deriving the signing
+domain and verifying the sync-committee aggregate signature here (the snapshot we
+generated already passed that verification at write time — re-running it on every
+forwarded message is wasted work); the light-client arm's supermajority exception
+(would require us to construct a hypothetical "best known" update on the fly, which
+is exactly what the full-node arm avoids). Enforced in
+`crates/pharos-node/src/host_impl.rs` (`validate_light_client_finality_update` at
+line 415, `validate_light_client_optimistic_update` at line 501) and exercised by the
+`validator_accepts_exact_match_finality` / `validator_accepts_exact_match_optimistic`
+tests in the same file.
 
 ### D-lc-snapshot-trait-on-host — `LightClientSnapshot` trait injected via `Host` for gossip validator access
 
-**Status**: Draft. **Date**: 2026-05-27.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+The gossip validator needs read-only access to the latest finality and optimistic
+snapshots without taking a write lock on the fork-choice store, without round-tripping
+through `pharos-network`'s req-resp serve path, and without coupling the
+validator to RocksDB column-family details. Pharos exposes those reads through the
+existing `LightClientProvider<E>` trait on `Host<E>` (already used by the req-resp
+serve handlers) and consumes them inside `HostImpl<E>::validate_light_client_*` via
+`self.light_client_finality_update()` / `self.light_client_optimistic_update()`. This
+keeps the validator's dependency surface to the `Host<E>` super-trait the network
+crate already requires. Rejected alternatives: a fresh `LightClientSnapshotStore`
+trait (would duplicate the four methods already on `LightClientProvider<E>` and force
+`HostImpl<E>` to carry two near-identical impls); reading directly from
+`Arc<RocksStore>` inside the validator (couples gossip validation to the storage
+backend, making swap-out for an alternative `Store` impl harder). Enforced in
+`crates/pharos-network/src/host.rs` (`LightClientProvider<E>` trait) and in
+`crates/pharos-node/src/host_impl.rs` (`impl<E: EthSpec> LightClientProvider<E> for
+HostImpl<E>` at line 567).
 
 ### D-lc-gossip-clock-window — Clock-window check for LC gossip: `get_sync_message_due_ms` basis-points deadline
 
-**Status**: Draft. **Date**: 2026-05-27.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+Spec wording in `specs/altair/light-client/p2p-interface.md` requires that an LC
+gossip message arrive no earlier than one full slot interval after its
+`signature_slot`'s start, modulo `MAXIMUM_GOSSIP_CLOCK_DISPARITY` (500 ms). Pharos
+implements this as `now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < due_ms` where
+`due_ms = genesis_ms + signature_slot * seconds_per_slot * 1000 + (seconds_per_slot *
+1000) / INTERVALS_PER_SLOT`. `INTERVALS_PER_SLOT = 3` matches `consensus-specs`
+`config/mainnet.yaml`. The check runs AFTER the monotonic-slot guard so a non-
+monotonic update never reaches `SystemTime::now()` (cheap-rejection first), and
+BEFORE the snapshot equality check so an early-arrival update is dropped without
+the tree_hash cost. Rejected alternatives: using `get_sync_message_due_ms` from the
+spec directly (it operates on slots, not millisecond timestamps, so the millisecond
+disparity check would re-derive the same arithmetic); per-validator wall-clock
+caching (the slot interval is fixed, so re-deriving on every call is two integer
+multiplications). Enforced in `crates/pharos-node/src/host_impl.rs`
+(`validate_light_client_finality_update` clock arithmetic at lines 449-460,
+`validate_light_client_optimistic_update` at lines 519-530).
 
 ### D-lc-broadcast-from-ingestion — LC gossip broadcast triggered from the block-ingestion path
 
-**Status**: Draft. **Date**: 2026-05-27.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+LC finality and optimistic updates are broadcast immediately after the block-
+ingestion loop advances the head. The trigger is colocated with the head-change
+detection because (a) the snapshot the validator will hash against has just been
+written (D-lc-snapshot-write-trigger), so we publish exactly what local subscribers
+will validate; (b) ingestion already owns the `NetworkCommandSender` clone needed
+for non-blocking publish; (c) it avoids a separate background task with its own
+shutdown/error handling. The publish is gated by an `IngestionEgress<E>::has_lc_snapshots`
+flag so phase0-only nodes (no altair fork transition yet) skip the publish without
+allocating an empty update. Rejected alternatives: a dedicated `lc_publisher` task
+polling fork-choice (extra task lifecycle, extra channel, harder to reason about
+ordering with snapshot writes); publishing from inside the STF (the STF is
+sync-only by contract per the project-level decisions in `CLAUDE.md` — pushing a
+tokio handle through it would invert that boundary). Enforced in
+`crates/pharos-node/src/block_ingestion.rs` (`run_block_ingestion_loop` post-head
+publish path, gated on `egress.has_lc_snapshots`) and verified by the
+`publish_called_after_head_change` / `no_publish_for_phase0_block` integration tests
+in `crates/pharos-node/tests/lc_gossip_publish.rs`.
 
 ### D-lc-snapshot-write-trigger — When to update the cached LC snapshot used by the validator
 
-**Status**: Draft. **Date**: 2026-05-27.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+The LC `finality_update` and `optimistic_update` snapshots are recomputed and
+stored when the STF dispatches an altair-or-later block in
+`pharos-stf::altair::light_client_dispatch`. Triggers: any block-import that
+advances the optimistic head writes a fresh `LightClientOptimisticUpdate`; any
+block-import that advances the finalized checkpoint additionally writes a fresh
+`LightClientFinalityUpdate`. Phase0 blocks bypass the dispatcher entirely (no
+sync committee, no LC structures), so no snapshot write fires there. The
+projected-state-root for the snapshot header is the canonical, STF-verified
+`block.state_root` field (not a recomputed `state.tree_hash_root()`); this is
+critical for bellatrix where the projected state omits `execution_payload_header`
+and a recomputed hash would not match what the consuming light client validates
+against. Rejected alternatives: writing the snapshot on every slot tick
+regardless of head change (wastes RocksDB writes when no head moved);
+writing only on epoch boundaries (delays finality-update propagation for up to
+32 slots). Enforced in `crates/pharos-stf/src/altair/light_client_dispatch.rs`
+(dispatcher entry point; bellatrix arm uses `block.state_root` at lines around
+607 and 762 — see commit `aaa5440` for the rationale of the Altair-projected
+state-hash fix).
 
 ### D-bench-location-per-crate — Criterion bench binaries live under each crate's `benches/` directory
 
-**Status**: Draft. **Date**: 2026-05-27.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+Each criterion bench lives in the `benches/` directory of the crate whose code
+it primarily exercises: `process_block` under `pharos-stf`, `tree_hash_beacon_state`
+under `pharos-ssz`, `gossip_validation` under `pharos-node` (where `HostImpl` is
+defined), `rpc_roundtrip` under `pharos-network`. The bench file is registered
+with `[[bench]] name = "<file>" harness = false` in that crate's `Cargo.toml` and
+criterion is a `[dev-dependencies]` entry. This keeps `cargo bench -p <crate>
+--bench <name>` working in isolation and lets a developer iterating on (say)
+`pharos-ssz` re-run only the tree-hash bench without recompiling the full
+workspace. The `gossip_validation` bench deviates from the original plan
+(planned for `pharos-network/benches/`) because `HostImpl<E>` is defined in
+`pharos-node`, and the plan's "duplicate `make_host` into the bench file"
+guidance presupposes the bench can construct that type — which requires
+importing from `pharos-node`, which `pharos-network` cannot do without a
+circular dependency. Rejected alternatives: a top-level `benches/` workspace
+crate (`cargo bench` would require `-p benches --bench <name>`, hiding which
+crate is under test); promoting `make_host` to a `pub mod test_helpers` (would
+pollute the `pharos-node` library surface for a single bench consumer). Enforced
+in `crates/pharos-{stf,ssz,network,node}/Cargo.toml` (`[[bench]]` entries) and
+the corresponding `benches/` directories.
 
 ### D-bench-history-format — Criterion baseline storage format and retention policy
 
-**Status**: Draft. **Date**: 2026-05-27.
+**Status**: Accepted. **Date**: 2026-05-28.
+
+`make bench` invokes the four criterion binaries sequentially, then runs
+`scripts/bench-summary.sh` which walks `target/criterion/*/new/estimates.json`
+and emits `bench-history/<sha>.json` (one file per committed bench-recording
+SHA). Each JSON has top-level fields `sha`, `host`, `toolchain`, `date`, and
+a `benches` array of `{name, ns, stderr_ns}` triples. The script refuses to
+write an empty `benches` array (it `exit 1`s if `target/criterion/` has no
+`estimates.json`) so a partial or aborted run cannot land a misleadingly
+"clean" empty record. `BENCH_FORCE=1` overrides the file-already-exists guard
+for re-runs from the same SHA. Rejected alternatives: appending to a single
+`bench-history.jsonl` (merge conflicts on every parallel feature branch);
+checking in HTML criterion reports under `target/criterion/` (huge, regenerated
+on every run, not human-diffable). Retention: every committed SHA's JSON is
+permanent — these files are the diff target for future perf-regression checks
+in CI (M4d work). Enforced in `scripts/bench-summary.sh` and the `bench`
+target in `Makefile`.
