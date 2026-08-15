@@ -50,9 +50,35 @@ curl -s http://127.0.0.1:5053/eth/v1/node/syncing | jq .data
 scripts/devnet/run-vc-vs-pharos.sh          # probe + launch VC
 PROBE_ONLY=1 scripts/devnet/run-vc-vs-pharos.sh   # read-probe only, no VC
 
+# 5. (M9 gate) run pharos-vc against the pharos BN, signing the carved-out keys
+cargo build -p pharos-validator --bin pharos-vc
+scripts/devnet/run-pharos-vc.sh
+# watch for production + confirm pharos-vc blocks land on the ref chain:
+#   grep -E 'block published|attestation submitted' ~/.cache/pharos-devnet/pharos-vc.log
+#   curl -s :5052/eth/v2/beacon/blocks/head | jq -r .data.message.body.execution_payload.fee_recipient
+#   (0x..02 = pharos-vc block, 0x..01 = lighthouse block)
+
 # teardown
 scripts/devnet/stop-devnet.sh
 ```
+
+### M9 validator gate (`run-pharos-vc.sh`)
+
+`gen-testnet.sh` carves the last `PHAROS_VC_COUNT` (default 8) validators out of
+the lighthouse keystore set into `$DEVNET_DIR/pharos-vc-keys/` (flat EIP-2335
+layout: `keystores/<pubkey>.json` + `secrets/<pubkey-without-0x>`).
+`run-pharos-vc.sh` launches `pharos-vc` against the pharos BN (:5053), signing
+only those keys. Because the two VCs sign **disjoint** validator sets, a
+pharos-vc-proposed block is gossiped and imported by lighthouse, and the pharos
+validators' attestations land in later blocks — no cross-client double-sign.
+
+Acceptance (Task 8.4): (a) pharos-vc proposes a block lighthouse imports + head
+advances to it; (b) pharos validators attest, attestations land in later blocks;
+(c) ethrex returns VALID for the pharos `engine_newPayloadV2`; (d) 0 slashing
+violations / bans / panics over ≥10 min / ≥2 epochs; (e) kill the EL mid-run →
+pharos BN 503 on produce_block → pharos-vc emits no signature. Override the
+validator split with `PHAROS_VC_COUNT`; exercise doppelganger with
+`DOPPELGANGER=true scripts/devnet/run-pharos-vc.sh`.
 
 Everything-in-one-tmux alternative: `~/.cache/pharos-devnet/run-tmux.sh --fresh`
 brings up all components (one pane each) for a watch-it-live session.

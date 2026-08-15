@@ -572,7 +572,8 @@ mod tests {
     //!   - Branch 1 of `is_optimistic_candidate_block`: parent block_hash == 0 →
     //!     NOT execution-enabled → false
     //!   - Branch 2: `block_slot + 128 = 129 > current_slot = 1` → false
-    //! → block is NOT an optimistic candidate.
+    //!
+    //! So the block is NOT an optimistic candidate.
     //!
     //! Test (a): EE returns `NotValidated` (SYNCING) → gate fires →
     //!   `Err(ImportError::NotOptimisticCandidate)`.

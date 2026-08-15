@@ -50,6 +50,18 @@ use pharos_utils::bls::aggregate;
 /// entry is evicted.
 pub const MAX_POOL_ENTRIES: usize = 16384;
 
+/// Compressed G2 point at infinity (`b'\xc0' + b'\x00' * 95`), per
+/// `specs/altair/bls.md`. This is the canonical signature for an **empty** sync
+/// aggregate: `eth_fast_aggregate_verify` accepts empty pubkeys only when paired
+/// with this exact value. A produced block with no sync participants must carry
+/// it (NOT the all-zero `BLSSignature::default()`), or its own
+/// `verify_signatures=true` re-import would fail `process_sync_aggregate`.
+fn empty_sync_committee_signature() -> BLSSignature {
+    let mut bytes = [0u8; 96];
+    bytes[0] = 0xc0;
+    BLSSignature::from_array(bytes)
+}
+
 // Mainnet and minimal both use 2048 for MAX_VALIDATORS_PER_COMMITTEE.
 // Using the concrete literal avoids the stable-Rust limitation that prevents
 // `E::ASSOCIATED_CONST` in const-generic positions.
@@ -443,7 +455,7 @@ impl<E: EthSpec> OperationPools<E> {
         }
 
         let sync_committee_signature = if sigs.is_empty() {
-            BLSSignature::default()
+            empty_sync_committee_signature()
         } else {
             aggregate(&sigs).unwrap_or_default()
         };
@@ -496,7 +508,7 @@ impl<E: EthSpec> OperationPools<E> {
         }
 
         let aggregated = if sigs.is_empty() {
-            BLSSignature::default()
+            empty_sync_committee_signature()
         } else {
             aggregate(&sigs).unwrap_or_default()
         };
@@ -517,6 +529,40 @@ impl<E: EthSpec> Default for OperationPools<E> {
             sync_messages: RwLock::new(LruCache::new(cap)),
             _phantom: std::marker::PhantomData,
         }
+    }
+}
+
+// ── helpers ────────────────────────────────────────────────────────────────────
+
+fn attester_slashing_key(slashing: &AttesterSlashing<VALIDATORS_PER_COMMITTEE>) -> u128 {
+    use std::collections::BTreeSet;
+
+    let set1: BTreeSet<u64> = slashing
+        .attestation_1
+        .attesting_indices
+        .as_slice()
+        .iter()
+        .map(|v| v.0)
+        .collect();
+    let set2: BTreeSet<u64> = slashing
+        .attestation_2
+        .attesting_indices
+        .as_slice()
+        .iter()
+        .map(|v| v.0)
+        .collect();
+
+    let mut intersection: Vec<u64> = set1.intersection(&set2).copied().collect();
+    intersection.sort_unstable();
+
+    match intersection.as_slice() {
+        [] => {
+            let xor_a: u64 = set1.iter().copied().fold(0, |a, b| a ^ b);
+            let xor_b: u64 = set2.iter().copied().fold(0, |a, b| a ^ b);
+            (xor_a as u128) | ((xor_b as u128) << 64)
+        }
+        [a] => *a as u128,
+        [a, b, ..] => (*a as u128) | ((*b as u128) << 64),
     }
 }
 
@@ -704,7 +750,15 @@ mod tests {
         for i in 0..(MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize) {
             assert_eq!(agg.sync_committee_bits.get(i), Some(false));
         }
-        assert_eq!(agg.sync_committee_signature, BLSSignature::default());
+        // An empty sync aggregate signs as the G2 point at infinity (0xc0 || 0*95),
+        // NOT all-zeros: `eth_fast_aggregate_verify` accepts empty participants only
+        // against the infinity signature (see empty_sync_committee_signature).
+        let mut infinity = [0u8; 96];
+        infinity[0] = 0xc0;
+        assert_eq!(
+            agg.sync_committee_signature,
+            BLSSignature::from_array(infinity)
+        );
     }
 
     #[test]
@@ -773,39 +827,5 @@ mod tests {
             ops.attestations[0].data.slot.0, slot_in,
             "drained attestation must be the in-window one"
         );
-    }
-}
-
-// ── helpers ────────────────────────────────────────────────────────────────────
-
-fn attester_slashing_key(slashing: &AttesterSlashing<VALIDATORS_PER_COMMITTEE>) -> u128 {
-    use std::collections::BTreeSet;
-
-    let set1: BTreeSet<u64> = slashing
-        .attestation_1
-        .attesting_indices
-        .as_slice()
-        .iter()
-        .map(|v| v.0)
-        .collect();
-    let set2: BTreeSet<u64> = slashing
-        .attestation_2
-        .attesting_indices
-        .as_slice()
-        .iter()
-        .map(|v| v.0)
-        .collect();
-
-    let mut intersection: Vec<u64> = set1.intersection(&set2).copied().collect();
-    intersection.sort_unstable();
-
-    match intersection.as_slice() {
-        [] => {
-            let xor_a: u64 = set1.iter().copied().fold(0, |a, b| a ^ b);
-            let xor_b: u64 = set2.iter().copied().fold(0, |a, b| a ^ b);
-            (xor_a as u128) | ((xor_b as u128) << 64)
-        }
-        [a] => *a as u128,
-        [a, b, ..] => (*a as u128) | ((*b as u128) << 64),
     }
 }

@@ -51,18 +51,6 @@ fn canned_altair_envelope(attested_slot: u64) -> LcEnvelope {
     }
 }
 
-/// Build a canned capella-style `LcEnvelope`.
-fn canned_capella_envelope(attested_slot: u64) -> LcEnvelope {
-    LcEnvelope {
-        variant: ForkVariant::Capella,
-        json: serde_json::json!({
-            "header": {"beacon": {"slot": attested_slot.to_string()}},
-        }),
-        ssz_bytes: vec![0x11, 0x22, 0x33, 0x44],
-        attested_slot,
-    }
-}
-
 // Non-zero gvr so compute_fork_digest produces distinct values per fork.
 const TEST_GVR: [u8; 32] = [0xAB; 32];
 
@@ -105,10 +93,6 @@ impl MockLc {
     }
     fn with_finality(mut self, env: LcEnvelope) -> Self {
         self.finality = Some(env);
-        self
-    }
-    fn with_optimistic(mut self, env: LcEnvelope) -> Self {
-        self.optimistic = Some(env);
         self
     }
 }
@@ -465,7 +449,7 @@ async fn updates_count_clamped_to_max() {
     let mock = MockLc::new().with_updates(vec![]);
     let (router, count_seen) = make_router_with_counter(mock);
     let req = Request::builder()
-        .uri(&format!(
+        .uri(format!(
             "/eth/v1/beacon/light_client/updates?start_period=0&count={}",
             MAX_REQUEST_LC_UPDATES + 1000
         ))

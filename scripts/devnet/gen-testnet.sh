@@ -132,7 +132,35 @@ lcli mnemonic-validators \
   --mnemonic-phrase "$MNEMONIC" \
   --testnet-dir "$D/testnet" >/dev/null
 
+# ---- carve out pharos-controlled validators (M9 pharos-vc gate) -------------
+# MOVE the last PHAROS_VC_COUNT keystores out of the lighthouse validators dir
+# into a flat EIP-2335 layout that `pharos-vc` consumes (--keystore-dir = flat
+# *.json, --secrets-dir = password files named by pubkey-without-0x). Moving
+# (not copying) guarantees the reference lighthouse VC (run-devnet.sh, --datadir
+# $D/keys) never discovers these keys, so pharos-vc and lighthouse VC sign
+# DISJOINT validator sets — a pharos-vc-proposed block is imported by lighthouse
+# and pharos validators attest into later blocks, with zero cross-client
+# double-sign risk. All carved keys remain in the genesis validator set (same
+# mnemonic), so the pharos BN resolves their on-chain indices.
+PHAROS_VC_COUNT="${PHAROS_VC_COUNT:-8}"
+PVCK="$D/pharos-vc-keys/keystores"
+PVCS="$D/pharos-vc-keys/secrets"
+rm -rf "$D/pharos-vc-keys"; mkdir -p "$PVCK" "$PVCS"
+mapfile -t ALLV < <(ls -1 "$D/keys/validators" | grep '^0x' | sort)
+TOTAL=${#ALLV[@]}
+if [ "$PHAROS_VC_COUNT" -ge "$TOTAL" ]; then
+  echo "FATAL: PHAROS_VC_COUNT=$PHAROS_VC_COUNT must be < total validators=$TOTAL"; exit 1
+fi
+for P in "${ALLV[@]: -$PHAROS_VC_COUNT}"; do
+  mv "$D/keys/validators/$P/voting-keystore.json" "$PVCK/$P.json"
+  rm -rf "$D/keys/validators/$P"
+  # pharos-vc resolves the password as <secrets-dir>/<pubkey-without-0x>.
+  mv "$D/keys/secrets/$P" "$PVCS/${P#0x}"
+done
+echo "pharos-vc validators: $PHAROS_VC_COUNT (flat keystores in $PVCK)"
+echo "lighthouse VC validators: $(( TOTAL - PHAROS_VC_COUNT ))"
+
 echo "==== done ===="
 echo "genesis_time=$GENESIS_TIME ($GENESIS_TIME_HEX)  data=$D"
 echo "capella_fork_epoch=$CAPELLA_EPOCH  shanghai_time=$SHANGHAI_TIME (fork ~$(( CAPELLA_EPOCH * SLOTS_PER_EPOCH * SECONDS_PER_SLOT ))s after genesis)"
-echo "validators: $(ls "$D/keys/validators" 2>/dev/null | grep -c '^0x' || echo 0) keystores"
+echo "validators: lighthouse=$(ls "$D/keys/validators" 2>/dev/null | grep -c '^0x' || echo 0)  pharos-vc=$(ls "$PVCK"/*.json 2>/dev/null | wc -l)"

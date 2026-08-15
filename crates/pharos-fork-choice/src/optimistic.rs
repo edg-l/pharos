@@ -440,6 +440,10 @@ pub fn apply_invalid_payload<E: EthSpec>(
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+// Test fixtures build blocks/states by mutating fields on `Default::default()`,
+// including nested fields (`body.execution_payload.block_hash`) that struct-init
+// syntax cannot express cleanly.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use pharos_types::MinimalEthSpec;
