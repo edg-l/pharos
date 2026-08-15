@@ -443,8 +443,16 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     {
         let fc_clone = Arc::clone(&fc_store);
         let eng = engine_handle.clone();
+        let head_tx_driver = head_tx.clone();
         tokio::spawn(async move {
-            run_engine_driver_loop::<MinimalEthSpec>(eng, fc_clone, head_rx, payload_rx).await;
+            run_engine_driver_loop::<MinimalEthSpec>(
+                eng,
+                fc_clone,
+                head_rx,
+                payload_rx,
+                head_tx_driver,
+            )
+            .await;
         });
     }
 

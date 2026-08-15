@@ -818,11 +818,21 @@ async fn main() -> anyhow::Result<()> {
     // Spawn engine driver loop + block ingestion loop when the engine is active.
     if let Some(engine_handle) = engine_handle_opt {
         // Spawn engine driver: listens for HeadChange watch and NewPayloadRequest mpsc.
+        // A clone of head_tx is given so the driver can emit a HeadChange on INVALID
+        // resolution (recomputed head after transitive invalidation).
         {
             let fc = Arc::clone(&fork_choice);
             let eng = engine_handle.clone();
+            let head_tx_driver = head_tx.clone();
             tokio::spawn(async move {
-                run_engine_driver_loop::<MainnetEthSpec>(eng, fc, head_rx, payload_rx).await;
+                run_engine_driver_loop::<MainnetEthSpec>(
+                    eng,
+                    fc,
+                    head_rx,
+                    payload_rx,
+                    head_tx_driver,
+                )
+                .await;
             });
             info!("engine driver loop started");
         }

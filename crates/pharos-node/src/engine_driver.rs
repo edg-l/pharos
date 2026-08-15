@@ -20,8 +20,10 @@ use pharos_engine::{
     EngineHandle, ForkchoiceUpdatedVersion, NewPayloadVersion, NewPayloadWire,
     types::{ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1},
 };
-use pharos_fork_choice::Store as FcStore;
-use pharos_types::{EthSpec, PayloadStatus, phase0::primitives::Root};
+use pharos_fork_choice::{
+    Store as FcStore, apply_invalid_payload, execution_block_hash_at_root, get_head,
+};
+use pharos_types::{EthSpec, PayloadStatus, phase0::primitives::Root, views::BeaconBlockView};
 use pharos_utils::Hash256;
 
 // ── ExecutionEngineHandle ─────────────────────────────────────────────────────
@@ -389,6 +391,73 @@ pub fn hash_to_hex(h: Hash256) -> String {
     out
 }
 
+// ── parse_latest_valid_hash ───────────────────────────────────────────────────
+
+/// Parse the Engine API `latestValidHash` field into `Option<Hash256>`.
+///
+/// The Engine API encodes the field as a `DATA` hex string (`0x`-prefixed
+/// 32 bytes) or JSON `null`.  A `None` input (JSON null) or a string that
+/// cannot be decoded as exactly 32 hex bytes returns `None`, which the
+/// caller treats as "null LVH" per the spec table.
+///
+/// Per `consensus-specs/sync/optimistic.md:224-233`:
+/// "How to apply latestValidHash when payload status is INVALID".
+///
+/// `Hash256 = FixedBytes<32>` implements `FromStr` (strips `0x`, hex-decodes,
+/// checks length) so we delegate to that.
+pub fn parse_latest_valid_hash(s: Option<&str>) -> Option<Hash256> {
+    let s = s?;
+    s.parse::<Hash256>().ok()
+}
+
+// ── maybe_emit_head_change ────────────────────────────────────────────────────
+
+/// Recompute and emit a `HeadChange` if `new_head != prev_head`.
+///
+/// Called after `apply_invalid_payload` marks one or more blocks `Invalid`.
+/// If the head did not move (the newly-invalid blocks were on a non-head branch)
+/// we emit nothing to avoid a spurious FCU round-trip.
+///
+/// Per `consensus-specs/sync/optimistic.md:263-267` (fork choice MUST support
+/// removing invalidated blocks from the canonical chain); the next call to
+/// `engine_forkchoiceUpdated` (triggered by the emitted `HeadChange`) will
+/// inform the EL of the updated head.
+fn maybe_emit_head_change<E: EthSpec>(
+    store: &Arc<RwLock<FcStore<E>>>,
+    new_head: Root,
+    prev_head: Root,
+    head_tx: &watch::Sender<Option<HeadChange>>,
+) where
+    E::BeaconBlock: BeaconBlockView,
+{
+    if new_head == prev_head {
+        return;
+    }
+    let s = store.read();
+    let head_block_hash = hash_to_hex(execution_block_hash_at_root(&s, new_head));
+    let safe_block_hash = hash_to_hex(compute_safe_block_hash(&s));
+    let finalized_block_hash = hash_to_hex(compute_finalized_block_hash(&s));
+    let head_slot = s
+        .blocks
+        .get(&new_head)
+        .map(|b| b.slot())
+        .unwrap_or_default();
+    drop(s);
+
+    let change = HeadChange {
+        head_root: new_head,
+        head_slot,
+        head_block_hash,
+        safe_block_hash,
+        finalized_block_hash,
+    };
+    info!(
+        new_head = %new_head,
+        "invalidation moved head; emitting HeadChange"
+    );
+    let _ = head_tx.send(Some(change));
+}
+
 // ── run_engine_driver_loop ────────────────────────────────────────────────────
 
 /// Async engine-driver loop.
@@ -396,11 +465,17 @@ pub fn hash_to_hex(h: Hash256) -> String {
 /// Selects between:
 /// (a) `head_rx.changed()` — calls `engine_forkchoiceUpdated` (V1 or V2 depending
 ///     on the head block's fork) with the new head/safe/finalized hashes.  If the
-///     EL returns `INVALID`, marks the head block as `PayloadStatus::Invalid` in
-///     the in-memory store.
+///     EL returns `INVALID`, calls `apply_invalid_payload` with the `latestValidHash`
+///     to mark the invalid block and all its descendants as `Invalid`, then recomputes
+///     head via `get_head` and emits a new `HeadChange` if the head has changed.
 /// (b) `payload_rx.recv()` — calls `engine_newPayload` (V1 or V2 depending on the
-///     payload's fork) with the new payload.  Maps `PayloadStatusStatus` to
-///     `PayloadStatus` and updates the store.
+///     payload's fork) with the new payload.  On `INVALID`/`INVALID_BLOCK_HASH`,
+///     calls `apply_invalid_payload` with `latestValidHash` for transitive
+///     descendant invalidation; then recomputes head and emits a `HeadChange`
+///     if the head has changed.
+///
+/// Per `consensus-specs/sync/optimistic.md:219-222` and `263-267`.
+/// Per `D-engine-head-driver` (M4a Phase 4) and `D-latest-valid-hash-resolution` (M8 Phase 3).
 ///
 /// The loop exits when both `head_rx` and `payload_rx` are dropped.
 pub async fn run_engine_driver_loop<E: EthSpec>(
@@ -408,7 +483,11 @@ pub async fn run_engine_driver_loop<E: EthSpec>(
     store: Arc<RwLock<FcStore<E>>>,
     mut head_rx: watch::Receiver<Option<HeadChange>>,
     mut payload_rx: mpsc::Receiver<NewPayloadRequest<E>>,
-) {
+    head_tx: watch::Sender<Option<HeadChange>>,
+) where
+    E::BeaconBlock: BeaconBlockView + Clone,
+    E::BeaconState: pharos_types::BeaconStateView,
+{
     loop {
         tokio::select! {
             // Head changed — call forkchoiceUpdated.
@@ -476,14 +555,30 @@ pub async fn run_engine_driver_loop<E: EthSpec>(
                         use pharos_engine::types::PayloadStatusStatus;
                         match resp.payload_status.status {
                             PayloadStatusStatus::Invalid | PayloadStatusStatus::InvalidBlockHash => {
+                                let lvh = parse_latest_valid_hash(
+                                    resp.payload_status.latest_valid_hash.as_deref(),
+                                );
                                 warn!(
                                     head_root = %change.head_root,
-                                    "forkchoice_updated: EL returned INVALID for head; \
-                                     marking block as Invalid"
+                                    latest_valid_hash = ?lvh,
+                                    "forkchoice_updated: EL returned INVALID; \
+                                     applying transitive invalidation"
                                 );
-                                store.write().mark_payload_status(
+                                // Apply transitive invalidation under the write lock.
+                                // Per `consensus-specs/sync/optimistic.md:219-222`.
+                                // Invalid entries remain in-memory only (no DB handle in
+                                // the driver); they self-heal on restart when the EL
+                                // re-reports INVALID for the same payloads via newPayload.
+                                let new_head = {
+                                    let mut s = store.write();
+                                    apply_invalid_payload::<E>(&mut s, change.head_root, lvh);
+                                    get_head::<E>(&s)
+                                };
+                                maybe_emit_head_change::<E>(
+                                    &store,
+                                    new_head,
                                     change.head_root,
-                                    PayloadStatus::Invalid,
+                                    &head_tx,
                                 );
                             }
                             PayloadStatusStatus::Valid => {
@@ -525,29 +620,71 @@ pub async fn run_engine_driver_loop<E: EthSpec>(
                 })
                 .await;
 
-                let status = match np_result {
+                match np_result {
                     Err(join_err) => {
                         error!(error = %join_err, "new_payload: join error");
-                        PayloadStatus::NotValidated
+                        store
+                            .write()
+                            .mark_payload_status(req.block_root, PayloadStatus::NotValidated);
                     }
                     Ok(Err(engine_err)) => {
                         warn!(error = %engine_err, "new_payload: engine error");
-                        PayloadStatus::NotValidated
+                        store
+                            .write()
+                            .mark_payload_status(req.block_root, PayloadStatus::NotValidated);
                     }
                     Ok(Ok(resp)) => {
                         use pharos_engine::types::PayloadStatusStatus;
                         match resp.status {
-                            PayloadStatusStatus::Valid => PayloadStatus::Valid,
+                            PayloadStatusStatus::Valid => {
+                                store
+                                    .write()
+                                    .mark_payload_status(req.block_root, PayloadStatus::Valid);
+                            }
                             PayloadStatusStatus::Invalid
-                            | PayloadStatusStatus::InvalidBlockHash => PayloadStatus::Invalid,
+                            | PayloadStatusStatus::InvalidBlockHash => {
+                                let lvh =
+                                    parse_latest_valid_hash(resp.latest_valid_hash.as_deref());
+                                warn!(
+                                    block_root = %req.block_root,
+                                    latest_valid_hash = ?lvh,
+                                    "new_payload: EL returned INVALID; \
+                                     applying transitive invalidation"
+                                );
+                                // Apply transitive invalidation under the write lock.
+                                // Per `consensus-specs/sync/optimistic.md:219-222`.
+                                // Invalid entries remain in-memory only (no DB handle in
+                                // the driver); they self-heal on restart when the EL
+                                // re-reports INVALID for the same payloads via newPayload.
+                                let prev_head = {
+                                    let guard = head_rx.borrow();
+                                    guard.as_ref().map(|hc| hc.head_root).unwrap_or_default()
+                                };
+                                let new_head = {
+                                    let mut s = store.write();
+                                    apply_invalid_payload::<E>(
+                                        &mut s,
+                                        req.block_root,
+                                        lvh,
+                                    );
+                                    get_head::<E>(&s)
+                                };
+                                maybe_emit_head_change::<E>(
+                                    &store,
+                                    new_head,
+                                    prev_head,
+                                    &head_tx,
+                                );
+                            }
                             PayloadStatusStatus::Syncing | PayloadStatusStatus::Accepted => {
-                                PayloadStatus::NotValidated
+                                store.write().mark_payload_status(
+                                    req.block_root,
+                                    PayloadStatus::NotValidated,
+                                );
                             }
                         }
                     }
-                };
-
-                store.write().mark_payload_status(req.block_root, status);
+                }
             }
         }
     }
@@ -615,5 +752,56 @@ mod tests {
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
         };
         assert_eq!(version, NewPayloadVersion::V2);
+    }
+
+    // ── parse_latest_valid_hash tests ─────────────────────────────────────────
+
+    /// None input (JSON null) → None.
+    #[test]
+    fn parse_lvh_none_returns_none() {
+        assert_eq!(parse_latest_valid_hash(None), None);
+    }
+
+    /// Valid 0x-prefixed 32-byte hex → Some(hash).
+    #[test]
+    fn parse_lvh_valid_hash_returns_some() {
+        let hex = "0x0000000000000000000000000000000000000000000000000000000000000000";
+        let result = parse_latest_valid_hash(Some(hex));
+        assert_eq!(result, Some(Hash256::default()));
+    }
+
+    /// Valid 32-byte hash with nonzero bytes.
+    #[test]
+    fn parse_lvh_nonzero_hash_returns_some() {
+        let hex = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let result = parse_latest_valid_hash(Some(hex));
+        let expected = Hash256::from_array(
+            [0xde, 0xad, 0xbe, 0xef]
+                .into_iter()
+                .cycle()
+                .take(32)
+                .collect::<Vec<u8>>()
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(result, Some(expected));
+    }
+
+    /// Malformed string (too short) → None.
+    #[test]
+    fn parse_lvh_malformed_returns_none() {
+        assert_eq!(parse_latest_valid_hash(Some("0xdeadbeef")), None);
+    }
+
+    /// Non-hex string → None.
+    #[test]
+    fn parse_lvh_non_hex_returns_none() {
+        assert_eq!(parse_latest_valid_hash(Some("not-a-hash")), None);
+    }
+
+    /// Empty string → None.
+    #[test]
+    fn parse_lvh_empty_string_returns_none() {
+        assert_eq!(parse_latest_valid_hash(Some("")), None);
     }
 }
