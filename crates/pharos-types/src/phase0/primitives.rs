@@ -50,6 +50,18 @@ pub const ATTESTATION_SUBNET_COUNT: u64 = 64;
 /// nominal send time as measured by the local clock.
 pub const MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS: u64 = 500;
 
+/// Maximum slot distance an attestation (or aggregate) may be from the current
+/// slot and still be propagated.
+///
+/// Per `specs/phase0/p2p-interface.md` (ATTESTATION_PROPAGATION_SLOT_RANGE = 32).
+pub const ATTESTATION_PROPAGATION_SLOT_RANGE: u64 = 32;
+
+/// Target number of aggregators per committee per slot.
+///
+/// Per `specs/phase0/validator.md` (TARGET_AGGREGATORS_PER_COMMITTEE = 16).
+/// Used in `is_aggregator` to compute the modulo threshold.
+pub const TARGET_AGGREGATORS_PER_COMMITTEE: u64 = 16;
+
 /// Number of intervals per slot used for light-client gossip timing windows.
 ///
 /// Value is 3, meaning the sync message is "due" at 1/3 of the slot duration

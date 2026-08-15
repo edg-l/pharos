@@ -43,6 +43,11 @@ numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
   - D-lc-gossip-validation-full-node-arm D-lc-snapshot-trait-on-host
   - D-lc-gossip-clock-window D-lc-broadcast-from-ingestion
   - D-lc-snapshot-write-trigger D-bench-location-per-crate D-bench-history-format
+- [M4e — Beacon block + attestation + aggregate gossip validation](#m4e-decisions)
+  - D-seen-cache-shape D-proposer-cache D-committee-cache D-verdict-strings-spec-keyed
+  - D-bls-on-hot-path D-invalid-roots-cache D-future-slot-disparity
+  - D-domain-types-additions D-is-aggregator-location D-cache-key-on-head
+  - D-seen-cache-after-accept D-no-tokio-from-validator
 
 ## M1 — Phase 0 STF + fork choice
 
@@ -1702,3 +1707,53 @@ on every run, not human-diffable). Retention: every committed SHA's JSON is
 permanent — these files are the diff target for future perf-regression checks
 in CI (M4d work). Enforced in `scripts/bench-summary.sh` and the `bench`
 target in `Makefile`.
+
+## M4e decisions
+
+### D-seen-cache-shape
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-proposer-cache
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-committee-cache
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-verdict-strings-spec-keyed
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-bls-on-hot-path
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-invalid-roots-cache
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-future-slot-disparity
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-domain-types-additions
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-is-aggregator-location
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-cache-key-on-head
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-seen-cache-after-accept
+
+**Status**: Draft. **Date**: 2026-05-28.
+
+### D-no-tokio-from-validator
+
+**Status**: Draft. **Date**: 2026-05-28.

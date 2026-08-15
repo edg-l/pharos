@@ -76,7 +76,7 @@ metrics-exporter-prometheus = "0.18"
 
 # Concurrency
 parking_lot = "0.12"
-lru = "0.12"
+lru = "0.16"
 arc-swap = "1"
 
 # Errors

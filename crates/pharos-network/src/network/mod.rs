@@ -282,7 +282,9 @@ pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScore
     _phantom: PhantomData<E>,
 }
 
-impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, H, S> {
+impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S: PeerScorer>
+    Network<E, H, S>
+{
     /// Drive the network event loop.
     ///
     /// Returns when a `NetworkCommand::Shutdown` is received or when
@@ -528,7 +530,16 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
         };
 
         // SSZ-decode + validate via the host.
-        let verdict = dispatch_gossip_message::<E, H>(self.host.as_ref(), &topic, &ssz_bytes);
+        // `dispatch_gossip_message` may call BLS verify (a blocking CPU op).
+        // Running it on a blocking thread prevents stalling the async executor.
+        let verdict = tokio::task::spawn_blocking({
+            let host = self.host.clone();
+            let topic = topic.clone();
+            let bytes = ssz_bytes.clone();
+            move || dispatch_gossip_message::<E, H>(host.as_ref(), &topic, &bytes)
+        })
+        .await
+        .expect("dispatch task panicked");
 
         // Convert verdict to gossipsub MessageAcceptance.
         let score_event;

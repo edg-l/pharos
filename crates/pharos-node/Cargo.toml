@@ -32,6 +32,7 @@ reqwest.workspace = true
 clap = { version = "4", features = ["derive"] }
 parking_lot.workspace = true
 thiserror.workspace = true
+lru.workspace = true
 # async-trait is needed for PeerPicker, which is used as Arc<dyn PeerPicker>.
 # dyn-safety requires the macro; BackfillBlockProvider uses native async-fn-in-trait
 # (Rust 1.85 stable) because it is only used as a monomorphised generic, not dyn.

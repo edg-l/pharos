@@ -86,6 +86,14 @@ pub const DOMAIN_BEACON_ATTESTER: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 pub const DOMAIN_RANDAO: [u8; 4] = [0x02, 0x00, 0x00, 0x00];
 pub const DOMAIN_DEPOSIT: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
 pub const DOMAIN_VOLUNTARY_EXIT: [u8; 4] = [0x04, 0x00, 0x00, 0x00];
+/// Domain for selection proofs (`DOMAIN_SELECTION_PROOF`).
+///
+/// Per `specs/phase0/beacon-chain.md:214`.
+pub const DOMAIN_SELECTION_PROOF: [u8; 4] = [0x05, 0x00, 0x00, 0x00];
+/// Domain for aggregate-and-proof messages (`DOMAIN_AGGREGATE_AND_PROOF`).
+///
+/// Per `specs/phase0/beacon-chain.md:215`.
+pub const DOMAIN_AGGREGATE_AND_PROOF: [u8; 4] = [0x06, 0x00, 0x00, 0x00];
 
 #[cfg(test)]
 mod tests {
