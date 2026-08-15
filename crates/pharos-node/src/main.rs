@@ -28,6 +28,7 @@ use pharos_node::block_ingestion::run_block_ingestion_loop;
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::fork_migration::run_fork_migration_loop;
 use pharos_node::host_impl::HostImpl;
+use pharos_node::jwt_autogen::ensure_jwt_secret;
 use pharos_node::pow_block::EnginePowBlockProvider;
 use pharos_node::startup::rehydrate_fork_choice_store;
 use pharos_node::subnet_rotation::run_subnet_rotation_loop;
@@ -241,11 +242,14 @@ async fn main() -> anyhow::Result<()> {
     let (head_tx, head_rx) = watch::channel::<Option<HeadChange>>(None);
     let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MainnetEthSpec>>(64);
 
-    // Spawn the engine actor only when a JWT secret path is provided.
-    // Without it (e.g. dev/test runs), the engine driver is not started.
-    let engine_handle_opt = if let Some(ref jwt_path) = args.jwt_secret {
-        let jwt_secret = pharos_engine::load_jwt_secret(jwt_path)
-            .with_context(|| format!("loading JWT secret from {:?}", jwt_path))?;
+    // Spawn the engine actor when an explicit JWT secret is given or when the
+    // user has configured a non-default execution endpoint.  Without either
+    // signal (e.g. dev/test runs with the defaults) the engine driver is not
+    // started.
+    let el_configured = args.execution_endpoint != "http://127.0.0.1:8551";
+    let engine_handle_opt = if args.jwt_secret.is_some() || el_configured {
+        let jwt_secret = ensure_jwt_secret(&args.data_dir, args.jwt_secret.as_deref())
+            .context("ensuring JWT secret")?;
 
         let primary_url: reqwest::Url = args
             .execution_endpoint
@@ -279,7 +283,10 @@ async fn main() -> anyhow::Result<()> {
         info!(endpoint = %args.execution_endpoint, "engine actor started");
         Some(handle)
     } else {
-        info!("--jwt-secret not provided; engine API integration disabled");
+        // TODO(m4b-phase-2): extend message with "+ no --checkpoint-sync-url" when the flag lands
+        info!(
+            "no EL configured (default endpoint + no --jwt-secret); engine API integration disabled"
+        );
         None
     };
 

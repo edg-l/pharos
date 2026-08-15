@@ -42,6 +42,7 @@ blst = "0.3"
 c-kzg = "2"
 sha2 = "0.11"
 hex = "0.4"
+rand_core = "0.9"
 
 # Async runtime / parallelism
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "signal"] }

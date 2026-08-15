@@ -7,6 +7,7 @@ pub mod block_ingestion;
 pub mod engine_driver;
 pub mod fork_migration;
 pub mod host_impl;
+pub mod jwt_autogen;
 pub mod pow_block;
 pub mod startup;
 pub mod subnet_rotation;
