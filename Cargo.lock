@@ -3034,6 +3034,7 @@ dependencies = [
  "pharos-ssz-derive",
  "pharos-utils",
  "proptest",
+ "rayon",
  "serde_yaml_ng",
  "snap",
  "thiserror 2.0.18",

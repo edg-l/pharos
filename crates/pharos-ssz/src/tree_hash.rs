@@ -22,6 +22,7 @@
 //! subtree of the given height.
 
 use pharos_utils::{FixedBytes, Hash256, Uint256, hash::hash_concat};
+use rayon::prelude::*;
 use std::sync::OnceLock;
 
 // ── TreeHashType ──────────────────────────────────────────────────────────────
@@ -210,17 +211,39 @@ fn merkleize_padded_inner(chunks: &[Hash256], padded_len: usize) -> Hash256 {
 
     // Ping-pong between two buffers across tree levels, reusing the
     // allocations instead of growing a fresh `Vec` per depth.
+    //
+    // Within a level, pair-hashes are independent → parallelize when the
+    // level has enough pairs to overcome rayon scheduling overhead.
     let mut current: Vec<Hash256> = chunks.to_vec();
     let mut next: Vec<Hash256> = Vec::with_capacity(current.len().div_ceil(2));
+    const PAR_PAIRS_THRESHOLD: usize = 16;
     for depth in 0..total_depth {
         next.clear();
-        let mut iter = current.chunks_exact(2);
-        for pair in iter.by_ref() {
-            next.push(hash_concat(pair[0].as_ref(), pair[1].as_ref()));
-        }
-        // If the layer has an odd node, pair it with the zero subtree at this depth.
-        if let [last] = iter.remainder() {
-            next.push(hash_concat(last.as_ref(), zero_hash(depth).as_ref()));
+        let pair_count = current.len() / 2;
+        let odd_remainder = current.len() % 2;
+        if pair_count >= PAR_PAIRS_THRESHOLD {
+            next.resize(pair_count + odd_remainder, Hash256::default());
+            next[..pair_count]
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(i, slot)| {
+                    let a = &current[2 * i];
+                    let b = &current[2 * i + 1];
+                    *slot = hash_concat(a.as_ref(), b.as_ref());
+                });
+            if odd_remainder == 1 {
+                let last = &current[2 * pair_count];
+                next[pair_count] = hash_concat(last.as_ref(), zero_hash(depth).as_ref());
+            }
+        } else {
+            let mut iter = current.chunks_exact(2);
+            for pair in iter.by_ref() {
+                next.push(hash_concat(pair[0].as_ref(), pair[1].as_ref()));
+            }
+            // If the layer has an odd node, pair it with the zero subtree at this depth.
+            if let [last] = iter.remainder() {
+                next.push(hash_concat(last.as_ref(), zero_hash(depth).as_ref()));
+            }
         }
         std::mem::swap(&mut current, &mut next);
     }

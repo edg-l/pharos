@@ -27,6 +27,8 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::{
     decode::Decode,
     encode::{BYTES_PER_LENGTH_OFFSET, Encode},
@@ -570,7 +572,7 @@ where
 
 impl<T, const N: u64> TreeHash for SszList<T, N>
 where
-    T: TreeHash + Encode,
+    T: TreeHash + Encode + Sync,
 {
     const TREE_HASH_TYPE: TreeHashType = TreeHashType::List;
 
@@ -591,7 +593,13 @@ where
             }
             _ => {
                 // Composite elements: per-element roots with limit = N.
-                let roots: Vec<Hash256> = elems.iter().map(|e| e.tree_hash_root()).collect();
+                // Threshold: rayon overhead vs serial is ~1024 elements for hashing.
+                const PAR_THRESHOLD: usize = 1024;
+                let roots: Vec<Hash256> = if elems.len() >= PAR_THRESHOLD {
+                    elems.par_iter().map(|e| e.tree_hash_root()).collect()
+                } else {
+                    elems.iter().map(|e| e.tree_hash_root()).collect()
+                };
                 let limit = N as usize;
                 merkleize_padded(&roots, limit)
             }
@@ -609,7 +617,7 @@ where
 
 impl<T, const N: u64> TreeHash for SszVector<T, N>
 where
-    T: TreeHash + Encode,
+    T: TreeHash + Encode + Sync,
 {
     const TREE_HASH_TYPE: TreeHashType = TreeHashType::Vector;
 
@@ -625,7 +633,12 @@ where
             }
             _ => {
                 // Composite elements: per-element roots, no limit.
-                let roots: Vec<Hash256> = elems.iter().map(|e| e.tree_hash_root()).collect();
+                const PAR_THRESHOLD: usize = 1024;
+                let roots: Vec<Hash256> = if elems.len() >= PAR_THRESHOLD {
+                    elems.par_iter().map(|e| e.tree_hash_root()).collect()
+                } else {
+                    elems.iter().map(|e| e.tree_hash_root()).collect()
+                };
                 merkleize(&roots)
             }
         }

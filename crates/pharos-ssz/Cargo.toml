@@ -11,6 +11,7 @@ description = "In-house SSZ encoding, decoding, and Merkleization for Pharos."
 pharos-utils.workspace = true
 pharos-ssz-derive.workspace = true
 thiserror.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
