@@ -9,6 +9,7 @@
 pub mod block;
 pub mod epoch;
 pub mod helpers;
+pub mod light_client;
 pub mod operations;
 pub mod state_transition;
 pub mod upgrade;

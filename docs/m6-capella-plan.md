@@ -215,9 +215,15 @@ Depends: Phase 1 (types). Unblocks the deferred LC conformance.
 - 5.4 `crates/pharos-stf/src/altair/light_client_dispatch.rs`: build the Capella header for
   capella-or-later blocks (use STF-verified values per M4c `D-bellatrix-lc-header-uses-state-root`).
 - 5.5 `crates/pharos-node/src/host_impl.rs`: LC finality/optimistic validators handle the
-  Capella header shape.
+  Capella header shape. **PARTIALLY DEFERRED to Phase 6**: Phase 5 delivered the capella LC
+  types/STF/storage/snapshot-writing + documented the migration point, but the validators
+  remain `E::AltairLightClient*`-typed because capella LC gossip cannot be routed to the host
+  until Phase 6 wires `Fork::Capella` + the capella fork-digest + the LC req-resp/gossip
+  topics. The capella-typing of these validators (and the capella LC gossip *publish*) is a
+  Phase 6 task (6.12). This is a phase-boundary move, not a skip — see Phase 6.
 - 5.6 **(moved from 3.6)** `crates/pharos-conformance/src/light_client.rs` +
-  `lib.rs` ladder: `run_light_client_capella_*`.
+  `lib.rs` ladder: `run_light_client_capella_*`. Also un-defers the capella LC ssz_static
+  cases (Phase 3 task 3.1 skipped them); only `PowBlock` remains skipped.
 - Checkpoint: `cargo check --workspace`; `--filter capella/light_client` `fail=0` both presets.
 - Commit: `feat(m6): capella LightClientHeader (execution payload + branch) + LC conformance`
 
@@ -244,6 +250,16 @@ Depends: Phases 1 + 2.
   `validate_attester_slashing` (1 IGNORE + 6 REJECT each) + seen-cache extensions.
 - 6.11 Tests: 27 rule-path unit tests (6 + 7×3) + verdict-string round-trip extension +
   `crates/pharos-node/tests/bls_to_exec_gossip_e2e.rs`.
+- 6.12 **(carry-in from Phase 5 task 5.5)** Capella-type the host LC validators
+  (`validate_light_client_finality_update` / `validate_light_client_optimistic_update` in
+  `crates/pharos-node/src/host_impl.rs`) to accept `E::CapellaLightClient*` updates, and wire
+  the capella LC gossip *publish* (block_ingestion already writes capella LC snapshots — now
+  publish them on the capella LC topics with the capella fork-digest). Add the capella LC
+  req-resp/gossip topic routing. This completes the LC gossip path that Phase 5 could not
+  (capella LC updates cannot be routed until `Fork::Capella` + the digest land in this phase).
+- 6.13 **(carry-in from Phase 3)** Tighten `EthSpec::BellatrixSignedBeaconBlock`'s bound to
+  `SignedBeaconBlockView<Message = Self::BellatrixBeaconBlock>` for consistency with the
+  capella assoc type (`eth_spec.rs` — non-functional, just removes a documentation trap).
 - Checkpoint: `cargo check -p pharos-network -p pharos-node && cargo test -p pharos-network -p pharos-node`.
 - Commit: `feat(m6): bls_to_execution_change topic + validator, fold in 3 phase0 validators, capella fork-digest migration`
 

@@ -16,9 +16,10 @@ use rocksdb::{
 use tracing::warn;
 
 use crate::cf::{
-    CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_FORKCHOICE, CF_LC_BOOTSTRAP, CF_LC_FINALITY_UPDATE,
-    CF_LC_OPTIMISTIC_UPDATE, CF_LC_UPDATE, CF_METADATA, CF_PAYLOAD_STATUS, CF_SLOT_TO_BLOCK_ROOT,
-    CF_STATES, LC_LATEST_KEY, all_cfs,
+    CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_FORKCHOICE, CF_LC_BOOTSTRAP, CF_LC_BOOTSTRAP_CAPELLA,
+    CF_LC_FINALITY_UPDATE, CF_LC_FINALITY_UPDATE_CAPELLA, CF_LC_OPTIMISTIC_UPDATE,
+    CF_LC_OPTIMISTIC_UPDATE_CAPELLA, CF_LC_UPDATE, CF_LC_UPDATE_CAPELLA, CF_METADATA,
+    CF_PAYLOAD_STATUS, CF_SLOT_TO_BLOCK_ROOT, CF_STATES, LC_LATEST_KEY, all_cfs,
 };
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
@@ -457,6 +458,102 @@ impl<E: EthSpec> Store<E> for RocksStore {
             None => Ok(None),
             Some(bytes) => {
                 let update = E::AltairLightClientOptimisticUpdate::from_ssz_bytes(&bytes)?;
+                Ok(Some(update))
+            }
+        }
+    }
+
+    // ── Capella light-client snapshot put/get ─────────────────────────────────
+
+    fn put_light_client_bootstrap_capella(
+        &self,
+        block_root: Root,
+        bootstrap: &E::CapellaLightClientBootstrap,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_BOOTSTRAP_CAPELLA)?;
+        self.db
+            .put_cf(cf, root_key(&block_root), bootstrap.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_bootstrap_capella(
+        &self,
+        block_root: &Root,
+    ) -> Result<Option<E::CapellaLightClientBootstrap>, StorageError> {
+        let cf = self.cf_handle(CF_LC_BOOTSTRAP_CAPELLA)?;
+        match self.db.get_cf(cf, root_key(block_root))? {
+            None => Ok(None),
+            Some(bytes) => {
+                let bootstrap = E::CapellaLightClientBootstrap::from_ssz_bytes(&bytes)?;
+                Ok(Some(bootstrap))
+            }
+        }
+    }
+
+    fn put_light_client_update_capella(
+        &self,
+        period: u64,
+        update: &E::CapellaLightClientUpdate,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_UPDATE_CAPELLA)?;
+        self.db
+            .put_cf(cf, period.to_le_bytes(), update.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_update_capella(
+        &self,
+        period: u64,
+    ) -> Result<Option<E::CapellaLightClientUpdate>, StorageError> {
+        let cf = self.cf_handle(CF_LC_UPDATE_CAPELLA)?;
+        match self.db.get_cf(cf, period.to_le_bytes())? {
+            None => Ok(None),
+            Some(bytes) => {
+                let update = E::CapellaLightClientUpdate::from_ssz_bytes(&bytes)?;
+                Ok(Some(update))
+            }
+        }
+    }
+
+    fn put_light_client_finality_update_capella(
+        &self,
+        update: &E::CapellaLightClientFinalityUpdate,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_FINALITY_UPDATE_CAPELLA)?;
+        self.db.put_cf(cf, LC_LATEST_KEY, update.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_finality_update_capella(
+        &self,
+    ) -> Result<Option<E::CapellaLightClientFinalityUpdate>, StorageError> {
+        let cf = self.cf_handle(CF_LC_FINALITY_UPDATE_CAPELLA)?;
+        match self.db.get_cf(cf, LC_LATEST_KEY)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let update = E::CapellaLightClientFinalityUpdate::from_ssz_bytes(&bytes)?;
+                Ok(Some(update))
+            }
+        }
+    }
+
+    fn put_light_client_optimistic_update_capella(
+        &self,
+        update: &E::CapellaLightClientOptimisticUpdate,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_OPTIMISTIC_UPDATE_CAPELLA)?;
+        self.db.put_cf(cf, LC_LATEST_KEY, update.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_optimistic_update_capella(
+        &self,
+    ) -> Result<Option<E::CapellaLightClientOptimisticUpdate>, StorageError> {
+        let cf = self.cf_handle(CF_LC_OPTIMISTIC_UPDATE_CAPELLA)?;
+        match self.db.get_cf(cf, LC_LATEST_KEY)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let update = E::CapellaLightClientOptimisticUpdate::from_ssz_bytes(&bytes)?;
                 Ok(Some(update))
             }
         }

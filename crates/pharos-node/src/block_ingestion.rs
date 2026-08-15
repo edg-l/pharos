@@ -23,7 +23,8 @@ use pharos_network::network::NetworkEvent;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
 use pharos_ssz::Decode;
 use pharos_stf::{
-    AltairDispatchBounds, BellatrixDispatchBounds, ExecutionEngine, StateTransitionError,
+    AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds, ExecutionEngine,
+    StateTransitionError,
 };
 use pharos_storage::StorageError;
 use pharos_types::views::{
@@ -166,7 +167,8 @@ where
         + BellatrixDispatchBounds<E>,
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, EE>
         + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + CapellaDispatchBounds<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock:
         pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
@@ -413,6 +415,7 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
     E: EthSpec,
     E::AltairBeaconState: AltairDispatchBounds<E>,
     E::BellatrixBeaconState: BellatrixDispatchBounds<E>,
+    E::CapellaBeaconState: CapellaDispatchBounds<E>,
     S: pharos_storage::Store<E>,
     E::AltairSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
@@ -420,6 +423,9 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
     E::BellatrixSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::BellatrixBeaconBlock: pharos_types::views::BeaconBlockView,
+    E::CapellaSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::CapellaBeaconBlock: pharos_types::views::BeaconBlockView,
     E::BeaconState: pharos_types::views::BeaconStateView,
 {
     use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _};
@@ -495,7 +501,37 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
             );
         }
         ForkVariant::Capella => {
-            // Phase 5: capella LC snapshot dispatch — implemented in M6 Phase 5.
+            let Some(capella_signed) = E::unwrap_capella_signed_block(signed_block) else {
+                return;
+            };
+            let capella_block = capella_signed.message();
+            let Some(post_state_capella) = E::unwrap_capella_state(post_state) else {
+                return;
+            };
+
+            let attested_root = capella_block.parent_root();
+            let finalized_root = post_state.finalized_checkpoint().root;
+
+            let attested_block_opt = fc_store
+                .blocks
+                .get(&attested_root)
+                .and_then(|b| E::unwrap_capella_block(b));
+            let attested_state_opt = fc_store
+                .block_states
+                .get(&attested_root)
+                .and_then(|s| E::unwrap_capella_state(s));
+            let finalized_block_opt = fc_store
+                .blocks
+                .get(&finalized_root)
+                .and_then(|b| E::unwrap_capella_block(b));
+
+            post_state_capella.call_update_lc_snapshots_capella::<S>(
+                capella_block,
+                attested_state_opt,
+                attested_block_opt,
+                finalized_block_opt,
+                store,
+            );
         }
     }
 }

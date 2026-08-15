@@ -1306,6 +1306,14 @@ where
         &self,
         msg: &<E as EthSpec>::AltairLightClientFinalityUpdate,
     ) -> GossipVerdict {
+        // Note (Phase 5 / D-capella-lc-header): The M4c IGNORE rules are
+        // unchanged for Capella. The header equality check at step 4 uses
+        // `tree_hash_root()`, which works correctly for any LightClientHeader
+        // shape (altair: beacon-only; capella: beacon + execution + branch).
+        // Phase 6 will update the method parameter from
+        // `E::AltairLightClientFinalityUpdate` to `E::CapellaLightClientFinalityUpdate`
+        // when the network fork-digest migration for capella is implemented.
+
         // Step 1 — snapshot lookup.
         let local = match self.light_client_finality_update() {
             Some(u) => u,
@@ -1378,6 +1386,10 @@ where
         &self,
         msg: &<E as EthSpec>::AltairLightClientOptimisticUpdate,
     ) -> GossipVerdict {
+        // Note (Phase 5 / D-capella-lc-header): Same as finality update — the
+        // IGNORE rules are unchanged for Capella; Phase 6 will change the type
+        // parameter to `E::CapellaLightClientOptimisticUpdate`.
+
         // Step 1 — snapshot lookup.
         let local = match self.light_client_optimistic_update() {
             Some(u) => u,

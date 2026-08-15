@@ -1015,6 +1015,62 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + Send
         + Sync
         + 'static;
+
+    // ── Capella light-client assoc types ──────────────────────────────────────
+
+    /// Capella `LightClientBootstrap` for this preset.
+    type CapellaLightClientBootstrap: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Capella `LightClientUpdate` for this preset.
+    type CapellaLightClientUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Capella `LightClientFinalityUpdate` for this preset.
+    type CapellaLightClientFinalityUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + crate::views::LightClientFinalityUpdateView
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Capella `LightClientOptimisticUpdate` for this preset.
+    type CapellaLightClientOptimisticUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + crate::views::LightClientOptimisticUpdateView
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
 }
 
 // ── MainnetEthSpec ─────────────────────────────────────────────────────────────
@@ -1614,6 +1670,14 @@ impl EthSpec for MainnetEthSpec {
     type AltairLightClientFinalityUpdate = crate::altair::LightClientFinalityUpdate<512>;
     /// Mainnet: `SYNC_COMMITTEE_SIZE = 512`.
     type AltairLightClientOptimisticUpdate = crate::altair::LightClientOptimisticUpdate<512>;
+    /// Mainnet capella `LightClientBootstrap` (`SYNC_COMMITTEE_SIZE=512, BYTES_PER_LOGS_BLOOM=256, MAX_EXTRA_DATA_BYTES=32`).
+    type CapellaLightClientBootstrap = crate::capella::MainnetLightClientBootstrap;
+    /// Mainnet capella `LightClientUpdate`.
+    type CapellaLightClientUpdate = crate::capella::MainnetLightClientUpdate;
+    /// Mainnet capella `LightClientFinalityUpdate`.
+    type CapellaLightClientFinalityUpdate = crate::capella::MainnetLightClientFinalityUpdate;
+    /// Mainnet capella `LightClientOptimisticUpdate`.
+    type CapellaLightClientOptimisticUpdate = crate::capella::MainnetLightClientOptimisticUpdate;
 }
 
 // ── MinimalEthSpec ─────────────────────────────────────────────────────────────
@@ -2220,4 +2284,12 @@ impl EthSpec for MinimalEthSpec {
     type AltairLightClientFinalityUpdate = crate::altair::LightClientFinalityUpdate<32>;
     /// Minimal: `SYNC_COMMITTEE_SIZE = 32`.
     type AltairLightClientOptimisticUpdate = crate::altair::LightClientOptimisticUpdate<32>;
+    /// Minimal capella `LightClientBootstrap`.
+    type CapellaLightClientBootstrap = crate::capella::MinimalLightClientBootstrap;
+    /// Minimal capella `LightClientUpdate`.
+    type CapellaLightClientUpdate = crate::capella::MinimalLightClientUpdate;
+    /// Minimal capella `LightClientFinalityUpdate`.
+    type CapellaLightClientFinalityUpdate = crate::capella::MinimalLightClientFinalityUpdate;
+    /// Minimal capella `LightClientOptimisticUpdate`.
+    type CapellaLightClientOptimisticUpdate = crate::capella::MinimalLightClientOptimisticUpdate;
 }

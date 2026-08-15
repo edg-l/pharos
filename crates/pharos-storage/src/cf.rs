@@ -73,17 +73,33 @@ pub const CF_LC_OPTIMISTIC_UPDATE: &str = "latest-optimistic-update";
 /// `pharos_fork_choice::Store::payload_statuses` map.
 pub const CF_PAYLOAD_STATUS: &str = "payload-status";
 
+/// Stores SSZ-encoded Capella `LightClientBootstrap` objects, keyed by block root.
+///
+/// Capella bootstrap headers include `execution` and `execution_branch` fields.
+pub const CF_LC_BOOTSTRAP_CAPELLA: &str = "capella-light-client-bootstrap";
+
+/// Stores SSZ-encoded Capella `LightClientUpdate` objects, keyed by sync-committee period.
+///
+/// Capella update headers include `execution` and `execution_branch` fields.
+pub const CF_LC_UPDATE_CAPELLA: &str = "capella-light-client-update";
+
+/// Single-row CF storing the latest SSZ-encoded Capella `LightClientFinalityUpdate`.
+pub const CF_LC_FINALITY_UPDATE_CAPELLA: &str = "capella-latest-finality-update";
+
+/// Single-row CF storing the latest SSZ-encoded Capella `LightClientOptimisticUpdate`.
+pub const CF_LC_OPTIMISTIC_UPDATE_CAPELLA: &str = "capella-latest-optimistic-update";
+
 /// Stable key for the single-row light-client update CFs.
 ///
-/// Used by `CF_LC_FINALITY_UPDATE` and `CF_LC_OPTIMISTIC_UPDATE`.
+/// Used by `CF_LC_FINALITY_UPDATE`, `CF_LC_OPTIMISTIC_UPDATE`, and their Capella variants.
 pub const LC_LATEST_KEY: &[u8] = b"latest";
 
-/// Returns all twelve column-family names in declaration order.
+/// Returns all sixteen column-family names in declaration order.
 ///
 /// Used when opening the database with `DB::open_cf_descriptors` so every CF
 /// is registered. The ordering does not affect correctness; RocksDB looks up
 /// CFs by name.
-pub fn all_cfs() -> [&'static str; 12] {
+pub fn all_cfs() -> [&'static str; 16] {
     [
         CF_DEFAULT,
         CF_BLOCKS,
@@ -97,5 +113,9 @@ pub fn all_cfs() -> [&'static str; 12] {
         CF_LC_FINALITY_UPDATE,
         CF_LC_OPTIMISTIC_UPDATE,
         CF_PAYLOAD_STATUS,
+        CF_LC_BOOTSTRAP_CAPELLA,
+        CF_LC_UPDATE_CAPELLA,
+        CF_LC_FINALITY_UPDATE_CAPELLA,
+        CF_LC_OPTIMISTIC_UPDATE_CAPELLA,
     ]
 }

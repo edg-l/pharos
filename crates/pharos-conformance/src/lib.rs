@@ -1850,6 +1850,51 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("capella", "fork_choice", "minimal"));
     }
 
+    // ── capella/light_client ──────────────────────────────────────────────────
+    if filter.matches("capella", "light_client", "mainnet") {
+        let result = light_client::run_light_client_capella_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "light_client",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "light_client", "mainnet"));
+    }
+
+    if filter.matches("capella", "light_client", "minimal") {
+        let result = light_client::run_light_client_capella_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "light_client",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "light_client", "minimal"));
+    }
+
     // ── engine/yaml ───────────────────────────────────────────────────────────
     if filter.matches("engine", "yaml", "-") {
         let specs_dir = dirs_engine_yaml();
@@ -1972,6 +2017,9 @@ fn fill_future_placeholders(report: &mut Report) {
         ("capella", "rewards", "minimal"),
         ("capella", "fork_choice", "mainnet"),
         ("capella", "fork_choice", "minimal"),
+        // Capella light_client
+        ("capella", "light_client", "mainnet"),
+        ("capella", "light_client", "minimal"),
         // Engine API YAML conformance
         ("engine", "yaml", "-"),
     ]
@@ -2072,6 +2120,9 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("capella", "rewards", "minimal"),
         ("capella", "fork_choice", "mainnet"),
         ("capella", "fork_choice", "minimal"),
+        // capella light_client
+        ("capella", "light_client", "mainnet"),
+        ("capella", "light_client", "minimal"),
         // engine API YAML conformance
         ("engine", "yaml", "-"),
         // future forks (placeholders)

@@ -59,6 +59,18 @@ use pharos_types::capella::{
     MinimalExecutionPayloadHeader as CapellaMinimalExecutionPayloadHeader,
     MinimalSignedBeaconBlock as CapellaMinimalSignedBeaconBlock, SignedBLSToExecutionChange,
     Withdrawal,
+    light_client::{
+        MainnetLightClientBootstrap as CapellaMainnetLCBootstrap,
+        MainnetLightClientFinalityUpdate as CapellaMainnetLCFinalityUpdate,
+        MainnetLightClientHeader as CapellaMainnetLCHeader,
+        MainnetLightClientOptimisticUpdate as CapellaMainnetLCOptimisticUpdate,
+        MainnetLightClientUpdate as CapellaMainnetLCUpdate,
+        MinimalLightClientBootstrap as CapellaMinimalLCBootstrap,
+        MinimalLightClientFinalityUpdate as CapellaMinimalLCFinalityUpdate,
+        MinimalLightClientHeader as CapellaMinimalLCHeader,
+        MinimalLightClientOptimisticUpdate as CapellaMinimalLCOptimisticUpdate,
+        MinimalLightClientUpdate as CapellaMinimalLCUpdate,
+    },
 };
 use pharos_types::phase0::{
     AggregateAndProof, AttestationData, BeaconBlockHeader, Checkpoint, DepositData, DepositMessage,
@@ -1137,16 +1149,21 @@ fn dispatch_capella_mainnet(
             check::<CapellaMainnetSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
         }
         "BeaconState" => check::<CapellaMainnetBeaconState>(ssz_bytes, expected_root, case_label),
-        // Phase 5: capella LC ssz_static (LightClientHeader, LightClientBootstrap,
-        // LightClientUpdate, LightClientFinalityUpdate, LightClientOptimisticUpdate)
-        // are deferred until Phase 5 ships the capella LC header type.
-        "LightClientHeader"
-        | "LightClientBootstrap"
-        | "LightClientUpdate"
-        | "LightClientFinalityUpdate"
-        | "LightClientOptimisticUpdate" => {
-            eprintln!("skipping mainnet/capella/ssz_static/{type_name}: LC types land in Phase 5");
-            Ok(false)
+        // Capella LC types (shipped in Phase 5).
+        "LightClientHeader" => {
+            check::<CapellaMainnetLCHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientBootstrap" => {
+            check::<CapellaMainnetLCBootstrap>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientUpdate" => {
+            check::<CapellaMainnetLCUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientFinalityUpdate" => {
+            check::<CapellaMainnetLCFinalityUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientOptimisticUpdate" => {
+            check::<CapellaMainnetLCOptimisticUpdate>(ssz_bytes, expected_root, case_label)
         }
         _ => {
             eprintln!("skipping mainnet/capella/ssz_static/{type_name}: not in dispatch table");
@@ -1260,16 +1277,21 @@ fn dispatch_capella_minimal(
             check::<CapellaMinimalSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
         }
         "BeaconState" => check::<CapellaMinimalBeaconState>(ssz_bytes, expected_root, case_label),
-        // Phase 5: capella LC ssz_static (LightClientHeader, LightClientBootstrap,
-        // LightClientUpdate, LightClientFinalityUpdate, LightClientOptimisticUpdate)
-        // are deferred until Phase 5 ships the capella LC header type.
-        "LightClientHeader"
-        | "LightClientBootstrap"
-        | "LightClientUpdate"
-        | "LightClientFinalityUpdate"
-        | "LightClientOptimisticUpdate" => {
-            eprintln!("skipping minimal/capella/ssz_static/{type_name}: LC types land in Phase 5");
-            Ok(false)
+        // Capella LC types (shipped in Phase 5).
+        "LightClientHeader" => {
+            check::<CapellaMinimalLCHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientBootstrap" => {
+            check::<CapellaMinimalLCBootstrap>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientUpdate" => {
+            check::<CapellaMinimalLCUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientFinalityUpdate" => {
+            check::<CapellaMinimalLCFinalityUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientOptimisticUpdate" => {
+            check::<CapellaMinimalLCOptimisticUpdate>(ssz_bytes, expected_root, case_label)
         }
         _ => {
             eprintln!("skipping minimal/capella/ssz_static/{type_name}: not in dispatch table");

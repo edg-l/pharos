@@ -16,6 +16,7 @@
 pub mod block;
 pub mod body;
 pub mod execution_payload;
+pub mod light_client;
 pub mod operations;
 pub mod state;
 
@@ -24,6 +25,10 @@ pub use block::{BeaconBlock, SignedBeaconBlock};
 pub use body::BeaconBlockBody;
 pub use execution_payload::{
     ExecutionPayload, ExecutionPayloadHeader, Withdrawal, WithdrawalIndex,
+};
+pub use light_client::{
+    EXECUTION_BRANCH_DEPTH, EXECUTION_PAYLOAD_GINDEX, LightClientBootstrap,
+    LightClientFinalityUpdate, LightClientHeader, LightClientOptimisticUpdate, LightClientUpdate,
 };
 pub use operations::{BLSToExecutionChange, HistoricalSummary, SignedBLSToExecutionChange};
 pub use state::BeaconState;
@@ -69,3 +74,33 @@ pub use execution_payload::MinimalExecutionPayload;
 
 /// Minimal capella `ExecutionPayloadHeader`.
 pub use execution_payload::MinimalExecutionPayloadHeader;
+
+/// Mainnet capella `LightClientHeader`.
+pub use light_client::MainnetLightClientHeader;
+
+/// Mainnet capella `LightClientBootstrap`.
+pub use light_client::MainnetLightClientBootstrap;
+
+/// Mainnet capella `LightClientUpdate`.
+pub use light_client::MainnetLightClientUpdate;
+
+/// Mainnet capella `LightClientFinalityUpdate`.
+pub use light_client::MainnetLightClientFinalityUpdate;
+
+/// Mainnet capella `LightClientOptimisticUpdate`.
+pub use light_client::MainnetLightClientOptimisticUpdate;
+
+/// Minimal capella `LightClientHeader`.
+pub use light_client::MinimalLightClientHeader;
+
+/// Minimal capella `LightClientBootstrap`.
+pub use light_client::MinimalLightClientBootstrap;
+
+/// Minimal capella `LightClientUpdate`.
+pub use light_client::MinimalLightClientUpdate;
+
+/// Minimal capella `LightClientFinalityUpdate`.
+pub use light_client::MinimalLightClientFinalityUpdate;
+
+/// Minimal capella `LightClientOptimisticUpdate`.
+pub use light_client::MinimalLightClientOptimisticUpdate;

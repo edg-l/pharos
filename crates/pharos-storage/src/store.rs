@@ -161,4 +161,57 @@ pub trait Store<E: EthSpec>: Send + Sync + 'static {
     fn get_light_client_optimistic_update(
         &self,
     ) -> Result<Option<E::AltairLightClientOptimisticUpdate>, StorageError>;
+
+    // ── Capella light-client snapshot store ───────────────────────────────────
+    //
+    // Separate CFs for capella LC types, which have a different SSZ layout
+    // (LightClientHeader includes execution + execution_branch fields).
+
+    /// Store an SSZ-encoded Capella `LightClientBootstrap`, keyed by `block_root`.
+    fn put_light_client_bootstrap_capella(
+        &self,
+        block_root: Root,
+        bootstrap: &E::CapellaLightClientBootstrap,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the Capella `LightClientBootstrap` for `block_root`, if stored.
+    fn get_light_client_bootstrap_capella(
+        &self,
+        block_root: &Root,
+    ) -> Result<Option<E::CapellaLightClientBootstrap>, StorageError>;
+
+    /// Store an SSZ-encoded Capella `LightClientUpdate` for `period`.
+    fn put_light_client_update_capella(
+        &self,
+        period: u64,
+        update: &E::CapellaLightClientUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the Capella `LightClientUpdate` for `period`, if stored.
+    fn get_light_client_update_capella(
+        &self,
+        period: u64,
+    ) -> Result<Option<E::CapellaLightClientUpdate>, StorageError>;
+
+    /// Overwrite the single-row latest Capella `LightClientFinalityUpdate`.
+    fn put_light_client_finality_update_capella(
+        &self,
+        update: &E::CapellaLightClientFinalityUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the latest stored Capella `LightClientFinalityUpdate`, if any.
+    fn get_light_client_finality_update_capella(
+        &self,
+    ) -> Result<Option<E::CapellaLightClientFinalityUpdate>, StorageError>;
+
+    /// Overwrite the single-row latest Capella `LightClientOptimisticUpdate`.
+    fn put_light_client_optimistic_update_capella(
+        &self,
+        update: &E::CapellaLightClientOptimisticUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the latest stored Capella `LightClientOptimisticUpdate`, if any.
+    fn get_light_client_optimistic_update_capella(
+        &self,
+    ) -> Result<Option<E::CapellaLightClientOptimisticUpdate>, StorageError>;
 }
