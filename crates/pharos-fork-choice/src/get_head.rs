@@ -675,4 +675,43 @@ mod tests {
         let store = minimal_store(genesis_time, wall_now);
         assert_eq!(get_current_slot(&store), Slot(N));
     }
+
+    /// Regression: weak-subjectivity / checkpoint-sync head fallback.
+    ///
+    /// After a non-zero-anchor checkpoint sync, the first imported block's
+    /// `update_checkpoints` adopts the block state's REAL justified root — a
+    /// pre-anchor block never fetched, so absent from `store.blocks`. Before the
+    /// fix, `get_head` seeded from that absent root and the import head lookup
+    /// `.expect()`-panicked ("head must be in store"). `effective_base` must fall
+    /// back to the finalized (anchor) root when the justified root is absent, and
+    /// must be a no-op (return the justified root) once it IS present.
+    #[test]
+    fn effective_base_falls_back_to_finalized_when_justified_absent() {
+        use pharos_types::phase0::BeaconBlock as Phase0BeaconBlock;
+
+        let anchor_root = Hash256::from_array([0x11; 32]);
+        let absent_justified_root = Hash256::from_array([0x22; 32]);
+
+        let block: <MinimalEthSpec as EthSpec>::BeaconBlock =
+            pharos_types::BeaconBlock::Phase0(Phase0BeaconBlock::default());
+
+        let mut store = minimal_store(0, 0);
+        // Anchor (finalized) block is present; the real justified root is not.
+        store.blocks.insert(anchor_root, block.clone());
+        store.finalized_checkpoint = Checkpoint {
+            epoch: pharos_utils::Epoch(0),
+            root: anchor_root,
+        };
+        store.justified_checkpoint = Checkpoint {
+            epoch: pharos_utils::Epoch(13),
+            root: absent_justified_root,
+        };
+
+        // Fallback: justified root absent → finalized/anchor root.
+        assert_eq!(super::effective_base(&store), anchor_root);
+
+        // No-op: once the justified block lands, it is used unchanged.
+        store.blocks.insert(absent_justified_root, block);
+        assert_eq!(super::effective_base(&store), absent_justified_root);
+    }
 }
