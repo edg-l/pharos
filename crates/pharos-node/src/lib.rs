@@ -6,6 +6,7 @@
 pub mod api_event_adapter;
 pub mod backfill;
 pub mod block_ingestion;
+pub mod block_production;
 pub mod checkpoint_sync;
 pub mod engine_driver;
 pub mod engine_keepalive;

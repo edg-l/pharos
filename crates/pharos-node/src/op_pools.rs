@@ -338,13 +338,28 @@ impl<E: EthSpec> OperationPools<E> {
     /// Drain all pooled operations, returning them capped at their respective
     /// `EthSpec` `MAX_*` constants.
     ///
+    /// Only attestations whose data slot falls within the spec inclusion window
+    /// relative to `block_slot` are retained:
+    ///   `att.data.slot + MIN_ATTESTATION_INCLUSION_DELAY <= block_slot`
+    ///   `block_slot - att.data.slot <= SLOTS_PER_EPOCH`
+    ///
+    /// Attestations outside this window are NOT drained — they remain pooled in
+    /// case a later slot falls within their window. (Stale attestations will be
+    /// evicted by the LRU cap when newer entries push them out.)
+    ///
     /// `deposits` is always empty — see `D-no-deposit-source`.
-    pub fn drain_for_block(&self, _slot: u64) -> BlockOperations {
+    pub fn drain_for_block(&self, block_slot: u64) -> BlockOperations {
         let max_proposer = E::MAX_PROPOSER_SLASHINGS as usize;
         let max_attester = E::MAX_ATTESTER_SLASHINGS as usize;
         let max_att = E::MAX_ATTESTATIONS as usize;
         let max_exits = E::MAX_VOLUNTARY_EXITS as usize;
         let max_bls = E::MAX_BLS_TO_EXECUTION_CHANGES as usize;
+
+        // Inclusion window per specs/phase0/beacon-chain.md:
+        //   att.data.slot + MIN_ATTESTATION_INCLUSION_DELAY <= block_slot
+        //   block_slot <= att.data.slot + SLOTS_PER_EPOCH
+        let min_delay = E::MIN_ATTESTATION_INCLUSION_DELAY;
+        let slots_per_epoch = E::SLOTS_PER_EPOCH;
 
         let proposer_slashings: Vec<_> = {
             let mut cache = self.proposer_slashings.write();
@@ -360,7 +375,20 @@ impl<E: EthSpec> OperationPools<E> {
 
         let attestations: Vec<_> = {
             let mut cache = self.attestations.write();
-            let keys: Vec<_> = cache.iter().take(max_att).map(|(k, _)| k.clone()).collect();
+            // Collect keys for attestations within the inclusion window, up to max_att.
+            let keys: Vec<AttKey> = cache
+                .iter()
+                .filter(|(_, att)| {
+                    let att_slot = att.data.slot.0;
+                    // att_slot + MIN_DELAY <= block_slot  (lower bound)
+                    let lower_ok = att_slot.saturating_add(min_delay) <= block_slot;
+                    // block_slot <= att_slot + SLOTS_PER_EPOCH  (upper bound)
+                    let upper_ok = block_slot <= att_slot.saturating_add(slots_per_epoch);
+                    lower_ok && upper_ok
+                })
+                .take(max_att)
+                .map(|(k, _)| k.clone())
+                .collect();
             keys.into_iter().filter_map(|k| cache.pop(&k)).collect()
         };
 
@@ -395,22 +423,31 @@ impl<E: EthSpec> OperationPools<E> {
     /// spec-valid (a block with no sync committee participation).
     ///
     /// The flat index in `sync_committee_bits` is:
-    ///   `global = subcommittee_index * SYNC_SUBCOMMITTEE_SIZE + position`
+    ///   `global = subcommittee_index * SYNC_SUBCOMMITTEE_SIZE + position_in_subcommittee`
     ///
-    /// KNOWN-INCOMPLETE (M9 Phase 2): `position` is currently the pool
-    /// *insertion order* within the subcommittee, NOT the validator's true
-    /// offset in `state.current_sync_committee.pubkeys`. The two coincide only
-    /// when every committee member contributes in committee order, so a block
-    /// built from this aggregate will generally FAIL `process_sync_aggregate`
-    /// verification. The correct position must be derived from the ordered
-    /// committee pubkeys, which are only available at block-assembly time.
-    /// Phase 4 (`produce_block`) MUST pass the committee in and compute real
-    /// positions before this is wired into live production. Until then callers
-    /// get a structurally-valid but semantically-placeholder aggregate.
+    /// where `position_in_subcommittee` is the validator's TRUE offset in the
+    /// subcommittee slice of `state.current_sync_committee.pubkeys`, NOT the
+    /// pool insertion order. This ensures `process_sync_aggregate` will accept
+    /// the produced block.
+    ///
+    /// # Parameters
+    ///
+    /// - `slot` / `block_root`: the block being assembled.
+    /// - `committee_pubkeys`: the ordered `current_sync_committee.pubkeys` slice
+    ///   (all `SYNC_COMMITTEE_SIZE` entries in committee order). Available from
+    ///   `state.sync_committee_pubkeys()` at block-assembly time.
+    /// - `validator_pubkey`: a function mapping `ValidatorIndex → Option<[u8; 48]>`.
+    ///   Used to convert each pooled message's `validator_index` to the pubkey
+    ///   needed for the committee-position lookup.
+    ///
+    /// Messages whose validator pubkey is not found in `committee_pubkeys` (e.g.
+    /// stale pool entries from a previous committee period) are silently skipped.
     pub fn drain_sync_aggregate<const SYNC_COMMITTEE_SIZE: u64>(
         &self,
         slot: Slot,
         block_root: Root,
+        committee_pubkeys: &[[u8; 48]],
+        validator_pubkey: impl Fn(u64) -> Option<[u8; 48]>,
     ) -> SyncAggregate<SYNC_COMMITTEE_SIZE> {
         let subcommittee_size = E::SYNC_SUBCOMMITTEE_SIZE as usize;
         let mut bits: Bitvector<SYNC_COMMITTEE_SIZE> = Bitvector::default();
@@ -425,13 +462,28 @@ impl<E: EthSpec> OperationPools<E> {
                 beacon_block_root: block_root,
             };
             if let Some(msgs) = cache.pop(&key) {
-                // FIXME(M9 Phase 4): `pos` is insertion order, not committee
-                // offset — see the doc comment. Wrong bits on mainnet.
-                for (pos, msg) in msgs.iter().enumerate() {
-                    let global = subc_idx as usize * subcommittee_size + pos;
-                    if (global as u64) < SYNC_COMMITTEE_SIZE {
-                        bits.set(global, true);
-                        sigs.push(msg.signature);
+                // Subcommittee slice: the `subc_idx`-th contiguous block of
+                // `subcommittee_size` entries in the full committee pubkeys list.
+                let subc_start = subc_idx as usize * subcommittee_size;
+                let subc_end = (subc_start + subcommittee_size).min(committee_pubkeys.len());
+                let subc_slice = &committee_pubkeys[subc_start..subc_end];
+
+                for msg in msgs.iter() {
+                    // Look up this validator's pubkey.
+                    let Some(pubkey) = validator_pubkey(msg.validator_index.0) else {
+                        continue;
+                    };
+                    // A validator may occupy MULTIPLE positions in the same
+                    // subcommittee (altair/validator.md); each occurrence is an
+                    // independent bit and the signature counts once per bit.
+                    for (pos_in_subc, pk) in subc_slice.iter().enumerate() {
+                        if pk == &pubkey {
+                            let global = subc_start + pos_in_subc;
+                            if (global as u64) < SYNC_COMMITTEE_SIZE {
+                                bits.set(global, true);
+                                sigs.push(msg.signature);
+                            }
+                        }
                     }
                 }
             }
@@ -447,6 +499,66 @@ impl<E: EthSpec> OperationPools<E> {
             sync_committee_bits: bits,
             sync_committee_signature,
         }
+    }
+
+    /// Fork-agnostic sync aggregate drain.
+    ///
+    /// Returns `(set_bits, aggregated_signature)` instead of a `SyncAggregate<N>`.
+    /// `set_bits` contains the global indices (0..<SYNC_COMMITTEE_SIZE) of participating
+    /// validators. The caller assembles `SyncAggregate<CONCRETE_SIZE>` without needing
+    /// `SYNC_COMMITTEE_SIZE` as a const-generic argument in the call site — which is
+    /// forbidden on stable Rust when the size comes from an `EthSpec` associated const.
+    ///
+    /// Used by `block_production::drain_sync_aggregate_into` to bridge the const-generic
+    /// boundary between `E::SYNC_COMMITTEE_SIZE` (an associated const) and the concrete
+    /// `SYNC_COMMITTEE_SIZE` const param of the fork-specific `SyncAggregate<N>`.
+    pub fn drain_sync_aggregate_raw(
+        &self,
+        slot: Slot,
+        block_root: Root,
+        committee_pubkeys: &[[u8; 48]],
+        validator_pubkey: impl Fn(u64) -> Option<[u8; 48]>,
+    ) -> (Vec<usize>, BLSSignature) {
+        let subcommittee_size = E::SYNC_SUBCOMMITTEE_SIZE as usize;
+        let mut set_bits: Vec<usize> = Vec::new();
+        let mut sigs: Vec<BLSSignature> = Vec::new();
+
+        let mut cache = self.sync_messages.write();
+
+        for subc_idx in 0..E::SYNC_COMMITTEE_SUBNET_COUNT {
+            let key = SyncMessageKey {
+                slot,
+                subcommittee_index: subc_idx,
+                beacon_block_root: block_root,
+            };
+            if let Some(msgs) = cache.pop(&key) {
+                let subc_start = subc_idx as usize * subcommittee_size;
+                let subc_end = (subc_start + subcommittee_size).min(committee_pubkeys.len());
+                let subc_slice = &committee_pubkeys[subc_start..subc_end];
+
+                for msg in msgs.iter() {
+                    let Some(pubkey) = validator_pubkey(msg.validator_index.0) else {
+                        continue;
+                    };
+                    // A validator may occupy multiple positions in the subcommittee;
+                    // set every matching bit and count the signature once per bit.
+                    for (pos_in_subc, pk) in subc_slice.iter().enumerate() {
+                        if pk == &pubkey {
+                            set_bits.push(subc_start + pos_in_subc);
+                            sigs.push(msg.signature);
+                        }
+                    }
+                }
+            }
+        }
+
+        let aggregated = if sigs.is_empty() {
+            BLSSignature::default()
+        } else {
+            aggregate(&sigs).unwrap_or_default()
+        };
+
+        (set_bits, aggregated)
     }
 }
 
@@ -570,11 +682,12 @@ mod tests {
         let pools = OperationPools::<E>::new();
         let att = make_att_one_bit(1, 0, 0, zero_sig());
         pools.insert_attestation(att.clone());
-        let ops = pools.drain_for_block(1);
+        // Drain at slot 2: att_slot(1) + MIN_ATTESTATION_INCLUSION_DELAY(1) <= 2.
+        let ops = pools.drain_for_block(2);
         assert_eq!(ops.attestations.len(), 1);
         assert_eq!(ops.attestations[0].data.slot.0, 1);
         // After drain the pool is empty.
-        let ops2 = pools.drain_for_block(1);
+        let ops2 = pools.drain_for_block(2);
         assert_eq!(ops2.attestations.len(), 0);
     }
 
@@ -594,7 +707,8 @@ mod tests {
         pools.insert_attestation(att_a);
         pools.insert_attestation(att_b);
 
-        let ops = pools.drain_for_block(2);
+        // Drain at slot 3: within the inclusion window for att_slot 2.
+        let ops = pools.drain_for_block(3);
         // Merged into a single attestation.
         assert_eq!(ops.attestations.len(), 1);
         let merged = &ops.attestations[0];
@@ -616,9 +730,29 @@ mod tests {
         pools.insert_attestation(att_a);
         pools.insert_attestation(att_b);
 
-        let ops = pools.drain_for_block(3);
+        // Drain at slot 4: within the inclusion window for att_slot 3.
+        let ops = pools.drain_for_block(4);
         // Must not be merged — two separate entries.
         assert_eq!(ops.attestations.len(), 2);
+    }
+
+    /// Task 4.5b-ii: `drain_for_block` filters attestations outside the
+    /// inclusion window (too-recent below `MIN_ATTESTATION_INCLUSION_DELAY`,
+    /// or too-old beyond `SLOTS_PER_EPOCH`), leaving them pooled.
+    #[test]
+    fn drain_filters_attestations_outside_inclusion_window() {
+        let pools = OperationPools::<E>::new();
+        // att for slot 10: cannot be included at slot 10 (needs slot >= 11).
+        pools.insert_attestation(make_att_one_bit(10, 0, 0, zero_sig()));
+        assert_eq!(pools.drain_for_block(10).attestations.len(), 0);
+
+        // Too old: att for slot 1 against a block SLOTS_PER_EPOCH+ later.
+        let too_late = 1 + <E as EthSpec>::SLOTS_PER_EPOCH + 1;
+        pools.insert_attestation(make_att_one_bit(1, 0, 0, zero_sig()));
+        assert_eq!(pools.drain_for_block(too_late).attestations.len(), 0);
+
+        // In-window drain still returns the slot-1 attestation (still pooled).
+        assert_eq!(pools.drain_for_block(2).attestations.len(), 1);
     }
 
     /// Task 2.6: `exit_dedup_by_index`
@@ -684,13 +818,103 @@ mod tests {
     fn sync_aggregate_empty_when_no_messages() {
         let pools = OperationPools::<E>::new();
         // MinimalEthSpec: SYNC_COMMITTEE_SIZE = 32
+        let committee: Vec<[u8; 48]> =
+            vec![[0u8; 48]; MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize];
         let agg = pools.drain_sync_aggregate::<{ MinimalEthSpec::SYNC_COMMITTEE_SIZE }>(
             Slot(10),
             Root::default(),
+            &committee,
+            |_| None,
         );
         for i in 0..(MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize) {
             assert_eq!(agg.sync_committee_bits.get(i), Some(false));
         }
         assert_eq!(agg.sync_committee_signature, BLSSignature::default());
+    }
+
+    /// Task 4.5b(i): `drain_sync_aggregate_uses_true_committee_position`
+    ///
+    /// Verifies that the participation bit is set at the validator's TRUE
+    /// position in the subcommittee, not pool insertion order.
+    #[test]
+    fn drain_sync_aggregate_uses_true_committee_position() {
+        let pools = OperationPools::<E>::new();
+        // Build a committee of 32 entries (MinimalEthSpec SYNC_COMMITTEE_SIZE).
+        // Place validator 7 at committee position 5 (subcommittee 0, offset 5).
+        const SIZE: usize = MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize;
+        let mut committee: Vec<[u8; 48]> = vec![[0u8; 48]; SIZE];
+        let val7_pubkey = [0x07u8; 48];
+        committee[5] = val7_pubkey; // true position = 5
+
+        // Insert a sync message for validator 7 in subcommittee 0.
+        let msg = SyncCommitteeMessage {
+            slot: Slot(1),
+            beacon_block_root: Root::default(),
+            validator_index: ValidatorIndex(7),
+            signature: BLSSignature::default(),
+        };
+        pools.insert_sync_message(msg, 0);
+
+        let agg = pools.drain_sync_aggregate::<{ MinimalEthSpec::SYNC_COMMITTEE_SIZE }>(
+            Slot(1),
+            Root::default(),
+            &committee,
+            |idx| {
+                if idx == 7 { Some(val7_pubkey) } else { None }
+            },
+        );
+        // Position 5 must be set; no other positions.
+        assert_eq!(
+            agg.sync_committee_bits.get(5),
+            Some(true),
+            "bit at true committee position 5 must be set"
+        );
+        for i in 0..SIZE {
+            if i != 5 {
+                assert_eq!(
+                    agg.sync_committee_bits.get(i),
+                    Some(false),
+                    "bit {i} must not be set (not validator 7's position)"
+                );
+            }
+        }
+    }
+
+    /// Task 4.5b(ii): `drain_for_block_filters_by_inclusion_window`
+    ///
+    /// Verifies that `drain_for_block` filters attestations outside the spec
+    /// inclusion window (`att.data.slot + MIN_DELAY <= block_slot <= att.data.slot + SLOTS_PER_EPOCH`).
+    #[test]
+    fn drain_for_block_filters_by_inclusion_window() {
+        type E = MinimalEthSpec;
+        let min_delay = E::MIN_ATTESTATION_INCLUSION_DELAY;
+        let spe = E::SLOTS_PER_EPOCH;
+        // Block is at slot 10.
+        let block_slot = 10u64;
+
+        // att_in_window: att.data.slot = block_slot - min_delay (earliest valid).
+        let slot_in = block_slot - min_delay;
+        // att_too_recent: att.data.slot = block_slot (not yet MIN_DELAY behind).
+        let slot_too_recent = block_slot;
+        // att_too_old: att.data.slot = block_slot - spe - 1 (beyond SLOTS_PER_EPOCH).
+        let slot_too_old = block_slot.saturating_sub(spe + 1);
+
+        let pools = OperationPools::<E>::new();
+        // Use different committee indices so they hash to different keys.
+        pools.insert_attestation(make_att_one_bit(slot_in, 10, 0, zero_sig()));
+        pools.insert_attestation(make_att_one_bit(slot_too_recent, 11, 0, zero_sig()));
+        pools.insert_attestation(make_att_one_bit(slot_too_old, 12, 0, zero_sig()));
+
+        let ops = pools.drain_for_block(block_slot);
+        // Only the in-window attestation should be returned.
+        assert_eq!(
+            ops.attestations.len(),
+            1,
+            "only in-window attestation should be drained"
+        );
+        assert_eq!(
+            ops.attestations[0].data.slot.0, slot_in,
+            "drained attestation must be the in-window one"
+        );
     }
 }

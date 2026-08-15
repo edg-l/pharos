@@ -41,6 +41,17 @@ pub use phase0::epoch::process_epoch;
 pub use phase0::genesis::{initialize_beacon_state_from_eth1, is_valid_genesis_state};
 pub use phase0::slot::process_slots;
 
+// ── Accessor re-exports (Task 4.2) ───────────────────────────────────────────
+//
+// Re-exported so `pharos-node::block_production` (and other crates that depend
+// on `pharos-stf`) can import them from one location without reaching into
+// `pharos-stf::phase0::accessors` directly.
+pub use phase0::accessors::{
+    compute_epoch_at_slot, compute_start_slot_at_epoch, get_active_validator_indices,
+    get_beacon_committee, get_beacon_proposer_index, get_block_root, get_block_root_at_slot,
+    get_committee_count_per_slot, get_current_epoch, get_randao_mix,
+};
+
 // ── Signing-domain constants ──────────────────────────────────────────────────
 //
 // Phase0 (0x00–0x06), Altair (0x07–0x09), Capella (0x0A) — re-exported here
@@ -583,6 +594,101 @@ where
     Ok(())
 }
 
+/// `process_block_for_production` — run the per-fork block-processing without BLS checks.
+///
+/// Entry point used by `produce_block` in `pharos-node::block_production`.
+/// The caller has already advanced the state to the proposal slot via
+/// `process_slots`, assembled the block body, and set `block.state_root =
+/// Default::default()`. This function runs the full per-fork `process_block`
+/// step sequence (for Capella: block_header → withdrawals → exec_payload →
+/// randao → eth1 → operations → sync_aggregate) with `verify_signatures=false`
+/// — all non-BLS validations still run.
+///
+/// After this returns `Ok(())`, the caller must set
+/// `block.state_root = state.tree_hash_root()` to seal the block. The
+/// `execution_engine` is needed for the Bellatrix/Capella `process_execution_payload`
+/// step (non-gating in optimistic mode via `ExecutionEngineHandle`).
+///
+/// Per `D-process-block-verify-flag`: threads `verify_signatures=false` through
+/// the per-fork `process_block` call — does NOT duplicate the step order; the
+/// step order lives inside each fork's `process_block`.
+///
+/// The state and block must be the same fork variant; `produce_block` ensures
+/// this by assembling the block from the head state's fork variant.
+pub fn process_block_for_production<E: EthSpec, EE: ExecutionEngine>(
+    state: E::BeaconState,
+    block: &E::BeaconBlock,
+    execution_engine: &EE,
+    runtime_cfg: &RuntimeConfig,
+) -> Result<E::BeaconState, StateTransitionError>
+where
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairBeaconState: AltairProcessBlockForProduction<E>,
+    E::BellatrixBeaconState: BellatrixProcessBlockForProduction<E, EE> + TreeHash,
+    E::CapellaBeaconState: CapellaProcessBlockForProduction<E, EE> + TreeHash,
+{
+    use pharos_types::views::ForkVariant;
+
+    // Dispatch on the state fork variant; call the per-fork `process_block`
+    // with `verify_signatures=false` (per `D-process-block-verify-flag`).
+    // `unreachable!()` guards the impossible-variant arm per project convention.
+    match state.fork_variant() {
+        ForkVariant::Phase0 => {
+            let mut state = state;
+            let phase0_block =
+                E::unwrap_phase0_block(block).ok_or(StateTransitionError::UnsupportedFork)?;
+            process_block::<E>(&mut state, phase0_block, false)?;
+            state.invalidate_root_cache();
+            Ok(state)
+        }
+        ForkVariant::Altair => {
+            let altair_block =
+                E::unwrap_altair_block(block).ok_or(StateTransitionError::UnsupportedFork)?;
+            let mut altair_inner =
+                E::into_altair_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+            altair_inner.process_block_for_production_altair(altair_block)?;
+            let mut wrapped = E::altair_into_state(altair_inner);
+            wrapped.invalidate_root_cache();
+            Ok(wrapped)
+        }
+        ForkVariant::Bellatrix => {
+            let bellatrix_block =
+                E::unwrap_bellatrix_block(block).ok_or(StateTransitionError::UnsupportedFork)?;
+            let mut bellatrix_inner =
+                E::into_bellatrix_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+            bellatrix_inner.process_block_for_production_bellatrix(
+                bellatrix_block,
+                execution_engine,
+                runtime_cfg,
+            )?;
+            let mut wrapped = E::bellatrix_into_state(bellatrix_inner);
+            wrapped.invalidate_root_cache();
+            Ok(wrapped)
+        }
+        ForkVariant::Capella => {
+            let capella_block =
+                E::unwrap_capella_block(block).ok_or(StateTransitionError::UnsupportedFork)?;
+            let mut capella_inner =
+                E::into_capella_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+            capella_inner.process_block_for_production_capella(
+                capella_block,
+                execution_engine,
+                runtime_cfg,
+            )?;
+            let mut wrapped = E::capella_into_state(capella_inner);
+            wrapped.invalidate_root_cache();
+            Ok(wrapped)
+        }
+    }
+}
+
 /// Fork-aware `process_justification_and_finalization`.
 ///
 /// Dispatches to the phase0, altair, or bellatrix implementation depending on
@@ -769,6 +875,462 @@ where
     }
 
     Ok(())
+}
+
+// ── Production block-processing dispatch traits ───────────────────────────────
+//
+// These traits allow `process_block_for_production` (above) to call the
+// per-fork `process_block` functions on inner concrete state types through the
+// opaque `E::AltairBeaconState` / `E::BellatrixBeaconState` /
+// `E::CapellaBeaconState` associated types.
+//
+// Each trait has a single method that calls the per-fork `process_block` with
+// `verify_signatures = false` — skipping all BLS checks while running all other
+// state mutations and validations per `D-process-block-verify-flag`.
+//
+// Blanket impls follow the same pattern as `AltairDispatch`, `BellatrixDispatch`,
+// and `CapellaDispatch` in the per-fork `state_transition.rs` files.
+
+/// Dispatch trait for production block processing on Altair inner states.
+pub trait AltairProcessBlockForProduction<E: EthSpec>: Sized {
+    /// Apply `block` (unsigned) to `self` with `verify_signatures=false`.
+    fn process_block_for_production_altair(
+        &mut self,
+        block: &E::AltairBeaconBlock,
+    ) -> Result<(), StateTransitionError>;
+}
+
+impl<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    E,
+> AltairProcessBlockForProduction<E>
+    for pharos_types::altair::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >
+where
+    E: EthSpec<
+            AltairBeaconState = pharos_types::altair::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+            AltairBeaconBlock = pharos_types::altair::BeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+        >,
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    E::AltairBeaconState: pharos_ssz::TreeHash,
+    E::AltairBeaconBlock: pharos_types::views::BeaconBlockView,
+    pharos_utils::BLSPubkey: Default + Clone,
+{
+    fn process_block_for_production_altair(
+        &mut self,
+        block: &E::AltairBeaconBlock,
+    ) -> Result<(), StateTransitionError> {
+        altair::block::process_block::<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            E,
+        >(self, block, false)
+    }
+}
+
+/// Dispatch trait for production block processing on Bellatrix inner states.
+pub trait BellatrixProcessBlockForProduction<E: EthSpec, EE: ExecutionEngine>: Sized {
+    /// Apply `block` (unsigned) to `self` with `verify_signatures=false`.
+    fn process_block_for_production_bellatrix(
+        &mut self,
+        block: &E::BellatrixBeaconBlock,
+        execution_engine: &EE,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<(), StateTransitionError>;
+}
+
+impl<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    E,
+    EE,
+> BellatrixProcessBlockForProduction<E, EE>
+    for pharos_types::bellatrix::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    E: EthSpec<
+            AltairBeaconState = pharos_types::altair::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+            BellatrixBeaconState = pharos_types::bellatrix::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            BellatrixBeaconBlock = pharos_types::bellatrix::BeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            AltairBeaconBlock = pharos_types::altair::BeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+        >,
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    pharos_types::bellatrix::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    E::AltairBeaconState: pharos_ssz::TreeHash,
+    E::AltairBeaconBlock: pharos_types::views::BeaconBlockView,
+    pharos_utils::BLSPubkey: Default + Clone,
+    EE: ExecutionEngine,
+{
+    fn process_block_for_production_bellatrix(
+        &mut self,
+        block: &E::BellatrixBeaconBlock,
+        execution_engine: &EE,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<(), StateTransitionError> {
+        bellatrix::block::process_block::<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            E,
+            EE,
+        >(self, block, execution_engine, false, runtime_cfg)?;
+        Ok(())
+    }
+}
+
+/// Dispatch trait for production block processing on Capella inner states.
+pub trait CapellaProcessBlockForProduction<E: EthSpec, EE: ExecutionEngine>: Sized {
+    /// Apply `block` (unsigned) to `self` with `verify_signatures=false`.
+    fn process_block_for_production_capella(
+        &mut self,
+        block: &E::CapellaBeaconBlock,
+        execution_engine: &EE,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<(), StateTransitionError>;
+}
+
+impl<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
+    E,
+    EE,
+> CapellaProcessBlockForProduction<E, EE>
+    for pharos_types::capella::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    E: EthSpec<
+            AltairBeaconState = pharos_types::altair::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+            CapellaBeaconState = pharos_types::capella::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            CapellaBeaconBlock = pharos_types::capella::BeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+            >,
+            AltairBeaconBlock = pharos_types::altair::BeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+        >,
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    pharos_types::capella::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+    >: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    E::AltairBeaconState: pharos_ssz::TreeHash,
+    E::AltairBeaconBlock: pharos_types::views::BeaconBlockView,
+    E::CapellaBeaconState: pharos_ssz::TreeHash,
+    pharos_utils::BLSPubkey: Default + Clone,
+    EE: ExecutionEngine,
+{
+    fn process_block_for_production_capella(
+        &mut self,
+        block: &E::CapellaBeaconBlock,
+        execution_engine: &EE,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<(), StateTransitionError> {
+        capella::block::process_block::<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+            MAX_BLS_TO_EXECUTION_CHANGES,
+            E,
+            EE,
+        >(self, block, execution_engine, false, runtime_cfg)?;
+        Ok(())
+    }
 }
 
 // ── BellatrixJaFDispatch trait ────────────────────────────────────────────────

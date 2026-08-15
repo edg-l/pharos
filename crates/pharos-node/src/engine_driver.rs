@@ -33,9 +33,7 @@ use pharos_stf::{
     phase0::accessors::{get_current_epoch, get_randao_mix},
 };
 use pharos_types::{
-    BeaconStateView, EthSpec, PayloadStatus,
-    config::RuntimeConfig,
-    phase0::primitives::Root,
+    BeaconStateView, EthSpec, PayloadStatus, config::RuntimeConfig, phase0::primitives::Root,
     views::BeaconBlockView,
 };
 use pharos_utils::Hash256;
