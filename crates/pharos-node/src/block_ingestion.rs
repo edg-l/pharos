@@ -23,6 +23,7 @@ use pharos_network::NetworkCommandSender;
 use pharos_network::host::{ForkContext as _, LightClientProvider as _};
 use pharos_network::network::NetworkEvent;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
+use pharos_network::types::Fork;
 use pharos_ssz::Decode;
 use pharos_stf::{
     AltairDispatchBounds, BellatrixDispatchBounds, ExecutionEngine, StateTransitionError,
@@ -135,8 +136,8 @@ where
         + BellatrixDispatchBounds<E>,
     E::Phase0BeaconBlock:
         pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
-    E::Phase0SignedBeaconBlock:
-        pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::Phase0SignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
     E::Phase0BeaconBlockBody: pharos_ssz::TreeHash
         + pharos_types::views::BeaconBlockBodyView<
             Attestation = pharos_types::phase0::Attestation<2048>,
@@ -144,10 +145,10 @@ where
             Deposit = pharos_types::phase0::Deposit<33>,
         >,
     E::AltairBeaconBlock: pharos_types::views::BeaconBlockView + Clone,
-    E::AltairSignedBeaconBlock:
-        pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
-    E::BellatrixSignedBeaconBlock:
-        pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::AltairSignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
     EE: ExecutionEngine + 'static,
 {
@@ -164,15 +165,39 @@ where
         };
         debug!(?topic, "block_ingestion: received gossip block");
 
-        // (b) Decode SSZ bytes. Phase 4: no snappy framing assumed at this layer
-        // (the network task already decompress when emitting GossipMessage).
-        let signed_block: E::SignedBeaconBlock = match E::SignedBeaconBlock::from_ssz_bytes(&data) {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(error = ?e, "block_ingestion: SSZ decode failed; dropping");
-                continue;
-            }
-        };
+        // (b) Decode SSZ bytes by the topic's fork-digest. Gossip beacon_block
+        // carries raw per-fork SSZ with no discriminant prefix — the fork is
+        // determined by the topic's fork-digest, not a leading byte.
+        let signed_block: E::SignedBeaconBlock =
+            match host.fork_from_context(&topic.fork_digest.into_inner()) {
+                Some(Fork::Bellatrix) => {
+                    match E::BellatrixSignedBeaconBlock::from_ssz_bytes(&data) {
+                        Ok(inner) => E::bellatrix_into_signed_block(inner),
+                        Err(e) => {
+                            warn!(error = ?e, "block_ingestion: bellatrix SSZ decode failed; dropping");
+                            continue;
+                        }
+                    }
+                }
+                Some(Fork::Altair) => {
+                    match E::AltairSignedBeaconBlock::from_ssz_bytes(&data) {
+                        Ok(inner) => E::altair_into_signed_block(inner),
+                        Err(e) => {
+                            warn!(error = ?e, "block_ingestion: altair SSZ decode failed; dropping");
+                            continue;
+                        }
+                    }
+                }
+                Some(Fork::Phase0) | None => {
+                    match E::Phase0SignedBeaconBlock::from_ssz_bytes(&data) {
+                        Ok(inner) => E::phase0_into_signed_block(inner),
+                        Err(e) => {
+                            warn!(error = ?e, "block_ingestion: phase0 SSZ decode failed; dropping");
+                            continue;
+                        }
+                    }
+                }
+            };
 
         // (c) Fetch pre_state from the fork-choice store.
         let pre_state = {
