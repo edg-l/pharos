@@ -366,6 +366,12 @@ where
 /// (spec: `max_by_key(|(root, _)| (weight, root))`).
 ///
 /// Per R7: "Fork-choice tie-break uses `(weight, root)` lexicographic max".
+///
+/// Contract: the returned root is normally present in `store.blocks`, but this
+/// is NOT guaranteed in pathological states (e.g. a weak-subjectivity store
+/// whose justified/finalized roots are both pre-anchor and unfetched). Callers
+/// MUST handle absence defensively (return an error / fall back) rather than
+/// `expect`/`unwrap` the lookup — a missing head must never panic the node.
 pub fn get_head<E: EthSpec>(store: &Store<E>) -> Root
 where
     E::BeaconBlock: BeaconBlockView + Clone,

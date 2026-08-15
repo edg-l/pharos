@@ -3291,6 +3291,59 @@ mod tests {
         );
     }
 
+    // ── per-fork dispatch coverage ───────────────────────────────────────────
+    //
+    // Regression guard for the M7 capella gossip-follow bug: `validate_beacon_block`
+    // had no capella arm in its fork-unwrap chain, so every capella `beacon_block`
+    // was Reject("unrecognised fork variant"). The unwrap is now the exhaustive
+    // `EthSpec::signed_block_message`; this asserts EVERY active fork variant is
+    // dispatched (reaches the validation pipeline) rather than rejected as an
+    // unknown fork. Each default block is at slot 0 so it is IGNOREd at the
+    // finalized-slot step — the point is that the fork-unwrap itself succeeds.
+    #[test]
+    fn block_validator_dispatches_every_fork_variant() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _parent_root, _) = make_block_test_host(&dir);
+
+        // Build a default signed block of each fork variant via the EthSpec
+        // associated inner types so the params match the fork enum exactly.
+        let cases: [(&str, MinForkSigned); 4] = [
+            (
+                "phase0",
+                MinForkSigned::Phase0(
+                    <MinimalEthSpec as pharos_types::EthSpec>::Phase0SignedBeaconBlock::default(),
+                ),
+            ),
+            (
+                "altair",
+                MinForkSigned::Altair(
+                    <MinimalEthSpec as pharos_types::EthSpec>::AltairSignedBeaconBlock::default(),
+                ),
+            ),
+            (
+                "bellatrix",
+                MinForkSigned::Bellatrix(
+                    <MinimalEthSpec as pharos_types::EthSpec>::BellatrixSignedBeaconBlock::default(
+                    ),
+                ),
+            ),
+            (
+                "capella",
+                MinForkSigned::Capella(
+                    <MinimalEthSpec as pharos_types::EthSpec>::CapellaSignedBeaconBlock::default(),
+                ),
+            ),
+        ];
+
+        for (name, block) in cases {
+            let verdict = host.validate_beacon_block(&block);
+            assert!(
+                !matches!(&verdict, GossipVerdict::Reject(r) if r.contains("unrecognised fork variant")),
+                "{name} beacon_block wrongly rejected as unrecognised fork variant: {verdict:?}"
+            );
+        }
+    }
+
     // ── (m) cache-mechanic: block_proposer_cache_avoids_redo ─────────────────
 
     #[test]

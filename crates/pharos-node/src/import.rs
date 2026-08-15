@@ -55,6 +55,12 @@ pub enum ImportError {
     /// `spawn_blocking` join error (tokio thread pool failure).
     #[error("spawn_blocking join error: {0}")]
     Join(#[from] tokio::task::JoinError),
+
+    /// `get_head` returned a root not present in the block store — a fork-choice
+    /// invariant violation. Surfaced as an error (block dropped / retried by the
+    /// caller) rather than panicking the whole node on the hot import path.
+    #[error("fork-choice head {root} not in block store (invariant violation)")]
+    HeadMissing { root: Root },
 }
 
 // ── ImportOutcome ─────────────────────────────────────────────────────────────
@@ -265,7 +271,10 @@ where
         let head_root = get_head::<E>(&store);
         let safe_hash = compute_safe_block_hash::<E>(&store);
         let finalized_hash = compute_finalized_block_hash::<E>(&store);
-        let head_block = store.blocks.get(&head_root).expect("head must be in store");
+        let head_block = match store.blocks.get(&head_root) {
+            Some(b) => b,
+            None => return Err(ImportError::HeadMissing { root: head_root }),
+        };
         let head_slot = head_block.slot();
         let head_block_hash =
             hash_to_hex(E::get_execution_block_hash(head_block).unwrap_or_default());

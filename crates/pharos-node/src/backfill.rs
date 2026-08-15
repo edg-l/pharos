@@ -52,6 +52,17 @@ pub const BACKFILL_RETRY_DELAY: Duration = Duration::from_secs(5);
 /// when the node is behind and no gossip blocks are visible yet).
 pub const BACKFILL_FOLLOW_FALLBACK: Duration = Duration::from_secs(48);
 
+/// If backfill imports a chunk whose start is within this many slots of the wall
+/// clock, the node is at the tip and live gossip — not backfill — should be
+/// delivering those blocks. Used to detect a silent gossip-follow failure that
+/// the backfill fallback would otherwise mask (the head keeps advancing, so the
+/// node looks healthy). ~2 fallback intervals' worth of slots.
+const NEAR_TIP_BACKFILL_SLOTS: u64 = 8;
+
+/// Throttle for the "advancing via backfill near the tip" warning so a genuine
+/// follow-lag is surfaced without flooding the log every chunk.
+const FOLLOWLAG_WARN_INTERVAL: Duration = Duration::from_secs(120);
+
 // ── BackfillError ─────────────────────────────────────────────────────────────
 
 /// Errors returned by the backfill driver.
@@ -168,6 +179,9 @@ where
     let cfg = fc_store.read().runtime_cfg.clone();
     let seconds_per_slot = cfg.seconds_per_slot;
 
+    // Throttle for the gossip-follow-lag warning (see NEAR_TIP_BACKFILL_SLOTS).
+    let mut last_followlag_warn: Option<tokio::time::Instant> = None;
+
     loop {
         // Check for shutdown before doing any work.
         if *shutdown_rx.borrow() {
@@ -242,6 +256,30 @@ where
             continue;
         }
 
+        // Observability: if backfill is importing blocks this close to the wall
+        // clock, the node is at the tip and live gossip — not the backfill
+        // fallback — should be delivering them. A persistent occurrence means
+        // gossip following is broken (e.g. wrong fork-digest, unformed mesh) and
+        // the backfill fallback is silently masking the lag. Surface it (throttled)
+        // so the failure isn't invisible behind a still-advancing head.
+        if start.0 + NEAR_TIP_BACKFILL_SLOTS >= wall_slot {
+            let now = tokio::time::Instant::now();
+            let due = last_followlag_warn
+                .map(|t| now.duration_since(t) >= FOLLOWLAG_WARN_INTERVAL)
+                .unwrap_or(true);
+            if due {
+                warn!(
+                    head = %head_slot,
+                    wall = %wall_slot,
+                    start = %start,
+                    "backfill is advancing the head near the tip — live gossip is not following \
+                     (check beacon_block gossip: fork-digest / mesh / peer fork). The backfill \
+                     fallback is masking the lag."
+                );
+                last_followlag_warn = Some(now);
+            }
+        }
+
         for signed in blocks {
             // Check shutdown inside the per-block loop so we don't hold the
             // lock for many blocks before yielding.
@@ -296,6 +334,14 @@ where
                 }
                 Err(crate::import::ImportError::Storage(e)) => {
                     return Err(BackfillError::Storage(e));
+                }
+                Err(crate::import::ImportError::HeadMissing { root }) => {
+                    warn!(%root, "backfill: fork-choice head not in store; backing off and retrying");
+                    if *shutdown_rx.borrow() {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
+                    break;
                 }
             };
 
