@@ -187,47 +187,37 @@ where
 fn compute_historical_batch_root<E: EthSpec>(state: &E::BeaconState) -> pharos_types::phase0::Root {
     use pharos_ssz::SszVector;
     use pharos_types::phase0::Root;
-    use pharos_utils::Hash256;
 
     let block_roots_slice = state.block_roots();
     let state_roots_slice = state.state_roots();
 
-    // Mainnet: SLOTS_PER_HISTORICAL_ROOT = 8192
-    if E::SLOTS_PER_HISTORICAL_ROOT == 8192 {
-        let block_roots: SszVector<Root, 8192> =
-            SszVector::from_vec(block_roots_slice.to_vec()).expect("block_roots length matches");
-        let state_roots: SszVector<Root, 8192> =
-            SszVector::from_vec(state_roots_slice.to_vec()).expect("state_roots length matches");
-        let batch = HistoricalBatch::<8192> {
-            block_roots,
-            state_roots,
-        };
-        return batch.tree_hash_root();
+    match E::SLOTS_PER_HISTORICAL_ROOT {
+        8192 => {
+            let block_roots: SszVector<Root, 8192> = SszVector::from_vec(block_roots_slice.to_vec())
+                .expect("block_roots length matches");
+            let state_roots: SszVector<Root, 8192> = SszVector::from_vec(state_roots_slice.to_vec())
+                .expect("state_roots length matches");
+            HistoricalBatch::<8192> {
+                block_roots,
+                state_roots,
+            }
+            .tree_hash_root()
+        }
+        64 => {
+            let block_roots: SszVector<Root, 64> = SszVector::from_vec(block_roots_slice.to_vec())
+                .expect("block_roots length matches");
+            let state_roots: SszVector<Root, 64> = SszVector::from_vec(state_roots_slice.to_vec())
+                .expect("state_roots length matches");
+            HistoricalBatch::<64> {
+                block_roots,
+                state_roots,
+            }
+            .tree_hash_root()
+        }
+        n => unreachable!(
+            "SLOTS_PER_HISTORICAL_ROOT={n}: no HistoricalBatch branch; add one to compute_historical_batch_root"
+        ),
     }
-
-    // Minimal: SLOTS_PER_HISTORICAL_ROOT = 64
-    if E::SLOTS_PER_HISTORICAL_ROOT == 64 {
-        let block_roots: SszVector<Root, 64> =
-            SszVector::from_vec(block_roots_slice.to_vec()).expect("block_roots length matches");
-        let state_roots: SszVector<Root, 64> =
-            SszVector::from_vec(state_roots_slice.to_vec()).expect("state_roots length matches");
-        let batch = HistoricalBatch::<64> {
-            block_roots,
-            state_roots,
-        };
-        return batch.tree_hash_root();
-    }
-
-    // Fallback: hash the raw bytes of block_roots ++ state_roots as a best-effort
-    // (should never be reached with current presets).
-    let mut data = Vec::with_capacity(block_roots_slice.len() * 32 + state_roots_slice.len() * 32);
-    for r in block_roots_slice {
-        data.extend_from_slice(r.as_slice());
-    }
-    for r in state_roots_slice {
-        data.extend_from_slice(r.as_slice());
-    }
-    Hash256::from(pharos_utils::hash::hash(&data))
 }
 
 /// `process_participation_record_updates` per
