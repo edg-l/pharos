@@ -2385,3 +2385,122 @@ at wall-now so block1 is genuinely one slot ahead — `D-import-clock-nudge`'s
 wall-now advance means a block is only `FutureSlot` when its slot is ahead of
 the wall clock, not the store cursor — then asserts the block is re-injected
 verbatim and not imported).
+
+## M6-Capella decisions
+
+**Status of this section**: PROPOSED stubs frozen at Phase 0. Each is finalized
+to ACCEPTED (with final rationale + any deviations found during implementation)
+in Phase 8. Plan: `docs/m6-capella-plan.md`. Spec: `~/dev/consensus-specs/specs/capella/*`.
+
+### D-capella-state-shape — Capella `BeaconState` field additions, `historical_roots` frozen
+
+**Status**: Proposed. **Date**: 2026-05-29.
+
+Capella `BeaconState` adds `next_withdrawal_index: u64`,
+`next_withdrawal_validator_index: ValidatorIndex (u64)`, and
+`historical_summaries: SszList<HistoricalSummary, HISTORICAL_ROOTS_LIMIT>`;
+`latest_execution_payload_header` is re-typed to `capella::ExecutionPayloadHeader`
+(+`withdrawals_root`). `historical_roots` is RETAINED in the container (SSZ layout
+stability) but FROZEN — `process_epoch` no longer appends to it. New enum variant
+`BeaconState::Capella` (and `BeaconBlock`/`BeaconBlockBody::Capella`), plus
+`ForkVariant::Capella` in `views.rs`. `CachedRoot` wired into the Capella inner
+state with the clone-resets semantics from `D-validator-cache-clone-resets` /
+`D-cached-root-wrapper`.
+
+### D-withdrawals-stf-shape — `process_withdrawals` native on Capella state
+
+**Status**: Proposed. **Date**: 2026-05-29.
+
+`process_withdrawals(state, payload)` runs natively on the Capella state (not via
+projection — it touches Capella-only fields). `get_expected_withdrawals` returns the
+expected `Withdrawal` list (+ a `processed_sweep_count` for fidelity, currently
+unused). The spec's `assert payload.withdrawals == expected` becomes
+`StateTransitionError::WithdrawalsMismatch`. The validator sweep wraps modulo
+`len(validators)` and respects `MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP` (per-preset) and
+`MAX_WITHDRAWALS_PER_PAYLOAD` (per-preset) with the spec assert
+`len(prior_withdrawals) < withdrawals_limit`.
+
+### D-bls-to-exec-change-domain — fork-agnostic signing domain
+
+**Status**: Proposed. **Date**: 2026-05-29.
+
+`DOMAIN_BLS_TO_EXECUTION_CHANGE = 0x0A000000`. `process_bls_to_execution_change`
+verifies the signature with a FORK-AGNOSTIC domain:
+`compute_domain(DOMAIN_BLS_TO_EXECUTION_CHANGE, GENESIS_FORK_VERSION,
+genesis_validators_root)` — NOT the state's current fork version (address changes
+are valid across forks). Credential flip: `BLS_WITHDRAWAL_PREFIX` →
+`ETH1_ADDRESS_WITHDRAWAL_PREFIX + 11×0x00 + to_execution_address`.
+
+### D-engine-v2-dispatch — Engine API V2 method dispatch
+
+**Status**: Proposed. **Date**: 2026-05-29.
+
+Add a `V2` arm to the existing `NewPayloadVersion` / `ForkchoiceUpdatedVersion` /
+`GetPayloadVersion` enums (per `D-engine-method-dispatch` from M4a). New wire types
+`WithdrawalV1`, `ExecutionPayloadV2` (= V1 + `withdrawals`), `PayloadAttributesV2`
+(+`withdrawals`). V2 conversion is `From<capella::ExecutionPayload> for
+ExecutionPayloadV2` in `pharos-engine/src/types.rs`; the engine-driver dispatch is
+fork-conditional (Capella head/block → V2, else V1). Wire casing verified against
+`~/dev/execution-apis/src/engine/shanghai.md`.
+
+### D-capella-getpayload-deferral — `engine_getPayloadV2` live wiring deferred to M8
+
+**Status**: Proposed. **Date**: 2026-05-29.
+
+`engine_getPayloadV2` wire type + version arm are added, but the live
+block-production driver path is NOT wired (Pharos is follow-only through M6).
+`engine_newPayloadV2` + `engine_forkchoiceUpdatedV2` ARE required for Capella block
+import. Full block production (getPayloadV2 → assembly, `PayloadAttributesV2` driver)
+deferred to M8. A TODO marks the deferral in `handle.rs`.
+
+### D-historical-summaries-field — `historical_summaries` stays Naive backend
+
+**Status**: Proposed. **Date**: 2026-05-29.
+
+`historical_summaries` is appended at most once per `SLOTS_PER_HISTORICAL_ROOT /
+SLOTS_PER_EPOCH` epochs (rare; not a hot per-block field), so it uses the `Naive`
+SSZ backend, NOT `Tree` — matching `historical_roots` in Bellatrix. The `Tree`-backend
+hot-field list (`D-tree-backend-fields`) was re-checked for Capella and is unchanged
+(the same 7 fields carry over). Recorded explicitly so the field list audit is on record.
+
+### D-capella-fork-digest — Capella fork version + schedule growth
+
+**Status**: Proposed. **Date**: 2026-05-29.
+
+Capella fork version `0x03000000` (mainnet; minimal `0x03000001` — confirm against
+preset/config). `ForkSchedule.fork_table()` grows from length 2 to length 3 with the
+Capella entry; `compute_fork_version`/digest derivation add the Capella tier. The
+generalized fork-migration loop (M4d) extends to `phase0→altair→bellatrix→capella`.
+Network `Fork` enum gains `Fork::Capella`; `rpc/codec.rs` context-bytes and the four
+LC req-resp methods gain Capella arms; `fork_from_context` recognises the Capella digest.
+
+### D-capella-lc-header — Capella `LightClientHeader` execution payload + branch
+
+**Status**: Proposed. **Date**: 2026-05-29.
+
+Capella `LightClientHeader` adds `execution: capella::ExecutionPayloadHeader` and
+`execution_branch: SszVector<Bytes32, 4>` (`floorlog2(EXECUTION_PAYLOAD_GINDEX=25)=4`).
+`get_lc_execution_root` is epoch-gated at `CAPELLA_FORK_EPOCH` (pre-Capella headers must
+carry default execution + branch); `is_valid_light_client_header` checks the merkle
+branch (depth 4, subtree index of gindex 25) against `beacon.body_root`. Header values
+are STF-verified (per M4c `D-bellatrix-lc-header-uses-state-root` precedent).
+
+### D-folded-phase0-validators — implement the 3 deferred phase0 gossip validators
+
+**Status**: Proposed. **Date**: 2026-05-29.
+
+`validate_voluntary_exit`, `validate_proposer_slashing`, `validate_attester_slashing`
+(currently `Accept` stubs in `host_impl.rs`) implemented in this milestone alongside
+`validate_bls_to_execution_change`. Rule counts verified vs `specs/phase0/p2p-interface.md`:
+voluntary_exit 1 IGNORE + 6 REJECT; proposer_slashing 1 IGNORE + 6 REJECT;
+attester_slashing 1 IGNORE + 6 REJECT. Seen-caches extended per `D-seen-cache-shape` (M4e).
+
+### D-bls-to-exec-seen-cache — seen-cache key for bls_to_execution_change gossip
+
+**Status**: Proposed. **Date**: 2026-05-29.
+
+The gossip seen-cache gains `bls_to_execution_change_indices: HashSet<ValidatorIndex>`
+(spec: IGNORE a second change for an already-seen validator index). Marked seen only
+AFTER an Accept verdict (per M4e `D-seen-cache-after-accept`). `validate_bls_to_execution_change`
+= 2 IGNORE (pre-CAPELLA_FORK_EPOCH; already-seen index) + 4 REJECT (index out of range;
+not a BLS withdrawal credential; pubkey-hash mismatch; bad signature).
