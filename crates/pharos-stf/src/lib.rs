@@ -30,8 +30,10 @@ pub use bellatrix::execution_engine::{
     ExecutionEngine, FixedExecutionEngine, NullExecutionEngine, PayloadVerificationStatus,
 };
 pub use bellatrix::state_transition::{BellatrixDispatch, BellatrixProcessSlotsDispatch};
+pub use capella::operations::withdrawals::get_expected_withdrawals;
 pub use capella::state_transition::{
     CapellaDispatch, CapellaJaFDispatch, CapellaProcessSlotsDispatch,
+    GetExpectedWithdrawalsDispatch,
 };
 pub use phase0::block::process_block;
 pub use phase0::epoch::justification_and_finalization::process_justification_and_finalization;

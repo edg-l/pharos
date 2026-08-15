@@ -17,15 +17,27 @@ use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
 use pharos_engine::{
-    EngineHandle, ForkchoiceUpdatedVersion, NewPayloadVersion, NewPayloadWire,
-    types::{ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1},
+    EngineError, EngineHandle, ForkchoiceUpdatedVersion, NewPayloadVersion, NewPayloadWire,
+    types::{
+        ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1, PayloadAttributesV1,
+        PayloadAttributesV2, PayloadIdV1, WithdrawalV1,
+    },
 };
 use pharos_fork_choice::{
     PowBlockProvider, Store as FcStore, ValidateMergeBlockError, apply_invalid_payload,
     block_is_execution_enabled, execution_block_hash_at_root, get_head, promote_valid_ancestors,
     validate_merge_block,
 };
-use pharos_types::{EthSpec, PayloadStatus, phase0::primitives::Root, views::BeaconBlockView};
+use pharos_stf::{
+    GetExpectedWithdrawalsDispatch,
+    phase0::accessors::{get_current_epoch, get_randao_mix},
+};
+use pharos_types::{
+    BeaconStateView, EthSpec, PayloadStatus,
+    config::RuntimeConfig,
+    phase0::primitives::Root,
+    views::BeaconBlockView,
+};
 use pharos_utils::Hash256;
 
 // ── ExecutionEngineHandle ─────────────────────────────────────────────────────
@@ -425,6 +437,151 @@ pub fn hash_to_hex(h: Hash256) -> String {
 pub fn parse_latest_valid_hash(s: Option<&str>) -> Option<Hash256> {
     let s = s?;
     s.parse::<Hash256>().ok()
+}
+
+// ── PayloadNotReady ───────────────────────────────────────────────────────────
+
+/// Errors returned by `prepare_execution_payload[_bellatrix]`.
+#[derive(Debug)]
+pub enum PreparePayloadError {
+    /// EL returned `payloadId = None` — EL is syncing or not ready to build.
+    PayloadNotReady,
+    /// Engine API call failed.
+    Engine(EngineError),
+}
+
+impl std::fmt::Display for PreparePayloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PreparePayloadError::PayloadNotReady => {
+                write!(f, "EL did not return a payload id (syncing/not ready)")
+            }
+            PreparePayloadError::Engine(e) => write!(f, "engine error: {e}"),
+        }
+    }
+}
+
+impl From<EngineError> for PreparePayloadError {
+    fn from(e: EngineError) -> Self {
+        PreparePayloadError::Engine(e)
+    }
+}
+
+// ── build_payload_attributes_v2 / v1 ─────────────────────────────────────────
+
+/// Build `PayloadAttributesV2` for a Capella block proposal.
+///
+/// - `timestamp`           = `state.genesis_time + slot * seconds_per_slot`
+/// - `prev_randao`         = `get_randao_mix(state, current_epoch)`
+///   (the mix used by the proposer, per `specs/capella/beacon-chain.md`)
+/// - `suggested_fee_recipient` = `fee_recipient` arg (caller-supplied)
+/// - `withdrawals`         = `get_expected_withdrawals(state)` for the proposal slot
+///
+/// Per `execution-apis/src/engine/shanghai.md` `PayloadAttributesV2`.
+pub fn build_payload_attributes_v2<E: EthSpec>(
+    state: &E::BeaconState,
+    capella_inner: &E::CapellaBeaconState,
+    slot: pharos_types::phase0::Slot,
+    fee_recipient: String,
+    runtime_cfg: &RuntimeConfig,
+) -> PayloadAttributesV2
+where
+    E::CapellaBeaconState: GetExpectedWithdrawalsDispatch<E>,
+{
+    let timestamp = state.genesis_time() + slot.0 * runtime_cfg.seconds_per_slot;
+    // prev_randao = get_randao_mix(state, get_current_epoch(state)) per
+    // capella/validator.md. Precondition: `state` is advanced to the proposal
+    // slot (process_slots(state, slot)) so its current epoch IS the proposal
+    // epoch — at an epoch boundary a slot-derived epoch would diverge.
+    let current_epoch = get_current_epoch::<E>(state);
+    let prev_randao = get_randao_mix::<E>(state, current_epoch);
+    let withdrawals: Vec<WithdrawalV1> = capella_inner
+        .get_expected_withdrawals_dispatch()
+        .into_iter()
+        .map(|w| WithdrawalV1 {
+            index: format!("0x{:x}", w.index),
+            validator_index: format!("0x{:x}", w.validator_index.0),
+            address: bytes_to_data_hex(w.address.as_slice()),
+            amount: format!("0x{:x}", w.amount.0),
+        })
+        .collect();
+    PayloadAttributesV2 {
+        timestamp: format!("0x{timestamp:x}"),
+        prev_randao: bytes_to_data_hex(prev_randao.as_slice()),
+        suggested_fee_recipient: fee_recipient,
+        withdrawals,
+    }
+}
+
+/// Build `PayloadAttributesV1` for a Bellatrix block proposal.
+///
+/// - `timestamp`           = `state.genesis_time + slot * seconds_per_slot`
+/// - `prev_randao`         = `get_randao_mix(state, current_epoch)`
+/// - `suggested_fee_recipient` = `fee_recipient` arg
+///
+/// Per `execution-apis/src/engine/paris.md` `PayloadAttributesV1`.
+/// No `withdrawals` field (Bellatrix pre-dates withdrawals).
+pub fn build_payload_attributes_v1<E: EthSpec>(
+    state: &E::BeaconState,
+    slot: pharos_types::phase0::Slot,
+    fee_recipient: String,
+    runtime_cfg: &RuntimeConfig,
+) -> PayloadAttributesV1 {
+    let timestamp = state.genesis_time() + slot.0 * runtime_cfg.seconds_per_slot;
+    // Precondition: `state` advanced to the proposal slot — see the V2 builder.
+    let current_epoch = get_current_epoch::<E>(state);
+    let prev_randao = get_randao_mix::<E>(state, current_epoch);
+    PayloadAttributesV1 {
+        timestamp: format!("0x{timestamp:x}"),
+        prev_randao: bytes_to_data_hex(prev_randao.as_slice()),
+        suggested_fee_recipient: fee_recipient,
+    }
+}
+
+// ── prepare_execution_payload / prepare_execution_payload_bellatrix ───────────
+
+/// Capella V2 payload preparation: FCU V2 with attributes → payloadId → getPayloadV2.
+///
+/// Steps:
+/// 1. Call `engine_forkchoiceUpdatedV2(fcu_state, Some(attrs))`.
+/// 2. Extract `payloadId` — if absent (EL syncing / not ready) returns
+///    `PreparePayloadError::PayloadNotReady` (never panics).
+/// 3. Call `engine_getPayloadV2(payload_id)` and return the `ExecutionPayloadV2`.
+///
+/// Per `execution-apis/src/engine/shanghai.md`.
+pub fn prepare_execution_payload(
+    engine: &EngineHandle,
+    fcu_state: ForkchoiceStateV1,
+    attrs: PayloadAttributesV2,
+) -> Result<ExecutionPayloadV2, PreparePayloadError> {
+    let fcu_resp = engine.forkchoice_updated_v2_blocking(fcu_state, Some(attrs))?;
+    let payload_id: PayloadIdV1 = fcu_resp
+        .payload_id
+        .ok_or(PreparePayloadError::PayloadNotReady)?;
+    let get_resp = engine.get_payload_v2_blocking(payload_id)?;
+    Ok(get_resp.execution_payload)
+}
+
+/// Bellatrix V1 payload preparation: FCU V1 with attributes → payloadId → getPayloadV1.
+///
+/// Steps:
+/// 1. Call `engine_forkchoiceUpdatedV1(fcu_state, Some(attrs))`.
+/// 2. Extract `payloadId` — if absent returns `PreparePayloadError::PayloadNotReady`.
+/// 3. Call `engine_getPayloadV1(payload_id)` and return the `ExecutionPayloadV1`.
+///
+/// Per `execution-apis/src/engine/paris.md`.
+pub fn prepare_execution_payload_bellatrix(
+    engine: &EngineHandle,
+    fcu_state: ForkchoiceStateV1,
+    attrs: PayloadAttributesV1,
+) -> Result<ExecutionPayloadV1, PreparePayloadError> {
+    let fcu_resp =
+        engine.forkchoice_updated_blocking(ForkchoiceUpdatedVersion::V1, fcu_state, Some(attrs))?;
+    let payload_id: PayloadIdV1 = fcu_resp
+        .payload_id
+        .ok_or(PreparePayloadError::PayloadNotReady)?;
+    let payload = engine.get_payload_blocking(pharos_engine::GetPayloadVersion::V1, payload_id)?;
+    Ok(payload)
 }
 
 // ── maybe_emit_head_change ────────────────────────────────────────────────────

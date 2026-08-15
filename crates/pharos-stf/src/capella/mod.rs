@@ -15,4 +15,7 @@ pub mod state_transition;
 pub mod upgrade;
 
 pub use block::capella_block_to_altair_block;
-pub use state_transition::{CapellaDispatch, CapellaJaFDispatch, CapellaProcessSlotsDispatch};
+pub use state_transition::{
+    CapellaDispatch, CapellaJaFDispatch, CapellaProcessSlotsDispatch,
+    GetExpectedWithdrawalsDispatch,
+};

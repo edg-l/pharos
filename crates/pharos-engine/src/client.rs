@@ -19,8 +19,8 @@ use crate::error::EngineError;
 use crate::jwt::{JwtSecret, sign_token};
 use crate::types::{
     BlockHeader, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
-    ForkchoiceUpdatedV1Response, PayloadAttributesV1, PayloadAttributesV2, PayloadIdV1,
-    PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
+    ForkchoiceUpdatedV1Response, GetPayloadV2Response, PayloadAttributesV1, PayloadAttributesV2,
+    PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
 };
 
 const ENGINE_RPC_TIMEOUT: Duration = Duration::from_secs(8);
@@ -61,12 +61,11 @@ pub enum ForkchoiceUpdatedVersion {
 }
 
 /// Version selector for `engine_getPayload*`. Bellatrix uses V1; Capella uses V2.
-/// Deneb adds V3 (M7), Electra adds V4 (M8).
+/// Deneb adds V3, Electra adds V4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GetPayloadVersion {
     V1,
-    /// Capella / Shanghai: `engine_getPayloadV2`. Wire type only; live driver
-    /// wiring is block-production-only (deferred to M8 — follow-only node).
+    /// Capella / Shanghai: `engine_getPayloadV2` returning `{executionPayload, blockValue}`.
     V2,
 }
 
@@ -259,14 +258,16 @@ impl EngineClient {
 
     /// `engine_getPayloadV2` — Capella (block production).
     ///
-    /// Returns an `ExecutionPayloadV2` (with withdrawals). This is the wire
-    /// path only; live block-production driver wiring is deferred to M8.
-    /// TODO(M8): wire `get_payload_v2` into the block-production path.
-    pub async fn get_payload_v2(&self, id: PayloadIdV1) -> Result<ExecutionPayloadV2, EngineError> {
+    /// Returns `{executionPayload, blockValue}` per `execution-apis/src/engine/shanghai.md`.
+    /// `blockValue` is the expected value (in wei) to be received by the fee recipient.
+    pub async fn get_payload_v2(
+        &self,
+        id: PayloadIdV1,
+    ) -> Result<GetPayloadV2Response, EngineError> {
         self.rpc_call("engine_getPayloadV2", [id]).await
     }
 
-    /// `engine_getPayload*` dispatch per version (legacy single-payload interface).
+    /// `engine_getPayload*` dispatch per version (V1 single-payload interface).
     pub async fn get_payload(
         &self,
         v: GetPayloadVersion,
@@ -275,10 +276,10 @@ impl EngineClient {
         match v {
             GetPayloadVersion::V1 => self.get_payload_v1(id).await,
             GetPayloadVersion::V2 => {
-                // V2 is block-production-only; deferred to M8. Should not be
-                // reached on the follow-only path.
+                // V2 returns a {executionPayload, blockValue} envelope; callers
+                // wanting the V2 path must use `get_payload_v2` directly.
                 Err(EngineError::UnexpectedResponse(
-                    "engine_getPayloadV2 is not wired on the follow-only path (M8)".into(),
+                    "get_payload(V2): use get_payload_v2 directly for the V2 envelope".into(),
                 ))
             }
         }
@@ -330,7 +331,7 @@ impl EngineClient {
     /// `eth_chainId` — returns the EL chain ID as a `u64`.
     pub async fn chain_id(&self) -> Result<u64, EngineError> {
         let hex: String = self.rpc_call("eth_chainId", Vec::<Value>::new()).await?;
-        parse_hex_u64(&hex)
+        crate::types::parse_hex_u64(&hex)
     }
 
     /// `eth_getBlockByHash` — returns `None` if the EL does not know the hash.
@@ -354,12 +355,6 @@ impl EngineClient {
     pub async fn syncing(&self) -> Result<SyncingStatus, EngineError> {
         self.rpc_call("eth_syncing", Vec::<Value>::new()).await
     }
-}
-
-fn parse_hex_u64(s: &str) -> Result<u64, EngineError> {
-    let hex = s.strip_prefix("0x").unwrap_or(s);
-    u64::from_str_radix(hex, 16)
-        .map_err(|_| EngineError::UnexpectedResponse(format!("expected hex u64, got `{s}`")))
 }
 
 #[cfg(test)]

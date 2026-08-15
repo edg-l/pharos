@@ -164,7 +164,326 @@ impl<
     }
 }
 
-// ── helpers (used by the From impl above) ────────────────────────────────────
+// ── TryFrom<ExecutionPayloadV1> for bellatrix::ExecutionPayload ───────────────
+
+/// Convert `ExecutionPayloadV1` wire type to the mainnet Bellatrix in-house
+/// `ExecutionPayload`. Validates transaction count against
+/// `MAX_TRANSACTIONS_PER_PAYLOAD = 1_048_576`.
+///
+/// This is the reverse of `PayloadToWire::to_execution_payload_v1`
+/// (in `pharos-node`). Lives here in `pharos-engine` because `ExecutionPayloadV1`
+/// is defined here; the orphan rule requires that either the trait, `Self`, or
+/// the parameter type be from the current crate.
+impl TryFrom<ExecutionPayloadV1>
+    for pharos_types::bellatrix::ExecutionPayload<1_073_741_824, 1_048_576, 256, 32>
+{
+    type Error = crate::error::EngineError;
+
+    fn try_from(p: ExecutionPayloadV1) -> Result<Self, Self::Error> {
+        use pharos_ssz::{SszList, SszVector};
+        if p.transactions.len() as u64 > 1_048_576 {
+            return Err(crate::error::EngineError::UnexpectedResponse(format!(
+                "transactions count {} exceeds MAX_TRANSACTIONS_PER_PAYLOAD 1048576",
+                p.transactions.len()
+            )));
+        }
+        let txs: Vec<SszList<u8, 1_073_741_824>> = p
+            .transactions
+            .iter()
+            .map(|h| decode_hex_bytes_into_sszlist(h))
+            .collect::<Result<_, _>>()?;
+        let transactions = SszList::from_items(txs).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("transactions overflow".into())
+        })?;
+        let extra_data = decode_hex_bytes_into_sszlist(&p.extra_data)?;
+        let logs_bloom_bytes = parse_hex_fixed::<256>(&p.logs_bloom)?;
+        let logs_bloom = SszVector::from_items(logs_bloom_bytes).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("logs_bloom size mismatch".into())
+        })?;
+        Ok(pharos_types::bellatrix::ExecutionPayload {
+            parent_hash: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.parent_hash)?),
+            fee_recipient: pharos_types::bellatrix::execution_payload::ExecutionAddress::from_array(
+                parse_hex_fixed::<20>(&p.fee_recipient)?,
+            ),
+            state_root: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.state_root)?),
+            receipts_root: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(
+                &p.receipts_root,
+            )?),
+            logs_bloom,
+            prev_randao: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.prev_randao)?),
+            block_number: parse_hex_u64(&p.block_number)?,
+            gas_limit: parse_hex_u64(&p.gas_limit)?,
+            gas_used: parse_hex_u64(&p.gas_used)?,
+            timestamp: parse_hex_u64(&p.timestamp)?,
+            extra_data,
+            base_fee_per_gas: parse_hex_uint256(&p.base_fee_per_gas)?,
+            block_hash: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.block_hash)?),
+            transactions,
+        })
+    }
+}
+
+// ── TryFrom<ExecutionPayloadV2> for capella::ExecutionPayload (mainnet) ───────
+
+/// Convert `ExecutionPayloadV2` wire type to the mainnet Capella in-house
+/// `ExecutionPayload` (MAX_WITHDRAWALS_PER_PAYLOAD = 16).
+/// Validates transaction count (≤ 1_048_576) and withdrawal count (≤ 16).
+impl TryFrom<ExecutionPayloadV2>
+    for pharos_types::capella::ExecutionPayload<1_073_741_824, 1_048_576, 256, 32, 16>
+{
+    type Error = crate::error::EngineError;
+
+    fn try_from(p: ExecutionPayloadV2) -> Result<Self, Self::Error> {
+        use pharos_ssz::{SszList, SszVector};
+        use pharos_types::capella::execution_payload::Withdrawal;
+        use pharos_types::phase0::primitives::{Gwei, ValidatorIndex};
+
+        if p.transactions.len() as u64 > 1_048_576 {
+            return Err(crate::error::EngineError::UnexpectedResponse(format!(
+                "transactions count {} exceeds MAX_TRANSACTIONS_PER_PAYLOAD 1048576",
+                p.transactions.len()
+            )));
+        }
+        if p.withdrawals.len() as u64 > 16 {
+            return Err(crate::error::EngineError::UnexpectedResponse(format!(
+                "withdrawals count {} exceeds MAX_WITHDRAWALS_PER_PAYLOAD 16",
+                p.withdrawals.len()
+            )));
+        }
+        let txs: Vec<SszList<u8, 1_073_741_824>> = p
+            .transactions
+            .iter()
+            .map(|h| decode_hex_bytes_into_sszlist(h))
+            .collect::<Result<_, _>>()?;
+        let transactions = SszList::from_items(txs).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("transactions overflow".into())
+        })?;
+        let withdrawals_vec: Vec<Withdrawal> = p
+            .withdrawals
+            .iter()
+            .map(|w| {
+                Ok(Withdrawal {
+                    index: parse_hex_u64(&w.index)?,
+                    validator_index: ValidatorIndex(parse_hex_u64(&w.validator_index)?),
+                    address:
+                        pharos_types::bellatrix::execution_payload::ExecutionAddress::from_array(
+                            parse_hex_fixed::<20>(&w.address)?,
+                        ),
+                    amount: Gwei(parse_hex_u64(&w.amount)?),
+                })
+            })
+            .collect::<Result<_, crate::error::EngineError>>()?;
+        let withdrawals = SszList::from_items(withdrawals_vec).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("withdrawals overflow".into())
+        })?;
+        let extra_data = decode_hex_bytes_into_sszlist(&p.extra_data)?;
+        let logs_bloom_bytes = parse_hex_fixed::<256>(&p.logs_bloom)?;
+        let logs_bloom = SszVector::from_items(logs_bloom_bytes).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("logs_bloom size mismatch".into())
+        })?;
+        Ok(pharos_types::capella::ExecutionPayload {
+            parent_hash: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.parent_hash)?),
+            fee_recipient: pharos_types::bellatrix::execution_payload::ExecutionAddress::from_array(
+                parse_hex_fixed::<20>(&p.fee_recipient)?,
+            ),
+            state_root: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.state_root)?),
+            receipts_root: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(
+                &p.receipts_root,
+            )?),
+            logs_bloom,
+            prev_randao: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.prev_randao)?),
+            block_number: parse_hex_u64(&p.block_number)?,
+            gas_limit: parse_hex_u64(&p.gas_limit)?,
+            gas_used: parse_hex_u64(&p.gas_used)?,
+            timestamp: parse_hex_u64(&p.timestamp)?,
+            extra_data,
+            base_fee_per_gas: parse_hex_uint256(&p.base_fee_per_gas)?,
+            block_hash: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.block_hash)?),
+            transactions,
+            withdrawals,
+        })
+    }
+}
+
+// ── TryFrom<ExecutionPayloadV2> for capella::ExecutionPayload (minimal) ───────
+
+/// Convert `ExecutionPayloadV2` wire type to the minimal Capella in-house
+/// `ExecutionPayload` (MAX_WITHDRAWALS_PER_PAYLOAD = 4).
+/// Validates transaction count (≤ 1_048_576) and withdrawal count (≤ 4).
+impl TryFrom<ExecutionPayloadV2>
+    for pharos_types::capella::ExecutionPayload<1_073_741_824, 1_048_576, 256, 32, 4>
+{
+    type Error = crate::error::EngineError;
+
+    fn try_from(p: ExecutionPayloadV2) -> Result<Self, Self::Error> {
+        use pharos_ssz::{SszList, SszVector};
+        use pharos_types::capella::execution_payload::Withdrawal;
+        use pharos_types::phase0::primitives::{Gwei, ValidatorIndex};
+
+        if p.transactions.len() as u64 > 1_048_576 {
+            return Err(crate::error::EngineError::UnexpectedResponse(format!(
+                "transactions count {} exceeds MAX_TRANSACTIONS_PER_PAYLOAD 1048576",
+                p.transactions.len()
+            )));
+        }
+        if p.withdrawals.len() as u64 > 4 {
+            return Err(crate::error::EngineError::UnexpectedResponse(format!(
+                "withdrawals count {} exceeds MAX_WITHDRAWALS_PER_PAYLOAD 4",
+                p.withdrawals.len()
+            )));
+        }
+        let txs: Vec<SszList<u8, 1_073_741_824>> = p
+            .transactions
+            .iter()
+            .map(|h| decode_hex_bytes_into_sszlist(h))
+            .collect::<Result<_, _>>()?;
+        let transactions = SszList::from_items(txs).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("transactions overflow".into())
+        })?;
+        let withdrawals_vec: Vec<Withdrawal> = p
+            .withdrawals
+            .iter()
+            .map(|w| {
+                Ok(Withdrawal {
+                    index: parse_hex_u64(&w.index)?,
+                    validator_index: ValidatorIndex(parse_hex_u64(&w.validator_index)?),
+                    address:
+                        pharos_types::bellatrix::execution_payload::ExecutionAddress::from_array(
+                            parse_hex_fixed::<20>(&w.address)?,
+                        ),
+                    amount: Gwei(parse_hex_u64(&w.amount)?),
+                })
+            })
+            .collect::<Result<_, crate::error::EngineError>>()?;
+        let withdrawals = SszList::from_items(withdrawals_vec).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("withdrawals overflow".into())
+        })?;
+        let extra_data = decode_hex_bytes_into_sszlist(&p.extra_data)?;
+        let logs_bloom_bytes = parse_hex_fixed::<256>(&p.logs_bloom)?;
+        let logs_bloom = SszVector::from_items(logs_bloom_bytes).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("logs_bloom size mismatch".into())
+        })?;
+        Ok(pharos_types::capella::ExecutionPayload {
+            parent_hash: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.parent_hash)?),
+            fee_recipient: pharos_types::bellatrix::execution_payload::ExecutionAddress::from_array(
+                parse_hex_fixed::<20>(&p.fee_recipient)?,
+            ),
+            state_root: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.state_root)?),
+            receipts_root: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(
+                &p.receipts_root,
+            )?),
+            logs_bloom,
+            prev_randao: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.prev_randao)?),
+            block_number: parse_hex_u64(&p.block_number)?,
+            gas_limit: parse_hex_u64(&p.gas_limit)?,
+            gas_used: parse_hex_u64(&p.gas_used)?,
+            timestamp: parse_hex_u64(&p.timestamp)?,
+            extra_data,
+            base_fee_per_gas: parse_hex_uint256(&p.base_fee_per_gas)?,
+            block_hash: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.block_hash)?),
+            transactions,
+            withdrawals,
+        })
+    }
+}
+
+// ── helpers (used by the From/TryFrom impls above) ───────────────────────────
+
+/// Parse a `0x`-prefixed hex string as a `u64` QUANTITY.
+pub(crate) fn parse_hex_u64(s: &str) -> Result<u64, crate::error::EngineError> {
+    let stripped = s.strip_prefix("0x").unwrap_or(s);
+    u64::from_str_radix(stripped, 16).map_err(|_| {
+        crate::error::EngineError::UnexpectedResponse(format!("expected hex u64, got `{s}`"))
+    })
+}
+
+/// Parse a `0x`-prefixed hex string as a fixed-size byte array.
+pub(crate) fn parse_hex_fixed<const N: usize>(
+    s: &str,
+) -> Result<[u8; N], crate::error::EngineError> {
+    let stripped = s.strip_prefix("0x").unwrap_or(s);
+    let padded = if stripped.len() % 2 == 1 {
+        format!("0{stripped}")
+    } else {
+        stripped.to_string()
+    };
+    let hex_bytes: Vec<u8> = (0..padded.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&padded[i..i + 2], 16).map_err(|_| {
+                crate::error::EngineError::UnexpectedResponse(format!("invalid hex byte in `{s}`"))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    if hex_bytes.len() != N {
+        return Err(crate::error::EngineError::UnexpectedResponse(format!(
+            "expected {N} bytes, got {} from `{s}`",
+            hex_bytes.len()
+        )));
+    }
+    let mut out = [0u8; N];
+    out.copy_from_slice(&hex_bytes);
+    Ok(out)
+}
+
+/// Parse a `0x`-prefixed hex string as a `pharos_utils::Uint256` QUANTITY.
+pub(crate) fn parse_hex_uint256(
+    s: &str,
+) -> Result<pharos_utils::Uint256, crate::error::EngineError> {
+    let stripped = s.strip_prefix("0x").unwrap_or(s);
+    let padded = if stripped.len() % 2 == 1 {
+        format!("0{stripped}")
+    } else {
+        stripped.to_string()
+    };
+    let hex_bytes: Vec<u8> = (0..padded.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&padded[i..i + 2], 16).map_err(|_| {
+                crate::error::EngineError::UnexpectedResponse(format!("invalid hex byte in `{s}`"))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    if hex_bytes.len() > 32 {
+        return Err(crate::error::EngineError::UnexpectedResponse(format!(
+            "uint256 overflow in `{s}`"
+        )));
+    }
+    // Copy big-endian hex_bytes into the tail of a 32-byte buffer.
+    let mut be_bytes = [0u8; 32];
+    let offset = 32 - hex_bytes.len();
+    be_bytes[offset..].copy_from_slice(&hex_bytes);
+    // Uint256 stores bytes little-endian.
+    be_bytes.reverse();
+    Ok(pharos_utils::Uint256::from_le_bytes(be_bytes))
+}
+
+/// Decode a `0x`-prefixed hex string into an `SszList<u8, N>`.
+fn decode_hex_bytes_into_sszlist<const N: u64>(
+    hex: &str,
+) -> Result<pharos_ssz::SszList<u8, N>, crate::error::EngineError> {
+    let stripped = hex.strip_prefix("0x").unwrap_or(hex);
+    let padded = if stripped.len() % 2 == 1 {
+        format!("0{stripped}")
+    } else {
+        stripped.to_string()
+    };
+    let bytes: Vec<u8> = (0..padded.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&padded[i..i + 2], 16).map_err(|_| {
+                crate::error::EngineError::UnexpectedResponse(format!(
+                    "invalid hex byte in `{hex}`"
+                ))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    pharos_ssz::SszList::from_items(bytes).map_err(|_| {
+        crate::error::EngineError::UnexpectedResponse(format!("byte list overflow in `{hex}`"))
+    })
+}
+
+// ── helpers (used by the capella From impl above) ────────────────────────────
 
 fn hex_data(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(2 + bytes.len() * 2);
@@ -199,6 +518,23 @@ fn hex_quantity_uint256(n: &pharos_utils::Uint256) -> String {
             hex
         }
     }
+}
+
+// ── GetPayloadV2Response ──────────────────────────────────────────────────────
+
+/// Response to `engine_getPayloadV2` per `execution-apis/src/engine/shanghai.md`.
+///
+/// Returns the execution payload AND the expected block value (priority fees) to
+/// be received by the fee recipient, in wei. V1 returns a bare `ExecutionPayloadV1`;
+/// V2 wraps it in this envelope.
+///
+/// Spec: "executionPayload: ExecutionPayloadV1 | ExecutionPayloadV2" +
+///       "blockValue: QUANTITY, 256 Bits"
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPayloadV2Response {
+    pub execution_payload: ExecutionPayloadV2,
+    pub block_value: String,
 }
 
 // ── ForkchoiceStateV1 ─────────────────────────────────────────────────────────

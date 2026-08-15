@@ -13,9 +13,12 @@ use pharos_types::{
 };
 use pharos_utils::BLSPubkey;
 
+use pharos_types::capella::execution_payload::Withdrawal;
+
 use crate::bellatrix::execution_engine::{ExecutionEngine, PayloadVerificationStatus};
 use crate::capella::block::process_block;
 use crate::capella::epoch::process_epoch;
+use crate::capella::operations::withdrawals::get_expected_withdrawals;
 use crate::error::{EpochProcessingError, StateTransitionError};
 use crate::phase0::helpers::DOMAIN_BEACON_PROPOSER;
 
@@ -878,5 +881,77 @@ where
         >(&mut altair)?;
         update_capella_from_altair(self, altair);
         Ok(())
+    }
+}
+
+// ── GetExpectedWithdrawalsDispatch trait ──────────────────────────────────────
+
+/// Dispatch trait for `get_expected_withdrawals` on capella states.
+///
+/// Allows `build_payload_attributes_v2` in `pharos-node` to call
+/// `get_expected_withdrawals` through the opaque `E::CapellaBeaconState` associated
+/// type. Implemented via blanket impl on `capella::BeaconState<...>`.
+pub trait GetExpectedWithdrawalsDispatch<E: EthSpec> {
+    /// Compute the list of expected withdrawals for the next block on this state.
+    ///
+    /// Per `specs/capella/beacon-chain.md` `get_expected_withdrawals`.
+    fn get_expected_withdrawals_dispatch(&self) -> Vec<Withdrawal>;
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    E,
+> GetExpectedWithdrawalsDispatch<E>
+    for BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    E: EthSpec<
+        CapellaBeaconState = BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+        >,
+    >,
+{
+    fn get_expected_withdrawals_dispatch(&self) -> Vec<Withdrawal> {
+        get_expected_withdrawals::<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            E,
+        >(self)
     }
 }

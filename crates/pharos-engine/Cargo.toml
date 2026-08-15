@@ -10,6 +10,7 @@ description = "Engine API client for talking to an Ethereum execution-layer node
 [dependencies]
 pharos-types.workspace = true
 pharos-utils.workspace = true
+pharos-ssz.workspace = true
 
 reqwest.workspace = true
 serde.workspace = true
@@ -22,4 +23,3 @@ parking_lot.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
-pharos-ssz.workspace = true

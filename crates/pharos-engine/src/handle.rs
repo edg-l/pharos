@@ -34,8 +34,8 @@ use crate::client::{
 use crate::error::EngineError;
 use crate::types::{
     ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1, ForkchoiceUpdatedV1Response,
-    PayloadAttributesV1, PayloadAttributesV2, PayloadIdV1, PayloadStatusV1, SyncingStatus,
-    TransitionConfigurationV1,
+    GetPayloadV2Response, PayloadAttributesV1, PayloadAttributesV2, PayloadIdV1, PayloadStatusV1,
+    SyncingStatus, TransitionConfigurationV1,
 };
 
 /// Capacity of the EngineHandle → actor request channel.
@@ -79,11 +79,10 @@ pub enum EngineRequest {
         id: PayloadIdV1,
         reply: oneshot::Sender<Result<ExecutionPayloadV1, EngineError>>,
     },
-    /// `engine_getPayloadV2` — Capella block production (wire path only; M8).
-    /// TODO(M8): wire `GetPayloadV2` into the block-production path.
+    /// `engine_getPayloadV2` — Capella block production. Returns `{executionPayload, blockValue}`.
     GetPayloadV2 {
         id: PayloadIdV1,
-        reply: oneshot::Sender<Result<ExecutionPayloadV2, EngineError>>,
+        reply: oneshot::Sender<Result<GetPayloadV2Response, EngineError>>,
     },
     GetBlockByHash {
         hash: String,
@@ -209,13 +208,13 @@ impl EngineHandle {
         self.dispatch_blocking(|reply| EngineRequest::GetPayload { version, id, reply })
     }
 
-    /// Sync `engine_getPayloadV2` — Capella block production (wire path only).
+    /// Sync `engine_getPayloadV2` — Capella block production.
     ///
-    /// TODO(M8): wire `get_payload_v2_blocking` into the block-production path.
+    /// Returns `{executionPayload, blockValue}` per shanghai.md.
     pub fn get_payload_v2_blocking(
         &self,
         id: PayloadIdV1,
-    ) -> Result<ExecutionPayloadV2, EngineError> {
+    ) -> Result<GetPayloadV2Response, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::GetPayloadV2 { id, reply })
     }
 
