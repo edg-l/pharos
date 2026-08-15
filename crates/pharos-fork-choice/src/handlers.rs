@@ -15,7 +15,8 @@ use pharos_types::{
 use crate::error::ForkChoiceError;
 use crate::get_head::{
     compute_slots_since_epoch_start, get_checkpoint_block, get_current_slot,
-    get_current_store_epoch,
+    get_current_store_epoch, get_slot_component_duration_ms, slot_from_time, slot_start_time,
+    time_into_current_slot_ms,
 };
 use crate::store::{LatestMessage, Store};
 
@@ -141,11 +142,10 @@ pub fn on_tick_per_slot<E: EthSpec>(store: &mut Store<E>, time: u64) {
 /// Catches up slot-by-slot to `time`, calling `on_tick_per_slot` for each
 /// intermediate slot, then once more for the final `time`.
 pub fn on_tick<E: EthSpec>(store: &mut Store<E>, time: u64) {
-    let tick_slot = (time - store.genesis_time) * 1000 / E::SLOT_DURATION_MS;
+    let tick_slot = slot_from_time::<E>(time, store.genesis_time);
 
     while get_current_slot(store).0 < tick_slot {
-        let previous_time =
-            store.genesis_time + (get_current_slot(store).0 + 1) * E::SLOT_DURATION_MS / 1000;
+        let previous_time = slot_start_time::<E>(get_current_slot(store).0 + 1, store.genesis_time);
         on_tick_per_slot(store, previous_time);
     }
     on_tick_per_slot(store, time);
@@ -159,9 +159,8 @@ where
     E::BeaconBlock: BeaconBlockView,
 {
     let block_slot = store.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0));
-    let seconds_since_genesis = store.time.saturating_sub(store.genesis_time);
-    let time_into_slot_ms = seconds_since_genesis.saturating_mul(1000) % E::SLOT_DURATION_MS;
-    let attestation_threshold_ms = E::ATTESTATION_DUE_BPS * E::SLOT_DURATION_MS / E::BASIS_POINTS;
+    let time_into_slot_ms = time_into_current_slot_ms::<E>(store);
+    let attestation_threshold_ms = get_slot_component_duration_ms::<E>(E::ATTESTATION_DUE_BPS);
     let is_before_attesting_interval = time_into_slot_ms < attestation_threshold_ms;
     let is_timely = get_current_slot(store) == block_slot && is_before_attesting_interval;
     store.block_timeliness.insert(root, is_timely);

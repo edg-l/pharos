@@ -25,11 +25,36 @@ const REORG_MAX_EPOCHS_SINCE_FINALIZATION: u64 = 2;
 /// `PROPOSER_REORG_CUTOFF_BPS` per `specs/phase0/fork-choice.md:136`.
 const PROPOSER_REORG_CUTOFF_BPS: u64 = 1_667;
 
+// ── Slot/time conversion helpers ─────────────────────────────────────────────
+
+/// Slot number derivable from `time` and `genesis_time`.
+///
+/// Shared by `get_slots_since_genesis` and `on_tick`. Saturating-subtracts so
+/// invalid stores (`time < genesis_time`) yield slot 0 rather than panicking.
+pub(crate) fn slot_from_time<E: EthSpec>(time: u64, genesis_time: u64) -> u64 {
+    time.saturating_sub(genesis_time) * 1000 / E::SLOT_DURATION_MS
+}
+
+/// Wall-clock time at the start of `slot`, inverse of `slot_from_time`.
+///
+/// Shared by `on_tick` and `get_forkchoice_store`.
+pub(crate) fn slot_start_time<E: EthSpec>(slot: u64, genesis_time: u64) -> u64 {
+    genesis_time + slot * E::SLOT_DURATION_MS / 1000
+}
+
+/// Milliseconds elapsed within the current slot of `store`.
+///
+/// Shared by `is_proposing_on_time` and `record_block_timeliness`.
+pub(crate) fn time_into_current_slot_ms<E: EthSpec>(store: &Store<E>) -> u64 {
+    let seconds_since_genesis = store.time.saturating_sub(store.genesis_time);
+    seconds_to_milliseconds(seconds_since_genesis) % E::SLOT_DURATION_MS
+}
+
 // ── Slot/epoch helpers ────────────────────────────────────────────────────────
 
 /// `get_slots_since_genesis` per `specs/phase0/fork-choice.md:224-226`.
 pub fn get_slots_since_genesis<E: EthSpec>(store: &Store<E>) -> u64 {
-    (store.time - store.genesis_time) * 1000 / E::SLOT_DURATION_MS
+    slot_from_time::<E>(store.time, store.genesis_time)
 }
 
 /// `get_current_slot` per `specs/phase0/fork-choice.md:229-231`.
@@ -353,12 +378,12 @@ where
 // ── Proposer head and reorg helpers ──────────────────────────────────────────
 
 /// `seconds_to_milliseconds` per `specs/phase0/fork-choice.md:490-497`.
-fn seconds_to_milliseconds(seconds: u64) -> u64 {
+pub(crate) fn seconds_to_milliseconds(seconds: u64) -> u64 {
     seconds.saturating_mul(1000)
 }
 
 /// `get_slot_component_duration_ms` per `specs/phase0/fork-choice.md:501-507`.
-fn get_slot_component_duration_ms<E: EthSpec>(basis_points: u64) -> u64 {
+pub(crate) fn get_slot_component_duration_ms<E: EthSpec>(basis_points: u64) -> u64 {
     basis_points * E::SLOT_DURATION_MS / E::BASIS_POINTS
 }
 
@@ -407,10 +432,7 @@ pub fn is_finalization_ok<E: EthSpec>(store: &Store<E>, slot: Slot) -> bool {
 
 /// `is_proposing_on_time` per `specs/phase0/fork-choice.md:561-565`.
 pub fn is_proposing_on_time<E: EthSpec>(store: &Store<E>) -> bool {
-    let seconds_since_genesis = store.time.saturating_sub(store.genesis_time);
-    let time_into_slot_ms = seconds_to_milliseconds(seconds_since_genesis) % E::SLOT_DURATION_MS;
-    let cutoff_ms = get_proposer_reorg_cutoff_ms::<E>();
-    time_into_slot_ms <= cutoff_ms
+    time_into_current_slot_ms::<E>(store) <= get_proposer_reorg_cutoff_ms::<E>()
 }
 
 /// `is_head_weak` per `specs/phase0/fork-choice.md:577-582`.

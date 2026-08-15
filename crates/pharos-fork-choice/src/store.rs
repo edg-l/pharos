@@ -11,7 +11,7 @@ use pharos_types::{
     views::BeaconBlockView,
 };
 
-use crate::get_head::get_current_slot;
+use crate::get_head::{get_current_slot, slot_start_time};
 
 // ── LatestMessage ─────────────────────────────────────────────────────────────
 
@@ -141,7 +141,7 @@ where
 
     // time = anchor_state.genesis_time + SLOT_DURATION_MS * anchor_state.slot // 1000
     // Per `specs/phase0/fork-choice.md:207`.
-    let time = anchor_state.genesis_time() + E::SLOT_DURATION_MS * anchor_state.slot().0 / 1000;
+    let time = slot_start_time::<E>(anchor_state.slot().0, anchor_state.genesis_time());
 
     let genesis_time = anchor_state.genesis_time();
 
