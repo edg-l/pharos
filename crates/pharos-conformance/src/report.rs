@@ -19,6 +19,8 @@ pub struct Row {
     pub skip: Option<u64>,
     /// Total test cases run.
     pub total: Option<u64>,
+    /// Optional per-row footnote marker index (1-based) into `Report::footnotes`.
+    pub footnote: Option<usize>,
 }
 
 impl Row {
@@ -32,6 +34,7 @@ impl Row {
             fail: None,
             skip: None,
             total: None,
+            footnote: None,
         }
     }
 
@@ -45,7 +48,14 @@ impl Row {
             fail: Some(fail),
             skip: Some(skip),
             total: Some(pass + fail + skip),
+            footnote: None,
         }
+    }
+
+    /// Attach a footnote marker to this row.
+    pub fn with_footnote(mut self, marker: usize) -> Self {
+        self.footnote = Some(marker);
+        self
     }
 
     /// Whether this row records any failures.
@@ -66,12 +76,26 @@ pub struct Report {
     pub tag: String,
     /// ISO date of the run.
     pub date: String,
+    /// Footnote texts, addressed by 1-based marker via `Row::footnote`.
+    pub footnotes: Vec<String>,
 }
 
 impl Report {
     /// Whether any implemented row has failures.
     pub fn has_failures(&self) -> bool {
         self.rows.iter().any(|r| r.has_failures())
+    }
+
+    /// Register a footnote and return its 1-based marker for use on rows.
+    ///
+    /// If `text` is already registered, returns the existing marker so that
+    /// multiple rows can share a single footnote line.
+    pub fn add_footnote(&mut self, text: &str) -> usize {
+        if let Some(i) = self.footnotes.iter().position(|f| f == text) {
+            return i + 1;
+        }
+        self.footnotes.push(text.to_owned());
+        self.footnotes.len()
     }
 }
 
@@ -100,20 +124,32 @@ pub fn write_markdown(report: &Report, path: &Path) -> std::io::Result<()> {
     out.push('\n');
 
     // Table header
-    out.push_str("| Fork      | Category           | Preset  | Pass | Fail | Skip | Total |\n");
-    out.push_str("|-----------|--------------------|---------|------|------|------|-------|\n");
+    out.push_str("| Fork      | Category               | Preset  | Pass | Fail | Skip | Total |\n");
+    out.push_str("|-----------|------------------------|---------|------|------|------|-------|\n");
 
     for row in &report.rows {
+        let category = match row.footnote {
+            Some(n) => format!("{}[^{n}]", row.category),
+            None => row.category.clone(),
+        };
         out.push_str(&format!(
-            "| {:<9} | {:<18} | {:<7} | {:<4} | {:<4} | {:<4} | {:<5} |\n",
+            "| {:<9} | {:<22} | {:<7} | {:<4} | {:<4} | {:<4} | {:<5} |\n",
             row.fork,
-            row.category,
+            category,
             row.preset,
             cell(row.pass),
             cell(row.fail),
             cell(row.skip),
             cell(row.total),
         ));
+    }
+
+    // Footnotes section (GitHub-flavoured markdown).
+    if !report.footnotes.is_empty() {
+        out.push('\n');
+        for (i, text) in report.footnotes.iter().enumerate() {
+            out.push_str(&format!("[^{}]: {text}\n", i + 1));
+        }
     }
 
     // Failures section
@@ -149,16 +185,26 @@ pub fn print_report(report: &Report) {
     );
     println!("{}", "-".repeat(65));
     for row in &report.rows {
+        let category = match row.footnote {
+            Some(n) => format!("{}*{n}", row.category),
+            None => row.category.clone(),
+        };
         println!(
-            "{:<12} {:<20} {:<8} {:>5} {:>5} {:>5} {:>6}",
+            "{:<12} {:<22} {:<8} {:>5} {:>5} {:>5} {:>6}",
             row.fork,
-            row.category,
+            category,
             row.preset,
             cell(row.pass),
             cell(row.fail),
             cell(row.skip),
             cell(row.total),
         );
+    }
+    if !report.footnotes.is_empty() {
+        println!("\nNotes:");
+        for (i, text) in report.footnotes.iter().enumerate() {
+            println!("  *{}: {text}", i + 1);
+        }
     }
     if !report.failures.is_empty() {
         println!("\nFailures ({}):", report.failures.len());

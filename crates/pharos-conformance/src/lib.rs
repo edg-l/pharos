@@ -15,6 +15,7 @@ pub mod filter;
 pub mod finality;
 pub mod fixture_walker;
 pub mod fixtures;
+pub mod fork_choice;
 pub mod genesis;
 pub mod operations;
 pub mod random;
@@ -513,6 +514,65 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("phase0", "rewards", "minimal"));
     }
 
+    // ── phase0/fork_choice/{mainnet,minimal} ──────────────────────────────────
+    //
+    // Per M1 plan Q1: phase-0 fork-choice fixtures do not exist upstream, so
+    // these rows are driven against `tests/{preset}/altair/fork_choice/`.  The
+    // shared Q1 footnote is registered once and attached to both rows.
+    let fc_footnote = report.add_footnote(
+        "Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures, applying the skip-unknown-step-keys policy. Decision recorded in `docs/decisions.md` (Q1).",
+    );
+
+    if filter.matches("phase0", "fork_choice", "mainnet") {
+        let result = fork_choice::run_fork_choice_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(
+            Row::live(
+                "phase0",
+                "fork_choice",
+                "mainnet",
+                result.pass,
+                result.fail,
+                result.skip,
+            )
+            .with_footnote(fc_footnote),
+        );
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "fork_choice", "mainnet").with_footnote(fc_footnote));
+    }
+
+    if filter.matches("phase0", "fork_choice", "minimal") {
+        let result = fork_choice::run_fork_choice_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(
+            Row::live(
+                "phase0",
+                "fork_choice",
+                "minimal",
+                result.pass,
+                result.fail,
+                result.skip,
+            )
+            .with_footnote(fc_footnote),
+        );
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("phase0", "fork_choice", "minimal").with_footnote(fc_footnote));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -548,6 +608,8 @@ fn fill_future_placeholders(report: &mut Report) {
         ("phase0", "random", "minimal"),
         ("phase0", "rewards", "mainnet"),
         ("phase0", "rewards", "minimal"),
+        ("phase0", "fork_choice", "mainnet"),
+        ("phase0", "fork_choice", "minimal"),
     ]
     .iter()
     .copied()
@@ -579,7 +641,9 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("phase0", "random", "minimal"),
         ("phase0", "rewards", "mainnet"),
         ("phase0", "rewards", "minimal"),
-        ("phase0", "fork_choice", "-"),
+        // fork_choice: per-preset rows pointing at altair fixtures (Q1).
+        ("phase0", "fork_choice", "mainnet"),
+        ("phase0", "fork_choice", "minimal"),
         // genesis: only minimal fixtures exist upstream (no mainnet genesis fixtures in v1.6.1).
         ("phase0", "genesis", "minimal"),
         // shuffling: per-preset rows (legacy phase0/shuffling/- removed).
