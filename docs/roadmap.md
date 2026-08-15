@@ -307,6 +307,19 @@ project-wide invariants that pre-date M0.
 - Light-client server endpoints (consumer side later still).
 - Engine API over IPC.
 - Differential fuzzing vs Lighthouse / EthereumJS.
+- **In-house `discv5` implementation.** M2 ships against the `sigp/discv5`
+  crate (the only maintained Rust impl; Reth and OP Stack tools depend on
+  it too). The "we own protocols with conformance suites" philosophy
+  doesn't bite immediately because discv5 has no upstream spec-test
+  suite, but long-term we want our own implementation under
+  `crates/pharos-network/src/discovery/` with the `discv5` external dep
+  retired. Scope: AES-128-GCM session crypto, ENR encoding (already
+  partial in M2's ENR helpers), Kademlia-like XOR routing,
+  PING/PONG/FINDNODE/NODES/TALKREQ/TALKRESP messages, ENR seq number
+  management, NAT traversal. Conformance: interop pings against
+  geth/reth/lighthouse on a local devnet. Realistic milestone window:
+  post-M4 once the chain is talking to a real EL and the networking
+  surface has settled.
 
 ## Still open
 
