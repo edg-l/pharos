@@ -216,6 +216,26 @@ layer forks on top of them.
 ### M3 — Altair
 - Sync committees, light-client gossip + req-resp.
 - Spec tests `altair` green.
+- Network-event expansion (deferred from M2 integration testing):
+  - `NetworkEvent::PeerSubscribed { peer, topic }` /
+    `PeerUnsubscribed { peer, topic }` — surface
+    `gossipsub::Event::Subscribed`/`Unsubscribed` for peer scoring
+    and mesh diagnostics.
+  - `NetworkEvent::PeerIdentified { peer, info }` — surface
+    `identify::Event::Received` for client tracking
+    (agent_string, protocols).
+  - `NetworkEvent::DialFailed { peer, error }` — surface
+    `SwarmEvent::OutgoingConnectionError` so the peer manager can
+    mark dead peers.
+  - `NetworkEvent::ExternalAddrConfirmed { address }` — surface
+    `SwarmEvent::ExternalAddrConfirmed` (AutoNAT/identify) so ENR
+    can be updated with the observed address.
+- Goodbye-on-shutdown: send `Goodbye(1 = ClientShutdown)` to every
+  connected peer before tearing down the swarm
+  (`specs/phase0/p2p-interface.md:1393`).
+- `MetaData.seq_number` monotonic increment on attnets / syncnets
+  change (M2 R13, `p2p-interface.md:391-393`).
+- Cross-fork ENR migration + topic re-subscription at fork epochs.
 
 ### M4 — Bellatrix + Engine API
 - Engine API client (alloy) talking to a real EL (reth/geth/ethrex).
@@ -251,6 +271,14 @@ layer forks on top of them.
 - Pruning, hot/cold DB split.
 - Slasher.
 - Metrics + tracing.
+- Real peer scoring (replaces the M2 `NoopScorer` stub):
+  - Consume `gossipsub::Event::SlowPeer` /
+    `GossipsubNotSupported` as scoring signals.
+  - Per-peer rate limits on req-resp methods
+    (`p2p-interface.md` rate-limit guidance).
+  - Exponential dial backoff for repeatedly-failing peers.
+  - Subnet-coverage scoring (penalise peers that subscribe to
+    subnets we expect, then never propagate).
 
 ### Beyond
 - Gloas / Heze (ePBS) once stable.
