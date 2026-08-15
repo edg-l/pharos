@@ -1096,4 +1096,311 @@ mod tests {
             }
         });
     }
+
+    // ── Candidate scaffold (fc.time = 774 → current_slot = 129) ─────────────
+
+    /// Identical to `build_scaffold` except `fc.time = 774` so that
+    /// `current_slot = 129` at the candidate gate.
+    ///
+    /// With `block_slot = 1` and `SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY = 128`:
+    ///   Branch 2: `1 + 128 = 129 <= 129` → IS a candidate.
+    ///
+    /// This is the minimum configuration for Tests 1 and 2 (optimistic import
+    /// path runs to completion because the candidate gate passes).
+    fn build_candidate_scaffold(
+        tmpdir: &tempfile::TempDir,
+    ) -> (
+        Arc<RwLock<pharos_fork_choice::Store<MinimalEthSpec>>>,
+        Root,
+        Arc<RocksStore>,
+    ) {
+        let store = Arc::new(
+            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+                path: tmpdir.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("RocksStore::open"),
+        );
+
+        let (genesis_state, signed_anchor) = build_anchor();
+        let anchor_root: Root = match &signed_anchor {
+            ForkSignedBeaconBlock::Bellatrix(inner) => inner.message.tree_hash_root(),
+            _ => unreachable!("anchor is always Bellatrix"),
+        };
+        let anchor_block = match signed_anchor {
+            ForkSignedBeaconBlock::Bellatrix(inner) => {
+                pharos_types::state::MinimalBeaconBlock::Bellatrix(inner.message)
+            }
+            _ => unreachable!("anchor is always Bellatrix"),
+        };
+
+        let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+
+        // time = 129 * 6 = 774  →  current_slot = (774 - 0) * 1000 / 6000 = 129.
+        // With block_slot = 1: `1 + 128 = 129 <= 129` → candidate via Branch 2.
+        fc.time = 774;
+
+        // Terminal-block-hash override so the merge-transition guard passes
+        // (same as build_scaffold).
+        fc.set_terminal_config(
+            pharos_utils::Uint256::default(),
+            Hash256::from_array(TERMINAL_HASH),
+            0,
+        );
+
+        (Arc::new(RwLock::new(fc)), anchor_root, store)
+    }
+
+    // ── Test 1 — pre-seed survives a full payload_tx channel ─────────────────
+
+    /// Pre-seed `payload_statuses[block_root] = NotValidated` survives even when
+    /// `payload_tx` is full and the `try_send` of the newPayload request is
+    /// dropped.
+    ///
+    /// The pre-seed happens in the persist worker (step h of `import_block`),
+    /// AFTER the `try_send` at step (f).  They are independent: the dropped send
+    /// does NOT prevent the pre-seed write from reaching `fc_store.payload_statuses`.
+    ///
+    /// Scenario:
+    /// - CANDIDATE execution block (Branch 2: slot 1 + 128 <= current_slot 129).
+    /// - `SyncingEE` returns `NotValidated`.
+    /// - Channel capacity 1, pre-filled → the `try_send` at step (f) fails.
+    ///
+    /// Assertions:
+    /// (a) `import_block` returns `Ok` (optimistic import succeeded).
+    /// (b) `fc_store.read().payload_statuses[block_root] == NotValidated`.
+    ///
+    /// Per `D-preseed-notvalidated-on-import` (M8 Phase 1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn preseed_not_validated_survives_full_payload_channel() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let (fc_store, anchor_root, rocks_store) = build_candidate_scaffold(&tmpdir);
+
+        let (genesis_state, _) = build_anchor();
+        let block = build_execution_block(genesis_state, anchor_root, &NullExecutionEngine);
+
+        let block_root: Root = match &block {
+            ForkSignedBeaconBlock::Bellatrix(inner) => inner.message.tree_hash_root(),
+            _ => unreachable!(),
+        };
+
+        let runtime_cfg = pharos_types::config::RuntimeConfig {
+            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            bellatrix_fork_epoch: 0,
+            altair_fork_epoch: 0,
+            ..Default::default()
+        };
+
+        // Capacity 1; pre-fill with a dummy request so the next try_send fails
+        // (exercises the drop-on-full path in import_block step (f)).
+        let (payload_tx, _payload_rx) = mpsc::channel::<EngineNewPayloadRequest<MinimalEthSpec>>(1);
+        let dummy = EngineNewPayloadRequest::<MinimalEthSpec> {
+            block_root: Root::default(),
+            payload: pharos_engine::NewPayloadWire::V1(pharos_engine::ExecutionPayloadV1 {
+                parent_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                fee_recipient: "0x0000000000000000000000000000000000000000".into(),
+                state_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                receipts_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                logs_bloom: "0x00".into(),
+                prev_randao: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                block_number: "0x0".into(),
+                gas_limit: "0x0".into(),
+                gas_used: "0x0".into(),
+                timestamp: "0x0".into(),
+                extra_data: "0x".into(),
+                base_fee_per_gas: "0x0".into(),
+                block_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                transactions: vec![],
+            }),
+            _marker: std::marker::PhantomData,
+        };
+        // Fill the channel: this succeeds (capacity = 1, was empty).
+        payload_tx
+            .try_send(dummy)
+            .expect("should fill channel (was empty)");
+        // Confirm channel is now full so import_block's try_send will drop.
+        assert!(
+            payload_tx.capacity() == 0,
+            "channel must be full before import so try_send is exercised as a drop"
+        );
+
+        let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
+        let result =
+            import_block::<MinimalEthSpec, SyncingEE, pharos_fork_choice::NoopPowBlockProvider>(
+                &block,
+                &fc_store,
+                &Arc::new(SyncingEE),
+                &pow_provider,
+                &payload_tx,
+                false,
+                &runtime_cfg,
+                &rocks_store,
+            )
+            .await;
+
+        // (a) Import must succeed despite the dropped send.
+        assert!(
+            result.is_ok(),
+            "import must succeed even when payload_tx is full; got Err: {}",
+            result
+                .as_ref()
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        );
+
+        // (b) Pre-seed must have written NotValidated regardless of the dropped send.
+        let status = fc_store.read().payload_statuses.get(&block_root).copied();
+        assert_eq!(
+            status,
+            Some(PayloadStatus::NotValidated),
+            "payload_statuses[block_root] must be NotValidated after import \
+             even when the payload_tx send was dropped"
+        );
+    }
+
+    // ── Test 2 — optimistic import then VALID promotion ───────────────────────
+
+    /// Optimistic-sync happy path at the import/fork-choice level:
+    /// - A CANDIDATE execution block imported while EL is SYNCING enters
+    ///   fork choice optimistically (head advances, status NotValidated).
+    /// - A later VALID verdict from the engine driver promotes the block
+    ///   (and all `NotValidated` ancestors) to `Valid`.
+    ///
+    /// Assertions after import:
+    /// (a) `import_block` returns `Ok`.
+    /// (b) `is_optimistic(&store, B_root) == true`.
+    /// (c) `payload_statuses[B_root] == NotValidated`.
+    /// (d) Anchor remains `Valid` (promotion stops at it).
+    ///
+    /// Assertions after promotion via `promote_valid_ancestors(B_root)`:
+    /// (e) `is_optimistic(&store, B_root) == false`.
+    /// (f) `payload_statuses[B_root] == Valid`.
+    /// (g) Anchor still `Valid` (walk stops at the first already-Valid entry).
+    ///
+    /// Per `D-optimistic-candidate-gates-import` (M8 Phase 3b) and
+    /// `D-preseed-notvalidated-on-import` (M8 Phase 1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn optimistic_import_then_valid_promotion() {
+        use pharos_fork_choice::{is_optimistic, promote_valid_ancestors};
+
+        let tmpdir = tempfile::tempdir().unwrap();
+        let (fc_store, anchor_root, rocks_store) = build_candidate_scaffold(&tmpdir);
+
+        let (genesis_state, _) = build_anchor();
+        let block = build_execution_block(genesis_state, anchor_root, &NullExecutionEngine);
+
+        let block_root: Root = match &block {
+            ForkSignedBeaconBlock::Bellatrix(inner) => inner.message.tree_hash_root(),
+            _ => unreachable!(),
+        };
+
+        let runtime_cfg = pharos_types::config::RuntimeConfig {
+            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            bellatrix_fork_epoch: 0,
+            altair_fork_epoch: 0,
+            ..Default::default()
+        };
+
+        let (payload_tx, _payload_rx) =
+            mpsc::channel::<EngineNewPayloadRequest<MinimalEthSpec>>(16);
+        let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
+
+        // ── Phase A: import with SYNCING EL ──────────────────────────────────
+
+        let result =
+            import_block::<MinimalEthSpec, SyncingEE, pharos_fork_choice::NoopPowBlockProvider>(
+                &block,
+                &fc_store,
+                &Arc::new(SyncingEE),
+                &pow_provider,
+                &payload_tx,
+                false,
+                &runtime_cfg,
+                &rocks_store,
+            )
+            .await;
+
+        // (a) Import must succeed.
+        assert!(
+            result.is_ok(),
+            "optimistic import with SYNCING EL must succeed; got Err: {}",
+            result
+                .as_ref()
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        );
+
+        let outcome = result.unwrap();
+        assert_eq!(
+            outcome.block_root, block_root,
+            "outcome.block_root must equal the computed block root"
+        );
+
+        {
+            let store = fc_store.read();
+
+            // (b) Block must be optimistic (execution-enabled + not Valid).
+            assert!(
+                is_optimistic::<MinimalEthSpec>(&store, block_root),
+                "block must be optimistic after import with SYNCING EL"
+            );
+
+            // (c) Status must be NotValidated (pre-seeded by persist worker).
+            assert_eq!(
+                store.payload_statuses.get(&block_root).copied(),
+                Some(PayloadStatus::NotValidated),
+                "payload_statuses[B_root] must be NotValidated after optimistic import"
+            );
+
+            // (d) Anchor must still be Valid (get_forkchoice_store seeds it Valid).
+            assert_eq!(
+                store.payload_statuses.get(&anchor_root).copied(),
+                Some(PayloadStatus::Valid),
+                "anchor must remain Valid after optimistic import of child block"
+            );
+        }
+
+        // ── Phase B: simulate engine-driver VALID verdict ─────────────────────
+        //
+        // Mirrors what `run_engine_driver_loop` does on a VALID newPayload
+        // response: mark the block Valid then call `promote_valid_ancestors`.
+        {
+            let mut store = fc_store.write();
+            store.mark_payload_status(block_root, PayloadStatus::Valid);
+            promote_valid_ancestors::<MinimalEthSpec>(&mut store, block_root);
+        }
+
+        {
+            let store = fc_store.read();
+
+            // (e) Block must no longer be optimistic.
+            assert!(
+                !is_optimistic::<MinimalEthSpec>(&store, block_root),
+                "block must NOT be optimistic after VALID promotion"
+            );
+
+            // (f) Status must be Valid.
+            assert_eq!(
+                store.payload_statuses.get(&block_root).copied(),
+                Some(PayloadStatus::Valid),
+                "payload_statuses[B_root] must be Valid after promotion"
+            );
+
+            // (g) Anchor must still be Valid (promotion walk stops at first Valid).
+            assert_eq!(
+                store.payload_statuses.get(&anchor_root).copied(),
+                Some(PayloadStatus::Valid),
+                "anchor must remain Valid after promotion walk stops at it"
+            );
+        }
+    }
 }

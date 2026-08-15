@@ -2910,3 +2910,193 @@ The freezer/prune loop is driven by the existing
 `fork_choice.read().finalized_checkpoint` on each head advance), mirroring the
 M7 `D-api-sse-broadcast` adapter pattern — no new channel or task-coordination
 primitive is introduced.
+
+## M8-OptimisticSync decisions
+
+Full spec-correct optimistic sync per `specs/sync/optimistic.md` +
+`specs/bellatrix/fork-choice.md`. Unblocks the live VC write/duties gate that M7
+(read gate) could not pass against a still-syncing EL. Plan:
+`docs/m8-optimistic-plan.md`. Operational prerequisite (not code): the EL MUST
+have its own p2p enabled to backward-sync execution toward the FCU head target;
+a `--p2p.disabled` EL can never satisfy optimistic sync.
+
+### D-engine-edge-stf-relaxation — relax the EL-verdict bool at the single wire edge
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+`ExecutionEngineHandle::new_payload_wire` returns "not rejected" for VALID /
+SYNCING / ACCEPTED and only `false` for INVALID / INVALID_BLOCK_HASH (engine
+error also rejects, per spec "Execution Engine Errors"). This is the minimal
+change that stops a checkpoint-synced node rejecting every tip block while the
+EL is still syncing. The relaxation lives ONLY at the live wire edge; the
+`FixedExecutionEngine` conformance mock is untouched so `execution_valid:false`
+fixtures still drive STF rejection. Both `notify_new_payload` and
+`notify_new_payload_capella` inherit it via the shared helper.
+
+### D-preseed-notvalidated-on-import — seed payload_statuses=NotValidated at import time
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+Every execution-carrying block gets `payload_statuses[root] = NotValidated`
+(if-absent, in-memory + persisted) in the import persist worker, independent of
+the fire-and-forget `payload_tx` send. Without this a dropped/lagging newPayload
+send would leave a post-merge block with no status entry, which the optimism
+derivation would alias as non-optimistic — the unsafe direction. The async
+engine driver later overwrites with Valid/Invalid.
+
+### D-is-optimistic-execution-block-derivation — derive optimism from payload_statuses, no parallel flag
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+`is_optimistic(store, root) = block_is_execution_enabled(block) &&
+payload_statuses.get(root) != Some(Valid)`. Single source of truth (the
+`payload_statuses` map); no parallel `optimistic` bool to drift. The
+execution-block guard + the Phase-1 pre-seed together disambiguate pre-merge
+blocks (no entry, not execution-enabled → false) from not-yet-validated
+post-merge blocks (entry present → optimistic until Valid).
+
+### D-optimistic-candidate-gates-import — gate optimistic import on is_optimistic_candidate_block
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+`is_optimistic_candidate_block` (SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY = 128, spec
+constant) gates whether a block may be imported optimistically: parent is an
+execution block OR the block is ≥ SAFE_SLOTS old. The gate runs AFTER the STF
+(Phase 3b) and rejects only when the EL verdict is NotValidated AND the block is
+not a candidate AND it is eligible for import now (`block_slot <= current_slot`).
+A VALID non-candidate block still imports (the gate is MAY-optimistic only).
+Future blocks bypass the gate to the future-slot hold path. On capella+ every
+block's parent is execution-enabled, so the gate is inert in normal operation;
+it only bites a merge-transition block near the tip (fork-choice poisoning
+protection). Backfill backs off slot-aware on `NotOptimisticCandidate`.
+
+### D-reorg-notvalidated-by-weight — filter_block_tree excludes only Invalid, never NotValidated
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+`filter_block_tree` continues to exclude only `Some(Invalid)`. NotValidated
+(optimistic) blocks stay in the viable set, so re-orgs between two optimistic
+tips resolve by normal LMD-GHOST weight (spec MUST-support: re-orgs not
+affecting the justified checkpoint). No extra code; guarded by comment + test.
+
+### D-payload-verification-status — thread a 3-valued EL verdict out of the STF
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+The `ExecutionEngine` trait returns `PayloadVerificationStatus
+{Valid, NotValidated, Invalid}` instead of `bool`; `process_execution_payload`
+maps Invalid→`Err(InvalidExecutionPayload)` (so Invalid is NEVER a successful
+return) and otherwise returns the status; `state_transition` returns
+`(state, Option<PayloadVerificationStatus>)` threaded through `process_block`
+(None pre-merge). This surfaces the EL verdict to the import-layer candidate gate
+without the STF knowing fork-choice concepts. `FixedExecutionEngine` maps
+true→Valid / false→Invalid (conformance preserved); `NullExecutionEngine`→Valid.
+
+### D-latest-valid-hash-resolution — 3-case latestValidHash table + transitive invalidation
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+On an EL INVALID (from newPayload OR forkchoiceUpdated), `resolve_invalid_block`
+implements the spec 3-case `latestValidHash` table (null → the block in
+question; zero → the first execution block on the chain; nonzero → the child,
+toward the block in question, of the block whose execution block_hash == LVH,
+falling back to null behaviour when no match). `apply_invalid_payload` then marks
+the resolved block AND all transitive descendants Invalid (forward BFS over the
+block graph), which `filter_block_tree` excludes from head selection. Invalid is
+kept in-memory only (the driver has no DB handle); it self-heals on restart via
+EL re-report.
+
+### D-async-engine-error-notvalidated — async driver keeps NotValidated on transient error
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+The synchronous STF path returns Invalid on an EL error (MUST NOT import). The
+asynchronous engine-driver recheck of an already-imported block instead keeps
+the block NotValidated on a transient RPC/join error: a connection blip is not a
+protocol INVALID verdict, and marking Invalid would permanently evict a possibly
+valid block from fork choice. The next newPayload/FCU re-evaluates it.
+
+### D-valid-ancestor-promotion — NOT_VALIDATED→VALID promotes all ancestors
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+On a newPayload VALID, `promote_valid_ancestors` walks parent_root marking every
+NotValidated ancestor (and the block itself) Valid, stopping at the first
+already-Valid ancestor or the anchor (spec MUST). Without it the
+`execution_optimistic` flag stays wrongly true for transitively-validated
+ancestors. The driver marks the block Valid explicitly before promotion.
+
+### D-merge-block-syncing-on-unknown-pow — relax validate_merge_block when PoW unavailable
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+In `on_block`, a `validate_merge_block` failure with `PowBlockNotFound` (terminal
+PoW block unknown to the EL ⇒ pow_parent also unknown, the spec's "both unknown")
+imports the merge-transition block optimistically as NotValidated instead of
+rejecting. All other merge errors (TERMINAL_BLOCK_HASH, TTD, PowParentNotFound,
+provider) still reject. On a later VALID the merge block is re-validated via the
+real `EnginePowBlockProvider` threaded into the driver; failure → invalidation.
+Known limitation (documented, genesis-sync-through-merge only — unreachable for
+checkpoint-synced Pharos whose anchor is post-merge): PowBlockNotFound at the
+VALID re-validation has no retry, and `promote_valid_ancestors` does not re-run
+`validate_merge_block` when indirectly promoting a merge block.
+
+### D-fcu-safe-finalized-verified-ancestor — FCU safe/finalized never an optimistic hash
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+`compute_safe_block_hash` / `compute_finalized_block_hash` resolve
+`latest_verified_ancestor` of the justified / finalized root before taking the EL
+block hash, so forkchoiceUpdated never sends an optimistic block hash as
+`safe`/`finalized`. `head_block_hash` is left as-is (the head MAY be optimistic —
+that is the point of optimistic FCU). `latest_verified_ancestor` falls back to
+the finalized root on a fragmented hot window.
+
+### D-anchor-payload-status-valid — seed the checkpoint anchor as Valid
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+The anchor block is seeded `PayloadStatus::Valid` in `get_forkchoice_store`,
+`apply_anchor` (checkpoint sync), and `rehydrate_fork_choice_store` (restart).
+Per spec "Checkpoint Sync (Weak Subjectivity Sync)" a CL MAY assume the anchor's
+ExecutionPayload is VALID. Without this, a post-merge checkpoint-synced anchor
+(execution-enabled, no status entry) would read as optimistic, making
+`latest_verified_ancestor` walk past it and FCU send a zero/optimistic
+safe/finalized hash.
+
+### D-optimistic-node-no-viable-branch — is_optimistic_node = head-optimistic OR all-branches-invalidated
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+`is_optimistic_node` returns true if (1) the head is optimistic, OR (2) the head
+fell back to the base because every viable branch was INVALIDATED — detected by
+the base having an execution-enabled child explicitly marked `Invalid` (NOT
+merely FFG-non-viable, which would false-positive). Condition (1) covers the
+common case; condition (2) is the spec's "no viable branch" state.
+
+### D-validator-optimistic-gate — 503 production endpoints only; duty reads stay 200
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+Duty-READ endpoints stay 200 and surface `execution_optimistic` (from
+`is_optimistic_node`) in the body; they are NOT 503'd on optimism. Production /
+signing endpoints (produce_block, attestation_data, aggregate selection,
+sync_committee_contribution) MUST 503 when `is_optimistic_node()` — but those do
+not exist yet (block production deferred past M7), so the contract is documented
+at the validator handler module + a do-not-sign marker in the VC stub, to be
+wired when production lands. Spec: optimistic validator MUST NOT
+propose/attest/sync-sign.
+
+### D-optimistic-conformance-runner — replay the sync/optimistic tape via an out-of-band verdict map
+
+**Status**: Accepted. **Date**: 2026-06-02.
+
+The `sync/optimistic` runner replays tick/checks/block/payload_status steps.
+Blocks import via `NullExecutionEngine` STF (matching pyspec
+`run_on_block(valid=True)` for optimistic blocks — `valid:false` blocks ARE
+imported, then excluded from head by the separately-declared INVALID
+payload_status); the declared EL verdict is applied out-of-band keyed by an
+`el_block_hash → verdict` + `el_block_hash → CL_root` map, driving
+`promote_valid_ancestors` / `apply_invalid_payload` / `mark_payload_status`. STF
+or missing-parent errors fail the case (no silent skip). bellatrix + capella,
+mainnet + minimal, pass=2 fail=0 each.
