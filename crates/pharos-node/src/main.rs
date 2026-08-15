@@ -1,6 +1,7 @@
 //! Pharos beacon-node entry point.
 
 mod host_impl;
+pub mod startup;
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;

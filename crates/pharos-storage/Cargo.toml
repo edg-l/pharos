@@ -8,5 +8,11 @@ authors.workspace = true
 description = "Storage abstraction (Store trait) and rocksdb backend for Pharos."
 
 [dependencies]
-pharos-types.workspace = true
-pharos-utils.workspace = true
+rocksdb = { workspace = true }
+pharos-ssz = { workspace = true }
+pharos-types = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

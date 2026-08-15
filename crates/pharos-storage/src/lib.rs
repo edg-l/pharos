@@ -6,3 +6,17 @@
 //!
 //! Slashing protection storage lives in `pharos-validator` (separate
 //! `rusqlite` DB).
+
+pub mod cf;
+pub mod db;
+pub mod error;
+pub mod forkchoice;
+pub mod keys;
+pub mod store;
+pub mod transition;
+
+pub use db::RocksStore;
+pub use error::StorageError;
+pub use forkchoice::ForkChoiceSnapshot;
+pub use store::Store;
+pub use transition::BlockTransition;

@@ -80,6 +80,7 @@ anyhow = "1"
 # Testing
 proptest = "1"
 criterion = "0.8"
+tempfile = "3"
 
 [profile.release]
 opt-level = 3
