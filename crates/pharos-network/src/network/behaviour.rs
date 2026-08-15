@@ -2,141 +2,71 @@
 //!
 //! Composes gossipsub, request-response (RPC), identify, and ping into a
 //! single struct that the libp2p swarm drives.
+//!
+//! `PharosBehaviour<E>` is generic over `E: EthSpec` because
+//! `request_response::Behaviour<RpcCodec<E>>` carries the `EthSpec` type
+//! parameter through to `RpcResponse<E>`. The `E` type parameter is anchored
+//! by the `request_response` field; no `PhantomData` field is needed.
 
-use std::io;
-
-use async_trait::async_trait;
-use futures::prelude::*;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{gossipsub, identify, ping, request_response};
+use pharos_types::EthSpec;
 
-// ── RPC stubs ─────────────────────────────────────────────────────────────────
+use crate::rpc::codec::RpcCodec;
+use crate::rpc::types::{RpcRequest, RpcResponse};
 
-/// The Ethereum CL req-resp codec.
-///
-/// The full SSZ + Snappy framing codec is implemented in Phase 5.
-/// This type satisfies the `request_response::Codec` bound so that
-/// `PharosBehaviour` compiles.  Every method returns an I/O error;
-/// the `request_response::Behaviour<RpcCodec>` is wired up but will not
-/// exchange any messages until Phase 5 supplies real encoding logic.
-#[derive(Clone, Default)]
-pub struct RpcCodec;
+pub use crate::rpc::protocol::RpcProtocol;
 
-/// RPC request variants for Ethereum CL req-resp.  Phase 5 defines the
-/// full set (`Status`, `Goodbye`, `BeaconBlocksByRange`, …).
-#[derive(Debug, Clone)]
-pub enum RpcRequest {}
+// ── PharosBehaviourEvent ──────────────────────────────────────────────────────
 
-/// RPC response variants for Ethereum CL req-resp.  Phase 5 defines the
-/// full set.
-#[derive(Debug, Clone)]
-pub enum RpcResponse {}
-
-/// The protocol string advertised during negotiation.  Phase 5 replaces this
-/// with the full set of Ethereum CL protocol IDs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RpcProtocol;
-
-impl AsRef<str> for RpcProtocol {
-    fn as_ref(&self) -> &str {
-        "/eth2/beacon_chain/req/pharos/1/ssz_snappy"
-    }
-}
-
-#[async_trait]
-impl request_response::Codec for RpcCodec {
-    type Protocol = RpcProtocol;
-    type Request = RpcRequest;
-    type Response = RpcResponse;
-
-    async fn read_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-    ) -> io::Result<Self::Request>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        Err(io::Error::other("RPC codec not implemented (Phase 5)"))
-    }
-
-    async fn read_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-    ) -> io::Result<Self::Response>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        Err(io::Error::other("RPC codec not implemented (Phase 5)"))
-    }
-
-    async fn write_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-        _req: Self::Request,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        Err(io::Error::other("RPC codec not implemented (Phase 5)"))
-    }
-
-    async fn write_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        _io: &mut T,
-        _res: Self::Response,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        Err(io::Error::other("RPC codec not implemented (Phase 5)"))
-    }
-}
-
-// ── PharosBehaviour ───────────────────────────────────────────────────────────
-
-/// The aggregated event type produced by `PharosBehaviour`.
+/// The aggregated event type produced by `PharosBehaviour<E>`.
 ///
 /// The `#[derive(NetworkBehaviour)]` macro uses this type as
 /// `to_swarm` (via `#[behaviour(to_swarm = "PharosBehaviourEvent")]`).
 /// Each variant wraps the inner event from the corresponding sub-behaviour.
 #[derive(Debug)]
-pub enum PharosBehaviourEvent {
+pub enum PharosBehaviourEvent<E: EthSpec> {
     Gossipsub(gossipsub::Event),
-    RequestResponse(request_response::Event<RpcRequest, RpcResponse>),
+    RequestResponse(request_response::Event<RpcRequest, RpcResponse<E>>),
     /// Boxed to keep the enum size reasonable (`identify::Event` is large).
     Identify(Box<identify::Event>),
     Ping(ping::Event),
 }
 
-impl From<gossipsub::Event> for PharosBehaviourEvent {
+impl<E: EthSpec> From<gossipsub::Event> for PharosBehaviourEvent<E> {
     fn from(e: gossipsub::Event) -> Self {
         PharosBehaviourEvent::Gossipsub(e)
     }
 }
 
-impl From<request_response::Event<RpcRequest, RpcResponse>> for PharosBehaviourEvent {
-    fn from(e: request_response::Event<RpcRequest, RpcResponse>) -> Self {
+impl<E: EthSpec> From<request_response::Event<RpcRequest, RpcResponse<E>>>
+    for PharosBehaviourEvent<E>
+{
+    fn from(e: request_response::Event<RpcRequest, RpcResponse<E>>) -> Self {
         PharosBehaviourEvent::RequestResponse(e)
     }
 }
 
-impl From<identify::Event> for PharosBehaviourEvent {
+impl<E: EthSpec> From<identify::Event> for PharosBehaviourEvent<E> {
     fn from(e: identify::Event) -> Self {
         PharosBehaviourEvent::Identify(Box::new(e))
     }
 }
 
-impl From<ping::Event> for PharosBehaviourEvent {
+impl<E: EthSpec> From<ping::Event> for PharosBehaviourEvent<E> {
     fn from(e: ping::Event) -> Self {
         PharosBehaviourEvent::Ping(e)
     }
 }
 
+// ── PharosBehaviour ───────────────────────────────────────────────────────────
+
 /// The combined libp2p `NetworkBehaviour` for the Pharos node.
+///
+/// Generic over `E: EthSpec` because `RpcCodec<E>` (and thus
+/// `request_response::Behaviour<RpcCodec<E>>`) carries the EthSpec type
+/// parameter through to `RpcResponse<E>`. The `E` type parameter is held by
+/// the `request_response` field; no additional `PhantomData` is required.
 ///
 /// Fields:
 /// - `gossipsub`: handles Ethereum CL gossip topics (Phase 4 wires validators).
@@ -145,12 +75,12 @@ impl From<ping::Event> for PharosBehaviourEvent {
 /// - `ping`: maintains liveness measurements with connected peers.
 #[derive(NetworkBehaviour)]
 #[behaviour(
-    to_swarm = "PharosBehaviourEvent",
+    to_swarm = "PharosBehaviourEvent<E>",
     prelude = "libp2p::swarm::derive_prelude"
 )]
-pub struct PharosBehaviour {
+pub struct PharosBehaviour<E: EthSpec> {
     pub gossipsub: gossipsub::Behaviour,
-    pub request_response: request_response::Behaviour<RpcCodec>,
+    pub request_response: request_response::Behaviour<RpcCodec<E>>,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
 }

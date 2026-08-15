@@ -10,8 +10,8 @@
 use pharos_types::EthSpec;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
-    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
-    Root, SignedVoluntaryExit, Slot,
+    AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, MetaData,
+    ProposerSlashing, Root, SignedVoluntaryExit, Slot,
 };
 
 use crate::types::SubnetId;
@@ -46,6 +46,16 @@ pub trait ForkContext: Send + Sync + 'static {
 
     /// The genesis validators root used in fork-digest computation.
     fn genesis_validators_root(&self) -> Root;
+
+    /// The local node's current `MetaData`.
+    ///
+    /// Used by `Ping` and `MetaData` req-resp handlers to return the node's
+    /// sequence number and attestation subnet bitfield. The default
+    /// implementation returns a zeroed `MetaData`; production nodes should
+    /// override this.
+    fn local_metadata(&self) -> MetaData {
+        MetaData::default()
+    }
 }
 
 // ── BlockProvider ─────────────────────────────────────────────────────────────

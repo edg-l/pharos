@@ -21,7 +21,7 @@ use libp2p::identify;
 use libp2p::identity::Keypair;
 use libp2p::noise;
 use libp2p::ping;
-use libp2p::request_response::{self, ProtocolSupport};
+use libp2p::request_response::{self, OutboundRequestId, ProtocolSupport};
 use libp2p::{PeerId, Swarm, SwarmBuilder};
 use pharos_ssz::Bitvector;
 use pharos_types::EthSpec;
@@ -41,10 +41,12 @@ use crate::gossip::{dispatch_gossip_message, subscribe_phase0_topics};
 use crate::handle::NetworkHandle;
 use crate::host::{GossipVerdict, Host};
 use crate::peer::manager::PeerManager;
-use crate::scoring::{PeerScorer, ScoreEvent};
+use crate::rpc::handler::handle_request;
+use crate::rpc::types::{RpcRequest, RpcResponse};
+use crate::scoring::{PeerScorer, RpcErrorKind, RpcMethod, ScoreEvent};
 use crate::topics::GossipTopic;
 
-use behaviour::{PharosBehaviour, PharosBehaviourEvent, RpcProtocol};
+use behaviour::{PharosBehaviour, PharosBehaviourEvent};
 
 // ── Commands and Events ───────────────────────────────────────────────────────
 
@@ -72,7 +74,7 @@ pub enum NetworkEvent {}
 /// event loop.  Shut down by sending `NetworkCommand::Shutdown` via the
 /// `NetworkHandle` or by dropping the handle's `shutdown_tx`.
 pub struct Network<E: EthSpec, H: Host<E>, S: PeerScorer> {
-    swarm: Swarm<PharosBehaviour>,
+    swarm: Swarm<PharosBehaviour<E>>,
     discovery: DiscoveryService,
     peer_manager: PeerManager<S>,
     host: Arc<H>,
@@ -83,6 +85,16 @@ pub struct Network<E: EthSpec, H: Host<E>, S: PeerScorer> {
     event_tx: mpsc::Sender<NetworkEvent>,
     discovery_tick: Interval,
     shutdown_signal: oneshot::Receiver<()>,
+    /// Pending outbound RPC requests: maps `OutboundRequestId` to the
+    /// originating method and the oneshot channel to resolve.
+    #[allow(clippy::type_complexity)]
+    pending_rpc: HashMap<
+        OutboundRequestId,
+        (
+            RpcMethod,
+            oneshot::Sender<Result<RpcResponse<E>, NetworkError>>,
+        ),
+    >,
     _phantom: PhantomData<E>,
 }
 
@@ -117,10 +129,15 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
         Ok(())
     }
 
-    async fn on_swarm_event(&mut self, event: libp2p::swarm::SwarmEvent<PharosBehaviourEvent>) {
+    async fn on_swarm_event(&mut self, event: libp2p::swarm::SwarmEvent<PharosBehaviourEvent<E>>) {
         match event {
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::Gossipsub(gs_event)) => {
                 self.on_gossip_event(gs_event).await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RequestResponse(
+                rr_event,
+            )) => {
+                self.on_request_response_event(rr_event).await;
             }
             _ => {
                 tracing::debug!("swarm event: {:?}", event);
@@ -216,6 +233,121 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
             .record_event(propagation_source, score_event);
     }
 
+    /// Handle an inbound or outbound req-resp event.
+    ///
+    /// - Inbound requests are dispatched to `handle_request` and the response
+    ///   is sent back via the response channel.
+    /// - Outbound responses are resolved into the pending oneshot map.
+    /// - Failures record scoring events on the peer.
+    async fn on_request_response_event(
+        &mut self,
+        event: request_response::Event<RpcRequest, RpcResponse<E>>,
+    ) {
+        match event {
+            request_response::Event::Message { peer, message, .. } => match message {
+                request_response::Message::Request {
+                    request_id: _,
+                    request,
+                    channel,
+                } => {
+                    // Determine the method for scoring before moving `request`.
+                    let method = rpc_method_from_request(&request);
+
+                    let host = Arc::clone(&self.host);
+                    // Handle synchronously to avoid lifetime complexity with &mut self.
+                    let response = handle_request::<E, H, S>(
+                        host.as_ref(),
+                        peer,
+                        request,
+                        &mut self.peer_manager,
+                    )
+                    .await;
+
+                    if self
+                        .swarm
+                        .behaviour_mut()
+                        .request_response
+                        .send_response(channel, response)
+                        .is_err()
+                    {
+                        tracing::warn!(%peer, "failed to send RPC response (channel closed)");
+                    }
+
+                    self.peer_manager
+                        .record_event(peer, ScoreEvent::RpcSuccess { method });
+                }
+                request_response::Message::Response {
+                    request_id,
+                    response,
+                } => {
+                    if let Some((_method, tx)) = self.pending_rpc.remove(&request_id) {
+                        let _ = tx.send(Ok(response));
+                    } else {
+                        tracing::warn!(?request_id, "received response for unknown request");
+                    }
+                }
+            },
+            request_response::Event::OutboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                tracing::warn!(%peer, ?error, "outbound RPC failure");
+                if let Some((method, tx)) = self.pending_rpc.remove(&request_id) {
+                    let _ = tx.send(Err(NetworkError::Libp2p(error.to_string())));
+                    self.peer_manager.record_event(
+                        peer,
+                        ScoreEvent::RpcError {
+                            method,
+                            kind: RpcErrorKind::ServerError,
+                        },
+                    );
+                }
+            }
+            request_response::Event::InboundFailure {
+                peer,
+                request_id: _,
+                error,
+                ..
+            } => {
+                tracing::warn!(%peer, ?error, "inbound RPC failure");
+                self.peer_manager.record_event(
+                    peer,
+                    ScoreEvent::RpcError {
+                        method: RpcMethod::Status, // conservative; method unknown on failure
+                        kind: RpcErrorKind::StreamReset,
+                    },
+                );
+            }
+            request_response::Event::ResponseSent {
+                peer, request_id, ..
+            } => {
+                tracing::debug!(%peer, ?request_id, "RPC response sent");
+            }
+        }
+    }
+
+    /// Send an outbound RPC request to `peer`, resolving the result via `reply`.
+    ///
+    /// Stashes the `reply` oneshot sender in `pending_rpc` keyed by the
+    /// `OutboundRequestId` assigned by libp2p. The response is resolved in
+    /// `on_request_response_event` when the peer replies.
+    pub fn on_outgoing_request_command(
+        &mut self,
+        peer: PeerId,
+        req: RpcRequest,
+        reply: oneshot::Sender<Result<RpcResponse<E>, NetworkError>>,
+    ) {
+        let method = rpc_method_from_request(&req);
+        let request_id = self
+            .swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(&peer, req);
+        self.pending_rpc.insert(request_id, (method, reply));
+    }
+
     /// Look up a parsed `GossipTopic` by its `TopicHash`.
     fn topic_lookup(&self, hash: &TopicHash) -> Option<GossipTopic> {
         self.topic_map.get(hash).cloned()
@@ -241,6 +373,20 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> Network<E, H, S> {
     #[allow(dead_code)]
     async fn on_command(&mut self, _cmd: NetworkCommand) {
         // Phase 7 adds dial, publish, and subnet-subscribe handling.
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Map an `RpcRequest` variant to its `RpcMethod` for scoring.
+fn rpc_method_from_request(req: &RpcRequest) -> RpcMethod {
+    match req {
+        RpcRequest::Status(_) => RpcMethod::Status,
+        RpcRequest::Goodbye(_) => RpcMethod::Goodbye,
+        RpcRequest::Ping(_) => RpcMethod::Ping,
+        RpcRequest::MetaData => RpcMethod::MetaData,
+        RpcRequest::BlocksByRange(_) => RpcMethod::BlocksByRange,
+        RpcRequest::BlocksByRoot(_) => RpcMethod::BlocksByRoot,
     }
 }
 
@@ -404,10 +550,19 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
         // Use the spec-conforming gossipsub config (Phase 4).
         let gossipsub = gossipsub_behaviour::<E>()?;
 
-        let rr = request_response::Behaviour::new(
-            [(RpcProtocol, ProtocolSupport::Full)],
-            request_response::Config::default(),
-        );
+        // Build request_response with all six protocol IDs, full support.
+        use crate::rpc::protocol::RpcProtocol;
+        use crate::scoring::RpcMethod as M;
+        let protocols = vec![
+            (RpcProtocol(M::Status), ProtocolSupport::Full),
+            (RpcProtocol(M::Goodbye), ProtocolSupport::Full),
+            (RpcProtocol(M::Ping), ProtocolSupport::Full),
+            (RpcProtocol(M::MetaData), ProtocolSupport::Full),
+            (RpcProtocol(M::BlocksByRange), ProtocolSupport::Full),
+            (RpcProtocol(M::BlocksByRoot), ProtocolSupport::Full),
+        ];
+        let rr: request_response::Behaviour<crate::rpc::codec::RpcCodec<E>> =
+            request_response::Behaviour::new(protocols, request_response::Config::default());
 
         let identify_cfg = identify::Config::new("/pharos/0.1.0".into(), public_key.clone());
         let identify = identify::Behaviour::new(identify_cfg);
@@ -423,7 +578,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             .map_err(|e| NetworkError::Libp2p(e.to_string()))?
             .with_quic()
             .with_dns()?
-            .with_behaviour(|_key| PharosBehaviour {
+            .with_behaviour(|_key| PharosBehaviour::<E> {
                 gossipsub,
                 request_response: rr,
                 identify,
@@ -477,6 +632,7 @@ impl<E: EthSpec, H: Host<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
             event_tx,
             discovery_tick,
             shutdown_signal,
+            pending_rpc: HashMap::new(),
             _phantom: PhantomData,
         };
 
@@ -496,8 +652,8 @@ mod tests {
     use pharos_types::MainnetEthSpec;
     use pharos_types::phase0::primitives::ForkDigest;
     use pharos_types::phase0::{
-        AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
-        Root, SignedVoluntaryExit, Slot,
+        AggregateAndProof, Attestation, AttesterSlashing, Checkpoint, ENRForkID, MetaData,
+        ProposerSlashing, Root, SignedVoluntaryExit, Slot,
     };
     use pharos_utils::{Bytes4, Epoch};
 
@@ -517,6 +673,9 @@ mod tests {
         fn genesis_validators_root(&self) -> Root {
             Root::default()
         }
+        fn local_metadata(&self) -> MetaData {
+            MetaData::default()
+        }
     }
 
     impl BlockProvider<MainnetEthSpec> for MockHost {
@@ -524,20 +683,23 @@ mod tests {
             &self,
             _root: Root,
         ) -> Option<<MainnetEthSpec as EthSpec>::SignedBeaconBlock> {
-            unreachable!("MockHost::block_by_root not called in Phase 3")
+            None
         }
         fn blocks_by_range(
             &self,
             _start_slot: Slot,
             _count: u64,
         ) -> Vec<<MainnetEthSpec as EthSpec>::SignedBeaconBlock> {
-            unreachable!("MockHost::blocks_by_range not called in Phase 3")
+            Vec::new()
         }
         fn finalized_checkpoint(&self) -> Checkpoint {
-            unreachable!("MockHost::finalized_checkpoint not called in Phase 3")
+            Checkpoint {
+                root: Root::default(),
+                epoch: Epoch(0),
+            }
         }
         fn head(&self) -> (Root, Slot) {
-            unreachable!("MockHost::head not called in Phase 3")
+            (Root::default(), Slot(0))
         }
     }
 
