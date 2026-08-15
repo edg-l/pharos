@@ -1,0 +1,48 @@
+{
+  "sha": "d96e1f8",
+  "host": "debian",
+  "toolchain": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "date": "2026-05-28T08:23:10Z",
+  "benches": [
+    {
+      "name": "gossip_validation_lc_finality_update",
+      "ns": 18104.044410166243,
+      "stderr_ns": 38.26337435143069
+    },
+    {
+      "name": "process_block_altair",
+      "ns": 1692560.5963424358,
+      "stderr_ns": 2529.0209377285346
+    },
+    {
+      "name": "process_block_bellatrix",
+      "ns": 1804709.5526248878,
+      "stderr_ns": 6098.369856651255
+    },
+    {
+      "name": "process_block_phase0",
+      "ns": 1548535.9209269767,
+      "stderr_ns": 2803.3188830114377
+    },
+    {
+      "name": "rpc_roundtrip_blocks_by_range_count_1",
+      "ns": 173735.26053956666,
+      "stderr_ns": 943.7701288533402
+    },
+    {
+      "name": "tree_hash_beacon_state_altair_mainnet",
+      "ns": 1421277.3795517099,
+      "stderr_ns": 4297.142859853705
+    },
+    {
+      "name": "tree_hash_beacon_state_bellatrix_cold",
+      "ns": 3017459.277647057,
+      "stderr_ns": 7751.010647370803
+    },
+    {
+      "name": "tree_hash_beacon_state_bellatrix_mainnet",
+      "ns": 1415567.3925050898,
+      "stderr_ns": 2528.1434966317206
+    }
+  ]
+}
