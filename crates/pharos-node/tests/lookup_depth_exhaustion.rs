@@ -25,6 +25,7 @@ use pharos_types::{EthSpec, MinimalEthSpec};
 use pharos_utils::{Epoch, Hash256};
 use tokio::sync::{Notify, mpsc, watch};
 
+use pharos_node::block_ingestion::ReinjectBlock;
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest};
 use pharos_node::host_impl::HostImpl;
 use pharos_node::lookup::{
@@ -164,6 +165,7 @@ async fn lookup_depth_exhaustion_fires_notify_backfill() {
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
     let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
     let (lookup_tx, lookup_rx) = mpsc::channel::<LookupRequest>(64);
+    let (reinject_tx, _reinject_rx) = mpsc::channel::<ReinjectBlock>(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let pending = Arc::new(PendingBlocks::default());
@@ -189,6 +191,7 @@ async fn lookup_depth_exhaustion_fires_notify_backfill() {
         payload_tx,
         pending,
         notify_backfill,
+        reinject_tx,
         shutdown_rx,
     ));
 

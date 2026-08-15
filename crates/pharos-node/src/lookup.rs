@@ -33,8 +33,8 @@ use pharos_types::{
 };
 
 use crate::block_ingestion::{
-    decode_block_by_topic, encode_signed_block_as_gossip_bytes, extract_block_root,
-    extract_parent_root,
+    ReinjectBlock, decode_block_by_topic, encode_signed_block_as_gossip_bytes, extract_block_root,
+    extract_parent_root, hold_future_block,
 };
 use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire};
 use crate::host_impl::HostImpl;
@@ -61,6 +61,12 @@ enum ImportAttempt {
     Imported,
     /// Parent state absent — the gap continues; walk further back.
     MissingParent,
+    /// Block is valid but its slot is ahead of the store clock (`FutureSlot`).
+    /// Per `fork-choice.md`, consideration "must be delayed until they are in
+    /// the past": the caller holds it and re-injects at slot start (mirroring
+    /// the gossip path) instead of dropping it. Carries the block's slot so the
+    /// caller can compute the hold duration via `HostImpl::wait_until_slot_start`.
+    FutureSlot { block_slot: u64 },
     /// STF / fork-choice rejected the block (or a join error). Do not walk back.
     Rejected,
 }
@@ -152,6 +158,7 @@ pub async fn run_lookup_loop<E, P, EE, PP>(
     payload_tx: mpsc::Sender<NewPayloadRequest<E>>,
     pending: Arc<PendingBlocks>,
     notify_backfill: Arc<Notify>,
+    reinject_tx: mpsc::Sender<ReinjectBlock>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), LookupError>
 where
@@ -220,32 +227,43 @@ where
 
                         if parent_known {
                             debug!(%block_root, "lookup: parent known; importing directly");
-                            if matches!(
-                                try_import(
-                                    &signed_block,
-                                    &fc_store,
-                                    &execution_engine,
-                                    &pow_provider,
-                                    &payload_tx,
-                                    &cfg,
-                                    &host,
-                                    &head_tx,
-                                )
-                                .await,
-                                ImportAttempt::Imported
-                            ) {
-                                drain_and_replay(
-                                    block_root,
-                                    &pending,
-                                    &host,
-                                    &fc_store,
-                                    &execution_engine,
-                                    &pow_provider,
-                                    &payload_tx,
-                                    &cfg,
-                                    &head_tx,
-                                )
-                                .await;
+                            match try_import(
+                                &signed_block,
+                                &fc_store,
+                                &execution_engine,
+                                &pow_provider,
+                                &payload_tx,
+                                &cfg,
+                                &host,
+                                &head_tx,
+                            )
+                            .await
+                            {
+                                ImportAttempt::Imported => {
+                                    drain_and_replay(
+                                        block_root,
+                                        &pending,
+                                        &host,
+                                        &fc_store,
+                                        &execution_engine,
+                                        &pow_provider,
+                                        &payload_tx,
+                                        &cfg,
+                                        &head_tx,
+                                        &reinject_tx,
+                                    )
+                                    .await;
+                                }
+                                ImportAttempt::FutureSlot { block_slot } => {
+                                    // Block is valid but ahead of the store clock. Hold and
+                                    // re-inject the original gossip `(topic, data)` at slot
+                                    // start via the ingestion re-inject channel, exactly as
+                                    // the gossip path does — rather than dropping it and
+                                    // relying on the next block's re-lookup to self-heal.
+                                    let wait = host.wait_until_slot_start(block_slot);
+                                    hold_future_block(&reinject_tx, wait, block_slot, topic, data);
+                                }
+                                ImportAttempt::MissingParent | ImportAttempt::Rejected => {}
                             }
                         } else {
                             // Queue the orphan, then walk backward to fetch its missing parent.
@@ -268,6 +286,7 @@ where
                                 &cfg,
                                 &head_tx,
                                 &notify_backfill,
+                                &reinject_tx,
                             )
                             .await;
                         }
@@ -284,6 +303,7 @@ where
                             &payload_tx,
                             &cfg,
                             &head_tx,
+                            &reinject_tx,
                         )
                         .await;
                     }
@@ -371,6 +391,12 @@ where
             ImportAttempt::Imported
         }
         Err(ImportError::MissingParentState) => ImportAttempt::MissingParent,
+        Err(ImportError::ForkChoice(pharos_fork_choice::ForkChoiceError::FutureSlot {
+            block_slot,
+            ..
+        })) => ImportAttempt::FutureSlot {
+            block_slot: block_slot.0,
+        },
         Err(e) => {
             warn!(error = %e, "lookup: import_block rejected block; not walking back");
             ImportAttempt::Rejected
@@ -425,6 +451,7 @@ async fn fetch_and_walk<E, P, EE, PP>(
     cfg: &pharos_types::config::RuntimeConfig,
     head_tx: &watch::Sender<Option<HeadChange>>,
     notify_backfill: &Arc<Notify>,
+    reinject_tx: &mpsc::Sender<ReinjectBlock>,
 ) where
     E: EthSpec,
     P: LookupBlockProvider<E>,
@@ -520,8 +547,26 @@ async fn fetch_and_walk<E, P, EE, PP>(
                     payload_tx,
                     cfg,
                     head_tx,
+                    reinject_tx,
                 )
                 .await;
+                return;
+            }
+            ImportAttempt::FutureSlot { block_slot } => {
+                // A fetched block ahead of the store clock. Ancestors walked
+                // backward are normally in the past, so this is only reachable
+                // at the very tip; hold and re-inject at slot start (mirroring
+                // the gossip path) rather than walk back or drop. Reconstruct
+                // the gossip `(topic, data)` from the block's OWN fork digest —
+                // the re-inject channel feeds the ingestion loop's import path.
+                debug!(%fetched_block_root, "lookup: fetched block in future; holding for slot start");
+                let topic = GossipTopic {
+                    fork_digest: fork_digest_of_block::<E>(host, fetched),
+                    kind: GossipTopicKind::BeaconBlock,
+                };
+                let data = encode_signed_block_as_gossip_bytes::<E>(fetched);
+                let wait = host.wait_until_slot_start(block_slot);
+                hold_future_block(reinject_tx, wait, block_slot, topic, data);
                 return;
             }
             ImportAttempt::Rejected => {
@@ -590,6 +635,7 @@ async fn drain_and_replay<E, EE, PP>(
     payload_tx: &mpsc::Sender<NewPayloadRequest<E>>,
     cfg: &pharos_types::config::RuntimeConfig,
     head_tx: &watch::Sender<Option<HeadChange>>,
+    reinject_tx: &mpsc::Sender<ReinjectBlock>,
 ) where
     E: EthSpec,
     EE: pharos_stf::ExecutionEngine + 'static,
@@ -651,22 +697,31 @@ async fn drain_and_replay<E, EE, PP>(
             };
 
             // Import.  No guard held here — try_import is .await-able.
-            if matches!(
-                try_import(
-                    &signed_block,
-                    fc_store,
-                    execution_engine,
-                    pow_provider,
-                    payload_tx,
-                    cfg,
-                    host,
-                    head_tx,
-                )
-                .await,
-                ImportAttempt::Imported
-            ) {
-                // Enqueue this block's root so its children are also replayed.
-                stack.push(entry.block_root);
+            match try_import(
+                &signed_block,
+                fc_store,
+                execution_engine,
+                pow_provider,
+                payload_tx,
+                cfg,
+                host,
+                head_tx,
+            )
+            .await
+            {
+                ImportAttempt::Imported => {
+                    // Enqueue this block's root so its children are also replayed.
+                    stack.push(entry.block_root);
+                }
+                ImportAttempt::FutureSlot { block_slot } => {
+                    // A replayed descendant whose slot is still ahead of the
+                    // store clock: hold and re-inject at slot start rather than
+                    // drop. We already hold the original gossip `(topic, data)`
+                    // for this entry, so re-inject it verbatim.
+                    let wait = host.wait_until_slot_start(block_slot);
+                    hold_future_block(reinject_tx, wait, block_slot, topic, entry.data);
+                }
+                ImportAttempt::MissingParent | ImportAttempt::Rejected => {}
             }
         }
     }

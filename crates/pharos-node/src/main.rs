@@ -704,6 +704,7 @@ async fn main() -> anyhow::Result<()> {
             let fc = Arc::clone(&fork_choice);
             let h = Arc::clone(&host);
             let shutdown_rx = pharos_node_shutdown_rx.clone();
+            let reinject_tx = reinject_tx.clone();
             tokio::spawn(async move {
                 if let Err(e) = run_lookup_loop::<
                     MainnetEthSpec,
@@ -721,6 +722,7 @@ async fn main() -> anyhow::Result<()> {
                     payload_tx,
                     pending,
                     notify_backfill,
+                    reinject_tx,
                     shutdown_rx,
                 )
                 .await

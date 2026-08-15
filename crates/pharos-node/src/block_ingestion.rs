@@ -355,7 +355,10 @@ where
 ///
 /// `wait` is passed in (not computed here) so this stays host-free and unit-
 /// testable; the caller computes it via `HostImpl::wait_until_slot_start`.
-fn hold_future_block(
+///
+/// `pub(crate)` so the lookup-sync loop can reuse the same hold-and-replay
+/// mechanism for future blocks it imports directly (see `lookup.rs`).
+pub(crate) fn hold_future_block(
     reinject_tx: &mpsc::Sender<ReinjectBlock>,
     wait: std::time::Duration,
     block_slot: u64,

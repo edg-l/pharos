@@ -2339,9 +2339,27 @@ parks `(topic, data)` and a `tokio::spawn` sleeps until the slot opens
 (`HostImpl::wait_until_slot_start`) then re-sends it for another import attempt.
 Bounded by `MAX_FUTURE_BLOCK_HOLD` (24 s) so the hold can't pin memory — the
 gossip validator already IGNOREs blocks further ahead. `on_block`'s assert is
-untouched. The lookup path is deliberately unchanged: its direct-import only
-sees past catch-up blocks, and a future block dropped there self-heals via the
-next block's re-lookup.
+untouched.
+
+**Extension (2026-05-29): the lookup-sync path now holds too.** Originally the
+lookup path was left dropping future blocks (self-heal via the next block's
+re-lookup, one slot late). `run_lookup_loop` now threads the same ingestion
+`reinject_tx`; `try_import` distinguishes `FutureSlot` via a new
+`ImportAttempt::FutureSlot { block_slot }` variant (previously folded into
+`Rejected` → dropped), and all three import sites — the parent-known
+direct-import, `fetch_and_walk`, and `drain_and_replay` — call
+`hold_future_block` (promoted to `pub(crate)`) instead of dropping. Re-injection
+flows through the ingestion channel, which decodes + `import_block`s without
+re-running gossip validation, so lookup-fetched (non-gossip) blocks re-imported
+this way are not subject to gossip rules. The direct-import site re-injects the
+original gossip `(topic, data)` verbatim; the fetch/replay sites reconstruct
+`(topic, data)` from the block's own fork digest via
+`encode_signed_block_as_gossip_bytes`.
 
 Verified by unit tests `hold_future_block_replays_when_due`,
-`hold_future_block_drops_when_too_far`, and `wait_until_slot_start_past_and_future`.
+`hold_future_block_drops_when_too_far`, `wait_until_slot_start_past_and_future`,
+and integration test `lookup_direct_import_holds_future_block` (anchors genesis
+at wall-now so block1 is genuinely one slot ahead — `D-import-clock-nudge`'s
+wall-now advance means a block is only `FutureSlot` when its slot is ahead of
+the wall clock, not the store cursor — then asserts the block is re-injected
+verbatim and not imported).
