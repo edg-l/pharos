@@ -1115,8 +1115,7 @@ where
     // Compute next_sync_committee branch when attested and signature periods match.
     let (next_sync_committee, next_sync_committee_branch) =
         if update_attested_period == update_signature_period {
-            let nsc_branch_hashes =
-                compute_state_proof(attested_state, NEXT_SYNC_COMMITTEE_GINDEX);
+            let nsc_branch_hashes = compute_state_proof(attested_state, NEXT_SYNC_COMMITTEE_GINDEX);
             let mut nsc_vec: Vec<Bytes32> = nsc_branch_hashes;
             while nsc_vec.len() < NEXT_SYNC_COMMITTEE_BRANCH_DEPTH as usize {
                 nsc_vec.push(Bytes32::default());

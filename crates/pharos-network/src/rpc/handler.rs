@@ -4,9 +4,13 @@
 //! host method and returns an `RpcResponse`. Scoring events are recorded via
 //! the `PeerManager`.
 
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
 use libp2p::PeerId;
 use pharos_ssz::SszList;
 use pharos_types::EthSpec;
+use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::{ErrorMessage, MetaData as Phase0MetaData, Status};
 
 use crate::host::{Host, LightClientProvider};
@@ -28,6 +32,7 @@ use crate::types::DisconnectReason;
 /// provides chain state needed to build responses.
 pub async fn handle_request<E, H, S>(
     host: &H,
+    host_metadata: &Arc<ArcSwap<AltairMetaData>>,
     peer: PeerId,
     req: RpcRequest,
     peer_manager: &mut PeerManager<S>,
@@ -73,7 +78,10 @@ where
         }
 
         RpcRequest::Ping(_seq) => {
-            let seq = host.local_metadata().seq_number;
+            // Read live metadata from the ArcSwap cache (updated by the subnet
+            // rotation driver via NetworkCommand::UpdateMetaData), not from the
+            // static host snapshot.
+            let seq = host_metadata.load().seq_number;
             RpcResponse::Ping(seq)
         }
 
@@ -81,7 +89,7 @@ where
         // Per `D-metadata-v2-dual-handle`: select V1 or V2 based on the
         // protocol that multistream-select negotiated for this stream.
         RpcRequest::MetaData | RpcRequest::MetaDataV1 => {
-            handle_metadata(host, negotiated_protocol_id)
+            handle_metadata::<E>(host_metadata, negotiated_protocol_id)
         }
 
         RpcRequest::BlocksByRange(req) => {
@@ -168,12 +176,16 @@ where
 ///
 /// The v1 view is derived from the v2 local metadata by copying `seq_number`
 /// and `attnets` and discarding `syncnets`.
-fn handle_metadata<E, H>(host: &H, negotiated_protocol_id: &str) -> RpcResponse<E>
+fn handle_metadata<E>(
+    host_metadata: &Arc<ArcSwap<AltairMetaData>>,
+    negotiated_protocol_id: &str,
+) -> RpcResponse<E>
 where
     E: EthSpec,
-    H: crate::host::ForkContext,
 {
-    let md = host.local_metadata();
+    // Read live metadata from the ArcSwap cache so peers see updates issued
+    // by the subnet rotation driver (NetworkCommand::UpdateMetaData).
+    let md = (**host_metadata.load()).clone();
     if negotiated_protocol_id == crate::scoring::RpcMethod::MetaDataV1.protocol_id() {
         // v1 peer: serve phase-0 MetaData (seq_number + attnets, no syncnets).
         let v1 = Phase0MetaData {
@@ -386,16 +398,27 @@ mod tests {
         RpcMethod::MetaData.protocol_id()
     }
 
+    /// Build an `ArcSwap<AltairMetaData>` carrying a specific `seq_number`.
+    fn make_md(seq: u64) -> Arc<ArcSwap<AltairMetaData>> {
+        let md = AltairMetaData {
+            seq_number: seq,
+            ..AltairMetaData::default()
+        };
+        Arc::new(ArcSwap::from_pointee(md))
+    }
+
     /// A `Ping(42)` request returns `Ping(seq)` where `seq` is the mock host's
     /// metadata seq_number.
     #[tokio::test]
     async fn ping_returns_local_seq() {
-        let host = MockHost::new(Bytes4::from_array([0u8; 4]), 7);
+        let host = MockHost::new(Bytes4::from_array([0u8; 4]), 0);
+        let md = make_md(7);
         let mut pm = make_peer_manager();
         let peer = PeerId::random();
 
         let resp = handle_request::<MainnetEthSpec, _, _>(
             &host,
+            &md,
             peer,
             RpcRequest::Ping(42),
             &mut pm,
@@ -404,20 +427,22 @@ mod tests {
         .await;
 
         match resp {
-            RpcResponse::Ping(seq) => assert_eq!(seq, 7, "Ping should return host's seq_number"),
+            RpcResponse::Ping(seq) => assert_eq!(seq, 7, "Ping should return ArcSwap seq_number"),
             other => panic!("expected RpcResponse::Ping, got: {other:?}"),
         }
     }
 
-    /// A `MetaData` (v2) request returns the host's altair metadata.
+    /// A `MetaData` (v2) request returns the cached altair metadata.
     #[tokio::test]
     async fn metadata_v2_returns_host_metadata() {
-        let host = MockHost::new(Bytes4::from_array([0u8; 4]), 3);
+        let host = MockHost::new(Bytes4::from_array([0u8; 4]), 0);
+        let md = make_md(3);
         let mut pm = make_peer_manager();
         let peer = PeerId::random();
 
         let resp = handle_request::<MainnetEthSpec, _, _>(
             &host,
+            &md,
             peer,
             RpcRequest::MetaData,
             &mut pm,
@@ -434,13 +459,15 @@ mod tests {
     /// A `MetaData` (v1) request returns truncated phase-0 metadata.
     #[tokio::test]
     async fn metadata_v1_returns_v1_truncated() {
-        let host = MockHost::new(Bytes4::from_array([0u8; 4]), 5);
+        let host = MockHost::new(Bytes4::from_array([0u8; 4]), 0);
+        let md = make_md(5);
         let mut pm = make_peer_manager();
         let peer = PeerId::random();
 
         let v1_protocol = RpcMethod::MetaDataV1.protocol_id();
         let resp = handle_request::<MainnetEthSpec, _, _>(
             &host,
+            &md,
             peer,
             RpcRequest::MetaDataV1,
             &mut pm,
@@ -451,6 +478,38 @@ mod tests {
         match resp {
             RpcResponse::MetaData(MetaDataResponse::V1(m)) => assert_eq!(m.seq_number, 5),
             other => panic!("expected RpcResponse::MetaData(V1), got: {other:?}"),
+        }
+    }
+
+    /// `Ping` reflects updates to the `ArcSwap` after construction (regression
+    /// guard for the bypass bug where handler called `host.local_metadata()`).
+    #[tokio::test]
+    async fn ping_reflects_arc_swap_updates() {
+        let host = MockHost::new(Bytes4::from_array([0u8; 4]), 0);
+        let md = make_md(1);
+        let mut pm = make_peer_manager();
+        let peer = PeerId::random();
+
+        // Mutate the ArcSwap after construction; handler must see the new value.
+        let updated = AltairMetaData {
+            seq_number: 42,
+            ..AltairMetaData::default()
+        };
+        md.store(Arc::new(updated));
+
+        let resp = handle_request::<MainnetEthSpec, _, _>(
+            &host,
+            &md,
+            peer,
+            RpcRequest::Ping(0),
+            &mut pm,
+            v2_protocol(),
+        )
+        .await;
+
+        match resp {
+            RpcResponse::Ping(seq) => assert_eq!(seq, 42, "Ping must read live ArcSwap"),
+            other => panic!("expected RpcResponse::Ping, got: {other:?}"),
         }
     }
 
@@ -471,8 +530,10 @@ mod tests {
             fork_digest: fd,
             ..Status::default()
         };
+        let md = make_md(0);
         let resp = handle_request::<MainnetEthSpec, _, _>(
             &host,
+            &md,
             peer,
             RpcRequest::Status(incoming.clone()),
             &mut pm,
@@ -505,8 +566,10 @@ mod tests {
             fork_digest: remote_fd,
             ..Status::default()
         };
+        let md = make_md(0);
         let resp = handle_request::<MainnetEthSpec, _, _>(
             &host,
+            &md,
             peer,
             RpcRequest::Status(incoming),
             &mut pm,

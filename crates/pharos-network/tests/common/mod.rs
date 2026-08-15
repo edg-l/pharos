@@ -420,14 +420,16 @@ pub async fn spawn_node_with_scorer(
         } else {
             builder.tcp_listen_port(0)
         };
-        builder.spawn().await.expect("NetworkBuilder::spawn failed")
+        let (h, _disc) = builder.spawn().await.expect("NetworkBuilder::spawn failed");
+        h
     } else {
         let builder = if quic_only {
             base_builder.no_tcp(true).quic_listen_port(Some(0))
         } else {
             base_builder.tcp_listen_port(0)
         };
-        builder.spawn().await.expect("NetworkBuilder::spawn failed")
+        let (h, _disc) = builder.spawn().await.expect("NetworkBuilder::spawn failed");
+        h
     };
 
     // Collect events until we have both LocalEnr and NewListenAddr.

@@ -16,6 +16,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
+
 use futures::StreamExt as _;
 use libp2p::core::ConnectedPoint;
 use libp2p::gossipsub::{self, IdentTopic, MessageAcceptance, TopicHash};
@@ -28,6 +30,7 @@ use libp2p::swarm::ConnectionError;
 use libp2p::{PeerId, Swarm, SwarmBuilder};
 use pharos_ssz::Bitvector;
 use pharos_types::EthSpec;
+use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::Status as BeaconStatus;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use tokio::sync::{mpsc, oneshot};
@@ -37,6 +40,7 @@ use discv5::enr::EnrKey as _;
 
 use crate::codec::snappy_block::{decode_snappy_block, encode_snappy_block};
 use crate::discovery::enr::Enr;
+use crate::discovery::handle::{DiscoveryCommand, DiscoveryHandle, discovery_channel};
 use crate::discovery::service::{DiscoveryConfig, DiscoveryService};
 use crate::discovery::subnets::compute_subscribed_subnets;
 use crate::error::NetworkError;
@@ -72,6 +76,21 @@ pub enum NetworkCommand<E: EthSpec> {
         topic: GossipTopic,
         reply: oneshot::Sender<Result<(), NetworkError>>,
     },
+    /// Unsubscribe from a gossipsub topic at runtime.
+    ///
+    /// Used by the fork-migration loop to drop phase-0 topics after crossing
+    /// `ALTAIR_FORK_EPOCH`. Per `specs/phase0/p2p-interface.md:1670-1672`.
+    Unsubscribe {
+        topic: GossipTopic,
+        reply: oneshot::Sender<Result<(), NetworkError>>,
+    },
+    /// Update the local node's `MetaData` (Altair v2).
+    ///
+    /// Swaps the cached `AltairMetaData` in `Network::host_metadata` and
+    /// increments `seq_number` if the `attnets` or `syncnets` fields changed.
+    /// Used by the subnet-rotation driver (Task 7.1) and the fork-migration
+    /// loop (Task 7.3).
+    UpdateMetaData(AltairMetaData),
     /// Dial a remote peer by multiaddr.
     Dial {
         addr: libp2p::Multiaddr,
@@ -178,9 +197,20 @@ pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScore
     discovery: DiscoveryService,
     peer_manager: PeerManager<S>,
     host: Arc<H>,
+    /// Cached local `MetaData` (Altair v2) for lock-free reads by RPC handlers.
+    ///
+    /// Initialised from `host.local_metadata()` at build time. Updated via
+    /// `NetworkCommand::UpdateMetaData` which is issued by the subnet-rotation
+    /// driver whenever the `attnets` or `syncnets` bitvectors change.
+    host_metadata: Arc<ArcSwap<AltairMetaData>>,
     /// Maps subscribed topic hashes to their parsed `GossipTopic` for dispatch.
     topic_map: HashMap<TopicHash, GossipTopic>,
     command_rx: mpsc::Receiver<NetworkCommand<E>>,
+    /// Inbound commands from `DiscoveryHandle`.
+    ///
+    /// Polled in the main select loop alongside `command_rx`. Commands are
+    /// forwarded to `DiscoveryService::handle_discovery_command`.
+    discovery_cmd_rx: mpsc::Receiver<DiscoveryCommand>,
     event_tx: mpsc::Sender<NetworkEvent>,
     discovery_tick: Interval,
     shutdown_signal: oneshot::Receiver<()>,
@@ -242,6 +272,11 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                             break;
                         }
                         Some(cmd) => self.on_command(cmd),
+                    }
+                }
+                dcmd = self.discovery_cmd_rx.recv() => {
+                    if let Some(dcmd) = dcmd {
+                        self.discovery.handle_discovery_command(dcmd);
                     }
                 }
                 _ = self.discovery_tick.tick() => {
@@ -539,9 +574,11 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                     // handler can select MetaData v1 vs v2 per `D-metadata-v2-dual-handle`.
                     let negotiated_protocol_id = method.protocol_id();
                     let host = Arc::clone(&self.host);
+                    let host_metadata = Arc::clone(&self.host_metadata);
                     // Handle synchronously to avoid lifetime complexity with &mut self.
                     let response = handle_request::<E, H, S>(
                         host.as_ref(),
+                        &host_metadata,
                         peer,
                         request,
                         &mut self.peer_manager,
@@ -1019,7 +1056,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
     /// seq_number newer than the stored one, a follow-up `GetMetaData`
     /// is issued.
     pub fn tick_ping(&mut self) {
-        let local_seq = self.host.local_metadata().seq_number;
+        let local_seq = self.host_metadata.load().seq_number;
         let connected: Vec<PeerId> = self.peer_manager.connected_peers().collect();
         for peer_id in connected {
             let request_id = self.send_rpc_request(&peer_id, RpcRequest::Ping(local_seq));
@@ -1152,6 +1189,29 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                     self.topic_map.insert(topic.topic_hash(), topic);
                 }
                 let _ = reply.send(result);
+            }
+            NetworkCommand::Unsubscribe { topic, reply } => {
+                let ident = libp2p::gossipsub::IdentTopic::new(topic.topic_str());
+                // Remove from topic map regardless of unsubscribe result so we
+                // stop dispatching messages for this topic.
+                self.topic_map.remove(&topic.topic_hash());
+                // Idempotent: gossipsub.unsubscribe returns false if we weren't
+                // subscribed; that is not an error in the fork-migration path.
+                let _ = self.swarm.behaviour_mut().gossipsub.unsubscribe(&ident);
+                let _ = reply.send(Ok(()));
+            }
+            NetworkCommand::UpdateMetaData(new_meta) => {
+                // Atomically swap the cached metadata; increment seq_number only
+                // when attnets or syncnets actually changed.
+                let old = self.host_metadata.load();
+                if new_meta.attnets != old.attnets || new_meta.syncnets != old.syncnets {
+                    let updated = AltairMetaData {
+                        seq_number: old.seq_number.wrapping_add(1),
+                        attnets: new_meta.attnets,
+                        syncnets: new_meta.syncnets,
+                    };
+                    self.host_metadata.store(Arc::new(updated));
+                }
             }
             NetworkCommand::Dial { addr, reply } => {
                 let result = self
@@ -1317,7 +1377,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
         }
     }
 
-    /// Construct the `Network` and return `(Network, NetworkHandle<E>)`.
+    /// Construct the `Network` and return `(Network, NetworkHandle<E>, DiscoveryHandle)`.
     ///
     /// Steps:
     /// 1. Derive the discv5 `CombinedKey` from the libp2p secp256k1 keypair.
@@ -1327,7 +1387,9 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
     /// 5. Subscribe to Phase-0 gossipsub topics; build the topic lookup map.
     /// 6. Add TCP listener; optionally add QUIC listener.
     /// 7. Wire mpsc channels and oneshot shutdown signal.
-    pub async fn build(self) -> Result<(Network<E, H, S>, NetworkHandle<E>), NetworkError> {
+    pub async fn build(
+        self,
+    ) -> Result<(Network<E, H, S>, NetworkHandle<E>, DiscoveryHandle), NetworkError> {
         // ── Step 1: bridge libp2p keypair → discv5 CombinedKey ───────────────
         //
         // Extract the secp256k1 secret bytes from the libp2p keypair and
@@ -1482,6 +1544,10 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
         let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(1024);
         let (shutdown_tx, shutdown_signal) = oneshot::channel::<()>();
 
+        // Discovery command channel: `DiscoveryHandle` sends commands, the
+        // `Network::run` loop polls and dispatches them to `DiscoveryService`.
+        let (discovery_handle, discovery_cmd_rx) = discovery_channel();
+
         let peer_manager = PeerManager::new(self.scorer, 100, 50);
 
         // Discovery poll interval: 30 seconds.
@@ -1491,13 +1557,20 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
 
         let local_peer_id = *swarm.local_peer_id();
 
+        // Initialise the cached metadata from the host so the first Ping
+        // response reflects the node's current seq_number / attnets / syncnets.
+        let initial_meta = self.host.local_metadata();
+        let host_metadata = Arc::new(ArcSwap::from_pointee(initial_meta));
+
         let network = Network {
             swarm,
             discovery,
             peer_manager,
             host: self.host,
+            host_metadata,
             topic_map,
             command_rx,
+            discovery_cmd_rx,
             event_tx,
             discovery_tick,
             shutdown_signal,
@@ -1512,20 +1585,21 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
 
         let handle = NetworkHandle::new(cmd_tx, event_rx, shutdown_tx, local_peer_id, node_id);
 
-        Ok((network, handle))
+        Ok((network, handle, discovery_handle))
     }
 
     /// Build, spawn the network task on the current Tokio runtime, and return
-    /// the `NetworkHandle<E>`.
+    /// `(NetworkHandle<E>, DiscoveryHandle)`.
     ///
     /// The spawned task owns the `Network` and drives its `run()` loop.
-    /// The returned handle is the single owner of the event-receiver side.
-    pub async fn spawn(self) -> Result<NetworkHandle<E>, NetworkError>
+    /// The returned `NetworkHandle` is the single owner of the event-receiver side.
+    /// The returned `DiscoveryHandle` allows cross-fork ENR updates (Task 7.4).
+    pub async fn spawn(self) -> Result<(NetworkHandle<E>, DiscoveryHandle), NetworkError>
     where
         H: 'static,
         S: 'static,
     {
-        let (network, handle) = self.build().await?;
+        let (network, handle, discovery_handle) = self.build().await?;
         tokio::spawn(async move {
             if let Err(e) = network.run().await {
                 tracing::error!("network task exited with error: {e}");
@@ -1533,7 +1607,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
                 tracing::info!("network shutdown complete");
             }
         });
-        Ok(handle)
+        Ok((handle, discovery_handle))
     }
 }
 
@@ -1693,10 +1767,11 @@ mod tests {
     /// tasks internally.
     #[tokio::test(flavor = "multi_thread")]
     async fn network_shutdown_smoke() {
-        let (network, handle) = NetworkBuilder::<MainnetEthSpec, MockHost, _>::new(MockHost)
-            .build()
-            .await
-            .expect("NetworkBuilder::build failed");
+        let (network, handle, _discovery_handle) =
+            NetworkBuilder::<MainnetEthSpec, MockHost, _>::new(MockHost)
+                .build()
+                .await
+                .expect("NetworkBuilder::build failed");
 
         let task = tokio::spawn(async move { network.run().await });
 

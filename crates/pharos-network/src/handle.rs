@@ -14,6 +14,7 @@ use discv5::enr::NodeId;
 use libp2p::{Multiaddr, PeerId};
 use pharos_ssz::Encode;
 use pharos_types::EthSpec;
+use pharos_types::altair::MetaData as AltairMetaData;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::NetworkError;
@@ -211,6 +212,34 @@ impl<E: EthSpec> NetworkHandle<E> {
             .await
             .map_err(|_| NetworkError::ChannelClosed)?;
         reply_rx.await.map_err(|_| NetworkError::ChannelClosed)?
+    }
+
+    /// Unsubscribe from a gossipsub `topic` at runtime.
+    ///
+    /// Used by the fork-migration loop to drop phase-0 topics after crossing
+    /// `ALTAIR_FORK_EPOCH`. Idempotent: unsubscribing a topic not currently
+    /// subscribed succeeds silently.
+    pub async fn unsubscribe(&self, topic: GossipTopic) -> Result<(), NetworkError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(NetworkCommand::Unsubscribe {
+                topic,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        reply_rx.await.map_err(|_| NetworkError::ChannelClosed)?
+    }
+
+    /// Update the local node's `MetaData` (Altair v2).
+    ///
+    /// The network task increments `seq_number` if the new attnets or syncnets
+    /// differ from the cached value. No reply channel — fire-and-forget.
+    pub async fn update_metadata(&self, meta: AltairMetaData) -> Result<(), NetworkError> {
+        self.cmd_tx
+            .send(NetworkCommand::UpdateMetaData(meta))
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)
     }
 
     /// Dial a remote peer by multiaddr.

@@ -49,7 +49,10 @@ pub struct DiscoveryConfig {
 /// subnet subscriptions.
 pub struct DiscoveryService {
     /// The underlying discv5 instance.
-    discv5: Discv5,
+    ///
+    /// `pub(crate)` so that `discovery::handle::DiscoveryService::handle_discovery_command`
+    /// can call `enr_insert` when the `DiscoveryHandle` receives an `UpdateEth2` command.
+    pub(crate) discv5: Discv5,
     /// Event stream produced by discv5.
     ///
     /// discv5 0.10 returns a *bounded* `mpsc::Receiver`; the plan referenced
@@ -171,8 +174,9 @@ impl DiscoveryService {
         new_attnets: Bitvector<ATTESTATION_SUBNET_COUNT>,
     ) -> Result<(), NetworkError> {
         let bytes = new_attnets.as_ssz_bytes();
+        // Pass `&&[u8]` (bytes-string RLP) to match `build_local_enr`.
         self.discv5
-            .enr_insert("attnets", &bytes)
+            .enr_insert("attnets", &bytes.as_slice())
             .map(|_| ())
             .map_err(|e| NetworkError::Discv5(e.to_string()))
     }

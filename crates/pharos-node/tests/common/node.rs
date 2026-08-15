@@ -100,15 +100,16 @@ pub async fn spawn_node(
     let discv5_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let listen_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 
-    let mut handle = NetworkBuilder::<MinimalEthSpec, HostImpl<MinimalEthSpec>, _>::new(host)
-        .local_key(local_key)
-        .listen_ip(listen_ip)
-        .discv5_addr(discv5_addr)
-        .bootnodes(bootnodes)
-        .tcp_listen_port(0)
-        .spawn()
-        .await
-        .expect("NetworkBuilder::spawn failed");
+    let (mut handle, _discovery_handle) =
+        NetworkBuilder::<MinimalEthSpec, HostImpl<MinimalEthSpec>, _>::new(host)
+            .local_key(local_key)
+            .listen_ip(listen_ip)
+            .discv5_addr(discv5_addr)
+            .bootnodes(bootnodes)
+            .tcp_listen_port(0)
+            .spawn()
+            .await
+            .expect("NetworkBuilder::spawn failed");
 
     // Collect events until we have both LocalEnr and NewListenAddr.
     let mut enr: Option<Enr> = None;

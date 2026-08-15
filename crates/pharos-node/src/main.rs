@@ -21,8 +21,10 @@ use pharos_types::state::{BeaconBlock as ForkBeaconBlock, MainnetBeaconState};
 use pharos_types::{EthSpec, MainnetEthSpec};
 use tracing::info;
 
+use pharos_node::fork_migration::run_fork_migration_loop;
 use pharos_node::host_impl::HostImpl;
 use pharos_node::startup::rehydrate_fork_choice_store;
+use pharos_node::subnet_rotation::run_subnet_rotation_loop;
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -178,23 +180,23 @@ async fn main() -> anyhow::Result<()> {
 
     let discv5_addr = SocketAddr::new(listen_ip, args.discv5_port);
 
-    let handle = NetworkBuilder::<MainnetEthSpec, Arc<HostImpl<MainnetEthSpec>>, NoopScorer>::new(
-        host.clone(),
-    )
-    .listen_ip(listen_ip)
-    .tcp_listen_port(tcp_port)
-    .discv5_addr(discv5_addr)
-    .bootnodes(bootnodes)
-    .spawn()
-    .await
-    .context("failed to start network")?;
+    let (handle, discovery_handle) =
+        NetworkBuilder::<MainnetEthSpec, Arc<HostImpl<MainnetEthSpec>>, NoopScorer>::new(
+            host.clone(),
+        )
+        .listen_ip(listen_ip)
+        .tcp_listen_port(tcp_port)
+        .discv5_addr(discv5_addr)
+        .bootnodes(bootnodes)
+        .spawn()
+        .await
+        .context("failed to start network")?;
 
     info!(peer_id = %handle.local_peer_id(), "network started");
 
     // Compute initial attestation subnets from the node-id and record them.
     // This bumps MetaData.seq_number from 0 to 1 exactly once at startup,
     // fulfilling the p2p-interface.md:391-393 requirement.
-    // TODO(M3b): wire to subnet-rotation epoch driver once M3b lands.
     let node_id = handle.local_node_id();
     let subnets = compute_subscribed_subnets::<MainnetEthSpec>(node_id, 0u64);
     let mut initial_attnets = Bitvector::<ATTESTATION_SUBNET_COUNT>::default();
@@ -206,6 +208,47 @@ async fn main() -> anyhow::Result<()> {
         seq_number = 1,
         "initial attnets recorded; metadata seq_number = 1"
     );
+
+    // Build fork schedule for the subnet rotation and fork migration loops.
+    // M3b: populate real altair fork version + epoch from EthSpec compile-time consts.
+    let fork_schedule = Arc::new(pharos_types::fork::ForkSchedule {
+        genesis_fork_version: pharos_types::phase0::primitives::Version::from_array(
+            MainnetEthSpec::GENESIS_FORK_VERSION,
+        ),
+        altair_fork_version: pharos_types::phase0::primitives::Version::from_array(
+            MainnetEthSpec::ALTAIR_FORK_VERSION,
+        ),
+        altair_fork_epoch: pharos_utils::Epoch(MainnetEthSpec::ALTAIR_FORK_EPOCH),
+        genesis_validators_root,
+    });
+
+    // Genesis time: for a production node this would be read from the chain
+    // database or the genesis state's `genesis_time` field. For now, use
+    // wall clock as a conservative approximation (cold-start scenario).
+    let genesis_time_secs = wall_clock_secs;
+
+    // Spawn subnet rotation loop (attestation subnet re-assignment every
+    // EPOCHS_PER_SUBNET_SUBSCRIPTION = 256 epochs).
+    // Takes a clonable `NetworkCommandSender` so we retain `handle` ownership.
+    {
+        let cmd = handle.command_sender();
+        let sched = Arc::clone(&fork_schedule);
+        let nid = node_id;
+        tokio::spawn(async move {
+            run_subnet_rotation_loop::<MainnetEthSpec>(cmd, sched, nid, genesis_time_secs).await;
+        });
+    }
+
+    // Spawn fork migration loop (fires once at ALTAIR_FORK_EPOCH to update the
+    // ENR `eth2` field and rotate gossip topics).
+    {
+        let cmd = handle.command_sender();
+        let disc = discovery_handle.clone();
+        let sched = Arc::clone(&fork_schedule);
+        tokio::spawn(async move {
+            run_fork_migration_loop::<MainnetEthSpec>(cmd, disc, sched, genesis_time_secs).await;
+        });
+    }
 
     // Block until Ctrl-C.
     tokio::signal::ctrl_c()
