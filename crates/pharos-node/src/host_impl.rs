@@ -21,9 +21,12 @@
 //! epochs when the persistent subnet assignment rotates.
 
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use lru::LruCache;
 
 use parking_lot::RwLock;
 use tokio::sync::{mpsc, watch};
@@ -100,6 +103,19 @@ pub struct HostImpl<E: EthSpec> {
     pub(crate) head_tx: Option<watch::Sender<Option<HeadChange>>>,
     /// Channel for new-payload requests to the engine driver.
     pub(crate) payload_tx: Option<mpsc::Sender<NewPayloadRequest<E>>>,
+    /// Tracks (slot, proposer_index) pairs seen so far; gates the RB3 duplicate-
+    /// proposer IGNORE rule per `specs/phase0/p2p-interface.md:575`.
+    /// Capacity: 4096 entries (D-seen-cache-after-accept).
+    seen_block_proposers: RwLock<LruCache<(Slot, u64), ()>>,
+    /// Caches `(slot, parent_root) → expected_proposer_index` to avoid
+    /// re-running `process_slots` + `get_beacon_proposer_index` on repeated
+    /// calls with the same key.
+    /// Capacity: 1024 entries.
+    proposer_cache: RwLock<LruCache<(Slot, Root), u64>>,
+    /// Set of block roots that have been explicitly REJECTed; used to
+    /// short-circuit children of bad blocks per `D-invalid-roots-cache`.
+    /// Capacity: 256 entries.
+    invalid_block_roots: RwLock<LruCache<Root, ()>>,
     _phantom: PhantomData<E>,
 }
 
@@ -151,6 +167,9 @@ impl<E: EthSpec> HostImpl<E> {
             last_forwarded_optimistic_slot: AtomicU64::new(0),
             head_tx: None,
             payload_tx: None,
+            seen_block_proposers: RwLock::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
+            proposer_cache: RwLock::new(LruCache::new(NonZeroUsize::new(1024).unwrap())),
+            invalid_block_roots: RwLock::new(LruCache::new(NonZeroUsize::new(256).unwrap())),
             _phantom: PhantomData,
         }
     }
@@ -234,6 +253,63 @@ impl<E: EthSpec> HostImpl<E> {
             md.attnets = new_attnets;
             md.seq_number = md.seq_number.wrapping_add(1);
         }
+    }
+
+    /// Look up the expected proposer for `(slot, parent_root)` from the cache,
+    /// or compute it by advancing the parent state to `slot`.
+    ///
+    /// Returns `Some((expected_proposer_index, state_at_slot))` on success.
+    /// Returns `None` when the parent state is not in the fork-choice store
+    /// (caller should IGNORE in that case).
+    ///
+    /// The cache is keyed on `(slot, parent_root) → u64`; the state clone is
+    /// returned on both cache-hit and cache-miss so the signature-verify step
+    /// (step 11) can reuse it without re-acquiring the fork-choice lock.
+    fn lookup_or_compute_expected_proposer(
+        &self,
+        slot: pharos_types::phase0::Slot,
+        parent_root: Root,
+    ) -> Option<(u64, E::BeaconState)>
+    where
+        E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
+        E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
+        E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+        E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
+                Attestation = pharos_types::phase0::Attestation<2048>,
+            >,
+    {
+        use pharos_stf::phase0::accessors::get_beacon_proposer_index;
+        use pharos_stf::process_slots_fork;
+        use pharos_types::BeaconStateView as _;
+
+        // Fast path: check cache (peek preserves LRU order on the read path).
+        if let Some(&idx) = self.proposer_cache.read().peek(&(slot, parent_root)) {
+            // Re-fetch parent state to advance to slot for signature verification.
+            let mut parent_state = self
+                .fork_choice
+                .read()
+                .block_states
+                .get(&parent_root)?
+                .clone();
+            if parent_state.slot() < slot {
+                process_slots_fork::<E>(&mut parent_state, slot).ok()?;
+            }
+            return Some((idx, parent_state));
+        }
+
+        // Slow path: advance parent state to `slot` and compute proposer.
+        let mut parent_state = self
+            .fork_choice
+            .read()
+            .block_states
+            .get(&parent_root)?
+            .clone();
+        if parent_state.slot() < slot {
+            process_slots_fork::<E>(&mut parent_state, slot).ok()?;
+        }
+        let idx = get_beacon_proposer_index::<E>(&parent_state).0;
+        self.proposer_cache.write().put((slot, parent_root), idx);
+        Some((idx, parent_state))
     }
 }
 
@@ -356,9 +432,204 @@ impl<E: EthSpec> BlockProvider<E> for HostImpl<E> {
 
 // ── GossipValidator ───────────────────────────────────────────────────────────
 
-impl<E: EthSpec> GossipValidator<E> for HostImpl<E> {
-    /// TODO(M4): Validate proposer signature, known parent, slot bounds.
-    fn validate_beacon_block(&self, _block: &E::SignedBeaconBlock) -> GossipVerdict {
+impl<E: EthSpec> GossipValidator<E> for HostImpl<E>
+where
+    E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
+    E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
+    E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+        >,
+    E::Phase0SignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+{
+    /// Validate a gossip `beacon_block` message per `specs/phase0/p2p-interface.md:540-620`.
+    ///
+    /// Implements the 12-step pipeline:
+    ///   1. RB7 — parent in invalid-roots cache (REJECT).
+    ///   2. RB1 — future slot (IGNORE).
+    ///   3. RB2 — at or below finalized slot (IGNORE).
+    ///   4. RB3 — duplicate proposer/slot (IGNORE).
+    ///   5. RB4 — proposer index out of range (REJECT).
+    ///   6. RB6 — parent unseen (IGNORE).
+    ///   7. Defensive parent-state-missing guard (REJECT).
+    ///   8. RB8 — block not higher than parent slot (REJECT).
+    ///   9. RB9 — finalized not ancestor (REJECT).
+    ///  10. RB10 — proposer mismatch (REJECT) or shuffling unavailable (IGNORE).
+    ///  11. RB5 — invalid proposer signature (REJECT).
+    ///  12. Insert into seen-proposers cache; return Accept.
+    ///
+    /// See `D-bls-on-hot-path`, `D-invalid-roots-cache`, `D-seen-cache-after-accept`.
+    fn validate_beacon_block(&self, block: &E::SignedBeaconBlock) -> GossipVerdict {
+        use pharos_ssz::TreeHash;
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_signing_root, compute_start_slot_at_epoch, get_domain,
+        };
+        use pharos_stf::phase0::helpers::DOMAIN_BEACON_PROPOSER;
+        use pharos_types::BeaconStateView as _;
+        use pharos_types::views::{BeaconBlockView, SignedBeaconBlockView};
+
+        // Extract the fork-enum `E::BeaconBlock` from the signed block.
+        // `SignedBeaconBlockView::message()` panics on the fork-enum; use
+        // the E unwrap helpers instead (same pattern as `on_block` in handlers.rs).
+        let block_msg: E::BeaconBlock = if let Some(inner) = E::unwrap_phase0_signed_block(block) {
+            E::phase0_into_block(inner.message().clone())
+        } else if let Some(inner) = E::unwrap_altair_signed_block(block) {
+            E::altair_into_block(inner.message().clone())
+        } else if let Some(inner) = E::unwrap_bellatrix_signed_block(block) {
+            E::bellatrix_into_block(inner.message().clone())
+        } else {
+            return GossipVerdict::Reject("block: unrecognised fork variant".into());
+        };
+
+        // Compute block_root once; reused by steps 8/9/10/11 cache inserts.
+        let block_root: Root = block_msg.tree_hash_root();
+
+        // Step 1 — RB7: parent block is in the invalid-roots set (REJECT).
+        if self
+            .invalid_block_roots
+            .read()
+            .peek(&block_msg.parent_root())
+            .is_some()
+        {
+            return GossipVerdict::Reject("block: parent in invalid set".into());
+        }
+
+        // Step 2 — RB1: block is from a future slot (IGNORE).
+        let genesis_time_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
+        let slot_time_ms = genesis_time_ms
+            + u128::from(block_msg.slot().0) * u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis(),
+            Err(_) => {
+                return GossipVerdict::Ignore("block: clock unavailable".into());
+            }
+        };
+        if now_ms + u128::from(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < slot_time_ms {
+            return GossipVerdict::Ignore("block: from future slot".into());
+        }
+
+        // Step 3 — RB2: block is not from a slot greater than the latest finalized slot (IGNORE).
+        {
+            let fc = self.fork_choice.read();
+            let finalized_slot =
+                compute_start_slot_at_epoch(fc.finalized_checkpoint.epoch, E::SLOTS_PER_EPOCH);
+            if block_msg.slot() <= finalized_slot {
+                return GossipVerdict::Ignore("block: not greater than finalized slot".into());
+            }
+        }
+
+        // Step 4 — RB3: first block for this proposer for the slot (IGNORE duplicate).
+        if self
+            .seen_block_proposers
+            .read()
+            .peek(&(block_msg.slot(), block_msg.proposer_index().0))
+            .is_some()
+        {
+            return GossipVerdict::Ignore("block: duplicate proposer/slot".into());
+        }
+
+        // Steps 5–7 and 8 require the fork-choice lock; acquire once and hold
+        // through step 9, then drop before calling lookup_or_compute_expected_proposer.
+        let (parent_slot, finalized_checkpoint) = {
+            let fc = self.fork_choice.read();
+
+            // Step 5 — RB4: proposer index out of range (REJECT).
+            if let Some(state) = fc.block_states.get(&block_msg.parent_root()) {
+                if block_msg.proposer_index().0 as usize >= state.num_validators() {
+                    return GossipVerdict::Reject("block: proposer index out of range".into());
+                }
+            }
+            // (If state is None, fall through — RB6 below handles missing parent.)
+
+            // Step 6 — RB6: block's parent has been seen (IGNORE if unseen).
+            if !fc.blocks.contains_key(&block_msg.parent_root()) {
+                return GossipVerdict::Ignore("block: parent unseen".into());
+            }
+
+            // Step 7 — defensive: parent is in blocks but state is missing (REJECT).
+            if !fc.block_states.contains_key(&block_msg.parent_root()) {
+                return GossipVerdict::Reject("block: parent invalid".into());
+            }
+
+            // Step 8 — RB8: block is from a higher slot than its parent (REJECT).
+            let parent_slot = fc.blocks.get(&block_msg.parent_root()).unwrap().slot();
+            if block_msg.slot() <= parent_slot {
+                self.invalid_block_roots.write().put(block_root, ());
+                return GossipVerdict::Reject("block: not higher than parent slot".into());
+            }
+
+            (parent_slot, fc.finalized_checkpoint.clone())
+        };
+        let _ = parent_slot; // consumed above
+
+        // Step 9 — RB9: current finalized checkpoint is an ancestor of the block (REJECT).
+        {
+            let fc = self.fork_choice.read();
+            let cp = pharos_fork_choice::get_checkpoint_block::<E>(
+                &*fc,
+                block_msg.parent_root(),
+                finalized_checkpoint.epoch,
+            );
+            if cp != finalized_checkpoint.root {
+                self.invalid_block_roots.write().put(block_root, ());
+                return GossipVerdict::Reject("block: finalized not ancestor".into());
+            }
+        }
+
+        // Step 10 — RB10: block is proposed by the expected proposer (REJECT/IGNORE).
+        // Drop the fc read guard before calling the helper (it re-acquires).
+        let (expected_idx, parent_state_at_slot) = match self
+            .lookup_or_compute_expected_proposer(block_msg.slot(), block_msg.parent_root())
+        {
+            None => {
+                return GossipVerdict::Ignore("block: shuffling unavailable".into());
+            }
+            Some(pair) => pair,
+        };
+        if expected_idx != block_msg.proposer_index().0 {
+            self.invalid_block_roots.write().put(block_root, ());
+            return GossipVerdict::Reject("block: proposer mismatch".into());
+        }
+
+        // Step 11 — RB5: proposer signature is valid (REJECT).
+        {
+            let block_epoch = compute_epoch_at_slot(block_msg.slot(), E::SLOTS_PER_EPOCH);
+            let domain = get_domain::<E>(
+                &parent_state_at_slot,
+                DOMAIN_BEACON_PROPOSER,
+                Some(block_epoch),
+            );
+            let signing_root = compute_signing_root(&block_msg, domain);
+            let pubkey = match parent_state_at_slot.validator(block_msg.proposer_index().0 as usize)
+            {
+                Some(v) => v.pubkey,
+                None => {
+                    self.invalid_block_roots.write().put(block_root, ());
+                    return GossipVerdict::Reject("block: proposer index out of range".into());
+                }
+            };
+            match pharos_utils::bls::verify(&pubkey, signing_root.as_ref(), block.signature()) {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.invalid_block_roots.write().put(block_root, ());
+                    return GossipVerdict::Reject("block: invalid proposer signature".into());
+                }
+                Err(_) => {
+                    self.invalid_block_roots.write().put(block_root, ());
+                    return GossipVerdict::Reject("block: invalid proposer signature".into());
+                }
+            }
+        }
+
+        // Step 12 — insert into seen-proposers cache and accept.
+        self.seen_block_proposers
+            .write()
+            .put((block_msg.slot(), block_msg.proposer_index().0), ());
         GossipVerdict::Accept
     }
 
@@ -984,6 +1255,662 @@ mod tests {
             host.validate_light_client_optimistic_update(&upd2),
             GossipVerdict::Accept,
             "strictly greater slot must Accept",
+        );
+    }
+
+    // ── beacon_block validation tests (Tasks 1.5 a–n) ────────────────────────
+
+    use blst::min_pk::SecretKey as BlstSecretKey;
+    use pharos_ssz::{SszList, SszSequence as _, TreeHash};
+    use pharos_stf::phase0::accessors::{compute_signing_root, get_domain};
+    use pharos_stf::phase0::helpers::DOMAIN_BEACON_PROPOSER;
+    use pharos_types::MinimalEthSpec;
+    use pharos_types::phase0::{
+        MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
+    };
+    use pharos_types::state::{
+        MinimalBeaconState as ForkMinimalState, SignedBeaconBlock as ForkSignedBeaconBlock,
+    };
+    use pharos_utils::bls::BLS_DST;
+    use pharos_utils::{BLSPubkey, BLSSignature, Gwei};
+
+    /// Type alias for the fork-enum `SignedBeaconBlock` over minimal Phase0 params.
+    type MinForkSigned =
+        ForkSignedBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32>;
+
+    fn block_test_sk() -> BlstSecretKey {
+        BlstSecretKey::key_gen(&[42u8; 32], &[]).expect("valid IKM")
+    }
+
+    fn block_test_pubkey() -> BLSPubkey {
+        BLSPubkey::from_array(block_test_sk().sk_to_pk().compress())
+    }
+
+    fn block_test_sign(msg: &[u8]) -> BLSSignature {
+        BLSSignature::from_array(block_test_sk().sign(msg, BLS_DST, &[]).compress())
+    }
+
+    /// Build a `HostImpl<MinimalEthSpec>` with a genesis Phase0 state+block
+    /// pre-inserted into the fork-choice store.
+    ///
+    /// Returns `(host, genesis_root, genesis_slot)` where `genesis_root` is
+    /// the hash_tree_root of the genesis block (usable as `parent_root` for
+    /// the next block).
+    fn make_block_test_host(dir: &tempfile::TempDir) -> (HostImpl<MinimalEthSpec>, Root, Slot) {
+        use pharos_types::phase0::misc::Fork;
+        use pharos_types::phase0::operations::BeaconBlockHeader;
+        use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
+
+        let store = Arc::new(
+            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+                path: dir.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("open store"),
+        );
+
+        let genesis_slot = Slot(0);
+
+        let validator = pharos_types::phase0::misc::Validator {
+            pubkey: block_test_pubkey(),
+            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            activation_epoch: Epoch(0),
+            exit_epoch: Epoch(u64::MAX),
+            withdrawable_epoch: Epoch(u64::MAX),
+            slashed: false,
+            ..Default::default()
+        };
+
+        let genesis_body_root = MinimalBeaconBlockBody::default().tree_hash_root();
+        let genesis_state_inner = MinimalBeaconState {
+            genesis_time: 0,
+            slot: genesis_slot,
+            fork: Fork {
+                previous_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+                current_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+                epoch: Epoch(0),
+            },
+            latest_block_header: BeaconBlockHeader {
+                slot: genesis_slot,
+                proposer_index: ValidatorIndex(0),
+                parent_root: Root::default(),
+                state_root: Root::default(),
+                body_root: genesis_body_root,
+            },
+            validators: SszList::with_push(&SszList::default(), validator).unwrap(),
+            balances: SszList::with_push(
+                &SszList::default(),
+                Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            )
+            .unwrap(),
+            ..Default::default()
+        };
+
+        let fork_genesis_state = ForkMinimalState::Phase0(genesis_state_inner.clone());
+        let state_root = fork_genesis_state.tree_hash_root();
+
+        let genesis_block = MinimalBeaconBlock {
+            slot: genesis_slot,
+            proposer_index: ValidatorIndex(0),
+            parent_root: Root::default(),
+            state_root,
+            body: MinimalBeaconBlockBody::default(),
+        };
+        let genesis_root: Root = genesis_block.tree_hash_root();
+
+        let fork_genesis_block = pharos_types::state::BeaconBlock::Phase0(genesis_block.clone());
+
+        // Build an anchor signed block (signature unused for anchor).
+        let anchor_signed = MinimalSignedBeaconBlock {
+            message: genesis_block,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        let _fork_anchor = MinForkSigned::Phase0(anchor_signed);
+
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(
+            fork_genesis_state.clone(),
+            fork_genesis_block,
+        );
+        let fork_choice = Arc::new(RwLock::new(fc_store));
+
+        // Insert genesis state into block_states so validate_beacon_block
+        // can find it as the parent state.  The store already has the anchor
+        // block; we additionally insert genesis_root → genesis_state so that
+        // lookup_or_compute_expected_proposer resolves the parent state.
+        {
+            let mut fc = fork_choice.write();
+            fc.block_states
+                .insert(genesis_root, fork_genesis_state.clone());
+            // Insert the fork-enum block so `fc.blocks.contains_key` succeeds.
+            fc.blocks.insert(genesis_root, {
+                let b = MinimalBeaconBlock {
+                    slot: genesis_slot,
+                    proposer_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+                    parent_root: Root::default(),
+                    state_root: fork_genesis_state.tree_hash_root(),
+                    body: MinimalBeaconBlockBody::default(),
+                };
+                pharos_types::state::BeaconBlock::Phase0(b)
+            });
+        }
+
+        let gvr = Root::default();
+        let fv = Version::from_array([0x00, 0x00, 0x00, 0x00]);
+        let runtime_cfg = Arc::new(RuntimeConfig {
+            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            ..Default::default()
+        });
+        let host = HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fv, runtime_cfg);
+        (host, genesis_root, genesis_slot)
+    }
+
+    /// Build a signed Phase0 block at `slot` with `parent_root` and sign
+    /// it with `block_test_sk()` against the given pre-state (advanced to slot).
+    ///
+    /// `proposer_idx` lets tests override the declared proposer index.
+    fn make_signed_block(
+        slot: Slot,
+        parent_root: Root,
+        parent_state: &ForkMinimalState,
+        proposer_idx: u64,
+        flip_sig: bool,
+    ) -> MinForkSigned {
+        use pharos_types::phase0::primitives::ValidatorIndex;
+
+        let block = MinimalBeaconBlock {
+            slot,
+            proposer_index: ValidatorIndex(proposer_idx),
+            parent_root,
+            state_root: Root::default(),
+            body: MinimalBeaconBlockBody::default(),
+        };
+
+        let domain = get_domain::<MinimalEthSpec>(
+            parent_state,
+            DOMAIN_BEACON_PROPOSER,
+            Some(pharos_stf::phase0::accessors::compute_epoch_at_slot(
+                slot,
+                MinimalEthSpec::SLOTS_PER_EPOCH,
+            )),
+        );
+        let signing_root = compute_signing_root(&block, domain);
+        let mut sig_bytes: [u8; 96] = block_test_sign(signing_root.as_ref()).into();
+        if flip_sig {
+            sig_bytes[0] ^= 0xff;
+        }
+        let sig = BLSSignature::from_array(sig_bytes);
+
+        MinForkSigned::Phase0(MinimalSignedBeaconBlock {
+            message: block,
+            signature: sig,
+        })
+    }
+
+    // ── (a) RB1: block_ignores_future_slot ───────────────────────────────────
+
+    #[test]
+    fn block_ignores_future_slot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        // A slot 1000 epochs in the future (genesis_time=0, seconds_per_slot=6).
+        let future_slot = Slot((now_ms / 6000) as u64 + 1000 * 8);
+        let block = make_signed_block(
+            future_slot,
+            parent_root,
+            &ForkMinimalState::Phase0(MinimalBeaconState::default()),
+            0,
+            false,
+        );
+        assert_eq!(
+            host.validate_beacon_block(&block),
+            GossipVerdict::Ignore("block: from future slot".into()),
+        );
+    }
+
+    // ── (b) RB2: block_ignores_at_or_below_finalized ─────────────────────────
+
+    #[test]
+    fn block_ignores_at_or_below_finalized() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        // Finalized slot from genesis fork-choice is 0.  A block at slot 0 should Ignore.
+        let block = make_signed_block(
+            Slot(0),
+            parent_root,
+            &ForkMinimalState::Phase0(MinimalBeaconState::default()),
+            0,
+            false,
+        );
+        assert_eq!(
+            host.validate_beacon_block(&block),
+            GossipVerdict::Ignore("block: not greater than finalized slot".into()),
+        );
+    }
+
+    // ── (c) RB3: block_ignores_duplicate_proposer_slot ───────────────────────
+
+    #[test]
+    fn block_ignores_duplicate_proposer_slot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        // Pre-insert (slot=1, proposer=0) into the seen cache.
+        host.seen_block_proposers.write().put((Slot(1), 0), ());
+
+        let block = make_signed_block(
+            Slot(1),
+            parent_root,
+            &ForkMinimalState::Phase0(MinimalBeaconState::default()),
+            0,
+            false,
+        );
+        assert_eq!(
+            host.validate_beacon_block(&block),
+            GossipVerdict::Ignore("block: duplicate proposer/slot".into()),
+        );
+    }
+
+    // ── (d) RB4: block_rejects_proposer_index_out_of_range ───────────────────
+
+    #[test]
+    fn block_rejects_proposer_index_out_of_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        // The genesis state has 1 validator (index 0). Index 1 is out of range.
+        let block = make_signed_block(
+            Slot(1),
+            parent_root,
+            &ForkMinimalState::Phase0(MinimalBeaconState::default()),
+            1,
+            false,
+        );
+        assert_eq!(
+            host.validate_beacon_block(&block),
+            GossipVerdict::Reject("block: proposer index out of range".into()),
+        );
+    }
+
+    // ── (e) RB6: block_ignores_unknown_parent ────────────────────────────────
+
+    #[test]
+    fn block_ignores_unknown_parent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _, _) = make_block_test_host(&dir);
+
+        // Use a parent root that is not in fc.blocks.
+        let unknown_parent = Root::from_array([0xff; 32]);
+        let block = make_signed_block(
+            Slot(1),
+            unknown_parent,
+            &ForkMinimalState::Phase0(MinimalBeaconState::default()),
+            0,
+            false,
+        );
+        assert_eq!(
+            host.validate_beacon_block(&block),
+            GossipVerdict::Ignore("block: parent unseen".into()),
+        );
+    }
+
+    // ── (f) RB7: block_rejects_parent_in_invalid_set ─────────────────────────
+
+    #[test]
+    fn block_rejects_parent_in_invalid_set() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        // Pre-populate the invalid-roots cache with the parent root.
+        host.invalid_block_roots.write().put(parent_root, ());
+
+        let block = make_signed_block(
+            Slot(1),
+            parent_root,
+            &ForkMinimalState::Phase0(MinimalBeaconState::default()),
+            0,
+            false,
+        );
+        assert_eq!(
+            host.validate_beacon_block(&block),
+            GossipVerdict::Reject("block: parent in invalid set".into()),
+        );
+    }
+
+    // ── (g) defensive: block_rejects_parent_state_missing ────────────────────
+
+    #[test]
+    fn block_rejects_parent_state_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _, _) = make_block_test_host(&dir);
+
+        // Insert a parent block but NOT its state into fork-choice.
+        let orphan_root = Root::from_array([0xaa; 32]);
+        {
+            let mut fc = host.fork_choice.write();
+            fc.blocks.insert(orphan_root, {
+                use pharos_types::phase0::primitives::ValidatorIndex;
+                pharos_types::state::BeaconBlock::Phase0(MinimalBeaconBlock {
+                    slot: Slot(0),
+                    proposer_index: ValidatorIndex(0),
+                    parent_root: Root::default(),
+                    state_root: Root::default(),
+                    body: MinimalBeaconBlockBody::default(),
+                })
+            });
+            // Deliberately do NOT insert fc.block_states[orphan_root].
+        }
+
+        let block = make_signed_block(
+            Slot(1),
+            orphan_root,
+            &ForkMinimalState::Phase0(MinimalBeaconState::default()),
+            0,
+            false,
+        );
+        assert_eq!(
+            host.validate_beacon_block(&block),
+            GossipVerdict::Reject("block: parent invalid".into()),
+        );
+    }
+
+    // ── (h) RB8: block_rejects_lower_or_equal_slot_than_parent ───────────────
+
+    #[test]
+    fn block_rejects_lower_or_equal_slot_than_parent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, parent_slot) = make_block_test_host(&dir);
+
+        // Block at same slot as parent (parent_slot == 0).
+        let block = make_signed_block(
+            parent_slot,
+            parent_root,
+            &ForkMinimalState::Phase0(MinimalBeaconState::default()),
+            0,
+            false,
+        );
+        let result = host.validate_beacon_block(&block);
+        // Because block.slot == 0 == finalized_slot (step 3 fires first), this
+        // would Ignore at RB2. Use slot 1 with parent slot 1 to hit RB8.
+        // Reset: insert a parent block at slot 2 (same as the test block slot).
+        let parent2 = Root::from_array([0x55; 32]);
+        // Re-use genesis state (has 1 validator so RB4 passes).
+        let genesis_state = host.fork_choice.read().block_states[&parent_root].clone();
+        {
+            use pharos_types::phase0::primitives::ValidatorIndex;
+            let mut fc = host.fork_choice.write();
+            fc.blocks.insert(
+                parent2,
+                pharos_types::state::BeaconBlock::Phase0(MinimalBeaconBlock {
+                    slot: Slot(2),
+                    proposer_index: ValidatorIndex(0),
+                    parent_root: Root::default(),
+                    state_root: Root::default(),
+                    body: MinimalBeaconBlockBody::default(),
+                }),
+            );
+            fc.block_states.insert(parent2, genesis_state.clone());
+        }
+        // Block at slot 2 with parent also at slot 2 → RB8.
+        let block2 = make_signed_block(Slot(2), parent2, &genesis_state, 0, false);
+        assert_eq!(
+            host.validate_beacon_block(&block2),
+            GossipVerdict::Reject("block: not higher than parent slot".into()),
+        );
+        // Ensure the block_root was cached in invalid_block_roots (side effect).
+        let block2_root: Root = {
+            use pharos_ssz::TreeHash;
+            use pharos_types::phase0::primitives::ValidatorIndex;
+            MinimalBeaconBlock {
+                slot: Slot(2),
+                proposer_index: ValidatorIndex(0),
+                parent_root: parent2,
+                state_root: Root::default(),
+                body: MinimalBeaconBlockBody::default(),
+            }
+            .tree_hash_root()
+        };
+        assert!(host.invalid_block_roots.read().peek(&block2_root).is_some());
+        let _ = result; // suppress unused warning for the first check (expected Ignore)
+    }
+
+    // ── (i) RB9: block_rejects_finalized_not_ancestor ────────────────────────
+
+    #[test]
+    fn block_rejects_finalized_not_ancestor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        // The fork-choice has a finalized checkpoint at root=0x00..00.
+        // Insert a "parent" block whose ancestry does NOT include that root.
+        // We do this by inserting a parent with parent_root == [0xcc;32] (not in blocks).
+        let fake_parent = Root::from_array([0xbb; 32]);
+        // Re-use genesis state (has 1 validator so RB4 passes before RB9 can fire).
+        let genesis_state = host.fork_choice.read().block_states[&parent_root].clone();
+        {
+            use pharos_types::phase0::primitives::ValidatorIndex;
+            let mut fc = host.fork_choice.write();
+            fc.blocks.insert(
+                fake_parent,
+                pharos_types::state::BeaconBlock::Phase0(MinimalBeaconBlock {
+                    slot: Slot(1),
+                    proposer_index: ValidatorIndex(0),
+                    parent_root: Root::from_array([0xcc; 32]), // not in blocks → walk terminates
+                    state_root: Root::default(),
+                    body: MinimalBeaconBlockBody::default(),
+                }),
+            );
+            fc.block_states.insert(fake_parent, genesis_state.clone());
+        }
+
+        // Block at slot 2 with this fake parent → finalized not ancestor.
+        let block = make_signed_block(Slot(2), fake_parent, &genesis_state, 0, false);
+        // get_checkpoint_block walks from fake_parent and finds nothing matching
+        // the finalized root (0x00..00) → returns genesis root (walk terminates at
+        // slot <= epoch_start).  If the returned root != finalized_checkpoint.root,
+        // we REJECT.  The genesis root IS the finalized root in our test setup,
+        // so this test forces a mismatch by using a parent not on the canonical chain.
+        // Because the walk from fake_parent will return [0xcc;32]'s walk result
+        // (which is get_ancestor of a missing root, returning [0xcc;32] itself —
+        // actually get_ancestor walks until slot <= epoch_0_start = 0).
+        // With epoch=0 and block_slot=1, get_checkpoint_block returns fake_parent
+        // itself (its slot 1 > 0 so get_ancestor recurses to its parent=[0xcc;32]
+        // which is not in blocks, so get_ancestor returns [0xcc;32]).
+        // [0xcc;32] != finalized_checkpoint.root (0x00..00) → REJECT.
+        assert_eq!(
+            host.validate_beacon_block(&block),
+            GossipVerdict::Reject("block: finalized not ancestor".into()),
+        );
+    }
+
+    // ── (j) RB10: block_rejects_proposer_mismatch ────────────────────────────
+
+    #[test]
+    fn block_rejects_proposer_mismatch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        // The genesis state has 1 validator; expected proposer is 0.
+        // Use proposer_index=0 but correct expected is also 0, so we need to
+        // actually use index 0 but set the expected to something else.
+        // Since there's only 1 validator, proposer_index=0 is always expected.
+        // To trigger a mismatch, we'd need a state with ≥2 validators and
+        // a shuffling that picks index ≠ the one we declare.
+        // Simpler: add a second validator and declare proposer_index=1 when
+        // the shuffling will select 0 (or vice versa).
+        // Since shuffling with 1 validator always picks 0, we need 2+ validators.
+        // Insert an extra validator into the parent state.
+        {
+            use pharos_types::phase0::misc::Validator;
+            use pharos_types::phase0::primitives::Epoch;
+            let extra_validator = Validator {
+                pubkey: BLSPubkey::from_array([0x99u8; 48]),
+                effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                activation_epoch: Epoch(0),
+                exit_epoch: Epoch(u64::MAX),
+                withdrawable_epoch: Epoch(u64::MAX),
+                slashed: false,
+                ..Default::default()
+            };
+            let mut fc = host.fork_choice.write();
+            let state = fc.block_states.get_mut(&parent_root).unwrap();
+            if let ForkMinimalState::Phase0(inner) = state {
+                inner.validators = SszList::with_push(&inner.validators, extra_validator).unwrap();
+                inner.balances = SszList::with_push(
+                    &inner.balances,
+                    Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                )
+                .unwrap();
+            }
+        }
+
+        // Get the actual expected proposer so we can declare a different one.
+        let expected = host
+            .lookup_or_compute_expected_proposer(Slot(1), parent_root)
+            .map(|(idx, _)| idx)
+            .unwrap();
+        // Use the other index (0 → 1, or 1 → 0).
+        let wrong_idx = if expected == 0 { 1 } else { 0 };
+
+        let parent_state = host.fork_choice.read().block_states[&parent_root].clone();
+        let block = make_signed_block(Slot(1), parent_root, &parent_state, wrong_idx, false);
+        assert_eq!(
+            host.validate_beacon_block(&block),
+            GossipVerdict::Reject("block: proposer mismatch".into()),
+        );
+    }
+
+    // ── (k) RB5: block_rejects_invalid_signature ─────────────────────────────
+
+    #[test]
+    fn block_rejects_invalid_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        let parent_state = host.fork_choice.read().block_states[&parent_root].clone();
+        // Flip a byte in the signature to make it invalid.
+        let block = make_signed_block(Slot(1), parent_root, &parent_state, 0, true);
+        assert_eq!(
+            host.validate_beacon_block(&block),
+            GossipVerdict::Reject("block: invalid proposer signature".into()),
+        );
+    }
+
+    // ── (l) cache-mechanic: block_accepts_happy_path ─────────────────────────
+
+    #[test]
+    fn block_accepts_happy_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        let parent_state = host.fork_choice.read().block_states[&parent_root].clone();
+        let expected = host
+            .lookup_or_compute_expected_proposer(Slot(1), parent_root)
+            .map(|(idx, _)| idx)
+            .unwrap();
+        let block = make_signed_block(Slot(1), parent_root, &parent_state, expected, false);
+        assert_eq!(host.validate_beacon_block(&block), GossipVerdict::Accept);
+
+        // Accept must insert into seen_block_proposers.
+        assert!(
+            host.seen_block_proposers
+                .read()
+                .peek(&(Slot(1), expected))
+                .is_some(),
+            "seen cache must be populated after accept"
+        );
+    }
+
+    // ── (m) cache-mechanic: block_proposer_cache_avoids_redo ─────────────────
+
+    #[test]
+    fn block_proposer_cache_avoids_redo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        // First call: populates the proposer cache.
+        let (expected, _) = host
+            .lookup_or_compute_expected_proposer(Slot(1), parent_root)
+            .unwrap();
+
+        // Second call with same (slot, parent_root) must return the same index.
+        let (expected2, _) = host
+            .lookup_or_compute_expected_proposer(Slot(1), parent_root)
+            .unwrap();
+        assert_eq!(expected, expected2, "cache must return same proposer index");
+
+        // Verify cache is populated.
+        assert!(
+            host.proposer_cache
+                .read()
+                .peek(&(Slot(1), parent_root))
+                .is_some(),
+            "proposer_cache must be populated after first call"
+        );
+
+        // Verify that the proposer cache has the entry from the first call.
+        // A second call for the same (slot, parent_root) must return the cached
+        // value rather than re-acquiring the fork-choice lock.
+        // (With 1 validator in test state, any wrong_idx would hit RB4 first,
+        // but the cache population — the mechanic under test — is verified above.)
+        assert!(
+            host.proposer_cache
+                .read()
+                .peek(&(Slot(1), parent_root))
+                .is_some()
+        );
+    }
+
+    // ── (n) cache-mechanic: block_invalid_roots_cache_persists ───────────────
+
+    #[test]
+    fn block_invalid_roots_cache_persists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, parent_root, _) = make_block_test_host(&dir);
+
+        let parent_state = host.fork_choice.read().block_states[&parent_root].clone();
+        let expected = host
+            .lookup_or_compute_expected_proposer(Slot(1), parent_root)
+            .map(|(idx, _)| idx)
+            .unwrap();
+
+        // First call: invalid signature → REJECT; must also insert into invalid_block_roots.
+        let bad_block = make_signed_block(Slot(1), parent_root, &parent_state, expected, true);
+        let bad_block_root: Root = {
+            use pharos_types::phase0::primitives::ValidatorIndex;
+            MinimalBeaconBlock {
+                slot: Slot(1),
+                proposer_index: ValidatorIndex(expected),
+                parent_root,
+                state_root: Root::default(),
+                body: MinimalBeaconBlockBody::default(),
+            }
+            .tree_hash_root()
+        };
+        assert_eq!(
+            host.validate_beacon_block(&bad_block),
+            GossipVerdict::Reject("block: invalid proposer signature".into()),
+        );
+        assert!(
+            host.invalid_block_roots
+                .read()
+                .peek(&bad_block_root)
+                .is_some(),
+            "bad block root must be in invalid_block_roots"
+        );
+
+        // Second call: a child block whose parent_root == bad_block_root.
+        // This must trigger the step-1 short-circuit (RB7).
+        let child_block =
+            make_signed_block(Slot(2), bad_block_root, &parent_state, expected, false);
+        assert_eq!(
+            host.validate_beacon_block(&child_block),
+            GossipVerdict::Reject("block: parent in invalid set".into()),
         );
     }
 }

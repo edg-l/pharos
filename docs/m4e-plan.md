@@ -457,8 +457,8 @@ questions so Phase 1 has clean defaults.
 - [ ] Task 0.2: Append a "Spec rule inventory" subsection to this
   plan (`docs/m4e-plan.md`) listing every IGNORE/REJECT rule per
   topic with a one-line summary and its spec line range. Three sub-
-  sections: BLOCK (10 rules, `RB1..RB10`), AGGREGATE (12 rules,
-  `RAG1..RAG12`), ATTESTATION (10 rules, `RAT1..RAT10`). Block-rule
+  sections: BLOCK (10 rules, `RB1..RB10`), AGGREGATE (16 rules,
+  `RAG1..RAG16`), ATTESTATION (12 rules, `RAT1..RAT12`). Block-rule
   ordering follows the 10 IGNORE/REJECT bullets of
   `specs/phase0/p2p-interface.md` `validate_beacon_block_gossip`:
   RB1 future-slot envelope (IGNORE), RB2 finalized-slot lower bound
@@ -655,21 +655,9 @@ math); lands the architectural pieces (proposer cache,
 invalid-roots cache, new HostImpl fields, the spec-rule-keyed verdict
 strings) that Phases 2 and 3 build on.
 
-- [ ] Task 1.1: If Task 0.8 confirmed `get_checkpoint_block` is
-  absent, add
-  `pub fn get_checkpoint_block<E: EthSpec>(store: &Store<E>, block_root: Root, epoch: Epoch) -> Option<Root>`
-  to `crates/pharos-fork-choice/src/lib.rs`. Implementation:
-  walk `store.blocks[root].parent_root` until
-  `store.blocks[root].slot() <= compute_start_slot_at_epoch(epoch)`;
-  return that block's root. Return `None` if the walk falls off the
-  block map. `compute_start_slot_at_epoch` is at
-  `crates/pharos-stf/src/phase0/accessors.rs` (re-export from there);
-  if calling across crates would create a cycle (it doesn't —
-  `pharos-fork-choice` already depends on `pharos-stf`), the call
-  is direct. Add a `#[test]` `get_checkpoint_block_walks_to_target_epoch`
-  in the same module. If Task 0.8 found the helper exists, skip
-  this task entirely and record "skipped, pre-existing helper at
-  <path:line>".
+- [x] Task 1.1: skipped, pre-existing helper at `crates/pharos-fork-choice/src/get_head.rs:102`.
+  Added `pub use get_head::get_checkpoint_block` to `crates/pharos-fork-choice/src/lib.rs`
+  so Task 1.4 step 9 can call `pharos_fork_choice::get_checkpoint_block`.
 - [ ] Task 1.2: Add three new fields to `HostImpl<E>` at
   `crates/pharos-node/src/host_impl.rs:84-104`:
     - `seen_block_proposers: RwLock<lru::LruCache<(Slot, u64), ()>>`
