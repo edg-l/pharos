@@ -431,27 +431,37 @@ fn bench_beacon_block(c: &mut Criterion) {
         })
         .collect();
 
+    // Preflight: confirm slot 1 is on the Accept path before measuring.
+    // Slot 1 is consumed by this assertion (seen_block_proposers now contains
+    // (Slot(1), proposer_table[0].1)), so the bench loop iterates over
+    // slots 2..=200 to avoid measuring an IGNORE on the first sample.
+    let (preflight_slot, preflight_proposer) = proposer_table[0];
+    let preflight_block = make_block_fixture(
+        genesis_root,
+        &genesis_state,
+        preflight_slot,
+        preflight_proposer,
+    );
+    assert_eq!(
+        host.validate_beacon_block(&preflight_block),
+        GossipVerdict::Accept,
+        "bench preflight expects Accept on slot 1"
+    );
+
+    let usable = &proposer_table[1..]; // slots 2..=200
     let mut iter_idx: usize = 0;
 
     c.bench_function("gossip_validation/beacon_block", |b| {
         b.iter_batched(
             || {
-                let (slot, proposer) = proposer_table[iter_idx % proposer_table.len()];
-                // Use slot offset to guarantee uniqueness when wrapping: multiply
-                // loop count into slot number beyond the pre-computed table.
-                let wrap = (iter_idx / proposer_table.len()) as u64;
-                // For wraps > 0 we just use the same fixture; seen_block_proposers
-                // will IGNORE (this measures the dedup-filter path on wrap).
-                // Wrapping is unlikely within a typical criterion run (100 samples).
-                let _ = wrap;
+                let (slot, proposer) = usable[iter_idx % usable.len()];
                 iter_idx += 1;
+                // Beyond `usable.len()` samples the bench wraps and measures the
+                // RB3 dedup IGNORE path; unlikely within a 100-sample criterion run.
                 make_block_fixture(genesis_root, &genesis_state, slot, proposer)
             },
             |block| {
-                let v = host.validate_beacon_block(&block);
-                // Document the expected verdict at this point.
-                // First 200 samples: Accept; beyond 200: IGNORE (seen proposer).
-                let _ = v;
+                let _ = host.validate_beacon_block(&block);
             },
             BatchSize::SmallInput,
         )
@@ -484,12 +494,24 @@ fn bench_attestation_unaggregated(c: &mut Criterion) {
         })
         .collect();
 
+    // Preflight: confirm slot 0 is on the Accept path before measuring.
+    // Slot 0 is consumed by this assertion; the bench loop iterates
+    // over slots 1..=200 to avoid an RAT7 dedup IGNORE on the first sample.
+    let (pf_slot, pf_subnet) = subnet_table[0];
+    let (pf_att, _) = make_att_fixture(genesis_root, &genesis_state, pf_slot);
+    assert_eq!(
+        host.validate_attestation(pf_subnet, &pf_att),
+        GossipVerdict::Accept,
+        "bench preflight expects Accept on slot 0"
+    );
+
+    let usable = &subnet_table[1..]; // slots 1..=200
     let mut iter_idx: usize = 0;
 
     c.bench_function("gossip_validation/attestation_unaggregated", |b| {
         b.iter_batched(
             || {
-                let (slot, subnet) = subnet_table[iter_idx % subnet_table.len()];
+                let (slot, subnet) = usable[iter_idx % usable.len()];
                 iter_idx += 1;
                 let (att, _computed_subnet) = make_att_fixture(genesis_root, &genesis_state, slot);
                 (att, subnet)
@@ -518,13 +540,25 @@ fn bench_aggregate_and_proof(c: &mut Criterion) {
     // att_slot=200 so all slots 0..=200 are in the propagation window.
     let (host, genesis_root, genesis_state) = make_bench_host(&dir, 200);
 
-    let mut iter_idx: usize = 0;
     let slots: Vec<Slot> = (0u64..=200).map(Slot).collect();
+
+    // Preflight: confirm slot 0 is on the Accept path before measuring.
+    // Slot 0 is consumed by this assertion (seen_aggregators now contains
+    // (aggregator_index, epoch_of_slot_0)); the bench loop uses slots 1..=200.
+    let pf_saap = make_aap_fixture(genesis_root, &genesis_state, slots[0]);
+    assert_eq!(
+        host.validate_aggregate_and_proof(&pf_saap),
+        GossipVerdict::Accept,
+        "bench preflight expects Accept on slot 0"
+    );
+
+    let usable = &slots[1..]; // slots 1..=200
+    let mut iter_idx: usize = 0;
 
     c.bench_function("gossip_validation/aggregate_and_proof", |b| {
         b.iter_batched(
             || {
-                let slot = slots[iter_idx % slots.len()];
+                let slot = usable[iter_idx % usable.len()];
                 iter_idx += 1;
                 make_aap_fixture(genesis_root, &genesis_state, slot)
             },

@@ -69,6 +69,9 @@ Notes:
 - `aggregate_and_proof` uses a slot counter (201 unique slots) so
   every sample exercises the full Accept path: committee compute
   + 3× BLS verify (selection proof + aggregator sig + aggregate sig).
+  Note: all 8 bench validators share one test key, so the aggregate
+  BLS verify reduces to a single fast_aggregate_verify under blst.
+  Real-world aggregate cost scales with committee heterogeneity.
 - `attestation_cache_warm` pre-populates both `committee_cache` and
   `seen_attestation_validators` with one pre-warm call before the
   bench loop. Every sample returns IGNORE after committee_cache hit
