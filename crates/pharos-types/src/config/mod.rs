@@ -14,6 +14,8 @@
 pub mod loader;
 pub use loader::{ConfigError, load_config_dir};
 
+use pharos_utils::{Hash256, Uint256};
+
 use crate::eth_spec::{EthSpec, MainnetEthSpec};
 
 /// Runtime configuration snapshot.
@@ -68,6 +70,41 @@ pub struct RuntimeConfig {
     pub altair_fork_epoch: u64,
     /// `GENESIS_VALIDATORS_ROOT` — typically set at genesis; zero-default before genesis.
     pub genesis_validators_root: [u8; 32],
+
+    // -- Bellatrix fork schedule and merge settings --
+    /// `BELLATRIX_FORK_VERSION` from `configs/{mainnet,minimal}.yaml`.
+    pub bellatrix_fork_version: [u8; 4],
+    /// `BELLATRIX_FORK_EPOCH` from `configs/{mainnet,minimal}.yaml`.
+    pub bellatrix_fork_epoch: u64,
+    /// `TERMINAL_TOTAL_DIFFICULTY` from `configs/{mainnet,minimal}.yaml`.
+    ///
+    /// `Uint256` because the mainnet value (`58750000000000000000000`) and especially
+    /// some testnet values exceed `u64::MAX`.
+    pub terminal_total_difficulty: Uint256,
+    /// `TERMINAL_BLOCK_HASH` from `configs/{mainnet,minimal}.yaml`.
+    ///
+    /// Zero hash when the TTD-based merge mechanism is used (the common case).
+    pub terminal_block_hash: Hash256,
+    /// `TERMINAL_BLOCK_HASH_ACTIVATION_EPOCH` from `configs/{mainnet,minimal}.yaml`.
+    ///
+    /// `FAR_FUTURE_EPOCH` (`u64::MAX`) when `terminal_block_hash` is zero.
+    pub terminal_block_hash_activation_epoch: u64,
+
+    // -- Bellatrix preset constants (from presets/{mainnet,minimal}/bellatrix.yaml) --
+    /// `INACTIVITY_PENALTY_QUOTIENT_BELLATRIX`.
+    pub inactivity_penalty_quotient_bellatrix: u64,
+    /// `MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX`.
+    pub min_slashing_penalty_quotient_bellatrix: u64,
+    /// `PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX`.
+    pub proportional_slashing_multiplier_bellatrix: u64,
+    /// `MAX_BYTES_PER_TRANSACTION` — dimension-bearing; drives `ByteList` SSZ container sizes.
+    pub max_bytes_per_transaction: u64,
+    /// `MAX_TRANSACTIONS_PER_PAYLOAD` — dimension-bearing; drives `List` SSZ container sizes.
+    pub max_transactions_per_payload: u64,
+    /// `BYTES_PER_LOGS_BLOOM` — dimension-bearing; drives `ByteVector` SSZ container size.
+    pub bytes_per_logs_bloom: u64,
+    /// `MAX_EXTRA_DATA_BYTES` — dimension-bearing; drives `ByteList` SSZ container size.
+    pub max_extra_data_bytes: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -160,6 +197,44 @@ impl RuntimeConfig {
             "TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE",
             self.target_aggregators_per_sync_subcommittee,
             E::TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE
+        );
+
+        // Bellatrix preset fields: non-dimension fields checked for preset consistency.
+        check_field!(
+            "INACTIVITY_PENALTY_QUOTIENT_BELLATRIX",
+            self.inactivity_penalty_quotient_bellatrix,
+            E::INACTIVITY_PENALTY_QUOTIENT_BELLATRIX
+        );
+        check_field!(
+            "MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX",
+            self.min_slashing_penalty_quotient_bellatrix,
+            E::MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX
+        );
+        check_field!(
+            "PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX",
+            self.proportional_slashing_multiplier_bellatrix,
+            E::PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX
+        );
+        // Dimension-bearing fields: mismatches mean SSZ container sizes are wrong.
+        check_field!(
+            "MAX_BYTES_PER_TRANSACTION",
+            self.max_bytes_per_transaction,
+            E::MAX_BYTES_PER_TRANSACTION
+        );
+        check_field!(
+            "MAX_TRANSACTIONS_PER_PAYLOAD",
+            self.max_transactions_per_payload,
+            E::MAX_TRANSACTIONS_PER_PAYLOAD
+        );
+        check_field!(
+            "BYTES_PER_LOGS_BLOOM",
+            self.bytes_per_logs_bloom,
+            E::BYTES_PER_LOGS_BLOOM
+        );
+        check_field!(
+            "MAX_EXTRA_DATA_BYTES",
+            self.max_extra_data_bytes,
+            E::MAX_EXTRA_DATA_BYTES
         );
 
         Ok(())

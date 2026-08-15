@@ -251,6 +251,10 @@ async fn main() -> anyhow::Result<()> {
             runtime_cfg.altair_fork_version,
         ),
         altair_fork_epoch: pharos_utils::Epoch(runtime_cfg.altair_fork_epoch),
+        bellatrix_fork_version: pharos_types::phase0::primitives::Version::from_array(
+            runtime_cfg.bellatrix_fork_version,
+        ),
+        bellatrix_fork_epoch: pharos_utils::Epoch(runtime_cfg.bellatrix_fork_epoch),
         genesis_validators_root,
     });
 

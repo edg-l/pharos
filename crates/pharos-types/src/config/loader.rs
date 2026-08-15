@@ -36,7 +36,9 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::str::FromStr;
 
+use pharos_utils::{Hash256, Uint256};
 use thiserror::Error;
 
 use super::RuntimeConfig;
@@ -122,6 +124,14 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
     })?;
     let altair_map = parse_flat_yaml(&altair_src);
 
+    // ── Step 3b: load bellatrix preset (<preset_dir>/bellatrix.yaml) ──────
+    let bellatrix_path = preset_dir.join("bellatrix.yaml");
+    let bellatrix_src = std::fs::read_to_string(&bellatrix_path).map_err(|e| ConfigError::Io {
+        file: bellatrix_path.display().to_string(),
+        source: e,
+    })?;
+    let bellatrix_map = parse_flat_yaml(&bellatrix_src);
+
     // ── Step 4: extract fields ─────────────────────────────────────────────
 
     // From network config:
@@ -132,6 +142,12 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
     let inactivity_score_bias = extract_u64(&config_map, "INACTIVITY_SCORE_BIAS")?;
     let inactivity_score_recovery_rate =
         extract_u64(&config_map, "INACTIVITY_SCORE_RECOVERY_RATE")?;
+    let bellatrix_fork_version = extract_version(&config_map, "BELLATRIX_FORK_VERSION")?;
+    let bellatrix_fork_epoch = extract_u64(&config_map, "BELLATRIX_FORK_EPOCH")?;
+    let terminal_total_difficulty = extract_uint256(&config_map, "TERMINAL_TOTAL_DIFFICULTY")?;
+    let terminal_block_hash = extract_hash256(&config_map, "TERMINAL_BLOCK_HASH")?;
+    let terminal_block_hash_activation_epoch =
+        extract_u64(&config_map, "TERMINAL_BLOCK_HASH_ACTIVATION_EPOCH")?;
 
     // From altair preset:
     let sync_committee_size = extract_u64(&altair_map, "SYNC_COMMITTEE_SIZE")?;
@@ -146,6 +162,18 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         extract_u64(&altair_map, "MIN_SLASHING_PENALTY_QUOTIENT_ALTAIR")?;
     let proportional_slashing_multiplier_altair =
         extract_u64(&altair_map, "PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR")?;
+
+    // From bellatrix preset:
+    let inactivity_penalty_quotient_bellatrix =
+        extract_u64(&bellatrix_map, "INACTIVITY_PENALTY_QUOTIENT_BELLATRIX")?;
+    let min_slashing_penalty_quotient_bellatrix =
+        extract_u64(&bellatrix_map, "MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX")?;
+    let proportional_slashing_multiplier_bellatrix =
+        extract_u64(&bellatrix_map, "PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX")?;
+    let max_bytes_per_transaction = extract_u64(&bellatrix_map, "MAX_BYTES_PER_TRANSACTION")?;
+    let max_transactions_per_payload = extract_u64(&bellatrix_map, "MAX_TRANSACTIONS_PER_PAYLOAD")?;
+    let bytes_per_logs_bloom = extract_u64(&bellatrix_map, "BYTES_PER_LOGS_BLOOM")?;
+    let max_extra_data_bytes = extract_u64(&bellatrix_map, "MAX_EXTRA_DATA_BYTES")?;
 
     // Uniform across presets (spec constants, not in YAML):
     // SYNC_COMMITTEE_SUBNET_COUNT = 4 per specs/altair/validator.md:80
@@ -175,6 +203,18 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         altair_fork_version,
         altair_fork_epoch,
         genesis_validators_root: [0u8; 32],
+        bellatrix_fork_version,
+        bellatrix_fork_epoch,
+        terminal_total_difficulty,
+        terminal_block_hash,
+        terminal_block_hash_activation_epoch,
+        inactivity_penalty_quotient_bellatrix,
+        min_slashing_penalty_quotient_bellatrix,
+        proportional_slashing_multiplier_bellatrix,
+        max_bytes_per_transaction,
+        max_transactions_per_payload,
+        bytes_per_logs_bloom,
+        max_extra_data_bytes,
     })
 }
 
@@ -223,6 +263,59 @@ fn parse_flat_yaml(src: &str) -> HashMap<String, String> {
 }
 
 // ── Field extraction helpers ──────────────────────────────────────────────────
+
+/// Parse a `Uint256` from a decimal or `0x`-prefixed hex string in the map.
+///
+/// Used for `TERMINAL_TOTAL_DIFFICULTY` which may exceed `u64::MAX`.
+fn extract_uint256(
+    map: &HashMap<String, String>,
+    field: &'static str,
+) -> Result<Uint256, ConfigError> {
+    let raw = map
+        .get(field)
+        .ok_or(ConfigError::MissingField(field))?
+        .trim();
+    Uint256::from_str(raw).map_err(|_| ConfigError::InvalidValue {
+        field,
+        value: raw.to_string(),
+    })
+}
+
+/// Parse a `Hash256` from a `0x`-prefixed 32-byte hex string in the map.
+///
+/// Used for `TERMINAL_BLOCK_HASH`.
+fn extract_hash256(
+    map: &HashMap<String, String>,
+    field: &'static str,
+) -> Result<Hash256, ConfigError> {
+    let raw = map
+        .get(field)
+        .ok_or(ConfigError::MissingField(field))?
+        .trim();
+    let hex = raw
+        .strip_prefix("0x")
+        .or_else(|| raw.strip_prefix("0X"))
+        .ok_or_else(|| ConfigError::InvalidValue {
+            field,
+            value: raw.to_string(),
+        })?;
+    if hex.len() != 64 {
+        return Err(ConfigError::InvalidValue {
+            field,
+            value: raw.to_string(),
+        });
+    }
+    let mut bytes = [0u8; 32];
+    for i in 0..32 {
+        bytes[i] = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).map_err(|_| {
+            ConfigError::InvalidValue {
+                field,
+                value: raw.to_string(),
+            }
+        })?;
+    }
+    Ok(Hash256::from_array(bytes))
+}
 
 fn extract_u64(map: &HashMap<String, String>, field: &'static str) -> Result<u64, ConfigError> {
     let raw = map

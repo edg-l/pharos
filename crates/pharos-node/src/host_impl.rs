@@ -96,11 +96,12 @@ impl<E: EthSpec> HostImpl<E> {
         let current_fork_digest =
             compute_fork_digest(current_fork_version, &genesis_validators_root);
 
-        // M3a: altair_fork_epoch = FAR_FUTURE_EPOCH; Phase 0 for all epochs.
         let fork_schedule = ForkSchedule {
             genesis_fork_version: current_fork_version,
-            altair_fork_version: current_fork_version, // placeholder; M3b sets real value
-            altair_fork_epoch: Epoch(u64::MAX),        // FAR_FUTURE_EPOCH
+            altair_fork_version: current_fork_version,
+            altair_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH; overridden by RuntimeConfig
+            bellatrix_fork_version: current_fork_version,
+            bellatrix_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
             genesis_validators_root,
         };
 

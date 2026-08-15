@@ -13,6 +13,7 @@
 
 use std::fmt;
 use std::ops::{Add, Sub};
+use std::str::FromStr;
 
 /// A 256-bit unsigned integer stored in little-endian byte order.
 ///
@@ -82,6 +83,61 @@ impl From<u64> for Uint256 {
         bytes[0..8].copy_from_slice(&v.to_le_bytes());
         Self(bytes)
     }
+}
+
+impl FromStr for Uint256 {
+    type Err = String;
+
+    /// Parse a decimal or `0x`-prefixed hex string into a `Uint256`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+            // Hex: parse up to 64 hex digits.
+            if hex.len() > 64 {
+                return Err(format!("hex value too large for Uint256: {s}"));
+            }
+            let mut bytes = [0u8; 32];
+            // Pad to even length.
+            let padded = if hex.len() % 2 != 0 {
+                format!("0{hex}")
+            } else {
+                hex.to_string()
+            };
+            // Decode big-endian hex into the high bytes, then reverse into LE.
+            let decoded = (0..padded.len() / 2)
+                .map(|i| u8::from_str_radix(&padded[2 * i..2 * i + 2], 16))
+                .collect::<Result<Vec<u8>, _>>()
+                .map_err(|_| format!("invalid hex in Uint256: {s}"))?;
+            // Copy decoded (big-endian) into the tail of a 32-byte buffer, then reverse.
+            let offset = 32 - decoded.len();
+            bytes[offset..].copy_from_slice(&decoded);
+            bytes.reverse(); // big-endian → little-endian
+            Ok(Uint256(bytes))
+        } else {
+            let mut result = Uint256::ZERO;
+            for ch in s.chars() {
+                let digit = ch
+                    .to_digit(10)
+                    .ok_or_else(|| format!("invalid decimal digit '{ch}' in Uint256: {s}"))?;
+                result = mul10(result);
+                result = result + Uint256::from(digit as u64);
+            }
+            Ok(result)
+        }
+    }
+}
+
+/// Multiply a `Uint256` by 10 using limb-level arithmetic.
+fn mul10(n: Uint256) -> Uint256 {
+    let limbs = to_limbs(&n);
+    let mut result = [0u64; 4];
+    let mut carry: u64 = 0;
+    for i in 0..4 {
+        let prod = (limbs[i] as u128) * 10 + (carry as u128);
+        result[i] = prod as u64;
+        carry = (prod >> 64) as u64;
+    }
+    // Overflow (carry != 0) wraps silently, matching the wrapping contract of Add/Sub.
+    from_limbs(result)
 }
 
 impl From<u128> for Uint256 {
@@ -277,6 +333,34 @@ mod tests {
     fn display_large() {
         let v = Uint256::from(1_000_000_000_000u64);
         assert_eq!(v.to_string(), "1000000000000");
+    }
+
+    #[test]
+    fn from_str_decimal() {
+        let v: Uint256 = "58750000000000000000000".parse().unwrap();
+        assert_eq!(v.to_string(), "58750000000000000000000");
+    }
+
+    #[test]
+    fn from_str_zero() {
+        let v: Uint256 = "0".parse().unwrap();
+        assert_eq!(v, Uint256::ZERO);
+    }
+
+    #[test]
+    fn from_str_hex() {
+        let v: Uint256 = "0x0000000000000000000000000000000000000000000000000000000000000000"
+            .parse()
+            .unwrap();
+        assert_eq!(v, Uint256::ZERO);
+    }
+
+    #[test]
+    fn from_str_large_decimal() {
+        // minimal TTD: 115792089237316195423570985008687907853269984665640564039457584007913129638912
+        let s = "115792089237316195423570985008687907853269984665640564039457584007913129638912";
+        let v: Uint256 = s.parse().unwrap();
+        assert_eq!(v.to_string(), s);
     }
 
     #[test]

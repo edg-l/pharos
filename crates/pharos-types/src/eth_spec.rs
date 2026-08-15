@@ -9,6 +9,7 @@
 //! - `specs/altair/validator.md:79-80` (sync committee subnet count, aggregator target).
 
 use std::fmt::Debug;
+use std::str::FromStr;
 
 /// Trait carrying all Phase 0 preset constants and derived limits.
 ///
@@ -320,6 +321,60 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// `ALTAIR_FORK_EPOCH` from `configs/mainnet.yaml:42` /
     /// `configs/minimal.yaml:38`.
     const ALTAIR_FORK_EPOCH: u64;
+
+    // ── Bellatrix preset constants ─────────────────────────────────────────────
+
+    // -- Bellatrix reward and penalty quotients --
+    // Source: `presets/mainnet/bellatrix.yaml`, `presets/minimal/bellatrix.yaml`
+
+    /// `INACTIVITY_PENALTY_QUOTIENT_BELLATRIX` from `presets/{mainnet,minimal}/bellatrix.yaml`.
+    ///
+    /// `2**24 = 16,777,216`.
+    const INACTIVITY_PENALTY_QUOTIENT_BELLATRIX: u64;
+
+    /// `MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX` from `presets/{mainnet,minimal}/bellatrix.yaml`.
+    ///
+    /// `2**5 = 32`.
+    const MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX: u64;
+
+    /// `PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX` from `presets/{mainnet,minimal}/bellatrix.yaml`.
+    ///
+    /// `3`.
+    const PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX: u64;
+
+    // -- Bellatrix execution limits --
+    // Source: `presets/mainnet/bellatrix.yaml`, `presets/minimal/bellatrix.yaml`
+
+    /// `MAX_BYTES_PER_TRANSACTION` from `presets/{mainnet,minimal}/bellatrix.yaml`.
+    ///
+    /// `2**30 = 1,073,741,824`.
+    const MAX_BYTES_PER_TRANSACTION: u64;
+
+    /// `MAX_TRANSACTIONS_PER_PAYLOAD` from `presets/{mainnet,minimal}/bellatrix.yaml`.
+    ///
+    /// `2**20 = 1,048,576`.
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64;
+
+    /// `BYTES_PER_LOGS_BLOOM` from `presets/{mainnet,minimal}/bellatrix.yaml`.
+    ///
+    /// `2**8 = 256`.
+    const BYTES_PER_LOGS_BLOOM: u64;
+
+    /// `MAX_EXTRA_DATA_BYTES` from `presets/{mainnet,minimal}/bellatrix.yaml`.
+    ///
+    /// `2**5 = 32`.
+    const MAX_EXTRA_DATA_BYTES: u64;
+
+    // -- Bellatrix fork schedule --
+    // Source: `configs/mainnet.yaml:44-45`, `configs/minimal.yaml:40-41`
+
+    /// `BELLATRIX_FORK_VERSION` from `configs/mainnet.yaml:44` /
+    /// `configs/minimal.yaml:40`.
+    const BELLATRIX_FORK_VERSION: [u8; 4];
+
+    /// `BELLATRIX_FORK_EPOCH` from `configs/mainnet.yaml:45` /
+    /// `configs/minimal.yaml:41`.
+    const BELLATRIX_FORK_EPOCH: u64;
 
     // -- Altair participation flag weights --
     // Source: `specs/altair/beacon-chain.md:84-89,105`
@@ -823,6 +878,32 @@ impl EthSpec for MainnetEthSpec {
     /// `ALTAIR_FORK_EPOCH` from `configs/mainnet.yaml:42`.
     const ALTAIR_FORK_EPOCH: u64 = 74_240;
 
+    // ── Bellatrix preset constants ────────────────────────────────────────────
+
+    // -- Bellatrix reward and penalty quotients --
+    /// `INACTIVITY_PENALTY_QUOTIENT_BELLATRIX` from `presets/mainnet/bellatrix.yaml`.
+    const INACTIVITY_PENALTY_QUOTIENT_BELLATRIX: u64 = 16_777_216;
+    /// `MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX` from `presets/mainnet/bellatrix.yaml`.
+    const MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX: u64 = 32;
+    /// `PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX` from `presets/mainnet/bellatrix.yaml`.
+    const PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX: u64 = 3;
+
+    // -- Bellatrix execution limits --
+    /// `MAX_BYTES_PER_TRANSACTION` from `presets/mainnet/bellatrix.yaml`.
+    const MAX_BYTES_PER_TRANSACTION: u64 = 1_073_741_824;
+    /// `MAX_TRANSACTIONS_PER_PAYLOAD` from `presets/mainnet/bellatrix.yaml`.
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64 = 1_048_576;
+    /// `BYTES_PER_LOGS_BLOOM` from `presets/mainnet/bellatrix.yaml`.
+    const BYTES_PER_LOGS_BLOOM: u64 = 256;
+    /// `MAX_EXTRA_DATA_BYTES` from `presets/mainnet/bellatrix.yaml`.
+    const MAX_EXTRA_DATA_BYTES: u64 = 32;
+
+    // -- Bellatrix fork schedule --
+    /// `BELLATRIX_FORK_VERSION` from `configs/mainnet.yaml:44`.
+    const BELLATRIX_FORK_VERSION: [u8; 4] = [0x02, 0x00, 0x00, 0x00];
+    /// `BELLATRIX_FORK_EPOCH` from `configs/mainnet.yaml:45`.
+    const BELLATRIX_FORK_EPOCH: u64 = 144_896;
+
     fn name() -> &'static str {
         "mainnet"
     }
@@ -847,6 +928,21 @@ impl EthSpec for MainnetEthSpec {
             altair_fork_version: Self::ALTAIR_FORK_VERSION,
             altair_fork_epoch: Self::ALTAIR_FORK_EPOCH,
             genesis_validators_root: [0u8; 32],
+            bellatrix_fork_version: Self::BELLATRIX_FORK_VERSION,
+            bellatrix_fork_epoch: Self::BELLATRIX_FORK_EPOCH,
+            // configs/mainnet.yaml: TERMINAL_TOTAL_DIFFICULTY: 58750000000000000000000
+            terminal_total_difficulty: pharos_utils::Uint256::from_str("58750000000000000000000")
+                .expect("valid TTD literal"),
+            terminal_block_hash: pharos_utils::Hash256::default(),
+            terminal_block_hash_activation_epoch: u64::MAX,
+            inactivity_penalty_quotient_bellatrix: Self::INACTIVITY_PENALTY_QUOTIENT_BELLATRIX,
+            min_slashing_penalty_quotient_bellatrix: Self::MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX,
+            proportional_slashing_multiplier_bellatrix:
+                Self::PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX,
+            max_bytes_per_transaction: Self::MAX_BYTES_PER_TRANSACTION,
+            max_transactions_per_payload: Self::MAX_TRANSACTIONS_PER_PAYLOAD,
+            bytes_per_logs_bloom: Self::BYTES_PER_LOGS_BLOOM,
+            max_extra_data_bytes: Self::MAX_EXTRA_DATA_BYTES,
         }
     }
 
@@ -1140,6 +1236,32 @@ impl EthSpec for MinimalEthSpec {
     /// at runtime.
     const ALTAIR_FORK_EPOCH: u64 = 0;
 
+    // ── Bellatrix preset constants ────────────────────────────────────────────
+
+    // -- Bellatrix reward and penalty quotients --
+    /// `INACTIVITY_PENALTY_QUOTIENT_BELLATRIX` from `presets/minimal/bellatrix.yaml`.
+    const INACTIVITY_PENALTY_QUOTIENT_BELLATRIX: u64 = 16_777_216;
+    /// `MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX` from `presets/minimal/bellatrix.yaml`.
+    const MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX: u64 = 32;
+    /// `PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX` from `presets/minimal/bellatrix.yaml`.
+    const PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX: u64 = 3;
+
+    // -- Bellatrix execution limits --
+    /// `MAX_BYTES_PER_TRANSACTION` from `presets/minimal/bellatrix.yaml`.
+    const MAX_BYTES_PER_TRANSACTION: u64 = 1_073_741_824;
+    /// `MAX_TRANSACTIONS_PER_PAYLOAD` from `presets/minimal/bellatrix.yaml`.
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64 = 1_048_576;
+    /// `BYTES_PER_LOGS_BLOOM` from `presets/minimal/bellatrix.yaml`.
+    const BYTES_PER_LOGS_BLOOM: u64 = 256;
+    /// `MAX_EXTRA_DATA_BYTES` from `presets/minimal/bellatrix.yaml`.
+    const MAX_EXTRA_DATA_BYTES: u64 = 32;
+
+    // -- Bellatrix fork schedule --
+    /// `BELLATRIX_FORK_VERSION` from `configs/minimal.yaml:40`.
+    const BELLATRIX_FORK_VERSION: [u8; 4] = [0x02, 0x00, 0x00, 0x01];
+    /// `BELLATRIX_FORK_EPOCH` from `configs/minimal.yaml:41` (FAR_FUTURE_EPOCH).
+    const BELLATRIX_FORK_EPOCH: u64 = u64::MAX;
+
     fn name() -> &'static str {
         "minimal"
     }
@@ -1164,6 +1286,23 @@ impl EthSpec for MinimalEthSpec {
             altair_fork_version: Self::ALTAIR_FORK_VERSION,
             altair_fork_epoch: Self::ALTAIR_FORK_EPOCH,
             genesis_validators_root: [0u8; 32],
+            bellatrix_fork_version: Self::BELLATRIX_FORK_VERSION,
+            bellatrix_fork_epoch: Self::BELLATRIX_FORK_EPOCH,
+            // configs/minimal.yaml: large TTD to prevent accidental merge on test networks
+            terminal_total_difficulty: pharos_utils::Uint256::from_str(
+                "115792089237316195423570985008687907853269984665640564039457584007913129638912",
+            )
+            .expect("valid TTD literal"),
+            terminal_block_hash: pharos_utils::Hash256::default(),
+            terminal_block_hash_activation_epoch: u64::MAX,
+            inactivity_penalty_quotient_bellatrix: Self::INACTIVITY_PENALTY_QUOTIENT_BELLATRIX,
+            min_slashing_penalty_quotient_bellatrix: Self::MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX,
+            proportional_slashing_multiplier_bellatrix:
+                Self::PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX,
+            max_bytes_per_transaction: Self::MAX_BYTES_PER_TRANSACTION,
+            max_transactions_per_payload: Self::MAX_TRANSACTIONS_PER_PAYLOAD,
+            bytes_per_logs_bloom: Self::BYTES_PER_LOGS_BLOOM,
+            max_extra_data_bytes: Self::MAX_EXTRA_DATA_BYTES,
         }
     }
 
