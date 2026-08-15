@@ -65,25 +65,11 @@ use tracing::warn;
 
 /// Extract the inner `E::BeaconBlock` from a fork-enum `E::SignedBeaconBlock`.
 ///
-/// Returns `None` only if the signed block variant is unrecognised (should
-/// never happen in a well-typed system).
-fn extract_block<E: EthSpec>(signed: &E::SignedBeaconBlock) -> Option<E::BeaconBlock>
-where
-    E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-    E::AltairSignedBeaconBlock: SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
-    E::BellatrixSignedBeaconBlock: SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
-    E::CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
-{
-    if let Some(inner) = E::unwrap_phase0_signed_block(signed) {
-        Some(E::phase0_into_block(inner.message().clone()))
-    } else if let Some(inner) = E::unwrap_altair_signed_block(signed) {
-        Some(E::altair_into_block(inner.message().clone()))
-    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed) {
-        Some(E::bellatrix_into_block(inner.message().clone()))
-    } else {
-        E::unwrap_capella_signed_block(signed)
-            .map(|inner| E::capella_into_block(inner.message().clone()))
-    }
+/// Infallible: `EthSpec::signed_block_message` dispatches over an exhaustive
+/// match, so every fork variant is handled (a new fork is a compile error
+/// there). The `Option` return is retained for caller ergonomics.
+fn extract_block<E: EthSpec>(signed: &E::SignedBeaconBlock) -> Option<E::BeaconBlock> {
+    Some(E::signed_block_message(signed))
 }
 
 /// Load a beacon state by root, falling through to cold restore-point + replay

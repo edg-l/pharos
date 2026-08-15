@@ -282,23 +282,11 @@ where
 {
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
 
-    // Extract the inner `E::BeaconBlock` (fork-enum) without calling
-    // `signed_block.message()`, which panics on the fork-enum
-    // (it cannot return a reference to an owned intermediate value).
-    // Instead, match on the phase0 / altair / bellatrix / capella inner variants and promote.
-    let block: E::BeaconBlock = if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
-        E::phase0_into_block(inner.message().clone())
-    } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
-        E::altair_into_block(inner.message().clone())
-    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed_block) {
-        E::bellatrix_into_block(inner.message().clone())
-    } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
-        E::capella_into_block(inner.message().clone())
-    } else {
-        return Err(ForkChoiceError::InvalidBlock {
-            reason: "unrecognised SignedBeaconBlock fork variant".to_owned(),
-        });
-    };
+    // Extract the inner `E::BeaconBlock` (fork-enum) via the exhaustive-match
+    // dispatch on `EthSpec`; `signed_block.message()` panics on the fork-enum and
+    // a per-fork `if let` chain has no exhaustiveness check (a missing fork arm
+    // would wrongly reject the block as invalid).
+    let block: E::BeaconBlock = E::signed_block_message(signed_block);
 
     // Parent block must be known; read pre_state for the merge-transition guard.
     let pre_state = store

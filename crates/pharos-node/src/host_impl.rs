@@ -721,8 +721,6 @@ where
         pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
-    E::CapellaSignedBeaconBlock:
-        pharos_types::views::SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
 {
     /// Validate a gossip `beacon_block` message per `specs/phase0/p2p-interface.md:540-620`.
     ///
@@ -750,20 +748,11 @@ where
         use pharos_types::BeaconStateView as _;
         use pharos_types::views::{BeaconBlockView, SignedBeaconBlockView};
 
-        // Extract the fork-enum `E::BeaconBlock` from the signed block.
-        // `SignedBeaconBlockView::message()` panics on the fork-enum; use
-        // the E unwrap helpers instead (same pattern as `on_block` in handlers.rs).
-        let block_msg: E::BeaconBlock = if let Some(inner) = E::unwrap_phase0_signed_block(block) {
-            E::phase0_into_block(inner.message().clone())
-        } else if let Some(inner) = E::unwrap_altair_signed_block(block) {
-            E::altair_into_block(inner.message().clone())
-        } else if let Some(inner) = E::unwrap_bellatrix_signed_block(block) {
-            E::bellatrix_into_block(inner.message().clone())
-        } else if let Some(inner) = E::unwrap_capella_signed_block(block) {
-            E::capella_into_block(inner.message().clone())
-        } else {
-            return GossipVerdict::Reject("block: unrecognised fork variant".into());
-        };
+        // Extract the fork-enum `E::BeaconBlock` from the signed block via the
+        // exhaustive-match dispatch on `EthSpec`. This cannot miss a fork variant
+        // (a new fork is a compile error in `signed_block_message`), unlike the
+        // old per-fork `if let` chain that silently rejected capella blocks.
+        let block_msg: E::BeaconBlock = E::signed_block_message(block);
 
         // Compute block_root once; reused by steps 8/9/10/11 cache inserts.
         let block_root: Root = block_msg.tree_hash_root();

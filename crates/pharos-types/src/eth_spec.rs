@@ -441,6 +441,20 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// fixture files.
     fn phase0_into_block(s: Self::Phase0BeaconBlock) -> Self::BeaconBlock;
 
+    /// Extract the block message from a fork-enum `SignedBeaconBlock` as a
+    /// fork-enum `BeaconBlock`, dispatching on the signed block's variant.
+    ///
+    /// This is the fork-safe replacement for the
+    /// `if let Some(_) = E::unwrap_<fork>_signed_block(..) { .. } else { .. }`
+    /// chains: generic code cannot `match` on the associated type
+    /// `Self::SignedBeaconBlock`, so those chains had no exhaustiveness check and
+    /// a missing fork arm silently fell through to a wrong default (this is how
+    /// the capella `beacon_block` gossip-validation bug — every capella block
+    /// rejected as "unrecognised fork variant" — slipped in). The per-preset
+    /// impl here is an EXHAUSTIVE `match` on the concrete enum, so adding a fork
+    /// variant is a compile error in one place and every caller stays correct.
+    fn signed_block_message(signed: &Self::SignedBeaconBlock) -> Self::BeaconBlock;
+
     /// Unwrap a fork-enum `SignedBeaconBlock` to the inner phase0 variant.
     ///
     /// Returns `Some` if the block is a `Phase0` variant, `None` otherwise.
@@ -1352,6 +1366,16 @@ impl EthSpec for MainnetEthSpec {
         crate::state::MainnetBeaconBlock::Phase0(s)
     }
 
+    fn signed_block_message(signed: &Self::SignedBeaconBlock) -> Self::BeaconBlock {
+        use crate::state::{MainnetBeaconBlock as B, MainnetSignedBeaconBlock as S};
+        match signed {
+            S::Phase0(b) => B::Phase0(b.message.clone()),
+            S::Altair(b) => B::Altair(b.message.clone()),
+            S::Bellatrix(b) => B::Bellatrix(b.message.clone()),
+            S::Capella(b) => B::Capella(b.message.clone()),
+        }
+    }
+
     fn unwrap_phase0_signed_block(
         s: &Self::SignedBeaconBlock,
     ) -> Option<&Self::Phase0SignedBeaconBlock> {
@@ -1980,6 +2004,16 @@ impl EthSpec for MinimalEthSpec {
 
     fn phase0_into_block(s: Self::Phase0BeaconBlock) -> Self::BeaconBlock {
         crate::state::MinimalBeaconBlock::Phase0(s)
+    }
+
+    fn signed_block_message(signed: &Self::SignedBeaconBlock) -> Self::BeaconBlock {
+        use crate::state::{MinimalBeaconBlock as B, MinimalSignedBeaconBlock as S};
+        match signed {
+            S::Phase0(b) => B::Phase0(b.message.clone()),
+            S::Altair(b) => B::Altair(b.message.clone()),
+            S::Bellatrix(b) => B::Bellatrix(b.message.clone()),
+            S::Capella(b) => B::Capella(b.message.clone()),
+        }
     }
 
     fn unwrap_phase0_signed_block(
