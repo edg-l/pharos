@@ -17,6 +17,7 @@ pub mod jwt_autogen;
 pub mod lookup;
 pub mod network_backfill_provider;
 pub mod network_lookup_provider;
+pub mod op_pools;
 pub mod pending_blocks;
 pub mod pow_block;
 pub mod startup;

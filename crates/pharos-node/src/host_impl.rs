@@ -55,6 +55,7 @@ use pharos_types::views::{LightClientFinalityUpdateView, LightClientOptimisticUp
 use pharos_utils::Epoch;
 
 use crate::engine_driver::{HeadChange, NewPayloadRequest};
+use crate::op_pools::OperationPools;
 
 // ── ForkContextInner ──────────────────────────────────────────────────────────
 
@@ -96,6 +97,13 @@ pub struct HostImpl<E: EthSpec> {
     metadata: RwLock<AltairMetaData>,
     /// Runtime configuration (seconds_per_slot, etc.) for gossip validation timing.
     runtime_cfg: Arc<RuntimeConfig>,
+    /// In-memory operation pools fed by the gossip-accept path (Task 2.4).
+    ///
+    /// Accepted attestations, slashings, exits, and credential changes are
+    /// inserted here for later `drain_for_block` at block-production time.
+    /// Shared as `Arc` so the same pool can be read by block-production without
+    /// holding any `HostImpl` lock.
+    pub op_pools: Arc<OperationPools<E>>,
     /// Highest `finalized_header.beacon.slot` of any forwarded altair finality update.
     ///
     /// Backs the per-topic monotonic forwarded-slot IGNORE rule per
@@ -225,6 +233,7 @@ impl<E: EthSpec> HostImpl<E> {
             seen_bls_to_execution_change_indices: RwLock::new(LruCache::new(
                 NonZeroUsize::new(4096).unwrap(),
             )),
+            op_pools: OperationPools::new(),
             _phantom: PhantomData,
         }
     }
@@ -1049,6 +1058,9 @@ where
         self.seen_attestation_validators
             .write()
             .put((participant, att.data.target.epoch), ());
+        // Feed the operation pool: insert the accepted unaggregated attestation
+        // so block-production can aggregate it (Task 2.4).
+        self.op_pools.insert_attestation(att.clone());
         GossipVerdict::Accept
     }
 
@@ -1278,6 +1290,10 @@ where
                 }
             }
         }
+        // Feed the operation pool: insert the accepted aggregate attestation
+        // (Task 2.4). The aggregate is extracted from the `AggregateAndProof`.
+        self.op_pools
+            .insert_attestation(saap.message.aggregate.clone());
         GossipVerdict::Accept
     }
 
@@ -1368,6 +1384,8 @@ where
         self.seen_voluntary_exit_indices
             .write()
             .put(validator_index, ());
+        // Feed the operation pool (Task 2.4).
+        self.op_pools.insert_voluntary_exit(exit.clone());
         GossipVerdict::Accept
     }
 
@@ -1474,6 +1492,8 @@ where
         self.seen_proposer_slashing_indices
             .write()
             .put(proposer_index, ());
+        // Feed the operation pool (Task 2.4).
+        self.op_pools.insert_proposer_slashing(slashing.clone());
         GossipVerdict::Accept
     }
 
@@ -1604,15 +1624,21 @@ where
                 cache.put(*idx, ());
             }
         }
+        // Feed the operation pool (Task 2.4).
+        self.op_pools.insert_attester_slashing(slashing.clone());
         GossipVerdict::Accept
     }
 
     /// TODO(M4): Validate sync committee message slot, validator index, signature.
     fn validate_sync_committee_message(
         &self,
-        _subnet: SubnetId,
-        _msg: &pharos_types::altair::SyncCommitteeMessage,
+        subnet: SubnetId,
+        msg: &pharos_types::altair::SyncCommitteeMessage,
     ) -> GossipVerdict {
+        // Feed accepted sync messages into the pool so drain_sync_aggregate can
+        // use them at block-production time (Task 2.4).
+        // `subnet` is the sync committee subcommittee index (0..SYNC_COMMITTEE_SUBNET_COUNT).
+        self.op_pools.insert_sync_message(msg.clone(), subnet);
         GossipVerdict::Accept
     }
 
@@ -2027,6 +2053,9 @@ where
         self.seen_bls_to_execution_change_indices
             .write()
             .put(validator_index, ());
+        // Feed the operation pool (Task 2.4).
+        self.op_pools
+            .insert_bls_to_execution_change(signed_msg.clone());
         GossipVerdict::Accept
     }
 }
