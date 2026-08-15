@@ -15,6 +15,7 @@
 //! 5. `process_operations`         — uses `MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX`
 //! 6. `process_sync_aggregate`
 
+use pharos_ssz::TreeHash as _;
 use pharos_types::{
     EthSpec,
     altair::BeaconState as AltairBeaconState,
@@ -202,6 +203,16 @@ where
         SYNC_COMMITTEE_SIZE,
         E,
     >(&mut altair_state, &altair_block)?;
+
+    // Patch `body_root` in `latest_block_header` to use the Bellatrix block body's
+    // tree hash root (which includes `execution_payload`), not the altair-projected
+    // body root that `process_block_header_altair` computed.
+    //
+    // Per spec: `process_block_header` sets
+    //   `state.latest_block_header.body_root = hash_tree_root(block.body)`
+    // where `block.body` is the full Bellatrix body (including execution_payload).
+    // The altair projection strips `execution_payload`, so we must patch here.
+    altair_state.latest_block_header.body_root = block.body.tree_hash_root();
 
     // Sync `latest_block_header` back to the bellatrix state so that
     // `process_execution_payload` (step 2) sees the updated block header.

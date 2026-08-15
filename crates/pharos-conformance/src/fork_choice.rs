@@ -32,10 +32,12 @@ use std::path::{Path, PathBuf};
 
 use pharos_fork_choice::get_head::{get_current_slot, get_proposer_head};
 use pharos_fork_choice::{
-    Store, get_forkchoice_store, get_head, on_attestation, on_attester_slashing, on_block, on_tick,
+    NoopPowBlockProvider, Store, get_forkchoice_store, get_head, on_attestation,
+    on_attester_slashing, on_block, on_tick,
 };
 use pharos_ssz::{Decode, TreeHash};
 use pharos_stf::phase0::BeaconStateWrite;
+use pharos_stf::{NullExecutionEngine, state_transition};
 use pharos_types::{
     BeaconStateView, EthSpec, MainnetEthSpec, MinimalEthSpec,
     phase0::{Attestation, AttesterSlashing, Checkpoint, Deposit, Epoch, Root, Slot},
@@ -308,16 +310,61 @@ where
                 // we can access body attestations for the post-block feed-through.
                 // The fork-enum `message()` panics, so we keep the inner ref.
                 let block_file = format!("{block}.ssz_snappy");
+                let cfg = pharos_types::config::RuntimeConfig::default();
 
                 // Try altair first; altair fork-choice fixtures use altair blocks.
                 if let Ok(altair_inner) = load_altair_signed_block::<E>(case_dir, &block_file) {
-                    let outcome = on_block::<E>(&mut store, &altair_inner);
-                    let attestations: Vec<Attestation<2048>> =
-                        if let Some(inner) = E::unwrap_altair_signed_block(&altair_inner) {
-                            inner.message().body().attestations().to_vec()
-                        } else {
-                            vec![]
-                        };
+                    // Run state transition externally (on_block now takes post_state).
+                    let altair_parent_root = E::unwrap_altair_signed_block(&altair_inner)
+                        .map(|inner| inner.message().parent_root())
+                        .unwrap_or_default();
+                    let pre_state = match store.block_states.get(&altair_parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &altair_inner,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let (post_state, attestations) = match post_state_result {
+                        Ok(ps) => {
+                            let atts: Vec<Attestation<2048>> =
+                                if let Some(inner) = E::unwrap_altair_signed_block(&altair_inner) {
+                                    inner.message().body().attestations().to_vec()
+                                } else {
+                                    vec![]
+                                };
+                            (ps, atts)
+                        }
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, NoopPowBlockProvider>(
+                        &mut store,
+                        &altair_inner,
+                        post_state,
+                        now,
+                        &NoopPowBlockProvider,
+                    );
                     match (outcome, valid) {
                         (Ok(()), true) => {
                             for att in &attestations {
@@ -346,7 +393,50 @@ where
                             }
                         };
                     let signed = E::phase0_into_signed_block(phase0_inner.clone());
-                    let outcome = on_block::<E>(&mut store, &signed);
+                    // Run state transition externally.
+                    let pre_state = match store
+                        .block_states
+                        .get(&phase0_inner.message().parent_root())
+                        .cloned()
+                    {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &signed,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let post_state = match post_state_result {
+                        Ok(ps) => ps,
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, NoopPowBlockProvider>(
+                        &mut store,
+                        &signed,
+                        post_state,
+                        now,
+                        &NoopPowBlockProvider,
+                    );
                     match (outcome, valid) {
                         (Ok(()), true) => {
                             for att in phase0_inner.message().body().attestations() {

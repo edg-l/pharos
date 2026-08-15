@@ -18,6 +18,7 @@ use crate::get_head::{
     get_current_store_epoch, get_slot_component_duration_ms, slot_from_time, slot_start_time,
     time_into_current_slot_ms,
 };
+use crate::pow_block::{PowBlockProvider, validate_merge_block};
 use crate::store::{LatestMessage, Store};
 
 // ── Checkpoint update helpers ─────────────────────────────────────────────────
@@ -213,22 +214,41 @@ where
 
 // ── on_block ──────────────────────────────────────────────────────────────────
 
-/// `on_block` per `specs/phase0/fork-choice.md:846-885`.
+/// `on_block` per `specs/phase0/fork-choice.md:846-885` with Bellatrix merge-transition
+/// guard per `specs/bellatrix/fork-choice.md:303-304`.
 ///
-/// Validates the block, runs state transition, inserts into the store, and
-/// eagerly computes unrealized justification via `compute_pulled_up_tip`.
-pub fn on_block<E: EthSpec>(
+/// Validates the block (slot bounds, finalized-chain ancestry), inserts it and
+/// its precomputed `post_state` into the store, and eagerly computes unrealized
+/// justification via `compute_pulled_up_tip`.
+///
+/// The caller is responsible for running `state_transition` and supplying
+/// `post_state` **before** calling `on_block`. This separation ensures the
+/// production block-ingestion loop can use a real `ExecutionEngine` for STF
+/// while fork-choice itself remains engine-agnostic.
+///
+/// `now` is the current unix timestamp (seconds); it is used only to record
+/// block timeliness for proposer-boost purposes.
+///
+/// For Bellatrix merge-transition blocks, calls `validate_merge_block` via
+/// `pow_provider` before inserting into the store. Non-Bellatrix blocks ignore
+/// `pow_provider`. The merge guard reads the pre-state from
+/// `store.block_states[block.parent_root]`, which must already be present.
+///
+/// Per `specs/bellatrix/fork-choice.md:303-304` (merge-transition guard) and
+/// `specs/bellatrix/fork-choice.md:200-260` (validate_merge_block body).
+pub fn on_block<E: EthSpec, P: PowBlockProvider>(
     store: &mut Store<E>,
     signed_block: &E::SignedBeaconBlock,
+    post_state: E::BeaconState,
+    now: u64,
+    pow_provider: &P,
 ) -> Result<(), ForkChoiceError>
 where
     E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
     E::BeaconState: BeaconStateWrite + Clone,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + pharos_stf::AltairJaFDispatch<E>
-        + pharos_stf::AltairProcessSlotsDispatch<E>,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::BellatrixJaFDispatch<E>
+    E::AltairBeaconState:
+        pharos_stf::AltairJaFDispatch<E> + pharos_stf::AltairProcessSlotsDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixJaFDispatch<E>
         + pharos_stf::BellatrixProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
@@ -245,7 +265,6 @@ where
     E::BellatrixSignedBeaconBlock: SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
 {
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
-    use pharos_stf::state_transition;
 
     // Extract the inner `E::BeaconBlock` (fork-enum) without calling
     // `signed_block.message()`, which panics on the fork-enum
@@ -263,7 +282,7 @@ where
         });
     };
 
-    // Parent block must be known.
+    // Parent block must be known; read pre_state for the merge-transition guard.
     let pre_state = store
         .block_states
         .get(&block.parent_root())
@@ -300,23 +319,54 @@ where
         });
     }
 
-    // Compute post-state via state transition.
-    // Fork choice always uses `NullExecutionEngine`; real EL validation happens
-    // in the beacon node's block-import pipeline, not in fork-choice.
     let block_root: Root = block.tree_hash_root();
-    let post_state = state_transition::<E, pharos_stf::NullExecutionEngine>(
-        pre_state,
-        signed_block,
-        &pharos_stf::NullExecutionEngine,
-        true,
-        &pharos_types::config::RuntimeConfig::default(),
-    )?;
 
-    // Insert block and state.
+    // [New in Bellatrix] Merge-transition guard per
+    // `specs/bellatrix/fork-choice.md:303-304`.
+    //
+    // `is_merge_transition_block` checks whether this is the first Bellatrix
+    // block with a non-default execution payload against a pre-state that has
+    // not yet completed the merge. For Phase0/Altair blocks this returns false
+    // immediately.
+    if E::is_merge_transition_block(&pre_state, &block) {
+        use pharos_stf::phase0::accessors::compute_epoch_at_slot;
+        let current_epoch = compute_epoch_at_slot(block.slot(), E::SLOTS_PER_EPOCH).0;
+        // Extract the execution payload's parent_hash from the block.
+        // `is_merge_transition_block` returned true → block is Bellatrix.
+        let payload_parent_hash = E::get_execution_payload_parent_hash(&block).unwrap_or_default();
+        // TTD / TERMINAL_BLOCK_HASH constants come from the store's runtime config.
+        // For conformance / test uses the defaults (zero TTD, zero TBH) are fine;
+        // the production ingestion loop sets these from `RuntimeConfig`.
+        validate_merge_block(
+            payload_parent_hash,
+            current_epoch,
+            store.terminal_block_hash,
+            store.terminal_block_hash_activation_epoch,
+            store.terminal_total_difficulty,
+            pow_provider,
+        )?;
+    }
+
+    // Insert block and post-state (supplied by the caller after running STF).
     store.blocks.insert(block_root, block.clone());
     store.block_states.insert(block_root, post_state.clone());
 
+    // Default-mark the EL payload as `NotValidated`; the engine driver loop
+    // (M4a Phase 4) updates this to `Valid`/`Invalid` once the EL responds
+    // to `engine_newPayloadV1`. Pre-Bellatrix blocks also get an entry, but
+    // the engine driver only emits `newPayload` for Bellatrix+ payloads, so
+    // their status stays `NotValidated` for the lifetime of the entry.
+    store
+        .payload_statuses
+        .insert(block_root, pharos_types::PayloadStatus::NotValidated);
+
+    // Record timeliness using the caller-supplied `now` timestamp.
+    // Saves `store.time` from being mutated by on_block (time is managed by on_tick).
+    let saved_time = store.time;
+    store.time = now;
     record_block_timeliness::<E>(store, block_root);
+    store.time = saved_time;
+
     update_proposer_boost_root::<E>(store, block_root);
 
     // Update realized checkpoints.

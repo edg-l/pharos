@@ -82,6 +82,7 @@ fn populate_store(
             slot_index: Some((slot, *root)),
             state: None,
             forkchoice: None,
+            payload_status: None,
         };
         <RocksStore as StoreTrait<MinimalEthSpec>>::write_block_transition(&store, transition)
             .expect("write_block_transition must succeed");

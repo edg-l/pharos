@@ -52,6 +52,10 @@ pub enum EngineRequest {
         id: PayloadIdV1,
         reply: oneshot::Sender<Result<ExecutionPayloadV1, EngineError>>,
     },
+    GetBlockByHash {
+        hash: String,
+        reply: oneshot::Sender<Result<Option<crate::types::BlockHeader>, EngineError>>,
+    },
     ChainId {
         reply: oneshot::Sender<Result<u64, EngineError>>,
     },
@@ -135,6 +139,14 @@ impl EngineHandle {
     /// Sync `eth_syncing`.
     pub fn syncing_blocking(&self) -> Result<SyncingStatus, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::Syncing { reply })
+    }
+
+    /// Sync `eth_getBlockByHash`.
+    pub fn get_block_by_hash_blocking(
+        &self,
+        hash: String,
+    ) -> Result<Option<crate::types::BlockHeader>, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetBlockByHash { hash, reply })
     }
 }
 
@@ -228,6 +240,9 @@ async fn dispatch(client: &EngineClient, req: EngineRequest) {
         }
         EngineRequest::GetPayload { version, id, reply } => {
             let _ = reply.send(client.get_payload(version, id).await);
+        }
+        EngineRequest::GetBlockByHash { hash, reply } => {
+            let _ = reply.send(client.get_block_by_hash(&hash).await);
         }
         EngineRequest::ChainId { reply } => {
             let _ = reply.send(client.chain_id().await);

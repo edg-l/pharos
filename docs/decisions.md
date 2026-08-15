@@ -1069,3 +1069,52 @@ Enforced in: `crates/pharos-types/src/fork.rs` (struct + accessors),
 `crates/pharos-node/src/main.rs` (YAML load → `ForkSchedule` wiring),
 `crates/pharos-node/src/fork_migration.rs` (consumer),
 `crates/pharos-node/src/subnet_rotation.rs` (consumer).
+
+---
+
+## M4a decisions
+
+### D-engine-head-driver — Head changes flow through a `tokio::watch` channel; sync fork choice never blocks on HTTP
+
+**Status**: Accepted. **Date**: 2026-05-25.
+
+`pharos-fork-choice` stays sync (M1 invariant). After each `on_block` or
+`on_attestation` call, the node-level code computes the new head via `get_head`
+and writes a `HeadChange { head_root, head_block_hash, safe_block_hash,
+finalized_block_hash }` value into a `tokio::sync::watch::Sender<Option<HeadChange>>`
+held in `pharos-node`. A separate tokio task (`run_engine_driver_loop` in
+`crates/pharos-node/src/engine_driver.rs`, Phase 4) subscribes via
+`watch::Receiver`, and invokes the engine HTTP calls (`new_payload` +
+`forkchoice_updated`) without ever blocking the STF. The driver loop also
+receives `NewPayloadRequest<E>` events via a `tokio::sync::mpsc::Receiver` from
+the block-ingestion loop; each Bellatrix block's execution payload is sent for
+`engine_newPayloadV1` validation and the returned `PayloadStatus` is recorded in
+the in-memory fork-choice store.
+
+`engine_forkchoiceUpdatedV1` responses with status `VALID` do not overwrite
+the `PayloadStatus` set by a prior `engine_newPayloadV1` call. This preserves
+the `Invalid` verdict in any race between newPayload-INVALID and FCU-VALID for
+the same block root. Only `INVALID`/`INVALID_BLOCK_HASH` from FCU cause the
+status to be updated.
+
+Rejected alternative: spawn a one-shot tokio task per head change from inside
+`on_block`. Would require fork choice to know about tokio; couples unrelated
+layers; `watch` does the debouncing for free (only the latest value is retained).
+
+Rejected alternative: a new `NetworkEvent::HeadChanged`. The network crate must
+not know about head changes; head is a node-level concept. A `watch` channel in
+`pharos-node` is the right shape.
+
+M4a simplification: `safe_block_hash` is derived as
+`execution_block_hash_at_root(store, justified_checkpoint.root)` per
+`specs/bellatrix/fork-choice.md:93-100`. The full spec-compliant
+`get_safe_execution_block_hash` is re-org-aware and considers proposer-boost
+(it walks the canonical chain to find the "safe" EL block rather than using the
+justified-checkpoint EL block directly). That logic is deferred to M11 alongside
+the proposer-boost re-org implementation. Until then, the EL receives the
+justified checkpoint's execution block hash as `safe_block_hash`, which is
+conservative and correct for a non-reorg-aware head driver.
+
+Enforced in: `crates/pharos-node/src/engine_driver.rs` (driver loop + types),
+`crates/pharos-node/src/block_ingestion.rs` (publisher),
+`crates/pharos-node/src/main.rs` (wiring).

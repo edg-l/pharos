@@ -7,6 +7,7 @@
 //! the (future) STF executor thread pool.
 
 use pharos_types::EthSpec;
+use pharos_types::PayloadStatus;
 use pharos_types::phase0::primitives::{Root, Slot};
 
 use crate::error::StorageError;
@@ -76,6 +77,21 @@ pub trait Store<E: EthSpec>: Send + Sync + 'static {
     /// slot-index updates. Per `D-rocksdb` atomic-writes requirement:
     /// "never split a logical state update across two un-batched writes."
     fn write_block_transition(&self, batch: BlockTransition<E>) -> Result<(), StorageError>;
+
+    // ── Payload status ────────────────────────────────────────────────────────
+
+    /// Retrieve the stored `PayloadStatus` for `root`, if any.
+    ///
+    /// Returns `None` when the block is not present in the `payload-status` CF.
+    /// Per `D-payload-status-store` (M4a Phase 4): the discriminant byte maps
+    /// `0 = Valid, 1 = Invalid, 2 = NotValidated`.
+    fn payload_status(&self, root: Root) -> Result<Option<PayloadStatus>, StorageError>;
+
+    /// Iterate all `(Root, PayloadStatus)` entries in the `payload-status` CF.
+    ///
+    /// Used at startup by `rehydrate_fork_choice_store` to seed the in-memory
+    /// `pharos_fork_choice::Store::payload_statuses` map.
+    fn payload_statuses_iter(&self) -> Result<Vec<(Root, PayloadStatus)>, StorageError>;
 
     // ── Light-client snapshot store ───────────────────────────────────────────
     //

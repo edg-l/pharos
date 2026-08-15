@@ -7,6 +7,7 @@
 //! committed or all absent.
 
 use pharos_types::EthSpec;
+use pharos_types::PayloadStatus;
 use pharos_types::phase0::primitives::{Root, Slot};
 
 use crate::forkchoice::ForkChoiceSnapshot;
@@ -31,6 +32,14 @@ pub struct BlockTransition<E: EthSpec> {
     ///
     /// Written to both `slot_to_block_root` and `block_root_to_slot` CFs.
     pub slot_index: Option<(Slot, Root)>,
+
+    /// Optional payload-status entry to persist: `(block_root, PayloadStatus)`.
+    ///
+    /// Written to the `payload-status` CF as `Root → u8` discriminant.
+    /// `0 = Valid, 1 = Invalid, 2 = NotValidated`.
+    /// Read at startup by `rehydrate_fork_choice_store` to seed the in-memory
+    /// `pharos_fork_choice::Store::payload_statuses` map.
+    pub payload_status: Option<(Root, PayloadStatus)>,
 }
 
 impl<E: EthSpec> BlockTransition<E> {
@@ -43,6 +52,7 @@ impl<E: EthSpec> BlockTransition<E> {
             state: None,
             forkchoice: None,
             slot_index: None,
+            payload_status: None,
         }
     }
 }

@@ -6,10 +6,11 @@ use std::collections::{HashMap, HashSet};
 
 use pharos_ssz::TreeHash;
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconStateView, EthSpec, PayloadStatus,
     phase0::{Checkpoint, Epoch, Root, ValidatorIndex},
     views::BeaconBlockView,
 };
+use pharos_utils::{Hash256, Uint256};
 
 use crate::get_head::{get_current_slot, slot_start_time};
 
@@ -101,6 +102,57 @@ pub struct Store<E: EthSpec> {
     ///
     /// Per `specs/phase0/fork-choice.md:184`.
     pub unrealized_justifications: HashMap<Root, Checkpoint>,
+
+    /// EL-validated payload status per block root (Bellatrix+).
+    ///
+    /// Phase0/Altair blocks never populate this map; Bellatrix blocks land
+    /// here as `NotValidated` and are updated to `Valid`/`Invalid` by the
+    /// engine driver loop (M4a Phase 4). `filter_block_tree` skips any
+    /// `Invalid` entry per `specs/bellatrix/fork-choice.md:74-79`.
+    pub payload_statuses: HashMap<Root, PayloadStatus>,
+
+    // ── Bellatrix terminal-block constants ────────────────────────────────────
+    /// `TERMINAL_TOTAL_DIFFICULTY` per `specs/bellatrix/fork-choice.md`.
+    ///
+    /// Set from `RuntimeConfig::terminal_total_difficulty` at construction time.
+    /// Used by `on_block`'s merge-transition guard (`validate_merge_block`)
+    /// without threading `RuntimeConfig` through the fork-choice boundary.
+    pub terminal_total_difficulty: Uint256,
+
+    /// `TERMINAL_BLOCK_HASH` per `specs/bellatrix/fork-choice.md`.
+    ///
+    /// Zero means "use TTD-based mode". Non-zero means "override mode":
+    /// the merge-transition block's `parent_hash` must equal this hash and
+    /// the current epoch must be ≥ `terminal_block_hash_activation_epoch`.
+    pub terminal_block_hash: Hash256,
+
+    /// `TERMINAL_BLOCK_HASH_ACTIVATION_EPOCH` per `specs/bellatrix/fork-choice.md`.
+    ///
+    /// Only consulted when `terminal_block_hash != zero`.
+    pub terminal_block_hash_activation_epoch: u64,
+}
+
+impl<E: EthSpec> Store<E> {
+    /// Record the EL's payload-validation verdict for `root`.
+    pub fn mark_payload_status(&mut self, root: Root, status: PayloadStatus) {
+        self.payload_statuses.insert(root, status);
+    }
+
+    /// Override the Bellatrix terminal-block constants in this store.
+    ///
+    /// Called at node startup after `get_forkchoice_store` (or
+    /// `rehydrate_fork_choice_store`) constructs the store, so that
+    /// `on_block`'s merge-transition guard uses the correct network values.
+    pub fn set_terminal_config(
+        &mut self,
+        terminal_total_difficulty: Uint256,
+        terminal_block_hash: Hash256,
+        terminal_block_hash_activation_epoch: u64,
+    ) {
+        self.terminal_total_difficulty = terminal_total_difficulty;
+        self.terminal_block_hash = terminal_block_hash;
+        self.terminal_block_hash_activation_epoch = terminal_block_hash_activation_epoch;
+    }
 }
 
 // ── get_forkchoice_store ──────────────────────────────────────────────────────
@@ -111,6 +163,11 @@ pub struct Store<E: EthSpec> {
 ///
 /// Panics if `anchor_block.state_root != hash_tree_root(anchor_state)`,
 /// matching the spec's first assertion.
+///
+/// Terminal-block constants (`terminal_total_difficulty`, `terminal_block_hash`,
+/// `terminal_block_hash_activation_epoch`) default to zero / default-hash.
+/// Production callers override these via `Store::set_terminal_config` after
+/// construction, or supply a `RuntimeConfig` via `get_forkchoice_store_with_config`.
 pub fn get_forkchoice_store<E: EthSpec>(
     anchor_state: E::BeaconState,
     anchor_block: E::BeaconBlock,
@@ -173,6 +230,12 @@ where
         checkpoint_states,
         latest_messages: HashMap::new(),
         unrealized_justifications,
+        payload_statuses: HashMap::new(),
+        // Terminal-block constants default to zero (no merge configured).
+        // Production callers set these via `Store::set_terminal_config`.
+        terminal_total_difficulty: Uint256::ZERO,
+        terminal_block_hash: Hash256::default(),
+        terminal_block_hash_activation_epoch: u64::MAX,
     };
 
     // Update the current slot based on the anchor state time.

@@ -489,6 +489,51 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Wrap a concrete bellatrix `SignedBeaconBlock` into the fork-enum `SignedBeaconBlock`.
     fn bellatrix_into_signed_block(s: Self::BellatrixSignedBeaconBlock) -> Self::SignedBeaconBlock;
 
+    /// Unwrap a fork-enum `BeaconBlock` to the inner bellatrix variant.
+    ///
+    /// Returns `Some` if the block is a `Bellatrix` variant, `None` otherwise.
+    /// Used by merge-transition helpers in `pharos-fork-choice`.
+    fn unwrap_bellatrix_block(s: &Self::BeaconBlock) -> Option<&Self::BellatrixBeaconBlock>;
+
+    /// Check whether `block` is a merge-transition block relative to `pre_state`.
+    ///
+    /// Per `specs/bellatrix/beacon-chain.md:209-210`:
+    /// returns `true` when the merge transition has not yet completed
+    /// (`pre_state.latest_execution_payload_header == default()`) AND the
+    /// block carries a non-default `ExecutionPayload`.
+    ///
+    /// Returns `false` for Phase0 / Altair blocks (no execution payload).
+    fn is_merge_transition_block(pre_state: &Self::BeaconState, block: &Self::BeaconBlock) -> bool;
+
+    /// Extract the EL `block_hash` from a Bellatrix fork-enum block.
+    ///
+    /// Returns `Some(hash)` for Bellatrix blocks; `None` for Phase0 / Altair
+    /// (pre-merge, no execution payload).
+    ///
+    /// Used by the engine driver to compute `safe_block_hash` and
+    /// `finalized_block_hash` per `specs/bellatrix/fork-choice.md:93-100`.
+    fn get_execution_block_hash(block: &Self::BeaconBlock) -> Option<pharos_utils::Hash256>;
+
+    /// Extract the EL `parent_hash` from a Bellatrix fork-enum block.
+    ///
+    /// Returns `Some(hash)` for Bellatrix blocks; `None` for Phase0 / Altair.
+    ///
+    /// Used by the merge-transition guard in `on_block` to obtain the
+    /// `payload.parent_hash` needed for `validate_merge_block`.
+    fn get_execution_payload_parent_hash(
+        block: &Self::BeaconBlock,
+    ) -> Option<pharos_utils::Hash256>;
+
+    /// Extract a clone of the `ExecutionPayload` from a fork-enum `SignedBeaconBlock`.
+    ///
+    /// Returns `Some(payload)` for Bellatrix blocks; `None` for Phase0 / Altair
+    /// (pre-merge, no execution payload).
+    ///
+    /// Used by the block-ingestion loop to push the wire-format payload to the
+    /// engine driver via `engine_newPayloadV1`. The clone is unavoidable because
+    /// the ingestion loop needs ownership to pass across a `spawn_blocking` boundary.
+    fn get_execution_payload(signed: &Self::SignedBeaconBlock) -> Option<Self::ExecutionPayload>;
+
     // -- Container associated types (D7) --
     // These allow STF code to be generic over `<E: EthSpec>` and reference
     // `E::BeaconState`, `E::BeaconBlock`, etc. without naming the concrete
@@ -1158,6 +1203,62 @@ impl EthSpec for MainnetEthSpec {
         crate::state::MainnetSignedBeaconBlock::Bellatrix(s)
     }
 
+    fn unwrap_bellatrix_block(s: &Self::BeaconBlock) -> Option<&Self::BellatrixBeaconBlock> {
+        match s {
+            crate::state::MainnetBeaconBlock::Bellatrix(inner) => Some(inner),
+            crate::state::MainnetBeaconBlock::Phase0(_) => None,
+            crate::state::MainnetBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn is_merge_transition_block(pre_state: &Self::BeaconState, block: &Self::BeaconBlock) -> bool {
+        use crate::bellatrix::ExecutionPayloadHeader;
+        let bellatrix_state = match Self::unwrap_bellatrix_state(pre_state) {
+            Some(s) => s,
+            None => return false,
+        };
+        let bellatrix_block = match Self::unwrap_bellatrix_block(block) {
+            Some(b) => b,
+            None => return false,
+        };
+        let header_default = ExecutionPayloadHeader::<256, 32>::default();
+        let merge_complete = bellatrix_state.latest_execution_payload_header != header_default;
+        let empty_payload = crate::bellatrix::MainnetExecutionPayload::default();
+        !merge_complete && bellatrix_block.body.execution_payload != empty_payload
+    }
+
+    fn get_execution_block_hash(block: &Self::BeaconBlock) -> Option<pharos_utils::Hash256> {
+        match block {
+            crate::state::MainnetBeaconBlock::Bellatrix(b) => {
+                Some(b.body.execution_payload.block_hash)
+            }
+            crate::state::MainnetBeaconBlock::Phase0(_) => None,
+            crate::state::MainnetBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn get_execution_payload_parent_hash(
+        block: &Self::BeaconBlock,
+    ) -> Option<pharos_utils::Hash256> {
+        match block {
+            crate::state::MainnetBeaconBlock::Bellatrix(b) => {
+                Some(b.body.execution_payload.parent_hash)
+            }
+            crate::state::MainnetBeaconBlock::Phase0(_) => None,
+            crate::state::MainnetBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn get_execution_payload(signed: &Self::SignedBeaconBlock) -> Option<Self::ExecutionPayload> {
+        match signed {
+            crate::state::MainnetSignedBeaconBlock::Bellatrix(b) => {
+                Some(b.message.body.execution_payload.clone())
+            }
+            crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
+            crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
+        }
+    }
+
     // Fork-enum types (D7 / Task 1.9)
     type BeaconState = crate::state::MainnetBeaconState;
     type Phase0BeaconState = crate::phase0::MainnetBeaconState;
@@ -1579,6 +1680,62 @@ impl EthSpec for MinimalEthSpec {
 
     fn bellatrix_into_signed_block(s: Self::BellatrixSignedBeaconBlock) -> Self::SignedBeaconBlock {
         crate::state::MinimalSignedBeaconBlock::Bellatrix(s)
+    }
+
+    fn unwrap_bellatrix_block(s: &Self::BeaconBlock) -> Option<&Self::BellatrixBeaconBlock> {
+        match s {
+            crate::state::MinimalBeaconBlock::Bellatrix(inner) => Some(inner),
+            crate::state::MinimalBeaconBlock::Phase0(_) => None,
+            crate::state::MinimalBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn is_merge_transition_block(pre_state: &Self::BeaconState, block: &Self::BeaconBlock) -> bool {
+        use crate::bellatrix::ExecutionPayloadHeader;
+        let bellatrix_state = match Self::unwrap_bellatrix_state(pre_state) {
+            Some(s) => s,
+            None => return false,
+        };
+        let bellatrix_block = match Self::unwrap_bellatrix_block(block) {
+            Some(b) => b,
+            None => return false,
+        };
+        let header_default = ExecutionPayloadHeader::<256, 32>::default();
+        let merge_complete = bellatrix_state.latest_execution_payload_header != header_default;
+        let empty_payload = crate::bellatrix::MinimalExecutionPayload::default();
+        !merge_complete && bellatrix_block.body.execution_payload != empty_payload
+    }
+
+    fn get_execution_block_hash(block: &Self::BeaconBlock) -> Option<pharos_utils::Hash256> {
+        match block {
+            crate::state::MinimalBeaconBlock::Bellatrix(b) => {
+                Some(b.body.execution_payload.block_hash)
+            }
+            crate::state::MinimalBeaconBlock::Phase0(_) => None,
+            crate::state::MinimalBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn get_execution_payload_parent_hash(
+        block: &Self::BeaconBlock,
+    ) -> Option<pharos_utils::Hash256> {
+        match block {
+            crate::state::MinimalBeaconBlock::Bellatrix(b) => {
+                Some(b.body.execution_payload.parent_hash)
+            }
+            crate::state::MinimalBeaconBlock::Phase0(_) => None,
+            crate::state::MinimalBeaconBlock::Altair(_) => None,
+        }
+    }
+
+    fn get_execution_payload(signed: &Self::SignedBeaconBlock) -> Option<Self::ExecutionPayload> {
+        match signed {
+            crate::state::MinimalSignedBeaconBlock::Bellatrix(b) => {
+                Some(b.message.body.execution_payload.clone())
+            }
+            crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
+            crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
+        }
     }
 
     // Fork-enum types (D7 / Task 1.9)

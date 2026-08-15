@@ -59,7 +59,10 @@ fn make_snapshot(head_slot: u64) -> ForkChoiceSnapshot {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// Opening a fresh DB writes schema_version=1; reopening reads it back.
+/// Opening a fresh DB writes schema_version=2; reopening reads it back.
+///
+/// Version was bumped from 1 → 2 when the `payload-status` column family was
+/// added in M4a Phase 4 (Task 4.8a).
 #[test]
 fn open_empty_db_writes_schema_version_1() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -71,7 +74,7 @@ fn open_empty_db_writes_schema_version_1() {
     let val = <S as Store<E>>::get_metadata(&store, b"schema_version")
         .expect("get schema_version")
         .expect("schema_version must be present");
-    assert_eq!(val, 1u32.to_le_bytes(), "schema_version must be 1 LE");
+    assert_eq!(val, 2u32.to_le_bytes(), "schema_version must be 2 LE");
 }
 
 /// Store a block, retrieve it, assert SSZ equality.
@@ -232,7 +235,7 @@ fn schema_mismatch_detected() {
     match result {
         Err(StorageError::SchemaMismatch { found, expected }) => {
             assert_eq!(found, 99, "found must be 99");
-            assert_eq!(expected, 1, "expected must be 1");
+            assert_eq!(expected, 2, "expected must be 2");
         }
         other => panic!("expected SchemaMismatch, got {other:?}"),
     }

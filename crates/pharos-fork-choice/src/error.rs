@@ -5,6 +5,7 @@
 //! `#[from]`.
 
 use pharos_types::phase0::{Root, Slot};
+use pharos_utils::Hash256;
 use thiserror::Error;
 
 /// Errors returned by fork-choice handlers.
@@ -53,4 +54,17 @@ pub enum ForkChoiceError {
     /// `compute_pulled_up_tip`.
     #[error("epoch processing failed: {0}")]
     EpochProcessing(#[from] pharos_stf::EpochProcessingError),
+
+    /// The terminal PoW block is invalid (TTD check failed, hash mismatch, etc.).
+    ///
+    /// Per `specs/bellatrix/fork-choice.md:303-304`.
+    #[error("invalid terminal PoW block: {0}")]
+    InvalidTerminalPowBlock(#[from] crate::pow_block::ValidateMergeBlockError),
+
+    /// The PoW block lookup returned an unavailable block.
+    ///
+    /// The spec notes this condition should be retried later.
+    /// Per `specs/bellatrix/fork-choice.md:303-304`.
+    #[error("PoW block not found: {hash:?}")]
+    PowBlockNotFound { hash: Hash256 },
 }

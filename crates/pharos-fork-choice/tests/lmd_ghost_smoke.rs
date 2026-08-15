@@ -49,6 +49,7 @@ use pharos_fork_choice::{
 };
 use pharos_ssz::TreeHash;
 use pharos_stf::phase0::state_write::BeaconStateWrite;
+use pharos_types::PayloadStatus;
 use pharos_types::{
     MinimalEthSpec,
     phase0::{Epoch, Gwei, Root, Slot, Validator, ValidatorIndex},
@@ -237,5 +238,57 @@ fn lmd_ghost_basic_weight_switch() {
     assert_eq!(
         head, root_c,
         "expected head=C after all validators switched to C"
+    );
+}
+
+/// Three-block chain `genesis → A → B`. Marking A as `Invalid` must prune
+/// both A and B from the viable head set; `get_head` falls back to the
+/// pre-invalid parent (genesis), since B is unreachable through an invalid A.
+#[test]
+fn filter_block_tree_skips_invalid_payload() {
+    let n_validators = 4usize;
+    let eff_balance = 32_000_000_000u64;
+    let anchor_state = make_genesis_state(n_validators, eff_balance);
+    let anchor_block = MinBlock {
+        state_root: anchor_state.tree_hash_root(),
+        ..MinBlock::default()
+    };
+    let mut store = get_forkchoice_store::<MinimalEthSpec>(
+        ForkMinState::Phase0(anchor_state.clone()),
+        ForkMinBlock::Phase0(anchor_block.clone()),
+    );
+    store.checkpoint_states.insert(
+        store.justified_checkpoint.clone(),
+        ForkMinState::Phase0(anchor_state.clone()),
+    );
+
+    let genesis_root: Root = anchor_block.tree_hash_root();
+    let block_a = make_block(1, genesis_root);
+    let root_a = insert_block(&mut store, block_a, &anchor_state);
+    let block_b = make_block(2, root_a);
+    let root_b = insert_block(&mut store, block_b, &anchor_state);
+
+    store
+        .unrealized_justifications
+        .insert(root_a, store.justified_checkpoint.clone());
+    store
+        .unrealized_justifications
+        .insert(root_b, store.justified_checkpoint.clone());
+
+    cast_votes(&mut store, root_b, Epoch(0), n_validators);
+
+    // Sanity: without any payload-status marks, head = B (heaviest leaf).
+    let head_before = get_head::<MinimalEthSpec>(&store);
+    assert_eq!(
+        head_before, root_b,
+        "expected head=B before marking A invalid"
+    );
+
+    // Mark A invalid; this also makes B unreachable through A.
+    store.mark_payload_status(root_a, PayloadStatus::Invalid);
+    let head_after = get_head::<MinimalEthSpec>(&store);
+    assert_eq!(
+        head_after, genesis_root,
+        "expected head=genesis after A marked Invalid"
     );
 }

@@ -2992,7 +2992,9 @@ name = "pharos-node"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
+ "jsonwebtoken",
  "libp2p",
  "parking_lot",
  "pharos-api",
@@ -3004,8 +3006,12 @@ dependencies = [
  "pharos-storage",
  "pharos-types",
  "pharos-utils",
+ "reqwest",
+ "serde",
+ "serde_json",
  "serial_test",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",

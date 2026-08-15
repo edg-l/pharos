@@ -33,4 +33,8 @@ pub enum StorageError {
     /// An I/O error (e.g. reading the genesis state file).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// On-disk data is structurally invalid (wrong discriminant, truncated value, etc.).
+    #[error("corrupted data: {0}")]
+    CorruptedData(String),
 }

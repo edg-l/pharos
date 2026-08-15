@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use pharos_ssz::{Decode, Encode};
-use pharos_types::EthSpec;
 use pharos_types::phase0::primitives::{Root, Slot};
+use pharos_types::{EthSpec, PayloadStatus};
 use rocksdb::{
     ColumnFamily, ColumnFamilyDescriptor, DB, DBCompressionType, Direction, IteratorMode, Options,
     WriteBatch,
@@ -17,8 +17,8 @@ use tracing::warn;
 
 use crate::cf::{
     CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_FORKCHOICE, CF_LC_BOOTSTRAP, CF_LC_FINALITY_UPDATE,
-    CF_LC_OPTIMISTIC_UPDATE, CF_LC_UPDATE, CF_METADATA, CF_SLOT_TO_BLOCK_ROOT, CF_STATES,
-    LC_LATEST_KEY, all_cfs,
+    CF_LC_OPTIMISTIC_UPDATE, CF_LC_UPDATE, CF_METADATA, CF_PAYLOAD_STATUS, CF_SLOT_TO_BLOCK_ROOT,
+    CF_STATES, LC_LATEST_KEY, all_cfs,
 };
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
@@ -27,7 +27,14 @@ use crate::store::Store;
 use crate::transition::BlockTransition;
 
 /// Schema version written to `metadata[b"schema_version"]` at DB creation.
-const SCHEMA_VERSION: u32 = 1;
+///
+/// History:
+/// - v1 (M3a): initial schema (11 column families).
+/// - v2 (M4a): added `payload-status` column family for Bellatrix EL
+///   payload validation state. Opening a v1 database returns
+///   `StorageError::SchemaMismatch`; the operator must delete the chain DB
+///   and resync from a checkpoint.
+const SCHEMA_VERSION: u32 = 2;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -76,8 +83,10 @@ impl RocksStore {
         let cf = store.cf_handle(CF_METADATA)?;
         match store.db.get_cf(cf, b"schema_version")? {
             None => {
-                // Fresh DB — write schema version 1.
-                store.db.put_cf(cf, b"schema_version", 1u32.to_le_bytes())?;
+                // Fresh DB — write current schema version.
+                store
+                    .db
+                    .put_cf(cf, b"schema_version", SCHEMA_VERSION.to_le_bytes())?;
             }
             Some(bytes) => {
                 if bytes.len() != 4 {
@@ -119,6 +128,31 @@ fn per_cf_opts(name: &str) -> Options {
         opts.set_compression_type(DBCompressionType::Lz4);
     }
     opts
+}
+
+// ── PayloadStatus encoding ────────────────────────────────────────────────────
+
+/// Encode a `PayloadStatus` to its `u8` discriminant.
+///
+/// `0 = Valid, 1 = Invalid, 2 = NotValidated` per `D-payload-status-store`.
+fn encode_payload_status(status: PayloadStatus) -> u8 {
+    match status {
+        PayloadStatus::Valid => 0,
+        PayloadStatus::Invalid => 1,
+        PayloadStatus::NotValidated => 2,
+    }
+}
+
+/// Decode a `u8` discriminant back to `PayloadStatus`.
+fn decode_payload_status(byte: u8) -> Result<PayloadStatus, StorageError> {
+    match byte {
+        0 => Ok(PayloadStatus::Valid),
+        1 => Ok(PayloadStatus::Invalid),
+        2 => Ok(PayloadStatus::NotValidated),
+        other => Err(StorageError::CorruptedData(format!(
+            "invalid PayloadStatus discriminant: {other} (expected 0, 1, or 2)"
+        ))),
+    }
 }
 
 // ── Store<E> impl ─────────────────────────────────────────────────────────────
@@ -253,8 +287,60 @@ impl<E: EthSpec> Store<E> for RocksStore {
             wb.put_cf(root_cf, root_key(root), slot.0.to_le_bytes());
         }
 
+        if let Some((root, status)) = &batch.payload_status {
+            let cf = self.cf_handle(CF_PAYLOAD_STATUS)?;
+            wb.put_cf(cf, root_key(root), [encode_payload_status(*status)]);
+        }
+
         self.db.write(wb)?;
         Ok(())
+    }
+
+    fn payload_status(&self, root: Root) -> Result<Option<PayloadStatus>, StorageError> {
+        let cf = self.cf_handle(CF_PAYLOAD_STATUS)?;
+        match self.db.get_cf(cf, root_key(&root))? {
+            None => Ok(None),
+            Some(bytes) => {
+                if bytes.len() != 1 {
+                    return Err(StorageError::InvalidKeyLength {
+                        got: bytes.len(),
+                        expected: 1,
+                    });
+                }
+                Ok(Some(decode_payload_status(bytes[0])?))
+            }
+        }
+    }
+
+    fn payload_statuses_iter(&self) -> Result<Vec<(Root, PayloadStatus)>, StorageError> {
+        let cf = self.cf_handle(CF_PAYLOAD_STATUS)?;
+        let mut out = Vec::new();
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(&[], Direction::Forward));
+        for item in iter {
+            let (k, v) = item?;
+            if k.len() != 32 {
+                warn!(
+                    len = k.len(),
+                    "payload-status CF: unexpected key length; skipping"
+                );
+                continue;
+            }
+            if v.len() != 1 {
+                warn!(
+                    len = v.len(),
+                    "payload-status CF: unexpected value length; skipping"
+                );
+                continue;
+            }
+            let mut root_bytes = [0u8; 32];
+            root_bytes.copy_from_slice(&k);
+            let root = Root::from(root_bytes);
+            let status = decode_payload_status(v[0])?;
+            out.push((root, status));
+        }
+        Ok(out)
     }
 
     // ── Light-client snapshot put/get ─────────────────────────────────────────
@@ -407,5 +493,104 @@ mod tests {
             matches!(result, Err(StorageError::RocksDb(_))),
             "expected RocksDb error, got {result:?}"
         );
+    }
+
+    /// Opening a database written with schema v1 (before the `payload-status` CF was added)
+    /// must return `SchemaMismatch { found: 1, expected: 2 }`.
+    #[test]
+    fn schema_v1_returns_mismatch() {
+        use rocksdb::{ColumnFamilyDescriptor, DB, Options};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("chain_db_v1");
+
+        // Simulate a v1 database: open without the payload-status CF and write v1 sentinel.
+        let v1_cfs = [
+            "default",
+            "blocks",
+            "block_root_to_slot",
+            "slot_to_block_root",
+            "states",
+            "forkchoice",
+            "metadata",
+            "light-client-bootstrap",
+            "light-client-update",
+            "latest-finality-update",
+            "latest-optimistic-update",
+        ];
+        {
+            let mut opts = Options::default();
+            opts.create_if_missing(true);
+            opts.create_missing_column_families(true);
+            let descriptors: Vec<ColumnFamilyDescriptor> = v1_cfs
+                .iter()
+                .map(|&n| ColumnFamilyDescriptor::new(n, Options::default()))
+                .collect();
+            let db = DB::open_cf_descriptors(&opts, &db_path, descriptors).expect("open v1 db");
+            let meta_cf = db.cf_handle("metadata").expect("metadata cf");
+            db.put_cf(meta_cf, b"schema_version", 1u32.to_le_bytes())
+                .expect("write v1 sentinel");
+        }
+
+        // Now open with the current `RocksStore::open` which expects v2.
+        let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+            path: db_path,
+            create_if_missing: false,
+        });
+
+        assert!(
+            matches!(
+                result,
+                Err(StorageError::SchemaMismatch {
+                    found: 1,
+                    expected: 2
+                })
+            ),
+            "expected SchemaMismatch{{found:1,expected:2}}, got {result:?}"
+        );
+    }
+
+    /// Opening a fresh v2 database must allow reading/writing the `payload-status` CF.
+    #[test]
+    fn fresh_db_payload_status_cf_queryable() {
+        use pharos_types::phase0::primitives::Root;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+            path: dir.path().join("chain_db"),
+            create_if_missing: true,
+        })
+        .expect("open fresh v2 store");
+
+        let root = Root::from([0x42u8; 32]);
+
+        // Initially absent.
+        let status =
+            <RocksStore as Store<pharos_types::MainnetEthSpec>>::payload_status(&store, root)
+                .expect("payload_status lookup");
+        assert!(status.is_none(), "fresh db: expected no entry for root");
+
+        // Write via a `BlockTransition`.
+        let mut bt = crate::transition::BlockTransition::<pharos_types::MainnetEthSpec>::new();
+        bt.payload_status = Some((root, PayloadStatus::Invalid));
+        <RocksStore as Store<pharos_types::MainnetEthSpec>>::write_block_transition(&store, bt)
+            .expect("write_block_transition");
+
+        // Now it must be readable.
+        let status =
+            <RocksStore as Store<pharos_types::MainnetEthSpec>>::payload_status(&store, root)
+                .expect("payload_status lookup after write");
+        assert_eq!(
+            status,
+            Some(PayloadStatus::Invalid),
+            "expected Invalid after write"
+        );
+
+        // And show up in the iterator.
+        let all =
+            <RocksStore as Store<pharos_types::MainnetEthSpec>>::payload_statuses_iter(&store)
+                .expect("payload_statuses_iter");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0], (root, PayloadStatus::Invalid));
     }
 }

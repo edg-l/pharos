@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconStateView, EthSpec, PayloadStatus,
     phase0::{Epoch, Root, Slot},
     views::BeaconBlockView,
 };
@@ -265,6 +265,17 @@ where
         Some(b) => b,
         None => return false,
     };
+
+    // Bellatrix per `specs/bellatrix/fork-choice.md:74-79`: skip any block
+    // whose execution payload has been marked `Invalid` by the EL. The
+    // descendants are also unreachable from this root, but recursion via
+    // each parent already filters them out, so we only need the local check.
+    if matches!(
+        store.payload_statuses.get(&block_root),
+        Some(PayloadStatus::Invalid)
+    ) {
+        return false;
+    }
 
     let children: Vec<Root> = store
         .blocks

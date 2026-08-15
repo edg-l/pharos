@@ -10,6 +10,7 @@ use clap::Parser;
 use libp2p::Multiaddr;
 use libp2p::multiaddr::Protocol;
 use parking_lot::RwLock;
+use pharos_engine::{EngineClient, spawn_engine_actor};
 use pharos_fork_choice::{get_forkchoice_store, on_tick};
 use pharos_network::discovery::subnets::compute_subscribed_subnets;
 use pharos_network::{NetworkBuilder, NoopScorer};
@@ -19,10 +20,15 @@ use pharos_types::phase0::MainnetBeaconState as Phase0MainnetBeaconState;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::state::{BeaconBlock as ForkBeaconBlock, MainnetBeaconState};
 use pharos_types::{EthSpec, MainnetEthSpec, load_config_dir};
+use tokio::sync::{mpsc, watch};
 use tracing::info;
 
+use pharos_node::ExecutionEngineHandle;
+use pharos_node::block_ingestion::run_block_ingestion_loop;
+use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::fork_migration::run_fork_migration_loop;
 use pharos_node::host_impl::HostImpl;
+use pharos_node::pow_block::EnginePowBlockProvider;
 use pharos_node::startup::rehydrate_fork_choice_store;
 use pharos_node::subnet_rotation::run_subnet_rotation_loop;
 
@@ -68,6 +74,26 @@ struct Args {
     /// When absent, defaults to the `MainnetEthSpec` compile-time preset.
     #[arg(long, value_name = "PATH")]
     config_dir: Option<PathBuf>,
+
+    /// Path to the JWT secret file for Engine API authentication.
+    ///
+    /// The file must contain a 32-byte hex-encoded secret (64 hex chars),
+    /// optionally with a `0x` prefix. Typically at `<el-datadir>/jwt.hex`.
+    #[arg(long, value_name = "PATH")]
+    jwt_secret: Option<PathBuf>,
+
+    /// Engine API (auth-RPC) endpoint URL for the primary execution client.
+    ///
+    /// Defaults to `http://127.0.0.1:8551`.
+    #[arg(long, default_value = "http://127.0.0.1:8551")]
+    execution_endpoint: String,
+
+    /// Engine API (auth-RPC) endpoint URL for the secondary (failover) EL.
+    ///
+    /// Optional. When present, the engine actor fails over to this endpoint
+    /// after `MAX_HEALTH_FAILURES` consecutive primary health-check failures.
+    #[arg(long, value_name = "URL")]
+    execution_endpoint_secondary: Option<String>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -196,23 +222,89 @@ async fn main() -> anyhow::Result<()> {
         .as_secs();
     on_tick::<MainnetEthSpec>(&mut fc_store_mut, wall_clock_secs);
 
+    // Set the Bellatrix terminal-block constants from the loaded RuntimeConfig.
+    // These are read by `on_block`'s merge-transition guard (`validate_merge_block`)
+    // without threading `RuntimeConfig` through the fork-choice boundary.
+    fc_store_mut.set_terminal_config(
+        runtime_cfg.terminal_total_difficulty,
+        runtime_cfg.terminal_block_hash,
+        runtime_cfg.terminal_block_hash_activation_epoch,
+    );
+
     let fork_choice = Arc::new(RwLock::new(fc_store_mut));
 
-    // ── Step 4: Construct host + network ──────────────────────────────────
+    // ── Step 4: Construct Engine API client + actor ───────────────────────
+
+    // Build `watch` and `mpsc` channels for the engine driver loop.
+    // The block-ingestion loop owns these senders and drives the engine driver
+    // via `head_tx.send()` / `payload_tx.try_send()` directly.
+    let (head_tx, head_rx) = watch::channel::<Option<HeadChange>>(None);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MainnetEthSpec>>(64);
+
+    // Spawn the engine actor only when a JWT secret path is provided.
+    // Without it (e.g. dev/test runs), the engine driver is not started.
+    let engine_handle_opt = if let Some(ref jwt_path) = args.jwt_secret {
+        let jwt_secret = pharos_engine::load_jwt_secret(jwt_path)
+            .with_context(|| format!("loading JWT secret from {:?}", jwt_path))?;
+
+        let primary_url: reqwest::Url = args
+            .execution_endpoint
+            .parse()
+            .context("--execution-endpoint is not a valid URL")?;
+
+        let primary = EngineClient::new(primary_url, jwt_secret.clone())
+            .context("constructing primary EngineClient")?;
+
+        let secondary_opt = if let Some(ref sec_url_str) = args.execution_endpoint_secondary {
+            let sec_url: reqwest::Url = sec_url_str
+                .parse()
+                .context("--execution-endpoint-secondary is not a valid URL")?;
+            let sec = EngineClient::new(sec_url, jwt_secret)
+                .context("constructing secondary EngineClient")?;
+            Some(sec)
+        } else {
+            None
+        };
+
+        let engine_runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("pharos-engine")
+                .enable_all()
+                .build()
+                .context("building engine tokio runtime")?,
+        );
+
+        let handle = spawn_engine_actor(engine_runtime, primary, secondary_opt);
+        info!(endpoint = %args.execution_endpoint, "engine actor started");
+        Some(handle)
+    } else {
+        info!("--jwt-secret not provided; engine API integration disabled");
+        None
+    };
+
+    // ── Step 5: Construct host + network ──────────────────────────────────
 
     // Wrap in Arc so we can retain a handle for record_attnets_change after
     // passing a clone into the network builder. Arc<HostImpl<E>> satisfies
     // Host<E> via the blanket impls in pharos_network::host.
-    let host = Arc::new(HostImpl::<MainnetEthSpec>::new(
+    //
+    // Wire the engine-driver channels before Arc::new so that HostImpl's
+    // on_head_change / on_new_block are live for the M4b/M4c gossip-validator
+    // path. Clones of head_tx / payload_tx are used here; the block-ingestion
+    // loop owns the originals (passed separately in Step 5b below).
+    let mut host_inner = HostImpl::<MainnetEthSpec>::new(
         store,
-        fork_choice,
+        fork_choice.clone(),
         genesis_validators_root,
         fork_version,
-    ));
+    );
+    host_inner.wire_engine(head_tx.clone(), payload_tx.clone());
+    let host = Arc::new(host_inner);
 
     let discv5_addr = SocketAddr::new(listen_ip, args.discv5_port);
 
-    let (handle, discovery_handle) =
+    let (mut handle, discovery_handle) =
         NetworkBuilder::<MainnetEthSpec, Arc<HostImpl<MainnetEthSpec>>, NoopScorer>::new(
             host.clone(),
         )
@@ -284,6 +376,49 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             run_fork_migration_loop::<MainnetEthSpec>(cmd, disc, sched, genesis_time_secs).await;
         });
+    }
+
+    // Spawn engine driver loop + block ingestion loop when the engine is active.
+    if let Some(engine_handle) = engine_handle_opt {
+        // Spawn engine driver: listens for HeadChange watch and NewPayloadRequest mpsc.
+        {
+            let fc = Arc::clone(&fork_choice);
+            let eng = engine_handle.clone();
+            tokio::spawn(async move {
+                run_engine_driver_loop::<MainnetEthSpec>(eng, fc, head_rx, payload_rx).await;
+            });
+            info!("engine driver loop started");
+        }
+
+        // Build production execution-engine bridge (EngineHandle → ExecutionEngine).
+        let exec_engine = Arc::new(ExecutionEngineHandle::new(engine_handle.clone()));
+
+        // Build production PoW-block provider for the merge-transition guard.
+        let pow_provider = Arc::new(EnginePowBlockProvider::new(engine_handle));
+
+        // Take the network event receiver and spawn the block-ingestion loop.
+        let event_rx = handle.take_event_receiver();
+        {
+            let fc = Arc::clone(&fork_choice);
+            let h = Arc::clone(&host);
+            tokio::spawn(async move {
+                if let Err(e) = run_block_ingestion_loop::<MainnetEthSpec, ExecutionEngineHandle>(
+                    event_rx,
+                    h,
+                    fc,
+                    exec_engine,
+                    pow_provider,
+                    head_tx,
+                    payload_tx,
+                    true, // validate_result: enforce BLS signatures and state roots
+                )
+                .await
+                {
+                    tracing::error!(error = %e, "block ingestion loop exited with error");
+                }
+            });
+        }
+        info!("block ingestion loop started");
     }
 
     // Block until Ctrl-C.

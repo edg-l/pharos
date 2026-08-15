@@ -58,7 +58,9 @@ pub struct NetworkHandle<E: EthSpec> {
     /// Receive events emitted by the `Network` event loop.
     ///
     /// Single consumer; never wrapped in `Arc<Mutex<_>>`.
-    event_rx: mpsc::Receiver<NetworkEvent>,
+    /// Wrapped in `Option` so callers can move the receiver out via
+    /// `take_event_receiver`, leaving the rest of the handle intact.
+    event_rx: Option<mpsc::Receiver<NetworkEvent>>,
     /// The local `PeerId` of this node.
     local_peer_id: PeerId,
     /// The discv5 `NodeId` derived from the local secp256k1 keypair.
@@ -83,7 +85,7 @@ impl<E: EthSpec> NetworkHandle<E> {
     ) -> Self {
         Self {
             cmd_tx,
-            event_rx,
+            event_rx: Some(event_rx),
             local_peer_id,
             local_node_id,
             shutdown_tx: Some(shutdown_tx),
@@ -113,8 +115,25 @@ impl<E: EthSpec> NetworkHandle<E> {
     ///
     /// Returns `None` when the network task has exited and the channel is
     /// drained. Uses `&mut self` to enforce single-consumer ownership.
+    ///
+    /// Panics if the event receiver has already been taken via `take_event_receiver`.
     pub async fn next_event(&mut self) -> Option<NetworkEvent> {
-        self.event_rx.recv().await
+        self.event_rx
+            .as_mut()
+            .expect("event receiver already taken")
+            .recv()
+            .await
+    }
+
+    /// Move the event receiver out of the handle.
+    ///
+    /// Allows the block-ingestion loop (or any other component) to own the
+    /// `mpsc::Receiver<NetworkEvent>` directly, while the rest of the handle
+    /// (command sender, peer ID, shutdown signal) remains intact.
+    ///
+    /// Panics if called more than once.
+    pub fn take_event_receiver(&mut self) -> mpsc::Receiver<NetworkEvent> {
+        self.event_rx.take().expect("event receiver already taken")
     }
 
     /// Wait until the network task emits a `LocalEnr` event, then return the
@@ -123,9 +142,15 @@ impl<E: EthSpec> NetworkHandle<E> {
     /// Emitted once at startup by `Network::run` before the main select loop.
     /// Integration tests that need to pass this node's ENR as a bootnode to
     /// another test node should await this before calling `spawn_node`.
+    ///
+    /// Panics if the event receiver has already been taken via `take_event_receiver`.
     pub async fn wait_for_local_enr(&mut self) -> crate::discovery::enr::Enr {
+        let rx = self
+            .event_rx
+            .as_mut()
+            .expect("event receiver already taken");
         loop {
-            match self.event_rx.recv().await {
+            match rx.recv().await {
                 Some(NetworkEvent::LocalEnr(enr)) => return enr,
                 Some(_) => continue,
                 None => panic!("network channel closed before LocalEnr was emitted"),
@@ -146,9 +171,15 @@ impl<E: EthSpec> NetworkHandle<E> {
     /// port is assigned asynchronously by the OS and reported via
     /// `SwarmEvent::NewListenAddr`. There is no synchronous API to query the
     /// actual bound port after `listen_on`; polling events is the only option.
+    ///
+    /// Panics if the event receiver has already been taken via `take_event_receiver`.
     pub async fn wait_for_listen_addr(&mut self) -> libp2p::Multiaddr {
+        let rx = self
+            .event_rx
+            .as_mut()
+            .expect("event receiver already taken");
         loop {
-            match self.event_rx.recv().await {
+            match rx.recv().await {
                 Some(NetworkEvent::NewListenAddr(addr)) => return addr,
                 Some(_) => continue,
                 None => panic!("network channel closed before NewListenAddr was emitted"),

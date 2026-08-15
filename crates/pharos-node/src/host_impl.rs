@@ -24,6 +24,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use tokio::sync::{mpsc, watch};
 use tracing::warn;
 
 use pharos_network::host::{
@@ -41,6 +42,8 @@ use pharos_types::phase0::{
     SignedVoluntaryExit, Slot,
 };
 use pharos_utils::Epoch;
+
+use crate::engine_driver::{HeadChange, NewPayloadRequest};
 
 // ── ForkContextInner ──────────────────────────────────────────────────────────
 
@@ -76,6 +79,11 @@ pub struct HostImpl<E: EthSpec> {
     fork_choice: Arc<RwLock<pharos_fork_choice::Store<E>>>,
     fork_context: ForkContextInner,
     metadata: RwLock<AltairMetaData>,
+    /// Broadcast channel for head-change events.  `None` before the engine
+    /// driver is wired in (cold start before Task 4.8 spawns the loop).
+    pub(crate) head_tx: Option<watch::Sender<Option<HeadChange>>>,
+    /// Channel for new-payload requests to the engine driver.
+    pub(crate) payload_tx: Option<mpsc::Sender<NewPayloadRequest<E>>>,
     _phantom: PhantomData<E>,
 }
 
@@ -121,7 +129,59 @@ impl<E: EthSpec> HostImpl<E> {
                 attnets: Bitvector::default(),
                 syncnets: Bitvector::default(),
             }),
+            head_tx: None,
+            payload_tx: None,
             _phantom: PhantomData,
+        }
+    }
+
+    /// Wire the engine-driver channels into `HostImpl`.
+    ///
+    /// Must be called before `Arc::new(self)` so that `on_head_change` and
+    /// `on_new_block` are live for the M4b/M4c gossip-validator path.
+    ///
+    /// Both senders must be clones of the same channels passed to
+    /// `run_engine_driver_loop` / `run_block_ingestion_loop` in `main.rs`.
+    pub fn wire_engine(
+        &mut self,
+        head_tx: watch::Sender<Option<HeadChange>>,
+        payload_tx: mpsc::Sender<NewPayloadRequest<E>>,
+    ) {
+        self.head_tx = Some(head_tx);
+        self.payload_tx = Some(payload_tx);
+    }
+
+    /// Send a new execution payload to the engine driver for validation.
+    ///
+    /// Called by the gossip-block ingestion path (Task 4.8b) once a Bellatrix
+    /// block has been accepted by `on_block`. The engine driver calls
+    /// `engine_newPayloadV1` and records the returned `PayloadStatus`.
+    pub fn on_new_block(
+        &self,
+        block_root: Root,
+        payload: pharos_engine::types::ExecutionPayloadV1,
+    ) {
+        if let Some(ref tx) = self.payload_tx {
+            let req = NewPayloadRequest {
+                block_root,
+                payload,
+                _marker: PhantomData,
+            };
+            // Best-effort: if the channel is full the ingestion loop has fallen
+            // behind; log a warning and drop.
+            if tx.try_send(req).is_err() {
+                warn!(%block_root, "on_new_block: payload channel full or closed; dropping payload");
+            }
+        }
+    }
+
+    /// Publish a head-change event to the engine driver watch channel.
+    ///
+    /// Called by the block-ingestion loop (Task 4.8b) after each successful
+    /// `get_head` computation.
+    pub fn on_head_change(&self, change: HeadChange) {
+        if let Some(ref tx) = self.head_tx {
+            let _ = tx.send(Some(change));
         }
     }
 

@@ -64,17 +64,26 @@ pub const CF_LC_FINALITY_UPDATE: &str = "latest-finality-update";
 /// Key = `b"latest"` (static), value = SSZ `LightClientOptimisticUpdate`.
 pub const CF_LC_OPTIMISTIC_UPDATE: &str = "latest-optimistic-update";
 
+/// Per-block EL payload validation status (Bellatrix+).
+///
+/// Per `D-payload-status-store` (M4a Phase 4): key = `Root` (32 B),
+/// value = `u8` discriminant (0 = `Valid`, 1 = `Invalid`, 2 = `NotValidated`).
+/// Written by `write_block_transition` when `payload_status` is `Some`.
+/// Read at startup by `rehydrate_fork_choice_store` to seed the in-memory
+/// `pharos_fork_choice::Store::payload_statuses` map.
+pub const CF_PAYLOAD_STATUS: &str = "payload-status";
+
 /// Stable key for the single-row light-client update CFs.
 ///
 /// Used by `CF_LC_FINALITY_UPDATE` and `CF_LC_OPTIMISTIC_UPDATE`.
 pub const LC_LATEST_KEY: &[u8] = b"latest";
 
-/// Returns all eleven column-family names in declaration order.
+/// Returns all twelve column-family names in declaration order.
 ///
 /// Used when opening the database with `DB::open_cf_descriptors` so every CF
 /// is registered. The ordering does not affect correctness; RocksDB looks up
 /// CFs by name.
-pub fn all_cfs() -> [&'static str; 11] {
+pub fn all_cfs() -> [&'static str; 12] {
     [
         CF_DEFAULT,
         CF_BLOCKS,
@@ -87,5 +96,6 @@ pub fn all_cfs() -> [&'static str; 11] {
         CF_LC_UPDATE,
         CF_LC_FINALITY_UPDATE,
         CF_LC_OPTIMISTIC_UPDATE,
+        CF_PAYLOAD_STATUS,
     ]
 }
