@@ -45,6 +45,21 @@ use pharos_types::bellatrix::{
     MinimalExecutionPayloadHeader as BellatrixMinimalExecutionPayloadHeader,
     MinimalSignedBeaconBlock as BellatrixMinimalSignedBeaconBlock,
 };
+use pharos_types::capella::{
+    BLSToExecutionChange, HistoricalSummary, MainnetBeaconBlock as CapellaMainnetBeaconBlock,
+    MainnetBeaconBlockBody as CapellaMainnetBeaconBlockBody,
+    MainnetBeaconState as CapellaMainnetBeaconState,
+    MainnetExecutionPayload as CapellaMainnetExecutionPayload,
+    MainnetExecutionPayloadHeader as CapellaMainnetExecutionPayloadHeader,
+    MainnetSignedBeaconBlock as CapellaMainnetSignedBeaconBlock,
+    MinimalBeaconBlock as CapellaMinimalBeaconBlock,
+    MinimalBeaconBlockBody as CapellaMinimalBeaconBlockBody,
+    MinimalBeaconState as CapellaMinimalBeaconState,
+    MinimalExecutionPayload as CapellaMinimalExecutionPayload,
+    MinimalExecutionPayloadHeader as CapellaMinimalExecutionPayloadHeader,
+    MinimalSignedBeaconBlock as CapellaMinimalSignedBeaconBlock, SignedBLSToExecutionChange,
+    Withdrawal,
+};
 use pharos_types::phase0::{
     AggregateAndProof, AttestationData, BeaconBlockHeader, Checkpoint, DepositData, DepositMessage,
     Eth1Block, Eth1Data, Fork, ForkData, ProposerSlashing, SignedAggregateAndProof,
@@ -901,6 +916,363 @@ fn dispatch_bellatrix_minimal(
         "BeaconState" => check::<BellatrixMinimalBeaconState>(ssz_bytes, expected_root, case_label),
         _ => {
             eprintln!("skipping minimal/bellatrix/ssz_static/{type_name}: not in dispatch table");
+            Ok(false)
+        }
+    }
+}
+
+// ── Capella ssz_static runner ─────────────────────────────────────────────────
+
+/// Run all capella ssz_static tests for the mainnet preset.
+pub fn run_ssz_static_capella_mainnet(root: &Path) -> StaticResult {
+    run_capella_ssz_static_preset(&root.join("mainnet"), "mainnet")
+}
+
+/// Run all capella ssz_static tests for the minimal preset.
+pub fn run_ssz_static_capella_minimal(root: &Path) -> StaticResult {
+    run_capella_ssz_static_preset(&root.join("minimal"), "minimal")
+}
+
+fn run_capella_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResult {
+    let base = preset_dir.join("capella/ssz_static");
+    if !base.is_dir() {
+        return StaticResult {
+            pass: 0,
+            fail: 0,
+            skip: 0,
+            failures: vec![],
+        };
+    }
+
+    let type_dirs = read_dir_sorted(&base).unwrap_or_default();
+
+    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
+    for type_dir in type_dirs {
+        let type_name = dir_name(&type_dir);
+        let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
+        for suite_dir in suite_dirs {
+            let suite_name = dir_name(&suite_dir);
+            let case_dirs = read_dir_sorted(&suite_dir).unwrap_or_default();
+            for case_dir in case_dirs {
+                let case_name = dir_name(&case_dir);
+                let case_label = format!(
+                    "{preset_name}/capella/ssz_static/{type_name}/{suite_name}/{case_name}"
+                );
+                all_cases.push((type_name.clone(), case_dir, case_label));
+            }
+        }
+    }
+
+    let results: Vec<(bool, Option<String>)> = all_cases
+        .into_par_iter()
+        .map(|(type_name, case_dir, case_label)| {
+            let result = run_capella_static_case(preset_name, &type_name, &case_dir, &case_label);
+            match result {
+                Ok(true) => (true, None),
+                Ok(false) => (false, None),
+                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
+            }
+        })
+        .collect();
+
+    let mut pass = 0u64;
+    let mut fail = 0u64;
+    let mut skip = 0u64;
+    let mut failures = Vec::new();
+    for (passed, err) in results {
+        match (passed, err) {
+            (true, _) => pass += 1,
+            (false, None) => skip += 1,
+            (false, Some(msg)) => {
+                fail += 1;
+                failures.push(msg);
+            }
+        }
+    }
+
+    StaticResult {
+        pass,
+        fail,
+        skip,
+        failures,
+    }
+}
+
+fn run_capella_static_case(
+    preset: &str,
+    type_name: &str,
+    case_dir: &Path,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    let ssz_snappy = case_dir.join("serialized.ssz_snappy");
+    if !ssz_snappy.exists() {
+        return Ok(false);
+    }
+    let roots_yaml = case_dir.join("roots.yaml");
+    if !roots_yaml.exists() {
+        return Ok(false);
+    }
+
+    let compressed = std::fs::read(&ssz_snappy)?;
+    let ssz_bytes = decompress_raw(&compressed)?;
+    let expected_root = read_root_from_file(&roots_yaml)?;
+
+    dispatch_capella(preset, type_name, &ssz_bytes, &expected_root, case_label)
+}
+
+fn dispatch_capella(
+    preset: &str,
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    match preset {
+        "mainnet" => dispatch_capella_mainnet(type_name, ssz_bytes, expected_root, case_label),
+        "minimal" => dispatch_capella_minimal(type_name, ssz_bytes, expected_root, case_label),
+        _ => Ok(false),
+    }
+}
+
+fn dispatch_capella_mainnet(
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    use pharos_types::phase0::{AggregateAndProof, SignedAggregateAndProof};
+
+    match type_name {
+        // Phase0-inherited preset-independent types
+        "Fork" => check::<Fork>(ssz_bytes, expected_root, case_label),
+        "ForkData" => check::<ForkData>(ssz_bytes, expected_root, case_label),
+        "Checkpoint" => check::<Checkpoint>(ssz_bytes, expected_root, case_label),
+        "Validator" => check::<Validator>(ssz_bytes, expected_root, case_label),
+        "AttestationData" => check::<AttestationData>(ssz_bytes, expected_root, case_label),
+        "Eth1Data" => check::<Eth1Data>(ssz_bytes, expected_root, case_label),
+        "DepositMessage" => check::<DepositMessage>(ssz_bytes, expected_root, case_label),
+        "DepositData" => check::<DepositData>(ssz_bytes, expected_root, case_label),
+        "BeaconBlockHeader" => check::<BeaconBlockHeader>(ssz_bytes, expected_root, case_label),
+        "SigningData" => check::<SigningData>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlockHeader" => {
+            check::<SignedBeaconBlockHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "ProposerSlashing" => check::<ProposerSlashing>(ssz_bytes, expected_root, case_label),
+        "VoluntaryExit" => check::<VoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "SignedVoluntaryExit" => check::<SignedVoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "Eth1Block" => check::<Eth1Block>(ssz_bytes, expected_root, case_label),
+        // Phase0-inherited preset-specific types (mainnet)
+        "HistoricalBatch" => check::<MainnetHistoricalBatch>(ssz_bytes, expected_root, case_label),
+        "IndexedAttestation" => {
+            check::<MainnetIndexedAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "PendingAttestation" => {
+            check::<MainnetPendingAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "AttesterSlashing" => {
+            check::<MainnetAttesterSlashing>(ssz_bytes, expected_root, case_label)
+        }
+        "Attestation" => check::<MainnetAttestation>(ssz_bytes, expected_root, case_label),
+        "Deposit" => check::<MainnetDeposit>(ssz_bytes, expected_root, case_label),
+        "AggregateAndProof" => {
+            check::<AggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedAggregateAndProof" => {
+            check::<SignedAggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        // Altair-inherited types (mainnet, SYNC_COMMITTEE_SIZE=512)
+        "SyncAggregate" => {
+            check::<pharos_types::altair::SyncAggregate<512>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommittee" => {
+            check::<pharos_types::altair::SyncCommittee<512>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommitteeMessage" => check::<pharos_types::altair::SyncCommitteeMessage>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SyncAggregatorSelectionData" => {
+            check::<pharos_types::altair::SyncAggregatorSelectionData>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        "SyncCommitteeContribution" => {
+            check::<pharos_types::altair::SyncCommitteeContribution<128>>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        "ContributionAndProof" => check::<pharos_types::altair::ContributionAndProof<128>>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SignedContributionAndProof" => check::<
+            pharos_types::altair::SignedContributionAndProof<128>,
+        >(ssz_bytes, expected_root, case_label),
+        // Capella-new types (mainnet)
+        "Withdrawal" => check::<Withdrawal>(ssz_bytes, expected_root, case_label),
+        "BLSToExecutionChange" => {
+            check::<BLSToExecutionChange>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedBLSToExecutionChange" => {
+            check::<SignedBLSToExecutionChange>(ssz_bytes, expected_root, case_label)
+        }
+        "HistoricalSummary" => check::<HistoricalSummary>(ssz_bytes, expected_root, case_label),
+        "ExecutionPayload" => {
+            check::<CapellaMainnetExecutionPayload>(ssz_bytes, expected_root, case_label)
+        }
+        "ExecutionPayloadHeader" => {
+            check::<CapellaMainnetExecutionPayloadHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlockBody" => {
+            check::<CapellaMainnetBeaconBlockBody>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlock" => check::<CapellaMainnetBeaconBlock>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlock" => {
+            check::<CapellaMainnetSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconState" => check::<CapellaMainnetBeaconState>(ssz_bytes, expected_root, case_label),
+        // Phase 5: capella LC ssz_static (LightClientHeader, LightClientBootstrap,
+        // LightClientUpdate, LightClientFinalityUpdate, LightClientOptimisticUpdate)
+        // are deferred until Phase 5 ships the capella LC header type.
+        "LightClientHeader"
+        | "LightClientBootstrap"
+        | "LightClientUpdate"
+        | "LightClientFinalityUpdate"
+        | "LightClientOptimisticUpdate" => {
+            eprintln!("skipping mainnet/capella/ssz_static/{type_name}: LC types land in Phase 5");
+            Ok(false)
+        }
+        _ => {
+            eprintln!("skipping mainnet/capella/ssz_static/{type_name}: not in dispatch table");
+            Ok(false)
+        }
+    }
+}
+
+fn dispatch_capella_minimal(
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    use pharos_types::phase0::{AggregateAndProof, SignedAggregateAndProof};
+
+    match type_name {
+        // Phase0-inherited preset-independent types
+        "Fork" => check::<Fork>(ssz_bytes, expected_root, case_label),
+        "ForkData" => check::<ForkData>(ssz_bytes, expected_root, case_label),
+        "Checkpoint" => check::<Checkpoint>(ssz_bytes, expected_root, case_label),
+        "Validator" => check::<Validator>(ssz_bytes, expected_root, case_label),
+        "AttestationData" => check::<AttestationData>(ssz_bytes, expected_root, case_label),
+        "Eth1Data" => check::<Eth1Data>(ssz_bytes, expected_root, case_label),
+        "DepositMessage" => check::<DepositMessage>(ssz_bytes, expected_root, case_label),
+        "DepositData" => check::<DepositData>(ssz_bytes, expected_root, case_label),
+        "BeaconBlockHeader" => check::<BeaconBlockHeader>(ssz_bytes, expected_root, case_label),
+        "SigningData" => check::<SigningData>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlockHeader" => {
+            check::<SignedBeaconBlockHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "ProposerSlashing" => check::<ProposerSlashing>(ssz_bytes, expected_root, case_label),
+        "VoluntaryExit" => check::<VoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "SignedVoluntaryExit" => check::<SignedVoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "Eth1Block" => check::<Eth1Block>(ssz_bytes, expected_root, case_label),
+        // Phase0-inherited preset-specific types (minimal)
+        "HistoricalBatch" => check::<MinimalHistoricalBatch>(ssz_bytes, expected_root, case_label),
+        "IndexedAttestation" => {
+            check::<MinimalIndexedAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "PendingAttestation" => {
+            check::<MinimalPendingAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "AttesterSlashing" => {
+            check::<MinimalAttesterSlashing>(ssz_bytes, expected_root, case_label)
+        }
+        "Attestation" => check::<MinimalAttestation>(ssz_bytes, expected_root, case_label),
+        "Deposit" => check::<MinimalDeposit>(ssz_bytes, expected_root, case_label),
+        "AggregateAndProof" => {
+            check::<AggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedAggregateAndProof" => {
+            check::<SignedAggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        // Altair-inherited types (minimal, SYNC_COMMITTEE_SIZE=32)
+        "SyncAggregate" => {
+            check::<pharos_types::altair::SyncAggregate<32>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommittee" => {
+            check::<pharos_types::altair::SyncCommittee<32>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommitteeMessage" => check::<pharos_types::altair::SyncCommitteeMessage>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SyncAggregatorSelectionData" => {
+            check::<pharos_types::altair::SyncAggregatorSelectionData>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        "SyncCommitteeContribution" => check::<pharos_types::altair::SyncCommitteeContribution<8>>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "ContributionAndProof" => check::<pharos_types::altair::ContributionAndProof<8>>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SignedContributionAndProof" => {
+            check::<pharos_types::altair::SignedContributionAndProof<8>>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        // Capella-new types (minimal)
+        "Withdrawal" => check::<Withdrawal>(ssz_bytes, expected_root, case_label),
+        "BLSToExecutionChange" => {
+            check::<BLSToExecutionChange>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedBLSToExecutionChange" => {
+            check::<SignedBLSToExecutionChange>(ssz_bytes, expected_root, case_label)
+        }
+        "HistoricalSummary" => check::<HistoricalSummary>(ssz_bytes, expected_root, case_label),
+        "ExecutionPayload" => {
+            check::<CapellaMinimalExecutionPayload>(ssz_bytes, expected_root, case_label)
+        }
+        "ExecutionPayloadHeader" => {
+            check::<CapellaMinimalExecutionPayloadHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlockBody" => {
+            check::<CapellaMinimalBeaconBlockBody>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlock" => check::<CapellaMinimalBeaconBlock>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlock" => {
+            check::<CapellaMinimalSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconState" => check::<CapellaMinimalBeaconState>(ssz_bytes, expected_root, case_label),
+        // Phase 5: capella LC ssz_static (LightClientHeader, LightClientBootstrap,
+        // LightClientUpdate, LightClientFinalityUpdate, LightClientOptimisticUpdate)
+        // are deferred until Phase 5 ships the capella LC header type.
+        "LightClientHeader"
+        | "LightClientBootstrap"
+        | "LightClientUpdate"
+        | "LightClientFinalityUpdate"
+        | "LightClientOptimisticUpdate" => {
+            eprintln!("skipping minimal/capella/ssz_static/{type_name}: LC types land in Phase 5");
+            Ok(false)
+        }
+        _ => {
+            eprintln!("skipping minimal/capella/ssz_static/{type_name}: not in dispatch table");
             Ok(false)
         }
     }

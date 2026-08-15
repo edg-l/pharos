@@ -37,7 +37,7 @@ use rayon::prelude::*;
 
 use crate::fixture_walker::{
     WalkOpts, load_pre_post_altair_state, load_pre_post_bellatrix_state,
-    load_pre_post_phase0_state, walk_category,
+    load_pre_post_capella_state, load_pre_post_phase0_state, walk_category,
 };
 use crate::fs_util::dir_name;
 
@@ -1052,6 +1052,513 @@ where
             } else {
                 CaseResult::Fail(format!(
                     "{case_name}: state mismatch after bellatrix epoch sub-routine"
+                ))
+            }
+        }
+        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
+        (Err(_), None) => CaseResult::Pass,
+        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
+    }
+}
+
+// ── Capella epoch-processing dispatchers ─────────────────────────────────────
+
+/// Run all capella epoch-processing sub-categories for the mainnet preset.
+pub fn run_epoch_processing_capella_mainnet(root: &Path) -> EpochResult {
+    use pharos_stf::altair::epoch::{
+        process_effective_balance_updates as altair_eff_bal,
+        process_eth1_data_reset as altair_eth1_reset,
+        process_inactivity_updates as altair_inactivity,
+        process_justification_and_finalization as altair_jf,
+        process_participation_flag_updates as altair_participation_flags,
+        process_randao_mixes_reset as altair_randao, process_registry_updates as altair_registry,
+        process_slashings_reset as altair_slash_reset,
+        process_sync_committee_updates as altair_sync_committee,
+    };
+    use pharos_stf::capella::epoch::{
+        process_historical_summaries_update, process_rewards_and_penalties_capella,
+        process_slashings_capella,
+    };
+    use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
+    use pharos_types::{MainnetEthSpec as E, capella::MainnetBeaconState};
+
+    let mut total = EpochResult::new();
+
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "justification_and_finalization",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_jf::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "inactivity_updates",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_inactivity::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "rewards_and_penalties",
+        |s| {
+            process_rewards_and_penalties_capella::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "registry_updates",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_registry::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "slashings",
+        |s| {
+            process_slashings_capella::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "eth1_data_reset",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_eth1_reset::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "effective_balance_updates",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_eff_bal::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "slashings_reset",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_slash_reset::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "randao_mixes_reset",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_randao::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "historical_summaries_update",
+        |s| {
+            process_historical_summaries_update::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "participation_flag_updates",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_participation_flags::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                E,
+            >(&mut a)
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MainnetBeaconState, E, _>(
+        root,
+        "mainnet",
+        "sync_committee_updates",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_sync_committee::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                E,
+            >(&mut a)
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total
+}
+
+/// Run all capella epoch-processing sub-categories for the minimal preset.
+pub fn run_epoch_processing_capella_minimal(root: &Path) -> EpochResult {
+    use pharos_stf::altair::epoch::{
+        process_effective_balance_updates as altair_eff_bal,
+        process_eth1_data_reset as altair_eth1_reset,
+        process_inactivity_updates as altair_inactivity,
+        process_justification_and_finalization as altair_jf,
+        process_participation_flag_updates as altair_participation_flags,
+        process_randao_mixes_reset as altair_randao, process_registry_updates as altair_registry,
+        process_slashings_reset as altair_slash_reset,
+        process_sync_committee_updates as altair_sync_committee,
+    };
+    use pharos_stf::capella::epoch::{
+        process_historical_summaries_update, process_rewards_and_penalties_capella,
+        process_slashings_capella,
+    };
+    use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
+    use pharos_types::{MinimalEthSpec as E, capella::MinimalBeaconState};
+
+    let mut total = EpochResult::new();
+
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "justification_and_finalization",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_jf::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "inactivity_updates",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_inactivity::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "rewards_and_penalties",
+        |s| {
+            process_rewards_and_penalties_capella::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "registry_updates",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_registry::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "slashings",
+        |s| {
+            process_slashings_capella::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "eth1_data_reset",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_eth1_reset::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "effective_balance_updates",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_eff_bal::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "slashings_reset",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_slash_reset::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "randao_mixes_reset",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_randao::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "historical_summaries_update",
+        |s| {
+            process_historical_summaries_update::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "participation_flag_updates",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_participation_flags::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total.merge(run_capella_sub::<MinimalBeaconState, E, _>(
+        root,
+        "minimal",
+        "sync_committee_updates",
+        |s| {
+            let mut a = capella_state_to_altair(s);
+            altair_sync_committee::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(s, a);
+            Ok(())
+        },
+    ));
+    total
+}
+
+// ── Capella sub-routine runner ────────────────────────────────────────────────
+
+fn run_capella_sub<S, E, F>(root: &Path, preset: &str, sub: &str, apply: F) -> EpochResult
+where
+    E: EthSpec<CapellaBeaconState = S>,
+    S: pharos_ssz::Decode + pharos_ssz::Encode + Send,
+    F: Fn(&mut S) -> Result<(), String> + Sync + Send,
+{
+    let cases: Vec<_> = walk_category(
+        root,
+        preset,
+        "capella",
+        "epoch_processing",
+        Some(sub),
+        epoch_walk_opts(),
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "capella/epoch_processing/{preset}/{sub}/{}",
+                dir_name(&case_dir)
+            );
+            run_capella_epoch_case::<S, E, _>(&case_dir, &case_name, &apply)
+        })
+        .collect();
+
+    let mut out = EpochResult::new();
+    for result in outcomes {
+        match result {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_capella_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
+where
+    E: EthSpec<CapellaBeaconState = S>,
+    S: pharos_ssz::Decode + pharos_ssz::Encode,
+    F: Fn(&mut S) -> Result<(), String>,
+{
+    let (pre, post) = match load_pre_post_capella_state::<E>(case_dir) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut pre_inner = match E::into_capella_state(pre) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not capella state")),
+    };
+
+    let result = apply(&mut pre_inner);
+
+    let post_bytes = post.map(|p| p.as_ssz_bytes());
+    let current_bytes = E::capella_into_state(pre_inner).as_ssz_bytes();
+
+    match (result, post_bytes) {
+        (Ok(()), Some(expected)) => {
+            if current_bytes == expected {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!(
+                    "{case_name}: state mismatch after capella epoch sub-routine"
                 ))
             }
         }

@@ -277,19 +277,23 @@ where
     E::AltairBeaconBlock: BeaconBlockView + Clone,
     E::AltairSignedBeaconBlock: SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock: SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView + Clone,
+    E::CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
 {
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
 
     // Extract the inner `E::BeaconBlock` (fork-enum) without calling
     // `signed_block.message()`, which panics on the fork-enum
     // (it cannot return a reference to an owned intermediate value).
-    // Instead, match on the phase0 / altair / bellatrix inner variants and promote.
+    // Instead, match on the phase0 / altair / bellatrix / capella inner variants and promote.
     let block: E::BeaconBlock = if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
         E::phase0_into_block(inner.message().clone())
     } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
         E::altair_into_block(inner.message().clone())
     } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed_block) {
         E::bellatrix_into_block(inner.message().clone())
+    } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
+        E::capella_into_block(inner.message().clone())
     } else {
         return Err(ForkChoiceError::InvalidBlock {
             reason: "unrecognised SignedBeaconBlock fork variant".to_owned(),

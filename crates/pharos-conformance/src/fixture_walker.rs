@@ -313,6 +313,47 @@ where
     Ok(E::bellatrix_into_signed_block(inner))
 }
 
+/// Load `pre.ssz_snappy` and optionally `post.ssz_snappy` as capella
+/// `BeaconState`s, wrapped in the fork-enum.
+pub fn load_pre_post_capella_state<E: EthSpec>(
+    dir: &Path,
+) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
+where
+    E::CapellaBeaconState: Decode,
+{
+    let pre_inner: E::CapellaBeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
+    let pre = E::capella_into_state(pre_inner);
+    let post = if dir.join("post.ssz_snappy").exists() {
+        let post_inner: E::CapellaBeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
+        Some(E::capella_into_state(post_inner))
+    } else {
+        None
+    };
+    Ok((pre, post))
+}
+
+/// Load `<name>.ssz_snappy` as a capella `BeaconState`, wrapped in the fork-enum.
+pub fn load_capella_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+where
+    E::CapellaBeaconState: Decode,
+{
+    let inner: E::CapellaBeaconState = load_ssz_snappy(dir, name)?;
+    Ok(E::capella_into_state(inner))
+}
+
+/// Decode a single `<name>.ssz_snappy` file as a capella `SignedBeaconBlock`,
+/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
+pub fn load_capella_signed_block<E: EthSpec>(
+    dir: &Path,
+    name: &str,
+) -> Result<E::SignedBeaconBlock, String>
+where
+    E::CapellaSignedBeaconBlock: Decode,
+{
+    let inner: E::CapellaSignedBeaconBlock = load_ssz_snappy(dir, name)?;
+    Ok(E::capella_into_signed_block(inner))
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Decode a single `<name>.ssz_snappy` file inside `dir`.

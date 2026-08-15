@@ -344,7 +344,7 @@ pub fn process_historical_summaries_update<
 /// `process_slashings` for Capella.
 ///
 /// Inherits Bellatrix's `PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX`.
-fn process_slashings_capella<
+pub fn process_slashings_capella<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
     const ETH1_DATA_VOTES_LIMIT: u64,
@@ -460,7 +460,7 @@ where
 /// `process_rewards_and_penalties` for Capella.
 ///
 /// Identical to Bellatrix.
-fn process_rewards_and_penalties_capella<
+pub fn process_rewards_and_penalties_capella<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
     const ETH1_DATA_VOTES_LIMIT: u64,

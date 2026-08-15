@@ -34,8 +34,8 @@ use pharos_utils::Gwei;
 use rayon::prelude::*;
 
 use crate::fixture_walker::{
-    WalkOpts, load_altair_state, load_bellatrix_state, load_phase0_state, load_ssz_snappy,
-    walk_category,
+    WalkOpts, load_altair_state, load_bellatrix_state, load_capella_state, load_phase0_state,
+    load_ssz_snappy, walk_category,
 };
 use crate::fs_util::dir_name;
 
@@ -620,4 +620,221 @@ where
 enum CaseResult {
     Pass,
     Fail(String),
+}
+
+// ── Capella entry points ──────────────────────────────────────────────────────
+
+/// Run all capella rewards sub-categories for the mainnet preset.
+pub fn run_rewards_capella_mainnet(root: &Path) -> RewardsResult {
+    let mut total = RewardsResult::new();
+    for sub in ["basic", "leak", "random"] {
+        total.merge(run_capella_rewards_sub_mainnet(root, sub));
+    }
+    total
+}
+
+/// Run all capella rewards sub-categories for the minimal preset.
+pub fn run_rewards_capella_minimal(root: &Path) -> RewardsResult {
+    let mut total = RewardsResult::new();
+    for sub in ["basic", "leak", "random"] {
+        total.merge(run_capella_rewards_sub_minimal(root, sub));
+    }
+    total
+}
+
+fn run_capella_rewards_sub_mainnet(root: &Path, sub: &str) -> RewardsResult {
+    use pharos_stf::altair::helpers::get_flag_index_deltas;
+    use pharos_stf::capella::helpers::{
+        capella_state_to_altair, get_inactivity_penalty_deltas_capella,
+    };
+    use pharos_types::{MainnetEthSpec as E, capella::MainnetBeaconState};
+
+    let cases: Vec<_> = walk_category(
+        root,
+        "mainnet",
+        "capella",
+        "rewards",
+        Some(sub),
+        WalkOpts {
+            meta_required: false,
+            inner_dir: Some("pyspec_tests"),
+        },
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!("capella/rewards/{sub}/mainnet/{}", dir_name(&case_dir));
+            run_capella_rewards_case::<E, MainnetBeaconState>(
+                &case_dir,
+                &case_name,
+                |s, fi| {
+                    let a = capella_state_to_altair(s);
+                    get_flag_index_deltas::<
+                        8192,
+                        16_777_216,
+                        2048,
+                        1_099_511_627_776,
+                        65536,
+                        8192,
+                        4,
+                        512,
+                        E,
+                    >(&a, fi)
+                },
+                |s| {
+                    get_inactivity_penalty_deltas_capella::<
+                        8192,
+                        16_777_216,
+                        2048,
+                        1_099_511_627_776,
+                        65536,
+                        8192,
+                        4,
+                        512,
+                        256,
+                        32,
+                        E,
+                    >(s)
+                },
+            )
+        })
+        .collect();
+    let mut out = RewardsResult::new();
+    for outcome in outcomes {
+        match outcome {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_capella_rewards_sub_minimal(root: &Path, sub: &str) -> RewardsResult {
+    use pharos_stf::altair::helpers::get_flag_index_deltas;
+    use pharos_stf::capella::helpers::{
+        capella_state_to_altair, get_inactivity_penalty_deltas_capella,
+    };
+    use pharos_types::{MinimalEthSpec as E, capella::MinimalBeaconState};
+
+    let cases: Vec<_> = walk_category(
+        root,
+        "minimal",
+        "capella",
+        "rewards",
+        Some(sub),
+        WalkOpts {
+            meta_required: false,
+            inner_dir: Some("pyspec_tests"),
+        },
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> =
+        cases
+            .into_par_iter()
+            .map(|(case_dir, _meta)| {
+                let case_name = format!("capella/rewards/{sub}/minimal/{}", dir_name(&case_dir));
+                run_capella_rewards_case::<E, MinimalBeaconState>(
+                    &case_dir,
+                    &case_name,
+                    |s, fi| {
+                        let a = capella_state_to_altair(s);
+                        get_flag_index_deltas::<
+                            64,
+                            16_777_216,
+                            32,
+                            1_099_511_627_776,
+                            64,
+                            64,
+                            4,
+                            32,
+                            E,
+                        >(&a, fi)
+                    },
+                    |s| {
+                        get_inactivity_penalty_deltas_capella::<
+                            64,
+                            16_777_216,
+                            32,
+                            1_099_511_627_776,
+                            64,
+                            64,
+                            4,
+                            32,
+                            256,
+                            32,
+                            E,
+                        >(s)
+                    },
+                )
+            })
+            .collect();
+    let mut out = RewardsResult::new();
+    for outcome in outcomes {
+        match outcome {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+fn run_capella_rewards_case<E, S>(
+    case_dir: &Path,
+    case_name: &str,
+    get_flag_deltas: impl Fn(&S, usize) -> (Vec<Gwei>, Vec<Gwei>),
+    get_inactivity_deltas: impl Fn(&S) -> (Vec<Gwei>, Vec<Gwei>),
+) -> CaseResult
+where
+    E: EthSpec<CapellaBeaconState = S>,
+    S: pharos_ssz::Decode,
+{
+    let pre = match load_capella_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let pre_inner = match E::into_capella_state(pre) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not capella state")),
+    };
+
+    macro_rules! check_flag_deltas {
+        ($flag_index:expr, $file:literal, $flag_name:literal) => {{
+            let (rewards, penalties) = get_flag_deltas(&pre_inner, $flag_index);
+            let actual = make_deltas(rewards, penalties);
+            let expected = match load_ssz_snappy::<Deltas<1_099_511_627_776u64>>(case_dir, $file) {
+                Ok(d) => d,
+                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+            };
+            if actual.as_ssz_bytes() != expected.as_ssz_bytes() {
+                return CaseResult::Fail(format!("{case_name}: {} mismatch", $flag_name));
+            }
+        }};
+    }
+
+    check_flag_deltas!(0, "source_deltas.ssz_snappy", "source_deltas");
+    check_flag_deltas!(1, "target_deltas.ssz_snappy", "target_deltas");
+    check_flag_deltas!(2, "head_deltas.ssz_snappy", "head_deltas");
+
+    let (rewards, penalties) = get_inactivity_deltas(&pre_inner);
+    let actual_inactivity = make_deltas(rewards, penalties);
+    let expected_inactivity = match load_ssz_snappy::<Deltas<1_099_511_627_776u64>>(
+        case_dir,
+        "inactivity_penalty_deltas.ssz_snappy",
+    ) {
+        Ok(d) => d,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    if actual_inactivity.as_ssz_bytes() != expected_inactivity.as_ssz_bytes() {
+        return CaseResult::Fail(format!("{case_name}: inactivity_penalty_deltas mismatch"));
+    }
+
+    CaseResult::Pass
 }

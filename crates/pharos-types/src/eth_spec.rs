@@ -872,7 +872,7 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + Send
         + Sync
         + 'static
-        + crate::views::SignedBeaconBlockView;
+        + crate::views::SignedBeaconBlockView<Message = Self::CapellaBeaconBlock>;
 
     /// Capella inner `BeaconBlockBody` (unwrapped).
     type CapellaBeaconBlockBody: pharos_ssz::Encode

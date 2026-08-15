@@ -1445,6 +1445,411 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("bellatrix", "fork_choice", "minimal"));
     }
 
+    // ── capella/transition ────────────────────────────────────────────────────
+    if filter.matches("capella", "transition", "mainnet") {
+        let result = transition::run_transition_capella_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "transition",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "transition", "mainnet"));
+    }
+
+    if filter.matches("capella", "transition", "minimal") {
+        let result = transition::run_transition_capella_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "transition",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "transition", "minimal"));
+    }
+
+    // ── capella/ssz_static ────────────────────────────────────────────────────
+    if filter.matches("capella", "ssz_static", "mainnet") {
+        let result = ssz_static::run_ssz_static_capella_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "ssz_static",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "ssz_static", "mainnet"));
+    }
+
+    if filter.matches("capella", "ssz_static", "minimal") {
+        let result = ssz_static::run_ssz_static_capella_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "ssz_static",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "ssz_static", "minimal"));
+    }
+
+    // ── capella/operations ────────────────────────────────────────────────────
+    if filter.matches("capella", "operations", "mainnet") {
+        let result = operations::run_operations_capella_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "operations",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "operations", "mainnet"));
+    }
+
+    if filter.matches("capella", "operations", "minimal") {
+        let result = operations::run_operations_capella_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "operations",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "operations", "minimal"));
+    }
+
+    // ── capella/epoch_processing ──────────────────────────────────────────────
+    if filter.matches("capella", "epoch_processing", "mainnet") {
+        let result = epoch_processing::run_epoch_processing_capella_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "epoch_processing",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "epoch_processing", "mainnet"));
+    }
+
+    if filter.matches("capella", "epoch_processing", "minimal") {
+        let result = epoch_processing::run_epoch_processing_capella_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "epoch_processing",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "epoch_processing", "minimal"));
+    }
+
+    // ── capella/sanity ────────────────────────────────────────────────────────
+    if filter.matches("capella", "sanity", "mainnet") {
+        let result = sanity::run_sanity_capella_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "sanity",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "sanity", "mainnet"));
+    }
+
+    if filter.matches("capella", "sanity", "minimal") {
+        let result = sanity::run_sanity_capella_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "sanity",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "sanity", "minimal"));
+    }
+
+    // ── capella/finality ──────────────────────────────────────────────────────
+    if filter.matches("capella", "finality", "mainnet") {
+        let result = finality::run_finality_capella_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "finality",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "finality", "mainnet"));
+    }
+
+    if filter.matches("capella", "finality", "minimal") {
+        let result = finality::run_finality_capella_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "finality",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "finality", "minimal"));
+    }
+
+    // ── capella/random ────────────────────────────────────────────────────────
+    if filter.matches("capella", "random", "mainnet") {
+        let result = random::run_random_capella_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "random",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "random", "mainnet"));
+    }
+
+    if filter.matches("capella", "random", "minimal") {
+        let result = random::run_random_capella_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "random",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "random", "minimal"));
+    }
+
+    // ── capella/rewards ───────────────────────────────────────────────────────
+    if filter.matches("capella", "rewards", "mainnet") {
+        let result = rewards::run_rewards_capella_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "rewards",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "rewards", "mainnet"));
+    }
+
+    if filter.matches("capella", "rewards", "minimal") {
+        let result = rewards::run_rewards_capella_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "rewards",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "rewards", "minimal"));
+    }
+
+    // ── capella/fork_choice ───────────────────────────────────────────────────
+    if filter.matches("capella", "fork_choice", "mainnet") {
+        let result = fork_choice::run_fork_choice_capella_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "fork_choice",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "fork_choice", "mainnet"));
+    }
+
+    if filter.matches("capella", "fork_choice", "minimal") {
+        let result = fork_choice::run_fork_choice_capella_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "capella",
+            "fork_choice",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("capella", "fork_choice", "minimal"));
+    }
+
     // ── engine/yaml ───────────────────────────────────────────────────────────
     if filter.matches("engine", "yaml", "-") {
         let specs_dir = dirs_engine_yaml();
@@ -1548,6 +1953,25 @@ fn fill_future_placeholders(report: &mut Report) {
         ("bellatrix", "rewards", "minimal"),
         ("bellatrix", "fork_choice", "mainnet"),
         ("bellatrix", "fork_choice", "minimal"),
+        // Capella categories
+        ("capella", "transition", "mainnet"),
+        ("capella", "transition", "minimal"),
+        ("capella", "ssz_static", "mainnet"),
+        ("capella", "ssz_static", "minimal"),
+        ("capella", "operations", "mainnet"),
+        ("capella", "operations", "minimal"),
+        ("capella", "epoch_processing", "mainnet"),
+        ("capella", "epoch_processing", "minimal"),
+        ("capella", "sanity", "mainnet"),
+        ("capella", "sanity", "minimal"),
+        ("capella", "finality", "mainnet"),
+        ("capella", "finality", "minimal"),
+        ("capella", "random", "mainnet"),
+        ("capella", "random", "minimal"),
+        ("capella", "rewards", "mainnet"),
+        ("capella", "rewards", "minimal"),
+        ("capella", "fork_choice", "mainnet"),
+        ("capella", "fork_choice", "minimal"),
         // Engine API YAML conformance
         ("engine", "yaml", "-"),
     ]
@@ -1629,10 +2053,28 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("bellatrix", "rewards", "minimal"),
         ("bellatrix", "fork_choice", "mainnet"),
         ("bellatrix", "fork_choice", "minimal"),
+        // capella categories
+        ("capella", "transition", "mainnet"),
+        ("capella", "transition", "minimal"),
+        ("capella", "ssz_static", "mainnet"),
+        ("capella", "ssz_static", "minimal"),
+        ("capella", "operations", "mainnet"),
+        ("capella", "operations", "minimal"),
+        ("capella", "epoch_processing", "mainnet"),
+        ("capella", "epoch_processing", "minimal"),
+        ("capella", "sanity", "mainnet"),
+        ("capella", "sanity", "minimal"),
+        ("capella", "finality", "mainnet"),
+        ("capella", "finality", "minimal"),
+        ("capella", "random", "mainnet"),
+        ("capella", "random", "minimal"),
+        ("capella", "rewards", "mainnet"),
+        ("capella", "rewards", "minimal"),
+        ("capella", "fork_choice", "mainnet"),
+        ("capella", "fork_choice", "minimal"),
         // engine API YAML conformance
         ("engine", "yaml", "-"),
         // future forks (placeholders)
-        ("capella", "ssz_static", "-"),
         ("deneb", "ssz_static", "-"),
         ("electra", "ssz_static", "-"),
         ("fulu", "ssz_static", "-"),
