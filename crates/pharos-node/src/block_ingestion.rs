@@ -241,6 +241,7 @@ where
             &egress.payload_tx,
             validate_result,
             &cfg,
+            &host.store_arc(),
         )
         .await
         {

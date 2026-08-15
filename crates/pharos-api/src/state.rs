@@ -18,7 +18,9 @@ use pharos_types::{
     EthSpec, SyncCommitteePubkeys,
     config::RuntimeConfig,
     phase0::{BeaconBlockHeader, Checkpoint, Root, Slot},
+    views::SignedBeaconBlockView as _,
 };
+use pharos_utils::BLSSignature;
 
 use crate::dto::block::{BlockApiSerializer, SignedBlockForApi};
 use crate::error::ApiError;
@@ -117,6 +119,18 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
     /// attestations as a JSON array. The implementation fetches from `RocksStore`
     /// and pattern-matches on the concrete fork-enum variant to build the DTOs.
     fn block_by_root_for_api(&self, root: Root) -> Result<Option<SignedBlockForApi>, ApiError>;
+
+    /// Return the `(BeaconBlockHeader, BLSSignature)` for `root`, sourcing the REAL
+    /// signature from the stored `SignedBeaconBlock`.
+    ///
+    /// After Task 1.1 (live block persistence), every imported block is flushed to
+    /// `RocksStore` before the head is published, so this method reliably returns the
+    /// real signature for any recently imported block. Falls back to `None` when the
+    /// signed block is absent (e.g., pre-schema-v3 anchor blocks).
+    fn signed_block_header_at(
+        &self,
+        root: Root,
+    ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)>;
 }
 
 // ── NodeChainState ────────────────────────────────────────────────────────────
@@ -299,6 +313,47 @@ where
         // Delegate to BeaconStateView::sync_committee_pubkeys which has
         // per-fork overrides returning the committee pubkeys (Phase0 returns None).
         fc.block_states.get(&block_root)?.sync_committee_pubkeys()
+    }
+
+    fn signed_block_header_at(&self, root: Root) -> Option<(BeaconBlockHeader, BLSSignature)> {
+        // Fetch the full SignedBeaconBlock from storage to extract the real signature.
+        // This is cheap for recently-imported blocks (always present after Task 1.1).
+        let signed = <RocksStore as DbStore<E>>::get_block(&self.store, &root)
+            .ok()
+            .flatten()?;
+
+        // Reconstruct BOTH the header fields and the real signature directly from
+        // the stored `SignedBeaconBlock` — no dependency on the in-memory
+        // fork-choice maps (which may not hold the block after a reorg or, from
+        // Phase 3, after pruning). `body_root` is the block body's merkle root.
+        use pharos_ssz::TreeHash;
+        use pharos_types::views::BeaconBlockView as _;
+
+        macro_rules! header_from {
+            ($inner:expr) => {{
+                let msg = $inner.message();
+                let header = BeaconBlockHeader {
+                    slot: msg.slot(),
+                    proposer_index: msg.proposer_index(),
+                    parent_root: msg.parent_root(),
+                    state_root: msg.state_root(),
+                    body_root: msg.body().tree_hash_root(),
+                };
+                Some((header, *$inner.signature()))
+            }};
+        }
+
+        if let Some(inner) = E::unwrap_phase0_signed_block(&signed) {
+            header_from!(inner)
+        } else if let Some(inner) = E::unwrap_altair_signed_block(&signed) {
+            header_from!(inner)
+        } else if let Some(inner) = E::unwrap_bellatrix_signed_block(&signed) {
+            header_from!(inner)
+        } else if let Some(inner) = E::unwrap_capella_signed_block(&signed) {
+            header_from!(inner)
+        } else {
+            None
+        }
     }
 
     fn block_by_root_for_api(&self, root: Root) -> Result<Option<SignedBlockForApi>, ApiError> {

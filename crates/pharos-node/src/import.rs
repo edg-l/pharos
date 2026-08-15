@@ -18,9 +18,9 @@ use tracing::warn;
 use pharos_fork_choice::Store as FcStore;
 use pharos_fork_choice::{PowBlockProvider, get_head, on_block, on_tick_per_slot};
 use pharos_stf::{ExecutionEngine, StateTransitionError, state_transition};
-use pharos_storage::StorageError;
+use pharos_storage::{BlockTransition, RocksStore, StateSummary, StorageError, Store as DbStore};
 use pharos_types::config::RuntimeConfig;
-use pharos_types::views::{BeaconStateView as _, ForkVariant};
+use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _, ForkVariant};
 use pharos_types::{EthSpec, phase0::primitives::Root};
 
 use crate::engine_driver::{
@@ -81,7 +81,8 @@ pub(crate) struct ImportOutcome<E: EthSpec> {
 /// Core block-import sequence.
 ///
 /// Executes: pre-state fetch → STF (spawn_blocking) → on_block (spawn_blocking)
-/// → payload_tx push (try_send, drop-on-full) → head computation.
+/// → payload_tx push (try_send, drop-on-full) → head computation
+/// → persist worker (spawn_blocking, after write lock released).
 ///
 /// **Does NOT** perform light-client snapshot dispatch or LC gossip publish.
 /// Those steps require `AltairDispatchBounds` / `BellatrixDispatchBounds` and
@@ -89,6 +90,11 @@ pub(crate) struct ImportOutcome<E: EthSpec> {
 ///
 /// `validate_result` is forwarded to `state_transition`. Set `false` in tests
 /// where blocks are produced without valid BLS signatures.
+///
+/// `store` is a concrete `&Arc<RocksStore>` (not a generic `S: Store<E>`) so no
+/// new where-bound explodes across call sites; `RocksStore` is the only `Store`
+/// impl wired in the binary (per `D-persist-in-import-core`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn import_block<E, EE, PP>(
     signed_block: &E::SignedBeaconBlock,
     fc_store: &Arc<RwLock<FcStore<E>>>,
@@ -97,6 +103,7 @@ pub(crate) async fn import_block<E, EE, PP>(
     payload_tx: &tokio::sync::mpsc::Sender<NewPayloadRequest<E>>,
     validate_result: bool,
     cfg: &RuntimeConfig,
+    store: &Arc<RocksStore>,
 ) -> Result<ImportOutcome<E>, ImportError>
 where
     E: EthSpec,
@@ -143,8 +150,8 @@ where
     // (a) Fetch pre_state from the fork-choice store.
     let parent_root = extract_parent_root::<E>(signed_block);
     let pre_state = {
-        let store = fc_store.read();
-        match store.block_states.get(&parent_root).cloned() {
+        let store_read = fc_store.read();
+        match store_read.block_states.get(&parent_root).cloned() {
             Some(s) => s,
             None => return Err(ImportError::MissingParentState),
         }
@@ -179,6 +186,7 @@ where
     // Clone post_state for return to the caller (ingestion loop uses it for
     // light-client snapshot dispatch, which needs AltairDispatchBounds /
     // BellatrixDispatchBounds that import_block deliberately does not carry).
+    // Also used by the persist worker below (after on_block has moved post_state).
     let post_state_for_return = post_state.clone();
 
     // (d) Compute block_root before moving signed_block into the spawn.
@@ -219,6 +227,7 @@ where
     .await?;
 
     on_block_result.map_err(ImportError::ForkChoice)?;
+    // The fork-choice WRITE guard is now dropped (on_block_result consumed it).
 
     // (f) For execution-layer blocks, push the execution payload to the engine driver.
     // Capella blocks use engine_newPayloadV2 (with withdrawals); Bellatrix uses V1.
@@ -268,6 +277,118 @@ where
             finalized_block_hash: hash_to_hex(finalized_hash),
         }
     };
+
+    // (h) Persist worker — runs AFTER on_block has dropped the WRITE guard.
+    //
+    // Per `D-persist-in-import-core`: the DB write is in a SEPARATE
+    // `spawn_blocking` worker that takes only `fc.read()` (write guard is already
+    // dropped). This means the disk write never blocks fork-choice readers
+    // (get_head / gossip validators / API / SSE). The worker is `.await`-ed to
+    // completion before `import_block` returns its `ImportOutcome`, so no head
+    // is ever published referencing an unpersisted block.
+    //
+    // The batch ALWAYS carries `forkchoice = Some(snapshot)` so a restart after
+    // live imports rehydrates from a fresh cursor, not the stale checkpoint-sync
+    // snapshot (WARNING-5 fix from the plan).
+    {
+        let fc_snap = Arc::clone(fc_store);
+        let store_persist = Arc::clone(store);
+        let signed_block_persist = signed_block.clone();
+        let post_state_persist = post_state_for_return.clone();
+        let head_root_for_persist = head_change.head_root;
+
+        // Capture the fields needed from the block before moving into the closure.
+        // `E::SignedBeaconBlock` is a fork-enum: use per-fork helpers rather than
+        // the trait-dispatch `.message()` which panics for the enum variant.
+        let block_parent_root = parent_root; // already computed above via extract_parent_root
+        // Derive slot and state_root by unwrapping to the concrete fork variant.
+        // `state_root` is the STF-verified field from the block (cheaper than
+        // re-merkleizing the post-state).
+        let (block_slot, block_state_root) = {
+            use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
+            if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
+                let msg = inner.message();
+                (msg.slot(), msg.state_root())
+            } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
+                let msg = inner.message();
+                (msg.slot(), msg.state_root())
+            } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed_block) {
+                let msg = inner.message();
+                (msg.slot(), msg.state_root())
+            } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
+                let msg = inner.message();
+                (msg.slot(), msg.state_root())
+            } else {
+                unreachable!("unknown fork variant in SignedBeaconBlock")
+            }
+        };
+
+        let persist_result = tokio::task::spawn_blocking(move || {
+            // Take only a READ guard (write guard dropped after on_block).
+            let fc = fc_snap.read();
+
+            // Snapshot fork-choice cursors so a restart rehydrates from the
+            // freshest state (not the stale checkpoint-sync snapshot).
+            let head_slot_for_snap = fc
+                .blocks
+                .get(&head_root_for_persist)
+                .map(|b| b.slot())
+                .unwrap_or(block_slot);
+            let snapshot = pharos_storage::ForkChoiceSnapshot {
+                justified_checkpoint: fc.justified_checkpoint.clone(),
+                finalized_checkpoint: fc.finalized_checkpoint.clone(),
+                unrealized_justified_checkpoint: fc.unrealized_justified_checkpoint.clone(),
+                unrealized_finalized_checkpoint: fc.unrealized_finalized_checkpoint.clone(),
+                proposer_boost_root: fc.proposer_boost_root,
+                last_known_time: fc.time,
+                genesis_time: fc.genesis_time,
+                head_root: head_root_for_persist,
+                head_slot: head_slot_for_snap,
+            };
+
+            let mut batch = BlockTransition::<E>::new();
+            batch.block = Some((block_root, signed_block_persist));
+            batch.slot_index = Some((block_slot, block_root));
+            batch.forkchoice = Some(snapshot);
+            batch.state_summary = Some((
+                block_root,
+                StateSummary {
+                    slot: block_slot,
+                    state_root: block_state_root,
+                    parent_root: block_parent_root,
+                },
+            ));
+
+            // Write epoch-boundary full state only when slot % SLOTS_PER_EPOCH == 0.
+            // This bounds the per-epoch state-write cost to one full-state encode
+            // per `D-epoch-boundary-state-cadence`.
+            if block_slot.0 % E::SLOTS_PER_EPOCH == 0 {
+                batch.state = Some((block_state_root, post_state_persist));
+            }
+
+            // Write `head_state_root` metadata ONLY when the imported block became
+            // the new head. On a non-head (competing-fork) import, `head_root` still
+            // points at the prior head, so writing this block's state-root here would
+            // desync the pointer from `forkchoice.head_root` and corrupt warm-restart.
+            if head_root_for_persist == block_root {
+                batch
+                    .metadata
+                    .push((b"head_state_root", block_state_root.as_slice().to_vec()));
+            }
+
+            <RocksStore as DbStore<E>>::write_block_transition(&*store_persist, batch)
+        })
+        .await?;
+
+        if let Err(e) = persist_result {
+            warn!(
+                %block_root,
+                error = %e,
+                "import_block: persist worker failed; block is in fork-choice RAM but not on disk"
+            );
+            return Err(ImportError::Storage(e));
+        }
+    }
 
     Ok(ImportOutcome {
         head_change,

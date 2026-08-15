@@ -12,6 +12,7 @@ use pharos_types::phase0::primitives::{Root, Slot};
 
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
+use crate::state_summary::StateSummary;
 use crate::transition::BlockTransition;
 
 /// Synchronous storage trait for the Pharos chain database.
@@ -92,6 +93,25 @@ pub trait Store<E: EthSpec>: Send + Sync + 'static {
     /// Used at startup by `rehydrate_fork_choice_store` to seed the in-memory
     /// `pharos_fork_choice::Store::payload_statuses` map.
     fn payload_statuses_iter(&self) -> Result<Vec<(Root, PayloadStatus)>, StorageError>;
+
+    // ── State-summary store ───────────────────────────────────────────────────
+
+    /// Write a `StateSummary` for `block_root` to the `state-summary` CF.
+    ///
+    /// Per schema v3 (`D-schema-v3-migration`): called for every imported block.
+    /// Prefer using `write_block_transition` (which sets `batch.state_summary`)
+    /// rather than calling this directly, to preserve the atomic-write invariant.
+    fn put_state_summary(
+        &self,
+        block_root: Root,
+        summary: &StateSummary,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the `StateSummary` for `block_root` from the `state-summary` CF.
+    ///
+    /// Returns `None` when the block has not been imported (or was imported before
+    /// schema v3 — those blocks lack a summary row).
+    fn get_state_summary(&self, block_root: &Root) -> Result<Option<StateSummary>, StorageError>;
 
     // ── Light-client snapshot store ───────────────────────────────────────────
     //

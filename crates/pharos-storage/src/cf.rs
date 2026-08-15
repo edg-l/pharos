@@ -94,12 +94,53 @@ pub const CF_LC_OPTIMISTIC_UPDATE_CAPELLA: &str = "capella-latest-optimistic-upd
 /// Used by `CF_LC_FINALITY_UPDATE`, `CF_LC_OPTIMISTIC_UPDATE`, and their Capella variants.
 pub const LC_LATEST_KEY: &[u8] = b"latest";
 
-/// Returns all sixteen column-family names in declaration order.
+// ── Schema v3 column families (D-schema-v3-migration) ─────────────────────────
+//
+// All four CFs below are declared here so `all_cfs()` (and thus `open()`) always
+// passes the complete v3 set to RocksDB. `state-summary` is written from Phase 1
+// (every block import). The three cold CFs are written only from Phase 3 (freezer
+// migration), but RocksDB requires every CF to be present at `open()` time even
+// if writes happen later.
+
+/// Per-block state summary for the replay walk.
+///
+/// Per schema v3 (`D-schema-v3-migration`, Task 1.5):
+/// key = `Root` (32 B block-root),
+/// value = SSZ `StateSummary { slot: u64 LE, state_root: Root 32B, parent_root: Root 32B }`.
+/// Written every import; read by Phase-2 `StateRegenService` to walk the persisted
+/// block chain for replay-on-read.
+pub const CF_STATE_SUMMARY: &str = "state-summary";
+
+/// Cold (post-finalization) block store.
+///
+/// Per schema v3 (`D-schema-v3-migration`, Task 1.5):
+/// key = `Root` (32 B block-root), value = SSZ `SignedBeaconBlock`.
+/// Written by Phase-3 freezer migration; read by Phase-2 regen + Phase-4 restart.
+pub const CF_COLD_BLOCKS: &str = "cold-blocks";
+
+/// Cold (post-finalization) state snapshots at restore-point slots.
+///
+/// Per schema v3 (`D-schema-v3-migration`, Task 1.5):
+/// key = `u64` BE (restore-point slot), value = SSZ `BeaconState`.
+/// Written by Phase-3 freezer; read by Phase-2 regen + Phase-4 restart.
+pub const CF_COLD_STATES: &str = "cold-states";
+
+/// Restore-point index: maps a restore-point slot to its state-root.
+///
+/// Per schema v3 (`D-schema-v3-migration`, Task 1.5):
+/// key = `u64` BE (restore-point slot), value = `Root` (32 B state-root).
+/// Written by Phase-3 freezer; read by Phase-2 regen for nearest-restore-point lookup.
+pub const CF_RESTORE_POINTS: &str = "restore-points";
+
+/// Returns all twenty column-family names in declaration order.
 ///
 /// Used when opening the database with `DB::open_cf_descriptors` so every CF
 /// is registered. The ordering does not affect correctness; RocksDB looks up
 /// CFs by name.
-pub fn all_cfs() -> [&'static str; 16] {
+///
+/// Per `D-schema-v3-migration`: the full v3 CF set (16 original + 4 new) is
+/// declared here so a fresh v3 DB opens with all CFs at first boot.
+pub fn all_cfs() -> [&'static str; 20] {
     [
         CF_DEFAULT,
         CF_BLOCKS,
@@ -117,5 +158,9 @@ pub fn all_cfs() -> [&'static str; 16] {
         CF_LC_UPDATE_CAPELLA,
         CF_LC_FINALITY_UPDATE_CAPELLA,
         CF_LC_OPTIMISTIC_UPDATE_CAPELLA,
+        CF_STATE_SUMMARY,
+        CF_COLD_BLOCKS,
+        CF_COLD_STATES,
+        CF_RESTORE_POINTS,
     ]
 }

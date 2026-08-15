@@ -85,7 +85,7 @@ pub trait BeaconBlockBodyView {
 
 /// Read-only accessors for `BeaconBlock` fields.
 pub trait BeaconBlockView {
-    type Body: BeaconBlockBodyView;
+    type Body: BeaconBlockBodyView + pharos_ssz::TreeHash;
 
     fn slot(&self) -> Slot;
     fn proposer_index(&self) -> ValidatorIndex;

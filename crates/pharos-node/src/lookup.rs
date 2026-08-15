@@ -398,6 +398,7 @@ where
         payload_tx,
         true,
         cfg,
+        &host.store_arc(),
     )
     .await
     {

@@ -156,6 +156,13 @@ impl ChainStateApi<MainnetEthSpec> for MockChain {
     ) -> Result<Option<pharos_api::dto::block::SignedBlockForApi>, pharos_api::ApiError> {
         Ok(None)
     }
+
+    fn signed_block_header_at(
+        &self,
+        _root: Root,
+    ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)> {
+        None
+    }
 }
 
 /// A minimal mock that delegates everything to `MockChain` but overrides
@@ -242,6 +249,13 @@ impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
         root: Root,
     ) -> Result<Option<pharos_api::dto::block::SignedBlockForApi>, pharos_api::ApiError> {
         self.inner.block_by_root_for_api(root)
+    }
+
+    fn signed_block_header_at(
+        &self,
+        root: Root,
+    ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)> {
+        self.inner.signed_block_header_at(root)
     }
 }
 

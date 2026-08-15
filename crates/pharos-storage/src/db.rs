@@ -19,11 +19,12 @@ use crate::cf::{
     CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_FORKCHOICE, CF_LC_BOOTSTRAP, CF_LC_BOOTSTRAP_CAPELLA,
     CF_LC_FINALITY_UPDATE, CF_LC_FINALITY_UPDATE_CAPELLA, CF_LC_OPTIMISTIC_UPDATE,
     CF_LC_OPTIMISTIC_UPDATE_CAPELLA, CF_LC_UPDATE, CF_LC_UPDATE_CAPELLA, CF_METADATA,
-    CF_PAYLOAD_STATUS, CF_SLOT_TO_BLOCK_ROOT, CF_STATES, LC_LATEST_KEY, all_cfs,
+    CF_PAYLOAD_STATUS, CF_SLOT_TO_BLOCK_ROOT, CF_STATE_SUMMARY, CF_STATES, LC_LATEST_KEY, all_cfs,
 };
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
 use crate::keys::{parse_slot_key, root_key, slot_key};
+use crate::state_summary::StateSummary;
 use crate::store::Store;
 use crate::transition::BlockTransition;
 
@@ -35,7 +36,13 @@ use crate::transition::BlockTransition;
 ///   payload validation state. Opening a v1 database returns
 ///   `StorageError::SchemaMismatch`; the operator must delete the chain DB
 ///   and resync from a checkpoint.
-const SCHEMA_VERSION: u32 = 2;
+/// - v3 (M-Storage): added four schema-v3 CFs — `state-summary`,
+///   `cold-blocks`, `cold-states`, `restore-points` — per
+///   `D-schema-v3-migration`. Opening a v2 database returns
+///   `StorageError::SchemaMismatch`; the operator must resync from checkpoint
+///   (no in-place migration: the live node had no post-startup block/state
+///   persistence to preserve before this milestone).
+const SCHEMA_VERSION: u32 = 3;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -297,8 +304,42 @@ impl<E: EthSpec> Store<E> for RocksStore {
             wb.put_cf(cf, root_key(root), [encode_payload_status(*status)]);
         }
 
+        if let Some((block_root, summary)) = &batch.state_summary {
+            let cf = self.cf_handle(CF_STATE_SUMMARY)?;
+            wb.put_cf(cf, root_key(block_root), summary.as_ssz_bytes());
+        }
+
+        if !batch.metadata.is_empty() {
+            let cf = self.cf_handle(CF_METADATA)?;
+            for (key, value) in &batch.metadata {
+                wb.put_cf(cf, *key, value);
+            }
+        }
+
         self.db.write(wb)?;
         Ok(())
+    }
+
+    fn put_state_summary(
+        &self,
+        block_root: Root,
+        summary: &StateSummary,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_STATE_SUMMARY)?;
+        self.db
+            .put_cf(cf, root_key(&block_root), summary.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_state_summary(&self, block_root: &Root) -> Result<Option<StateSummary>, StorageError> {
+        let cf = self.cf_handle(CF_STATE_SUMMARY)?;
+        match self.db.get_cf(cf, root_key(block_root))? {
+            None => Ok(None),
+            Some(bytes) => {
+                let summary = StateSummary::from_ssz_bytes(&bytes)?;
+                Ok(Some(summary))
+            }
+        }
     }
 
     fn payload_status(&self, root: Root) -> Result<Option<PayloadStatus>, StorageError> {
@@ -597,7 +638,7 @@ mod tests {
     }
 
     /// Opening a database written with schema v1 (before the `payload-status` CF was added)
-    /// must return `SchemaMismatch { found: 1, expected: 2 }`.
+    /// must return `SchemaMismatch { found: 1, expected: 3 }`.
     #[test]
     fn schema_v1_returns_mismatch() {
         use rocksdb::{ColumnFamilyDescriptor, DB, Options};
@@ -633,7 +674,7 @@ mod tests {
                 .expect("write v1 sentinel");
         }
 
-        // Now open with the current `RocksStore::open` which expects v2.
+        // Now open with the current `RocksStore::open` which expects v3.
         let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
@@ -644,14 +685,75 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 1,
-                    expected: 2
+                    expected: 3
                 })
             ),
-            "expected SchemaMismatch{{found:1,expected:2}}, got {result:?}"
+            "expected SchemaMismatch{{found:1,expected:3}}, got {result:?}"
         );
     }
 
-    /// Opening a fresh v2 database must allow reading/writing the `payload-status` CF.
+    /// Opening a database written with schema v2 (before the v3 CFs were added)
+    /// must return `SchemaMismatch { found: 2, expected: 3 }`.
+    #[test]
+    fn schema_v2_returns_mismatch() {
+        use rocksdb::{ColumnFamilyDescriptor, DB, Options};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("chain_db_v2");
+
+        // Simulate a v2 database: open with the 16 v2 CFs and write v2 sentinel.
+        let v2_cfs = [
+            "default",
+            "blocks",
+            "block_root_to_slot",
+            "slot_to_block_root",
+            "states",
+            "forkchoice",
+            "metadata",
+            "light-client-bootstrap",
+            "light-client-update",
+            "latest-finality-update",
+            "latest-optimistic-update",
+            "payload-status",
+            "capella-light-client-bootstrap",
+            "capella-light-client-update",
+            "capella-latest-finality-update",
+            "capella-latest-optimistic-update",
+        ];
+        {
+            let mut opts = Options::default();
+            opts.create_if_missing(true);
+            opts.create_missing_column_families(true);
+            let descriptors: Vec<ColumnFamilyDescriptor> = v2_cfs
+                .iter()
+                .map(|&n| ColumnFamilyDescriptor::new(n, Options::default()))
+                .collect();
+            let db = DB::open_cf_descriptors(&opts, &db_path, descriptors).expect("open v2 db");
+            let meta_cf = db.cf_handle("metadata").expect("metadata cf");
+            db.put_cf(meta_cf, b"schema_version", 2u32.to_le_bytes())
+                .expect("write v2 sentinel");
+        }
+
+        // Now open with the current `RocksStore::open` which expects v3.
+        let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+            path: db_path,
+            create_if_missing: false,
+        });
+
+        assert!(
+            matches!(
+                result,
+                Err(StorageError::SchemaMismatch {
+                    found: 2,
+                    expected: 3
+                })
+            ),
+            "expected SchemaMismatch{{found:2,expected:3}}, got {result:?}"
+        );
+    }
+
+    /// Opening a fresh v3 database must allow reading/writing the `payload-status` and
+    /// `state-summary` CFs.
     #[test]
     fn fresh_db_payload_status_cf_queryable() {
         use pharos_types::phase0::primitives::Root;

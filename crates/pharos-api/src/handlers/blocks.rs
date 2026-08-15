@@ -128,12 +128,37 @@ struct SingleHeaderResponse {
     data: HeaderItem,
 }
 
-/// Build a `HeaderItem` from a block root using `block_header_at`.
+/// Build a `HeaderItem` from a block root using the stored signed block.
+///
+/// Sources the REAL proposer signature from `signed_block_header_at` (which
+/// reads the `SignedBeaconBlock` from `RocksStore`). Falls back to the
+/// in-memory header with a zeroed signature only when the signed block is
+/// absent from storage (e.g. pre-schema-v3 anchor blocks imported before
+/// Phase 1 was deployed).
 fn build_header_item<E: EthSpec>(
     chain: &dyn crate::state::ChainStateApi<E>,
     root: pharos_types::phase0::Root,
     _execution_optimistic: bool,
 ) -> Result<HeaderItem, ApiError> {
+    // Prefer the real signature sourced from the stored SignedBeaconBlock.
+    if let Some((hdr, sig)) = chain.signed_block_header_at(root) {
+        return Ok(HeaderItem {
+            root: root.into(),
+            canonical: true,
+            header: SignedHeaderDto {
+                message: BeaconBlockHeaderDto {
+                    slot: u64::from(hdr.slot),
+                    proposer_index: hdr.proposer_index.into(),
+                    parent_root: hdr.parent_root.into(),
+                    state_root: hdr.state_root.into(),
+                    body_root: hdr.body_root.into(),
+                },
+                signature: sig.into_inner(),
+            },
+        });
+    }
+
+    // Fall back: block not yet in storage — use in-memory header with zeroed sig.
     let hdr = chain
         .block_header_at(root)
         .ok_or_else(|| ApiError::NotFound(format!("block not found for root {root:?}")))?;
@@ -148,8 +173,6 @@ fn build_header_item<E: EthSpec>(
                 state_root: hdr.state_root.into(),
                 body_root: hdr.body_root.into(),
             },
-            // Signatures are not tracked in the in-memory block header;
-            // the `latest_block_header` stores a zeroed signature per STF.
             signature: [0u8; 96],
         },
     })

@@ -293,6 +293,13 @@ mod tests {
         ) -> Result<Option<crate::dto::block::SignedBlockForApi>, ApiError> {
             Ok(None)
         }
+
+        fn signed_block_header_at(
+            &self,
+            _root: Root,
+        ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)> {
+            None
+        }
     }
 
     #[test]

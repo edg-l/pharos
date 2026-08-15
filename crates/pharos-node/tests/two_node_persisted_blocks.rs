@@ -78,13 +78,9 @@ fn populate_store(
             MinimalSignedBeaconBlock::Bellatrix(inner) => inner.message.slot,
             MinimalSignedBeaconBlock::Capella(inner) => inner.message.slot,
         };
-        let transition = BlockTransition::<MinimalEthSpec> {
-            block: Some((*root, block.clone())),
-            slot_index: Some((slot, *root)),
-            state: None,
-            forkchoice: None,
-            payload_status: None,
-        };
+        let mut transition = BlockTransition::<MinimalEthSpec>::new();
+        transition.block = Some((*root, block.clone()));
+        transition.slot_index = Some((slot, *root));
         <RocksStore as StoreTrait<MinimalEthSpec>>::write_block_transition(&store, transition)
             .expect("write_block_transition must succeed");
     }

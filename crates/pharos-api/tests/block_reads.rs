@@ -172,6 +172,16 @@ impl ChainStateApi<MainnetEthSpec> for BlockMock {
             Ok(None)
         }
     }
+
+    fn signed_block_header_at(
+        &self,
+        root: Root,
+    ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)> {
+        // Mock returns None — tests that need a real signature must use
+        // the full node path; this mock is block-DTO-only.
+        let _ = root;
+        None
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

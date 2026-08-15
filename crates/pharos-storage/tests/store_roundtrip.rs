@@ -59,12 +59,15 @@ fn make_snapshot(head_slot: u64) -> ForkChoiceSnapshot {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// Opening a fresh DB writes schema_version=2; reopening reads it back.
+/// Opening a fresh DB writes schema_version=3; reopening reads it back.
 ///
-/// Version was bumped from 1 → 2 when the `payload-status` column family was
-/// added in M4a Phase 4 (Task 4.8a).
+/// Version history:
+/// - v1 (M3a): initial schema.
+/// - v2 (M4a): added `payload-status` CF.
+/// - v3 (M-Storage Phase 1): added `state-summary`, `cold-blocks`, `cold-states`,
+///   `restore-points` CFs per `D-schema-v3-migration`.
 #[test]
-fn open_empty_db_writes_schema_version_1() {
+fn open_empty_db_writes_schema_version_3() {
     let dir = tempfile::tempdir().expect("tempdir");
     {
         let _store = open(dir.path());
@@ -74,7 +77,30 @@ fn open_empty_db_writes_schema_version_1() {
     let val = <S as Store<E>>::get_metadata(&store, b"schema_version")
         .expect("get schema_version")
         .expect("schema_version must be present");
-    assert_eq!(val, 2u32.to_le_bytes(), "schema_version must be 2 LE");
+    assert_eq!(val, 3u32.to_le_bytes(), "schema_version must be 3 LE");
+}
+
+/// Store a `StateSummary`, retrieve it, assert field equality.
+#[test]
+fn state_summary_roundtrip() {
+    use pharos_storage::StateSummary;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = open(dir.path());
+    let root = Root::from([0x11u8; 32]);
+    let summary = StateSummary {
+        slot: Slot(42),
+        state_root: Root::from([0x22u8; 32]),
+        parent_root: Root::from([0x33u8; 32]),
+    };
+    <S as Store<E>>::put_state_summary(&store, root, &summary).expect("put_state_summary");
+    let got = <S as Store<E>>::get_state_summary(&store, &root)
+        .expect("get_state_summary")
+        .expect("summary must exist");
+    assert_eq!(got, summary, "StateSummary must roundtrip");
+    // A missing root returns None, not an error.
+    let absent = <S as Store<E>>::get_state_summary(&store, &Root::from([0x99u8; 32]))
+        .expect("get_state_summary absent");
+    assert!(absent.is_none(), "absent summary must be None");
 }
 
 /// Store a block, retrieve it, assert SSZ equality.
@@ -236,7 +262,7 @@ fn schema_mismatch_detected() {
     match result {
         Err(StorageError::SchemaMismatch { found, expected }) => {
             assert_eq!(found, 99, "found must be 99");
-            assert_eq!(expected, 2, "expected must be 2");
+            assert_eq!(expected, 3, "expected must be 3");
         }
         other => panic!("expected SchemaMismatch, got {other:?}"),
     }

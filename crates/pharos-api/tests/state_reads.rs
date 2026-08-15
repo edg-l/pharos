@@ -190,6 +190,13 @@ impl ChainStateApi<MainnetEthSpec> for StateMock {
     ) -> Result<Option<pharos_api::dto::block::SignedBlockForApi>, pharos_api::ApiError> {
         Ok(None)
     }
+
+    fn signed_block_header_at(
+        &self,
+        _root: Root,
+    ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)> {
+        None
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
