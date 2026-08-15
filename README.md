@@ -6,7 +6,7 @@
 
 A from-scratch Rust Ethereum proof-of-stake consensus client.
 
-**Status: pre-alpha, M4a done.** Not usable as a node yet. Phase 0,
+**Status: pre-alpha, M4b done.** Not usable as a node yet. Phase 0,
 Altair, and Bellatrix conformance are all at 100% (all categories, zero
 failures) on both `mainnet` and `minimal` presets. State transition,
 LMD-GHOST + FFG fork choice, the M2 networking baseline (`discv5`, `libp2p`
@@ -14,10 +14,12 @@ gossipsub + req-resp, peer manager, Status/Goodbye handshake), the M3a
 infrastructure (`pharos-storage` + RocksDB, real `Host<E>`, persistent
 restart), M3b (Altair STF, enum-of-forks state, sync committees,
 light-client server, MetaDataV2, context-bytes codec, cross-fork ENR
-migration, subnet rotation, YAML preset loader), and M4a (Engine API client
+migration, subnet rotation, YAML preset loader), M4a (Engine API client
 with JWT auth, Bellatrix STF, fork-choice invalid-payload tracking, engine
-driver loop, in-process pipeline integration test) are complete. Beacon API
-and validator client are on the M4b+ roadmap.
+driver loop, in-process pipeline integration test), and M4b (JWT
+auto-generation, Engine API keepalive, checkpoint sync, forward backfill,
+mock pipeline integration test) are complete. Beacon API and validator
+client are on the M4c+ roadmap.
 
 ## Philosophy
 
@@ -84,8 +86,12 @@ boundary.
   `exchangeCapabilities`), Bellatrix STF, invalid-payload tracking in fork
   choice, engine driver loop, in-process pipeline integration test. All
   `bellatrix` conformance categories green. **Done.**
-- **M4b–M4d — Checkpoint sync, backfill, devnet acceptance gate.** First
-  merged sync against a real ethrex devnet.
+- **M4b — Checkpoint sync + forward backfill.** JWT auto-generation,
+  Engine API keepalive (60-second `exchangeTransitionConfigurationV1`
+  poll), checkpoint sync from a trusted Beacon API URL, forward backfill
+  via `BeaconBlocksByRange`, mock pipeline integration test. **Done.**
+- **M4c–M4d — LC gossip carry-ins, perf bench baseline, devnet acceptance
+  gate.** First merged sync against a real ethrex devnet.
 - **M5–M10 — Capella, Deneb, Beacon API, validator client, Electra,
   Fulu (PeerDAS).**
 - **M11 — Productionization.** Checkpoint sync, weak subjectivity, backfill,

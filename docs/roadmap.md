@@ -436,39 +436,40 @@ Deferred from M4a: `get_safe_execution_block_hash` reorg-aware walk (M11),
 `engine_exchangeCapabilities` 60-second polling loop (M4b/M11), LC gossip
 validation bodies (M4c).
 
-#### M4b — Checkpoint sync + forward backfill (code + mock integration)
-- **Checkpoint sync** (moved here from M11): mainnet has 11M+ slots;
-  syncing from genesis is not viable. CLAUDE.md already commits to
-  "checkpoint sync first-class." Wire endpoint:
-  `--checkpoint-sync-url <beacon-api-url>` fetches finalized state +
-  block from a trusted source, jumps fork choice to it. Weak
-  subjectivity validation lives in M11.
-- **Forward backfill** (moved here from M11): after checkpoint-sync
-  jump, fill blocks slot-by-slot until head via `BeaconBlocksByRange`
-  requests. Backward historical-state backfill stays M11.
-- **Engine API conformance extension**: complete the remaining bellatrix
-  YAML fixtures left out of the M4a scaffold.
-- **Mock integration test**: extend `tests/engine_pipeline.rs` (or add a
-  sibling test) with a mock CL Beacon API serving a known finalized
-  state; pharos jumps fork choice to it; backfills against the axum
-  Engine API mock. No real ethrex required.
-- **`exchange_transition_configuration` TTD mismatch warning** (deferred from
-  M4a spec audit Task 7.6, paris.md:289): CL SHOULD log a user-visible error
-  when the EL's `terminalTotalDifficulty` value in the response mismatches the
-  locally configured value. Wire the comparison in `pharos-node` after calling
-  `exchange_transition_configuration` on startup.
-- **`exchange_transition_configuration` 60-second polling** (deferred from M4a
-  spec audit Task 7.6, paris.md:291): CL SHOULD poll
-  `engine_exchangeTransitionConfigurationV1` every 60 seconds. Currently called
-  once on startup (cached per `Q-exchange-capabilities-cadence`). Wire a
-  `tokio::time::interval(60s)` loop in the engine driver or a separate
-  keepalive task.
-- **Automatic `jwt.hex` generation** (deferred from M4a spec audit Task 7.6,
-  authentication.md:38): CL SHOULD generate and store a random 32-byte
-  `jwt.hex` when `--jwt-secret` is not supplied, rather than running without
-  authentication. Wire `OsRng::fill_bytes` + `std::fs::write` in
-  `pharos-node/src/main.rs` when `args.jwt_secret.is_none()` and an EL endpoint
-  is configured.
+#### M4b — Checkpoint sync + forward backfill (code + mock integration) (DONE)
+
+Delivered via commits `7a50c3d` (JWT auto-gen + engine keepalive — `ensure_jwt_secret`,
+`run_transition_config_keepalive`) → `2b3c1e8` (checkpoint sync — `fetch_checkpoint`,
+`apply_anchor`, axum mock Beacon API server) → `5f8e9d2` (forward backfill —
+`run_backfill_loop`, `BackfillBlockProvider`, `PeerPicker`) → `d1a4b6c` (engine
+conformance YAML extension — 2 new examples, `pass=6 fail=0`) → `e9c2f7a` (mock
+pipeline integration test — `checkpoint_backfill_pipeline.rs`, 10-run green) →
+`f44251f` (`apply_anchor` weak-subjectivity fix + ADR `D-anchor-as-weak-subj-root`).
+
+- [x] **JWT auto-generation**: `ensure_jwt_secret` in
+  `pharos-node/src/jwt_autogen.rs` auto-generates `<data_dir>/jwt.hex` via
+  `OpenOptions::create_new(true)` (0o600 on Unix). See ADR `D-jwt-auto-gen`.
+- [x] **Engine keepalive**: `run_transition_config_keepalive` in
+  `pharos-node/src/engine_keepalive.rs`, 60-second interval, `HashSet`-deduplicated
+  TTD-mismatch `WARN`. Cold-start check in `main.rs`. See ADR
+  `D-engine-config-keepalive`.
+- [x] **Checkpoint sync**: `fetch_checkpoint` + `apply_anchor` in
+  `pharos-node/src/checkpoint_sync.rs`. `GET /eth/v2/debug/beacon/states/finalized`
+  SSZ + `GET /eth/v2/beacon/blocks/0x<root>` SSZ. Optional `--checkpoint-sync-block-root`
+  tamper flag. See ADRs `D-checkpoint-sync-source`, `D-anchor-state-on-disk`,
+  `D-anchor-as-weak-subj-root`.
+- [x] **Forward backfill**: `run_backfill_loop` in `pharos-node/src/backfill.rs`.
+  `BeaconBlocksByRange` chunks of 64, STF + fork-choice advance, exits within
+  `BACKFILL_TAIL_LAG_SLOTS`. See ADR `D-backfill-driver`.
+- [x] **Engine API conformance extension**: `engine/yaml` row `pass=6 fail=0`.
+- [x] **Mock pipeline integration test**:
+  `crates/pharos-node/tests/checkpoint_backfill_pipeline.rs`, axum mocks for
+  Beacon API + Engine API.
+- [x] **TTD mismatch warning**: cold-start check + 60-second keepalive (resolves
+  M4a GAP paris.md:289 and paris.md:291).
+- [x] **Automatic `jwt.hex` generation**: resolves M4a GAP authentication.md:38.
+
+Deferred from M4b: weak-subjectivity validation (M11), historical backfill (M11).
 
 #### M4-perf — Tree-backed persistent SSZ collections + tree-hash parallelism
 

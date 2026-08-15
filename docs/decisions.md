@@ -31,6 +31,9 @@ numeric `D1`–`D8` / `Q1`–`Q4` keys, M2 onward uses descriptive
 - [M4a — Engine API + Bellatrix STF](#m4a-decisions)
   - D-engine-method-dispatch D-engine-head-driver D-payload-status-store
   - D-network-backpressure D-engine-conformance-runner D-bellatrix-state-shape
+- [M4b — Checkpoint sync + forward backfill](#m4b-decisions)
+  - D-anchor-as-weak-subj-root D-checkpoint-sync-source D-anchor-state-on-disk
+  - D-backfill-driver D-engine-config-keepalive D-jwt-auto-gen
 
 ## M1 — Phase 0 STF + fork choice
 
@@ -1299,3 +1302,88 @@ Enforced in: `crates/pharos-node/src/checkpoint_sync.rs:272-303` (comment + chec
 construction in `apply_anchor`). The test workaround that previously patched the snapshot
 post-`apply_anchor` at `checkpoint_backfill_pipeline.rs` has been removed; the snapshot
 is now correct as returned.
+
+### D-checkpoint-sync-source — Single trusted Beacon API URL; no quorum; optional tamper flag
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+Checkpoint sync trusts a single operator-supplied Beacon API URL. `fetch_checkpoint`
+issues `GET /eth/v2/debug/beacon/states/finalized` with `Accept: application/octet-stream`,
+reads the `Eth-Consensus-Version` response header to select the per-fork SSZ decoder,
+then fetches the matching block via `GET /eth/v2/beacon/blocks/0x<root>`. Rejected
+alternatives: quorum across multiple checkpoint-sync sources (adds latency and operational
+complexity with marginal security gain for the weak-subjectivity use case; the operator's
+choice of URL is itself the trust anchor), embedded weak-subjectivity root in the binary
+(breaks mainnet-compat when the root ages past the weak-subjectivity period), and
+peer-discovery-based bootstrap (requires a live P2P network before fork choice exists).
+An optional `--checkpoint-sync-block-root` flag accepts an out-of-band root override for
+tamper detection; the flag is validated in `fetch_checkpoint` after the block root is
+derived from the downloaded state. Enforced in `crates/pharos-node/src/checkpoint_sync.rs`
+(`fetch_checkpoint`, lines 110-245).
+
+### D-anchor-state-on-disk — Single atomic `BlockTransition` write; no per-CF puts
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+The anchor block, state, slot-index entry, and `ForkChoiceSnapshot` are written together
+via a single `<RocksStore as Store<E>>::write_block_transition` call, which maps the four
+payloads to a single RocksDB `WriteBatch` committed atomically. No individual
+`put_block`, `put_state`, or `put_forkchoice_snapshot` calls are made from `apply_anchor`.
+Rejected alternative: separate writes per column family (creates a crash window between
+writes; a crash mid-sequence leaves the DB in a state where the snapshot references a
+block root that has no corresponding block body, causing `rehydrate_fork_choice_store` to
+fail with `KeyNotFound`). This decision is orthogonal to `D-anchor-as-weak-subj-root`,
+which governs the checkpoint-field semantics of the synthesised snapshot; both decisions
+are required for a correct anchor write. Enforced in
+`crates/pharos-node/src/checkpoint_sync.rs:317-323` (`apply_anchor` → `write_block_transition`).
+
+### D-backfill-driver — `pharos-node` owns the backfill loop; network crate is plumbing only
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+`run_backfill_loop` and the `BackfillBlockProvider` trait live in `pharos-node`, not
+`pharos-network`. The network crate exposes `BeaconBlocksByRange` as a raw req-resp
+primitive; the node crate decides when and how to issue requests, validates responses,
+and drives STF + fork-choice updates. Rejected alternative: a `BackfillService` inside
+`pharos-network` (would require the network crate to know about the STF, fork choice,
+and storage layers — coupling that violates the layering rule established in M2 and M3a).
+`BackfillBlockProvider` uses native async-fn-in-trait syntax (stable in Rust 1.85), not
+`#[async_trait]`, because it is always used as a monomorphised generic `P: BackfillBlockProvider<E>`;
+`PeerPicker` uses `#[async_trait]` because it is used as `Arc<dyn PeerPicker>` where
+dyn-safety is the genuine requirement. Enforced in `crates/pharos-node/src/backfill.rs`
+(`run_backfill_loop` at line 1, `BackfillBlockProvider` trait, `PeerPicker` trait).
+
+### D-engine-config-keepalive — 60-second `engine_exchangeTransitionConfigurationV1` loop owned by `pharos-node`
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+`run_transition_config_keepalive` lives in `pharos-node` (not `pharos-engine`) because
+`RuntimeConfig.terminal_total_difficulty` — the CL-side TTD value to compare against
+the EL's response — is loaded by the node binary and is not available to the engine
+transport crate. The 60-second interval is hardcoded per `paris.md:291` ("Consensus Layer
+client software SHOULD poll this endpoint every 60 seconds"); no config knob is exposed.
+A `HashSet<Uint256>` of already-warned EL TTD values deduplicates `WARN` log lines so
+the same mismatch does not flood the log across successive ticks (risk R5 in the M4b
+plan). The cold-start TTD comparison runs in `main.rs` before the keepalive task is
+spawned, so the very first tick (which the keepalive skips via `ticker.tick().await` on
+entry) does not duplicate the startup check. Enforced in
+`crates/pharos-node/src/engine_keepalive.rs` (`run_transition_config_keepalive` at line 120,
+60-second interval at line 126) and `crates/pharos-node/src/main.rs` (cold-start check at
+lines 405-453, keepalive spawn at line 450).
+
+### D-jwt-auto-gen — Auto-generate `jwt.hex` if absent; never overwrite existing; hex-only format
+
+**Status**: Accepted. **Date**: 2026-05-26.
+
+`ensure_jwt_secret` (in `crates/pharos-node/src/jwt_autogen.rs`) resolves the JWT secret
+by three-way priority: (1) explicit `--jwt-secret <path>` arg loads from that path; (2)
+`<data_dir>/jwt.hex` exists — reload it; (3) neither — generate 32 bytes via `OsRng`,
+write as 64 lowercase hex characters to `<data_dir>/jwt.hex` using `OpenOptions::create_new(true)`
+so the write fails atomically if another process raced to create the same file. On Unix,
+the file is created with mode `0o600`. Rejected alternatives: in-memory ephemeral secret
+(breaks EL pairing across process restarts because the EL node caches the secret per
+session; a fresh random key after restart requires the operator to re-provision the EL),
+and a `jwt-secret` entry in the YAML config file (adds config surface for a value that
+benefits from automatic rotation on first boot; file-based auto-gen matches what Lighthouse
+and Teku do). Enforced in `crates/pharos-node/src/jwt_autogen.rs` (`ensure_jwt_secret`
+at line 26, `open_for_write` at line 65).
