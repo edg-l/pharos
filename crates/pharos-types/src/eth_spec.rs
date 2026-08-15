@@ -2,7 +2,11 @@
 //!
 //! Constants are sourced from:
 //! - `presets/mainnet/phase0.yaml` and `presets/minimal/phase0.yaml` (preset constants).
+//! - `presets/mainnet/altair.yaml` and `presets/minimal/altair.yaml` (altair preset constants).
+//! - `configs/mainnet.yaml` and `configs/minimal.yaml` (config constants incl. fork schedule).
 //! - `specs/phase0/beacon-chain.md:186-196` (non-configurable spec constants).
+//! - `specs/altair/beacon-chain.md` (altair participation flag weights).
+//! - `specs/altair/validator.md:79-80` (sync committee subnet count, aggregator target).
 
 use std::fmt::Debug;
 
@@ -240,8 +244,106 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Per `specs/phase0/fork-choice.md` "Constant" section.
     const BASIS_POINTS: u64 = 10_000;
 
+    // ── Altair preset constants ────────────────────────────────────────────────
+
+    // -- Altair sync committee --
+    // Source: `presets/mainnet/altair.yaml:15`, `presets/minimal/altair.yaml:15`
+
+    /// `SYNC_COMMITTEE_SIZE` from `presets/mainnet/altair.yaml:15` /
+    /// `presets/minimal/altair.yaml:15`.
+    const SYNC_COMMITTEE_SIZE: u64;
+
+    /// `SYNC_COMMITTEE_SUBNET_COUNT` from `specs/altair/validator.md:80`.
+    ///
+    /// Uniform across presets (always 4).
+    const SYNC_COMMITTEE_SUBNET_COUNT: u64;
+
+    /// `SYNC_SUBCOMMITTEE_SIZE` = `SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT`.
+    ///
+    /// Pre-computed literal (B2/B3) so SSZ bitvectors compile on stable Rust 1.85:
+    /// a trait-level `const A / B` expression is not stabilised in this position.
+    /// Mainnet: 512 / 4 = 128. Minimal: 32 / 4 = 8.
+    const SYNC_SUBCOMMITTEE_SIZE: u64;
+
+    /// `MIN_SYNC_COMMITTEE_PARTICIPANTS` from `presets/mainnet/altair.yaml:22` /
+    /// `presets/minimal/altair.yaml:22`.
+    const MIN_SYNC_COMMITTEE_PARTICIPANTS: u64;
+
+    /// `EPOCHS_PER_SYNC_COMMITTEE_PERIOD` from `presets/mainnet/altair.yaml:17` /
+    /// `presets/minimal/altair.yaml:17`.
+    const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64;
+
+    /// `TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE` from `specs/altair/validator.md:79`.
+    ///
+    /// Uniform across presets (always 16).
+    const TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE: u64;
+
+    /// `UPDATE_TIMEOUT` from `presets/mainnet/altair.yaml:24` /
+    /// `presets/minimal/altair.yaml:24`.
+    ///
+    /// Equals `SLOTS_PER_EPOCH * EPOCHS_PER_SYNC_COMMITTEE_PERIOD`.
+    const UPDATE_TIMEOUT: u64;
+
+    // -- Altair reward and penalty quotients --
+    // Source: `presets/mainnet/altair.yaml:6,8,10`, `presets/minimal/altair.yaml:6,8,10`
+
+    /// `INACTIVITY_PENALTY_QUOTIENT_ALTAIR` from `presets/mainnet/altair.yaml:6` /
+    /// `presets/minimal/altair.yaml:6`.
+    const INACTIVITY_PENALTY_QUOTIENT_ALTAIR: u64;
+
+    /// `MIN_SLASHING_PENALTY_QUOTIENT_ALTAIR` from `presets/mainnet/altair.yaml:8` /
+    /// `presets/minimal/altair.yaml:8`.
+    const MIN_SLASHING_PENALTY_QUOTIENT_ALTAIR: u64;
+
+    /// `PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR` from `presets/mainnet/altair.yaml:10` /
+    /// `presets/minimal/altair.yaml:10`.
+    const PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR: u64;
+
+    // -- Altair validator cycle constants --
+    // Source: `configs/mainnet.yaml:113,115`, `configs/minimal.yaml:109,111`
+
+    /// `INACTIVITY_SCORE_BIAS` from `configs/mainnet.yaml:113` /
+    /// `configs/minimal.yaml:109`.
+    const INACTIVITY_SCORE_BIAS: u64;
+
+    /// `INACTIVITY_SCORE_RECOVERY_RATE` from `configs/mainnet.yaml:115` /
+    /// `configs/minimal.yaml:111`.
+    const INACTIVITY_SCORE_RECOVERY_RATE: u64;
+
+    // -- Altair fork schedule --
+    // Source: `configs/mainnet.yaml:41-42`, `configs/minimal.yaml:37-38`
+
+    /// `ALTAIR_FORK_VERSION` from `configs/mainnet.yaml:41` /
+    /// `configs/minimal.yaml:37`.
+    const ALTAIR_FORK_VERSION: [u8; 4];
+
+    /// `ALTAIR_FORK_EPOCH` from `configs/mainnet.yaml:42` /
+    /// `configs/minimal.yaml:38`.
+    const ALTAIR_FORK_EPOCH: u64;
+
+    // -- Altair participation flag weights --
+    // Source: `specs/altair/beacon-chain.md:84-89,105`
+    // These are non-configurable spec constants, uniform across all presets.
+    // Provided as associated consts with default values so impls need not repeat them.
+
+    /// `[TIMELY_SOURCE_WEIGHT, TIMELY_TARGET_WEIGHT, TIMELY_HEAD_WEIGHT]`
+    /// per `specs/altair/beacon-chain.md:84-86,105`.
+    const PARTICIPATION_FLAG_WEIGHTS: [u64; 3] = [14, 26, 14];
+
+    /// `WEIGHT_DENOMINATOR` per `specs/altair/beacon-chain.md:89`.
+    ///
+    /// Sum of all five incentivization weights (the three participation-flag
+    /// weights plus `SYNC_REWARD_WEIGHT=2` and `PROPOSER_WEIGHT=8`).
+    const WEIGHT_DENOMINATOR: u64 = 64;
+
     /// Human-readable preset name (e.g. `"mainnet"`, `"minimal"`).
     fn name() -> &'static str;
+
+    /// Returns a `RuntimeConfig` snapshot populated from this preset's consts.
+    ///
+    /// Used as the `Default` impl for `RuntimeConfig` (mainnet) and as the
+    /// starting point for runtime YAML overrides (Phase 8).
+    fn default_runtime_config() -> crate::config::RuntimeConfig;
 
     // -- Container associated types (D7) --
     // These allow STF code to be generic over `<E: EthSpec>` and reference
@@ -434,8 +536,68 @@ impl EthSpec for MainnetEthSpec {
     /// `ATTESTATION_DUE_BPS` from `configs/mainnet.yaml:80`.
     const ATTESTATION_DUE_BPS: u64 = 3_333;
 
+    // ── Altair preset constants ────────────────────────────────────────────────
+
+    // -- Altair sync committee --
+    /// `SYNC_COMMITTEE_SIZE` from `presets/mainnet/altair.yaml:15`.
+    const SYNC_COMMITTEE_SIZE: u64 = 512;
+    /// `SYNC_COMMITTEE_SUBNET_COUNT` from `specs/altair/validator.md:80`.
+    const SYNC_COMMITTEE_SUBNET_COUNT: u64 = 4;
+    /// `SYNC_SUBCOMMITTEE_SIZE` = 512 / 4 = 128.
+    const SYNC_SUBCOMMITTEE_SIZE: u64 = 128;
+    /// `MIN_SYNC_COMMITTEE_PARTICIPANTS` from `presets/mainnet/altair.yaml:22`.
+    const MIN_SYNC_COMMITTEE_PARTICIPANTS: u64 = 1;
+    /// `EPOCHS_PER_SYNC_COMMITTEE_PERIOD` from `presets/mainnet/altair.yaml:17`.
+    const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 256;
+    /// `TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE` from `specs/altair/validator.md:79`.
+    const TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE: u64 = 16;
+    /// `UPDATE_TIMEOUT` from `presets/mainnet/altair.yaml:24` (32 * 256 = 8192).
+    const UPDATE_TIMEOUT: u64 = 8_192;
+
+    // -- Altair reward and penalty quotients --
+    /// `INACTIVITY_PENALTY_QUOTIENT_ALTAIR` from `presets/mainnet/altair.yaml:6`.
+    const INACTIVITY_PENALTY_QUOTIENT_ALTAIR: u64 = 50_331_648;
+    /// `MIN_SLASHING_PENALTY_QUOTIENT_ALTAIR` from `presets/mainnet/altair.yaml:8`.
+    const MIN_SLASHING_PENALTY_QUOTIENT_ALTAIR: u64 = 64;
+    /// `PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR` from `presets/mainnet/altair.yaml:10`.
+    const PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR: u64 = 2;
+
+    // -- Altair validator cycle constants --
+    /// `INACTIVITY_SCORE_BIAS` from `configs/mainnet.yaml:113`.
+    const INACTIVITY_SCORE_BIAS: u64 = 4;
+    /// `INACTIVITY_SCORE_RECOVERY_RATE` from `configs/mainnet.yaml:115`.
+    const INACTIVITY_SCORE_RECOVERY_RATE: u64 = 16;
+
+    // -- Altair fork schedule --
+    /// `ALTAIR_FORK_VERSION` from `configs/mainnet.yaml:41`.
+    const ALTAIR_FORK_VERSION: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+    /// `ALTAIR_FORK_EPOCH` from `configs/mainnet.yaml:42`.
+    const ALTAIR_FORK_EPOCH: u64 = 74_240;
+
     fn name() -> &'static str {
         "mainnet"
+    }
+
+    fn default_runtime_config() -> crate::config::RuntimeConfig {
+        crate::config::RuntimeConfig {
+            sync_committee_size: Self::SYNC_COMMITTEE_SIZE,
+            sync_committee_subnet_count: Self::SYNC_COMMITTEE_SUBNET_COUNT,
+            sync_subcommittee_size: Self::SYNC_SUBCOMMITTEE_SIZE,
+            min_sync_committee_participants: Self::MIN_SYNC_COMMITTEE_PARTICIPANTS,
+            epochs_per_sync_committee_period: Self::EPOCHS_PER_SYNC_COMMITTEE_PERIOD,
+            target_aggregators_per_sync_subcommittee:
+                Self::TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE,
+            update_timeout: Self::UPDATE_TIMEOUT,
+            inactivity_penalty_quotient_altair: Self::INACTIVITY_PENALTY_QUOTIENT_ALTAIR,
+            min_slashing_penalty_quotient_altair: Self::MIN_SLASHING_PENALTY_QUOTIENT_ALTAIR,
+            proportional_slashing_multiplier_altair: Self::PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR,
+            inactivity_score_bias: Self::INACTIVITY_SCORE_BIAS,
+            inactivity_score_recovery_rate: Self::INACTIVITY_SCORE_RECOVERY_RATE,
+            genesis_fork_version: Self::GENESIS_FORK_VERSION,
+            altair_fork_version: Self::ALTAIR_FORK_VERSION,
+            altair_fork_epoch: Self::ALTAIR_FORK_EPOCH,
+            genesis_validators_root: [0u8; 32],
+        }
     }
 
     type BeaconState = crate::phase0::MainnetBeaconState;
@@ -573,8 +735,73 @@ impl EthSpec for MinimalEthSpec {
     /// `ATTESTATION_DUE_BPS` from `configs/minimal.yaml:76`.
     const ATTESTATION_DUE_BPS: u64 = 3_333;
 
+    // ── Altair preset constants ────────────────────────────────────────────────
+
+    // -- Altair sync committee --
+    /// `SYNC_COMMITTEE_SIZE` from `presets/minimal/altair.yaml:15`.
+    const SYNC_COMMITTEE_SIZE: u64 = 32;
+    /// `SYNC_COMMITTEE_SUBNET_COUNT` from `specs/altair/validator.md:80`.
+    const SYNC_COMMITTEE_SUBNET_COUNT: u64 = 4;
+    /// `SYNC_SUBCOMMITTEE_SIZE` = 32 / 4 = 8.
+    const SYNC_SUBCOMMITTEE_SIZE: u64 = 8;
+    /// `MIN_SYNC_COMMITTEE_PARTICIPANTS` from `presets/minimal/altair.yaml:22`.
+    const MIN_SYNC_COMMITTEE_PARTICIPANTS: u64 = 1;
+    /// `EPOCHS_PER_SYNC_COMMITTEE_PERIOD` from `presets/minimal/altair.yaml:17`.
+    const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 8;
+    /// `TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE` from `specs/altair/validator.md:79`.
+    const TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE: u64 = 16;
+    /// `UPDATE_TIMEOUT` from `presets/minimal/altair.yaml:24` (8 * 8 = 64).
+    const UPDATE_TIMEOUT: u64 = 64;
+
+    // -- Altair reward and penalty quotients --
+    /// `INACTIVITY_PENALTY_QUOTIENT_ALTAIR` from `presets/minimal/altair.yaml:6`.
+    const INACTIVITY_PENALTY_QUOTIENT_ALTAIR: u64 = 50_331_648;
+    /// `MIN_SLASHING_PENALTY_QUOTIENT_ALTAIR` from `presets/minimal/altair.yaml:8`.
+    const MIN_SLASHING_PENALTY_QUOTIENT_ALTAIR: u64 = 64;
+    /// `PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR` from `presets/minimal/altair.yaml:10`.
+    const PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR: u64 = 2;
+
+    // -- Altair validator cycle constants --
+    /// `INACTIVITY_SCORE_BIAS` from `configs/minimal.yaml:109`.
+    const INACTIVITY_SCORE_BIAS: u64 = 4;
+    /// `INACTIVITY_SCORE_RECOVERY_RATE` from `configs/minimal.yaml:111`.
+    const INACTIVITY_SCORE_RECOVERY_RATE: u64 = 16;
+
+    // -- Altair fork schedule --
+    /// `ALTAIR_FORK_VERSION` from `configs/minimal.yaml:37`.
+    const ALTAIR_FORK_VERSION: [u8; 4] = [0x01, 0x00, 0x00, 0x01];
+    /// `ALTAIR_FORK_EPOCH` from plan Task 0.3 (minimal preset activates altair at genesis).
+    ///
+    /// NOTE: `configs/minimal.yaml:38` sets this to FAR_FUTURE_EPOCH (2^64-1) for generic
+    /// spec-test runs. The plan specifies `0` for the minimal preset to reflect a test
+    /// configuration where altair is active from genesis. Use `RuntimeConfig` to override
+    /// at runtime.
+    const ALTAIR_FORK_EPOCH: u64 = 0;
+
     fn name() -> &'static str {
         "minimal"
+    }
+
+    fn default_runtime_config() -> crate::config::RuntimeConfig {
+        crate::config::RuntimeConfig {
+            sync_committee_size: Self::SYNC_COMMITTEE_SIZE,
+            sync_committee_subnet_count: Self::SYNC_COMMITTEE_SUBNET_COUNT,
+            sync_subcommittee_size: Self::SYNC_SUBCOMMITTEE_SIZE,
+            min_sync_committee_participants: Self::MIN_SYNC_COMMITTEE_PARTICIPANTS,
+            epochs_per_sync_committee_period: Self::EPOCHS_PER_SYNC_COMMITTEE_PERIOD,
+            target_aggregators_per_sync_subcommittee:
+                Self::TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE,
+            update_timeout: Self::UPDATE_TIMEOUT,
+            inactivity_penalty_quotient_altair: Self::INACTIVITY_PENALTY_QUOTIENT_ALTAIR,
+            min_slashing_penalty_quotient_altair: Self::MIN_SLASHING_PENALTY_QUOTIENT_ALTAIR,
+            proportional_slashing_multiplier_altair: Self::PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR,
+            inactivity_score_bias: Self::INACTIVITY_SCORE_BIAS,
+            inactivity_score_recovery_rate: Self::INACTIVITY_SCORE_RECOVERY_RATE,
+            genesis_fork_version: Self::GENESIS_FORK_VERSION,
+            altair_fork_version: Self::ALTAIR_FORK_VERSION,
+            altair_fork_epoch: Self::ALTAIR_FORK_EPOCH,
+            genesis_validators_root: [0u8; 32],
+        }
     }
 
     type BeaconState = crate::phase0::MinimalBeaconState;
