@@ -20,6 +20,7 @@ use pharos_ssz::Encode as _;
 use pharos_types::phase0::primitives::{ForkDigest, Slot};
 use pharos_types::phase0::{Attestation, MainnetSignedBeaconBlock};
 use pharos_utils::ValidatorIndex;
+use serial_test::serial;
 use tokio::time::timeout;
 
 const FORK_DIGEST: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
@@ -47,6 +48,7 @@ fn attestation_topic(subnet: u64) -> GossipTopic {
 /// B must receive a `NetworkEvent::GossipMessage` with the matching SSZ payload
 /// within 5 seconds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn block_gossip_round_trip() {
     let mut node_a = spawn_node(vec![], TestHost::new(fd()), false).await;
     let mut node_b = spawn_node(vec![], TestHost::new(fd()), false).await;
@@ -105,6 +107,7 @@ async fn block_gossip_round_trip() {
 /// A publishes on beacon_attestation_3; B3 (subnet 3) receives it.
 /// B4 (only subscribed to subnet 4) must NOT receive it within 1 second.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn attestation_subnet_gossip() {
     let mut node_a = spawn_node(vec![], TestHost::new(fd()), false).await;
     let mut node_b3 = spawn_node(vec![], TestHost::new(fd()), false).await;
@@ -208,6 +211,7 @@ async fn attestation_subnet_gossip() {
 /// `GossipVerdict::Reject` for this block and gossipsub does not propagate it
 /// further. C must NOT receive a `GossipMessage` within 2 seconds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn gossip_reject_drops_message() {
     // B rejects blocks with proposer_index = u64::MAX.
     let b_host = TestHost::new(fd()).reject_blocks_with_proposer(u64::MAX);

@@ -38,3 +38,4 @@ async-trait = "0.1"
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber.workspace = true
+serial_test = "3"
