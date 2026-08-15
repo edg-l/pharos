@@ -348,6 +348,7 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
 // ── CapturingScorer ───────────────────────────────────────────────────────────
 
 /// A `PeerScorer` that records every `ScoreEvent` for later inspection in tests.
+#[allow(dead_code)]
 #[derive(Clone, Default)]
 pub struct CapturingScorer(pub Arc<Mutex<Vec<ScoreEvent>>>);
 
@@ -392,11 +393,13 @@ pub struct TestNode {
 /// After `spawn_node` returns:
 /// - `TestNode::listen_addr` is the real bound TCP or QUIC multiaddr.
 /// - `TestNode::enr` is the locally signed ENR including the real discv5 UDP port.
+#[allow(dead_code)]
 pub async fn spawn_node(bootnodes: Vec<Enr>, host: TestHost, quic_only: bool) -> TestNode {
     spawn_node_with_scorer(bootnodes, host, quic_only, None).await
 }
 
 /// Like `spawn_node` but accepts an optional `CapturingScorer`.
+#[allow(dead_code)]
 pub async fn spawn_node_with_scorer(
     bootnodes: Vec<Enr>,
     host: TestHost,

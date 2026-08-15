@@ -185,6 +185,28 @@ pub enum NetworkEvent {
     ExternalAddrConfirmed { address: libp2p::Multiaddr },
 }
 
+impl NetworkEvent {
+    /// Returns the variant name as a static string.
+    ///
+    /// Used in structured warn logs (D-network-backpressure) to identify which
+    /// event was dropped when the consumer is stalled, without allocating.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Self::PeerConnected(_) => "PeerConnected",
+            Self::PeerDisconnected(_, _) => "PeerDisconnected",
+            Self::GossipMessage { .. } => "GossipMessage",
+            Self::NewListenAddr(_) => "NewListenAddr",
+            Self::LocalEnr(_) => "LocalEnr",
+            Self::Shutdown => "Shutdown",
+            Self::PeerSubscribed { .. } => "PeerSubscribed",
+            Self::PeerUnsubscribed { .. } => "PeerUnsubscribed",
+            Self::PeerIdentified { .. } => "PeerIdentified",
+            Self::DialFailed { .. } => "DialFailed",
+            Self::ExternalAddrConfirmed { .. } => "ExternalAddrConfirmed",
+        }
+    }
+}
+
 // ── Network ───────────────────────────────────────────────────────────────────
 
 /// The running network task.
@@ -212,6 +234,11 @@ pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScore
     /// forwarded to `DiscoveryService::handle_discovery_command`.
     discovery_cmd_rx: mpsc::Receiver<DiscoveryCommand>,
     event_tx: mpsc::Sender<NetworkEvent>,
+    /// Configured capacity of the `event_tx` channel.
+    ///
+    /// Stored here so `emit_event` can include it in the drop-warning log
+    /// per D-network-backpressure.
+    event_channel_capacity: usize,
     discovery_tick: Interval,
     shutdown_signal: oneshot::Receiver<()>,
     /// Pending outbound RPC requests: maps `OutboundRequestId` to the
@@ -258,7 +285,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
         // waiting on `NetworkEvent::LocalEnr` (e.g. integration tests that
         // need the discv5 ENR with the real bound UDP port) can proceed.
         let local_enr = self.discovery.local_enr();
-        self.emit_event(NetworkEvent::LocalEnr(local_enr));
+        self.emit_event(NetworkEvent::LocalEnr(local_enr)).await;
 
         loop {
             tokio::select! {
@@ -297,9 +324,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                 }
             }
         }
-        if let Err(err) = self.event_tx.try_send(NetworkEvent::Shutdown) {
-            tracing::warn!(error = %err, "network event channel send failed; event dropped");
-        }
+        self.emit_event(NetworkEvent::Shutdown).await;
         tracing::info!("network event loop exited; Shutdown emitted");
         Ok(())
     }
@@ -360,15 +385,16 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                 self.on_swarm_connection_established(peer_id, endpoint);
             }
             libp2p::swarm::SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-                self.on_swarm_connection_closed(peer_id, cause.as_ref());
+                self.on_swarm_connection_closed(peer_id, cause.as_ref())
+                    .await;
             }
             libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } => {
                 tracing::info!(%address, "new listen address");
-                self.emit_event(NetworkEvent::NewListenAddr(address));
+                self.emit_event(NetworkEvent::NewListenAddr(address)).await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::Identify(id_event)) => {
                 if let identify::Event::Received { peer_id, info, .. } = *id_event {
-                    self.on_identify(peer_id, info);
+                    self.on_identify(peer_id, info).await;
                 }
             }
             libp2p::swarm::SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -376,7 +402,8 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                 self.emit_event(NetworkEvent::DialFailed {
                     peer: peer_id,
                     error: error_str,
-                });
+                })
+                .await;
                 if let Some(pid) = peer_id {
                     self.peer_manager.record_event(
                         pid,
@@ -390,7 +417,8 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
             libp2p::swarm::SwarmEvent::ExternalAddrConfirmed { address } => {
                 tracing::info!(%address, "external address confirmed");
                 // ENR update deferred to M3b (cross-fork ENR migration).
-                self.emit_event(NetworkEvent::ExternalAddrConfirmed { address });
+                self.emit_event(NetworkEvent::ExternalAddrConfirmed { address })
+                    .await;
             }
             _ => {
                 // Remaining swarm events are deferred to M11 (peer scoring,
@@ -416,7 +444,8 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                     self.emit_event(NetworkEvent::PeerSubscribed {
                         peer: peer_id,
                         topic: parsed,
-                    });
+                    })
+                    .await;
                 } else {
                     tracing::debug!(%peer_id, ?topic, "peer subscribed to unknown topic; ignoring");
                 }
@@ -426,7 +455,8 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                     self.emit_event(NetworkEvent::PeerUnsubscribed {
                         peer: peer_id,
                         topic: parsed,
-                    });
+                    })
+                    .await;
                 } else {
                     tracing::debug!(%peer_id, ?topic, "peer unsubscribed from unknown topic; ignoring");
                 }
@@ -534,7 +564,8 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                 topic,
                 peer: propagation_source,
                 data: ssz_bytes,
-            });
+            })
+            .await;
         }
 
         // Record score event for the peer.
@@ -595,7 +626,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                     // response so consumers see the peer as ready before the remote sees
                     // the Status reply.
                     if is_inbound_status && matches!(response, RpcResponse::Status(_)) {
-                        self.emit_event(NetworkEvent::PeerConnected(peer));
+                        self.emit_event(NetworkEvent::PeerConnected(peer)).await;
                         self.peer_manager.record_event(
                             peer,
                             ScoreEvent::RpcSuccess {
@@ -669,7 +700,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                     // Each request_id belongs to exactly one tracking map.
                     if let Some(hs_peer) = self.pending_status_checks.remove(&request_id) {
                         // Handshake Status response.
-                        self.on_status_response(hs_peer, &response);
+                        self.on_status_response(hs_peer, &response).await;
                     } else if let Some(ping_peer) = self.pending_ping_checks.remove(&request_id) {
                         // Ping keepalive seq-number check.
                         self.on_ping_response(ping_peer, &response);
@@ -869,7 +900,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
     /// `NetworkEvent::PeerIdentified` with the updated snapshot. Drops the
     /// event when the peer is not in the connected map (unknown-peer identify;
     /// per D-peer-info-shape identify-flood mitigation by per-peer overwrite).
-    fn on_identify(&mut self, peer: PeerId, info: identify::Info) {
+    async fn on_identify(&mut self, peer: PeerId, info: identify::Info) {
         let agent = info.agent_version.clone();
         let protocols: Vec<String> = info.protocols.iter().map(|p| p.to_string()).collect();
         let observed = info.observed_addr.clone();
@@ -881,7 +912,8 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
                 self.emit_event(NetworkEvent::PeerIdentified {
                     peer,
                     info: Box::new(snapshot),
-                });
+                })
+                .await;
             }
             None => {
                 tracing::debug!(%peer, "identify event for unknown peer; dropping");
@@ -895,7 +927,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
     /// `Connected` and records the status.  If it differs, records a
     /// `HandshakeFail` score event, transitions to `Disconnecting`, sends
     /// `Goodbye(2 = IrrelevantNetwork)`, and disconnects.
-    fn on_status_response(&mut self, peer_id: PeerId, response: &RpcResponse<E>) {
+    async fn on_status_response(&mut self, peer_id: PeerId, response: &RpcResponse<E>) {
         let peer_status = match response {
             RpcResponse::Status(s) => s.clone(),
             RpcResponse::Error { code, .. } => {
@@ -961,7 +993,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
             self.swarm.disconnect_peer_id(peer_id).ok();
         } else {
             self.peer_manager.on_handshake_complete(peer_id);
-            self.emit_event(NetworkEvent::PeerConnected(peer_id));
+            self.emit_event(NetworkEvent::PeerConnected(peer_id)).await;
             self.peer_manager.record_event(
                 peer_id,
                 ScoreEvent::RpcSuccess {
@@ -1027,7 +1059,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
     /// If a disconnect reason was pre-registered via
     /// `peer_manager.note_disconnect_reason` (e.g., Goodbye plumbing), that
     /// reason takes precedence over the libp2p `ConnectionError`.
-    pub fn on_swarm_connection_closed(
+    pub async fn on_swarm_connection_closed(
         &mut self,
         peer_id: PeerId,
         reason: Option<&ConnectionError>,
@@ -1046,7 +1078,8 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
             });
         // on_disconnected records ScoreEvent::PeerDisconnected with the resolved reason.
         self.peer_manager.on_disconnected(peer_id, dr.clone());
-        self.emit_event(NetworkEvent::PeerDisconnected(peer_id, dr));
+        self.emit_event(NetworkEvent::PeerDisconnected(peer_id, dr))
+            .await;
     }
 
     /// Send a `Ping` keepalive to every `Connected` peer.
@@ -1155,14 +1188,39 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> Network<E, 
         }
     }
 
-    /// Emit a `NetworkEvent` to the consumer channel.
+    /// Emit a `NetworkEvent` to the consumer channel with bounded back-pressure.
     ///
-    /// Uses `try_send` to avoid blocking the event loop. Logs a warning when
-    /// the channel is full and the event is dropped (back-pressure via drop
-    /// per D-channels).
-    fn emit_event(&self, ev: NetworkEvent) {
-        if let Err(err) = self.event_tx.try_send(ev) {
-            tracing::warn!(error = %err, "network event channel send failed; event dropped");
+    /// **Back-pressure policy** (`D-network-backpressure`):
+    /// All call sites are inside `async fn` handlers (`run`, `on_swarm_event`,
+    /// `on_gossip_event`, `on_request_response_event`), so an async signature is
+    /// the correct approach here. The alternative — keeping `emit_event` sync
+    /// and falling back to `tokio::runtime::Handle::current().block_on(timeout(...))`
+    /// — would panic inside the tokio runtime because `block_on` cannot be called
+    /// from an async context. Therefore this function is `async`.
+    ///
+    /// Behaviour:
+    /// - Awaits `event_tx.send(ev)` under a 1-second timeout.
+    /// - If the channel becomes available within 1 second, the event is delivered;
+    ///   no events are dropped on a slow-but-live consumer.
+    /// - If the consumer is fully stalled for more than 1 second, a warning is
+    ///   logged and the function returns without dropping the task (graceful
+    ///   degradation). The event is lost in that case, but the network loop
+    ///   continues running.
+    async fn emit_event(&mut self, ev: NetworkEvent) {
+        let variant = ev.variant_name();
+        match tokio::time::timeout(Duration::from_secs(1), self.event_tx.send(ev)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                // Receiver dropped; channel is closed.
+                tracing::debug!("network event channel closed; event discarded");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    event = variant,
+                    queue_depth = self.event_channel_capacity,
+                    "network event channel full for >1 s; dropping event (consumer stalled)"
+                );
+            }
         }
     }
 
@@ -1268,6 +1326,7 @@ fn rpc_method_from_request(req: &RpcRequest) -> RpcMethod {
 /// - `discv5_addr`: `127.0.0.1:9001` (note: UDP; avoids collision with TCP 9000)
 /// - `local_key`: freshly generated secp256k1 keypair
 /// - `bootnodes`: empty
+/// - `event_channel_capacity`: 1024 (see `event_channel_capacity` for rationale)
 pub struct NetworkBuilder<E, H, S> {
     host: Arc<H>,
     listen_ip: IpAddr,
@@ -1280,6 +1339,10 @@ pub struct NetworkBuilder<E, H, S> {
     bootnodes: Vec<Enr>,
     local_key: Keypair,
     scorer: S,
+    /// Capacity of the `mpsc` channel from `Network` to `NetworkHandle`.
+    ///
+    /// Default: 1024. See `event_channel_capacity` for the trade-off.
+    event_channel_capacity: usize,
     _phantom: PhantomData<E>,
 }
 
@@ -1301,6 +1364,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>>
             bootnodes: Vec::new(),
             local_key: Keypair::generate_secp256k1(),
             scorer: crate::scoring::NoopScorer,
+            event_channel_capacity: 1024,
             _phantom: PhantomData,
         }
     }
@@ -1373,8 +1437,25 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
             bootnodes: self.bootnodes,
             local_key: self.local_key,
             scorer,
+            event_channel_capacity: self.event_channel_capacity,
             _phantom: PhantomData,
         }
+    }
+
+    /// Set the capacity of the outbound event channel (`Network → NetworkHandle`).
+    ///
+    /// **Default**: 1024.
+    ///
+    /// **Trade-off** (`D-network-backpressure`): a larger buffer absorbs short
+    /// consumer stalls without back-pressure, at the cost of higher memory use
+    /// and delayed drop detection. A smaller buffer (e.g. 2 in tests) exercises
+    /// the bounded-await path sooner. The default of 1024 is sized for ~2 slots
+    /// of worst-case mainnet gossip load (each slot can produce O(100) gossip
+    /// events); a well-behaved consumer drains the channel inside one slot period
+    /// (12 s). Values below 64 are uncommon in production but useful in tests.
+    pub fn event_channel_capacity(mut self, capacity: usize) -> Self {
+        self.event_channel_capacity = capacity;
+        self
     }
 
     /// Construct the `Network` and return `(Network, NetworkHandle<E>, DiscoveryHandle)`.
@@ -1541,7 +1622,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
 
         // ── Step 7: wire channels ─────────────────────────────────────────────
         let (cmd_tx, command_rx) = mpsc::channel::<NetworkCommand<E>>(64);
-        let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(1024);
+        let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(self.event_channel_capacity);
         let (shutdown_tx, shutdown_signal) = oneshot::channel::<()>();
 
         // Discovery command channel: `DiscoveryHandle` sends commands, the
@@ -1572,6 +1653,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
             command_rx,
             discovery_cmd_rx,
             event_tx,
+            event_channel_capacity: self.event_channel_capacity,
             discovery_tick,
             shutdown_signal,
             pending_rpc: HashMap::new(),
