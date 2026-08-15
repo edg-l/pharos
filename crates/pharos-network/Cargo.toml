@@ -42,3 +42,12 @@ async-trait = "0.1"
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber.workspace = true
 serial_test = "3"
+criterion = { workspace = true }
+
+[[bench]]
+name = "gossip_validation"
+harness = false
+
+[[bench]]
+name = "rpc_roundtrip"
+harness = false

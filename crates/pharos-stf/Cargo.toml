@@ -17,3 +17,8 @@ rayon.workspace = true
 
 [dev-dependencies]
 snap.workspace = true
+criterion = { workspace = true }
+
+[[bench]]
+name = "process_block"
+harness = false

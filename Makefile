@@ -147,8 +147,14 @@ watch-test: ## cargo-watch: rerun tests on every save. CRATE=<name> narrows the 
 	$(CARGO) watch -x "test $(if $(CRATE),-p $(CRATE),--workspace)"
 
 .PHONY: bench
-bench: ## Run criterion benches. (No benches yet; M11.)
-	$(CARGO) bench --workspace
+bench: ## Run criterion benches. Captured to $(LOGS)/bench.log. Records bench-history/<sha>.json.
+	@mkdir -p $(LOGS) bench-history
+	@: > $(LOGS)/bench.log
+	$(CARGO) bench -p pharos-stf --bench process_block 2>&1 | tee -a $(LOGS)/bench.log
+	$(CARGO) bench -p pharos-ssz --bench tree_hash_beacon_state 2>&1 | tee -a $(LOGS)/bench.log
+	$(CARGO) bench -p pharos-network --bench gossip_validation 2>&1 | tee -a $(LOGS)/bench.log
+	$(CARGO) bench -p pharos-network --bench rpc_roundtrip 2>&1 | tee -a $(LOGS)/bench.log
+	./scripts/bench-summary.sh
 
 .PHONY: clean
 clean: ## Clear the cargo target directory.

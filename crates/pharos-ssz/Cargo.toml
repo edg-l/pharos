@@ -17,3 +17,9 @@ rayon.workspace = true
 proptest.workspace = true
 snap.workspace = true
 serde_yaml_ng.workspace = true
+criterion = { workspace = true }
+pharos-types = { path = "../pharos-types" }
+
+[[bench]]
+name = "tree_hash_beacon_state"
+harness = false
