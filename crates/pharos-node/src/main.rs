@@ -222,6 +222,19 @@ struct Args {
     /// Only consulted when `--metrics` is set.
     #[arg(long, default_value_t = 5054, value_name = "PORT")]
     metrics_port: u16,
+
+    // ── Logging ───────────────────────────────────────────────────────────────
+    /// Log output format: `pretty` (human-readable, default) or `json`
+    /// (machine-readable, suitable for log aggregators; emits span enter/exit
+    /// events for per-span latency measurement).
+    #[arg(long, default_value = "pretty", value_name = "FORMAT")]
+    log_format: pharos_utils::tracing::LogFormat,
+
+    /// Log filter directive in `RUST_LOG` syntax, e.g. `info` or
+    /// `info,pharos_stf=debug`. Overridden by the `RUST_LOG` environment
+    /// variable when set.
+    #[arg(long, default_value = "info", value_name = "FILTER")]
+    log_level: String,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -275,14 +288,12 @@ fn peer_info_to_json(info: &pharos_network::PeerInfo) -> JsonValue {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
+    // Parse args first so --log-format / --log-level are available before the
+    // subscriber is installed.  Tracing before this point uses the default
+    // no-op subscriber; startup errors are surfaced via anyhow after init.
     let args = Args::parse();
+
+    pharos_utils::tracing::init_tracing(args.log_format, &args.log_level);
 
     // ── Metrics (opt-in via --metrics) ────────────────────────────────────────
     if args.metrics {

@@ -44,6 +44,9 @@ where
     H: Host<E> + LightClientProvider<E> + BlobProvider<E>,
     S: PeerScorer,
 {
+    let method = req.method_name();
+    let _span = tracing::info_span!("rpc_handle", %peer, method).entered();
+
     match req {
         RpcRequest::Status(incoming) => {
             let local = build_local_status(host);

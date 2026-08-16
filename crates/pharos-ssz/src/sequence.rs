@@ -1415,7 +1415,7 @@ mod tests {
     #[test]
     fn list_empty_encodes_to_empty_bytes() {
         let list = SszList::<u64, 1024>::new();
-        assert_eq!(list.as_ssz_bytes(), vec![]);
+        assert_eq!(list.as_ssz_bytes(), Vec::<u8>::new());
     }
 
     // ── SszVector basic tests ────────────────────────────────────────────────

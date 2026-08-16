@@ -14,7 +14,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use thiserror::Error;
 use tokio::sync::{Notify, mpsc, watch};
-use tracing::{debug, warn};
+use tracing::{Instrument as _, debug, info_span, warn};
 
 use pharos_fork_choice::Store as FcStore;
 use pharos_network::NetworkCommandSender;
@@ -263,6 +263,21 @@ where
                 None => continue,
             };
 
+        // Per-slot root span and per-block child span.
+        // Both are created with an explicit parent relationship so tracing's span
+        // hierarchy is correct without holding `EnteredSpan` guards across `.await`
+        // points (which would make the future `!Send` and break `tokio::spawn`).
+        let block_slot = crate::import::signed_block_slot::<E>(&signed_block).0;
+        let block_root = extract_block_root::<E>(&signed_block);
+        let slot_span = info_span!("process_slot", slot = block_slot);
+        // `import_block` span is explicitly parented to the slot span.
+        let block_span = info_span!(
+            parent: &slot_span,
+            "import_block",
+            block_root = %block_root,
+            slot = block_slot,
+        );
+
         // (c)-(h) Core import: pre-state fetch → DA gate → STF → on_block → payload push → HeadChange.
         let parent_root = extract_parent_root::<E>(&signed_block);
         let outcome = match crate::import::import_block::<E, EE, EnginePowBlockProvider, DA>(
@@ -276,6 +291,7 @@ where
             &host.store_arc(),
             &da_checker,
         )
+        .instrument(block_span)
         .await
         {
             Ok(o) => o,

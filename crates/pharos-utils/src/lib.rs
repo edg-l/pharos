@@ -8,6 +8,7 @@ pub mod bytes;
 pub mod cached_root;
 pub mod hash;
 pub mod metrics;
+pub mod tracing;
 pub mod uint256;
 pub mod units;
 pub mod version;

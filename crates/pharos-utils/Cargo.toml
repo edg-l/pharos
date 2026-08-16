@@ -19,7 +19,10 @@ thiserror.workspace = true
 serde = { workspace = true, optional = true }
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 reqwest = { workspace = true }
+serde_json.workspace = true

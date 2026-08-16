@@ -84,16 +84,26 @@ struct Args {
     /// Defaults to `<vc-data-dir>/slashing_protection_export.json`.
     #[arg(long, value_name = "FILE")]
     export_slashing_protection: Option<PathBuf>,
+
+    // ── Logging ───────────────────────────────────────────────────────────────
+    /// Log output format: `pretty` (human-readable, default) or `json`
+    /// (machine-readable; emits span enter/exit events for log aggregators).
+    #[arg(long, default_value = "pretty", value_name = "FORMAT")]
+    log_format: pharos_utils::tracing::LogFormat,
+
+    /// Log filter directive in `RUST_LOG` syntax, e.g. `info` or
+    /// `info,pharos_validator=debug`. Overridden by `RUST_LOG` when set.
+    #[arg(long, default_value = "info", value_name = "FILTER")]
+    log_level: String,
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialise tracing.
-    tracing_subscriber::fmt::init();
-
     let args = Args::parse();
+
+    pharos_utils::tracing::init_tracing(args.log_format, &args.log_level);
 
     info!("pharos-vc {} starting", env!("CARGO_PKG_VERSION"));
 

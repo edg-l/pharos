@@ -143,6 +143,28 @@ pub enum RpcRequest {
     BlobSidecarsByRoot(BlobSidecarsByRootRequest<MAX_REQUEST_BLOB_SIDECARS>),
 }
 
+impl RpcRequest {
+    /// Return a short, stable string name for the method, used as a tracing
+    /// span field and as a Prometheus `method` label.
+    pub fn method_name(&self) -> &'static str {
+        match self {
+            RpcRequest::Status(_) => "Status",
+            RpcRequest::Goodbye(_) => "Goodbye",
+            RpcRequest::Ping(_) => "Ping",
+            RpcRequest::MetaData => "MetaData",
+            RpcRequest::MetaDataV1 => "MetaDataV1",
+            RpcRequest::BlocksByRange(_) => "BlocksByRange",
+            RpcRequest::BlocksByRoot(_) => "BlocksByRoot",
+            RpcRequest::LightClientBootstrap(_) => "LightClientBootstrap",
+            RpcRequest::LightClientUpdatesByRange(_) => "LightClientUpdatesByRange",
+            RpcRequest::LightClientFinalityUpdate => "LightClientFinalityUpdate",
+            RpcRequest::LightClientOptimisticUpdate => "LightClientOptimisticUpdate",
+            RpcRequest::BlobSidecarsByRange(_) => "BlobSidecarsByRange",
+            RpcRequest::BlobSidecarsByRoot(_) => "BlobSidecarsByRoot",
+        }
+    }
+}
+
 // ── RpcResponse ───────────────────────────────────────────────────────────────
 
 /// An inbound or outbound Ethereum CL req-resp response.
