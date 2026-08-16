@@ -232,7 +232,7 @@ pub(crate) fn increase_balance_capella<
         .unwrap_or(Gwei(0));
     state.balances = state
         .balances
-        .with_set(index.0 as usize, Gwei(cur.0 + delta.0))
+        .with_set(index.0 as usize, Gwei(cur.0.saturating_add(delta.0)))
         .expect("balance index in range");
 }
 
@@ -869,7 +869,7 @@ where
         .unwrap_or(Gwei(0));
     state.slashings = state
         .slashings
-        .with_set(slashing_slot, Gwei(cur_slashing.0 + effective_balance.0))
+        .with_set(slashing_slot, Gwei(cur_slashing.0.saturating_add(effective_balance.0)))
         .map_err(crate::error::StateTransitionError::Ssz)?;
 
     // Capella inherits bellatrix's penalty quotient.

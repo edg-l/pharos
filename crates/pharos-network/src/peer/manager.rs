@@ -280,6 +280,13 @@ impl<S: PeerScorer> PeerManager<S> {
         self.peers.remove(&peer_id);
     }
 
+    /// Remove expired bans from the map. Call periodically (e.g. in
+    /// `tick_score_prune`) to prevent unbounded growth.
+    pub fn sweep_expired_bans(&mut self) {
+        let now = Instant::now();
+        self.banned.retain(|_, expires_at| *expires_at > now);
+    }
+
     // ── Accessors ─────────────────────────────────────────────────────────────
 
     /// Record a failed outbound dial attempt in the bounded LRU cache.

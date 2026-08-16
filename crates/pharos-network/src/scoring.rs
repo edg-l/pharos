@@ -37,6 +37,8 @@ pub enum ScoreEvent {
     PeerConnected,
     /// The peer disconnected.
     PeerDisconnected { reason: DisconnectReason },
+    /// A connection was rejected because the peer is banned.
+    BannedPeerConnected,
 }
 
 /// RPC methods tracked for scoring purposes.

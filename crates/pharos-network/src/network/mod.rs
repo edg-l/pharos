@@ -1344,6 +1344,19 @@ impl<
         self.pending_dials.remove(&peer_id);
 
         if num_established.get() == 1 {
+            if self.peer_manager.is_banned(&peer_id) {
+                tracing::warn!(
+                    banned_peer = %peer_id,
+                    "rejecting connection from banned peer"
+                );
+                self.peer_manager.record_event(
+                    peer_id,
+                    ScoreEvent::BannedPeerConnected,
+                );
+                self.swarm.disconnect_peer_id(peer_id).ok();
+                return;
+            }
+
             let dir = if endpoint.is_dialer() {
                 ConnectionDirection::Outbound
             } else {
@@ -1464,6 +1477,7 @@ impl<
     /// sends `Goodbye(3)` (Fault/error) then disconnects from the swarm.
     /// With `NoopScorer` this is always a no-op.
     pub fn tick_score_prune(&mut self) {
+        self.peer_manager.sweep_expired_bans();
         let to_prune = self.peer_manager.should_prune();
         for peer_id in to_prune {
             // Pre-register reason before disconnect so ConnectionClosed carries

@@ -42,7 +42,7 @@ where
         .get(index.0 as usize)
         .copied()
         .unwrap_or(Gwei(0));
-    state.set_balance(index.0 as usize, Gwei(cur.0 + delta.0));
+    state.set_balance(index.0 as usize, Gwei(cur.0.saturating_add(delta.0)));
 }
 
 /// `decrease_balance` per `specs/phase0/beacon-chain.md:1215-1221`.
@@ -171,7 +171,7 @@ where
         .get(slashing_slot)
         .copied()
         .unwrap_or(Gwei(0));
-    state.set_slashing(slashing_slot, Gwei(cur_slashing.0 + effective_balance.0))?;
+    state.set_slashing(slashing_slot, Gwei(cur_slashing.0.saturating_add(effective_balance.0)))?;
 
     let penalty = Gwei(effective_balance.0 / E::MIN_SLASHING_PENALTY_QUOTIENT);
     decrease_balance::<E>(state, slashed_index, penalty);
