@@ -1613,14 +1613,12 @@ where
                 // Fix 4: real LMD-GHOST vote weight.
                 let weight = get_weight::<E>(&fc, *root).to_string();
 
-                // Fix 5: real execution block hash for Bellatrix+ blocks;
-                // Phase0/Altair stay zero.
-                use pharos_types::views::BeaconBlockBodyView as _;
-                let exec_block_hash_hex = block
-                    .body()
-                    .execution_block_hash()
-                    .map(|h| format!("0x{}", hex::encode(h)))
-                    .unwrap_or_else(|| format!("0x{}", "0".repeat(64)));
+                // Real execution block hash for Bellatrix+ blocks (zero for
+                // Phase0/Altair). Use the fork-aware fork-choice helper rather
+                // than `block.body()`, which is `unimplemented!()` on the
+                // fork-enum BeaconBlock (it cannot return a borrowed enum body).
+                let exec_hash = pharos_fork_choice::execution_block_hash_at_root(&fc, *root);
+                let exec_block_hash_hex = format!("0x{}", hex::encode(exec_hash.as_slice()));
 
                 serde_json::json!({
                     "slot": block.slot().0.to_string(),
