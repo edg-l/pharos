@@ -40,9 +40,10 @@ use pharos_types::{
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
     load_bellatrix_state, load_capella_signed_block, load_capella_state, load_deneb_signed_block,
-    load_deneb_state, load_phase0_signed_block, load_pre_post_altair_state,
-    load_pre_post_bellatrix_state, load_pre_post_capella_state, load_pre_post_deneb_state,
-    load_pre_post_phase0_state, walk_category,
+    load_deneb_state, load_electra_signed_block, load_electra_state, load_phase0_signed_block,
+    load_pre_post_altair_state, load_pre_post_bellatrix_state, load_pre_post_capella_state,
+    load_pre_post_deneb_state, load_pre_post_electra_state, load_pre_post_phase0_state,
+    walk_category,
 };
 use crate::fs_util::dir_name;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
@@ -220,11 +221,41 @@ pub fn enumerate_sanity(
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
                 }),
-                _ => Box::new(move || {
+                ("deneb", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
                     match run_deneb_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("electra", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_electra_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                _ => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_electra_blocks_case::<MinimalEthSpec>(
                         &case_dir,
                         &case_name,
                         n,
@@ -333,8 +364,24 @@ pub fn enumerate_sanity(
                             CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                         }
                     }),
-                    _ => Box::new(move || {
+                    ("deneb", _) => Box::new(move || {
                         match run_deneb_slots_case_minimal(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("electra", "mainnet") => {
+                        Box::new(move || {
+                            match run_electra_slots_case_mainnet(&case_dir, &case_name) {
+                                CaseResult::Pass => CaseOutcome::Pass,
+                                CaseResult::Skip => CaseOutcome::Skip,
+                                CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                            }
+                        })
+                    }
+                    _ => Box::new(move || {
+                        match run_electra_slots_case_minimal(&case_dir, &case_name) {
                             CaseResult::Pass => CaseOutcome::Pass,
                             CaseResult::Skip => CaseOutcome::Skip,
                             CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
@@ -372,6 +419,10 @@ where
         + CapellaUpgradeDispatch<E>,
     E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
         + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
@@ -513,6 +564,10 @@ where
         + CapellaUpgradeDispatch<E>,
     E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
         + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::AltairSignedBeaconBlock: pharos_ssz::Decode,
     E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
@@ -668,6 +723,10 @@ where
         + CapellaUpgradeDispatch<E>,
     E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
         + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
     E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
@@ -847,6 +906,10 @@ where
         + pharos_ssz::Decode,
     E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
         + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::CapellaSignedBeaconBlock: pharos_ssz::Decode,
     E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
@@ -1016,8 +1079,12 @@ where
         + pharos_ssz::Decode,
     E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
         + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
         + pharos_ssz::TreeHash
         + pharos_ssz::Decode,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::DenebSignedBeaconBlock: pharos_ssz::Decode,
     E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
@@ -1041,6 +1108,99 @@ where
     for i in 0..blocks_count {
         let block_file = format!("blocks_{i}.ssz_snappy");
         let block = match load_deneb_signed_block::<E>(case_dir, &block_file) {
+            Ok(v) => v,
+            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+        };
+        let state = current.take().unwrap();
+        match state_transition::<E, pharos_stf::NullExecutionEngine>(
+            state,
+            &block,
+            &pharos_stf::NullExecutionEngine,
+            validate_result,
+            &E::default_runtime_config(),
+        ) {
+            Ok((new_state, _)) => current = Some(new_state),
+            Err(e) => {
+                block_error = Some(format!("{e}"));
+                break;
+            }
+        }
+    }
+
+    match (block_error, post) {
+        (None, Some(expected)) => {
+            let state = current.unwrap();
+            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!("{case_name}: state mismatch after block sequence"))
+            }
+        }
+        (None, None) => CaseResult::Fail(format!(
+            "{case_name}: expected a block to fail but all blocks applied successfully"
+        )),
+        (Some(_), None) => CaseResult::Pass,
+        (Some(e), Some(_)) => {
+            CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
+        }
+    }
+}
+
+fn run_electra_blocks_case<E>(
+    case_dir: &Path,
+    case_name: &str,
+    blocks_count: u64,
+    validate_result: bool,
+) -> CaseResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + AltairProcessSlotsDispatch<E>
+        + AltairUpgradeDispatch<E>
+        + pharos_ssz::Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + pharos_ssz::Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>
+        + pharos_ssz::Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + pharos_ssz::Decode,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash
+        + pharos_ssz::Decode,
+    E::ElectraSignedBeaconBlock: pharos_ssz::Decode,
+    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock:
+        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+{
+    let (pre, post) = match load_pre_post_electra_state::<E>(case_dir) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut current: Option<E::BeaconState> = Some(pre);
+    let mut block_error: Option<String> = None;
+
+    for i in 0..blocks_count {
+        let block_file = format!("blocks_{i}.ssz_snappy");
+        let block = match load_electra_signed_block::<E>(case_dir, &block_file) {
             Ok(v) => v,
             Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
         };
@@ -1156,6 +1316,104 @@ fn run_deneb_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult 
         return CaseResult::Fail(format!("{case_name}: process_slots failed: {e}"));
     }
     let final_state = E::deneb_into_state(pre_inner);
+    if final_state.as_ssz_bytes() == expected.as_ssz_bytes() {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
+    }
+}
+
+fn run_electra_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
+    use pharos_stf::electra::state_transition::process_slots_electra_with_cfg;
+    use pharos_types::MainnetEthSpec as E;
+
+    let slots_path = case_dir.join("slots.yaml");
+    let slots_count: u64 = match read_u64_yaml(&slots_path) {
+        Ok(n) => n,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let pre_state = match load_electra_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_electra_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let mut pre_inner = match E::into_electra_state(pre_state) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not electra state")),
+    };
+    let target_slot = Slot(pre_inner.slot.0 + slots_count);
+    if let Err(e) = process_slots_electra_with_cfg::<
+        8192,
+        16_777_216,
+        2048,
+        1_099_511_627_776,
+        65536,
+        8192,
+        4,
+        512,
+        256,
+        32,
+        134_217_728,
+        134_217_728,
+        262_144,
+        E,
+    >(&mut pre_inner, target_slot, &E::default_runtime_config())
+    {
+        return CaseResult::Fail(format!("{case_name}: process_slots failed: {e}"));
+    }
+    let final_state = E::electra_into_state(pre_inner);
+    if final_state.as_ssz_bytes() == expected.as_ssz_bytes() {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
+    }
+}
+
+fn run_electra_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
+    use pharos_stf::electra::state_transition::process_slots_electra_with_cfg;
+    use pharos_types::MinimalEthSpec as E;
+
+    let slots_path = case_dir.join("slots.yaml");
+    let slots_count: u64 = match read_u64_yaml(&slots_path) {
+        Ok(n) => n,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let pre_state = match load_electra_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_electra_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let mut pre_inner = match E::into_electra_state(pre_state) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not electra state")),
+    };
+    let target_slot = Slot(pre_inner.slot.0 + slots_count);
+    if let Err(e) = process_slots_electra_with_cfg::<
+        64,
+        16_777_216,
+        32,
+        1_099_511_627_776,
+        64,
+        64,
+        4,
+        32,
+        256,
+        32,
+        134_217_728,
+        64,
+        64,
+        E,
+    >(&mut pre_inner, target_slot, &E::default_runtime_config())
+    {
+        return CaseResult::Fail(format!("{case_name}: process_slots failed: {e}"));
+    }
+    let final_state = E::electra_into_state(pre_inner);
     if final_state.as_ssz_bytes() == expected.as_ssz_bytes() {
         CaseResult::Pass
     } else {

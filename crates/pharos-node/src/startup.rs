@@ -105,8 +105,13 @@ where
     E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine>
         + CapellaProcessSlotsDispatch<E>
         + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState:
-        DenebDispatch<E, NullExecutionEngine> + DenebProcessSlotsDispatch<E> + pharos_ssz::TreeHash,
+    E::DenebBeaconState: DenebDispatch<E, NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
     // 1. Hot states CF.
@@ -191,8 +196,13 @@ where
     E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine>
         + CapellaProcessSlotsDispatch<E>
         + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState:
-        DenebDispatch<E, NullExecutionEngine> + DenebProcessSlotsDispatch<E> + pharos_ssz::TreeHash,
+    E::DenebBeaconState: DenebDispatch<E, NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
     if start_slot >= target_slot {
@@ -306,8 +316,13 @@ where
     E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine>
         + CapellaProcessSlotsDispatch<E>
         + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState:
-        DenebDispatch<E, NullExecutionEngine> + DenebProcessSlotsDispatch<E> + pharos_ssz::TreeHash,
+    E::DenebBeaconState: DenebDispatch<E, NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
     // ── Step 1: Determine the hot window start (split_slot) ───────────────────

@@ -101,6 +101,83 @@ pub fn electra_state_to_altair<
     }
 }
 
+/// Copy the shared fields from an `altair::BeaconState` back into an
+/// `electra::BeaconState`. The electra-only fields (pending queues, churn
+/// balances) and the execution-payload header / withdrawal fields /
+/// `historical_summaries` are preserved.
+///
+/// Used to sync back altair-projected block-processing steps (`process_randao`,
+/// `process_eth1_data`, `process_sync_aggregate`).
+#[allow(clippy::type_complexity)]
+pub fn update_electra_from_altair<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
+>(
+    state: &mut BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+    >,
+    altair: AltairBeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+) {
+    state.genesis_time = altair.genesis_time;
+    state.genesis_validators_root = altair.genesis_validators_root;
+    state.slot = altair.slot;
+    state.fork = altair.fork;
+    state.latest_block_header = altair.latest_block_header;
+    state.block_roots = altair.block_roots;
+    state.state_roots = altair.state_roots;
+    state.historical_roots = altair.historical_roots;
+    state.eth1_data = altair.eth1_data;
+    state.eth1_data_votes = altair.eth1_data_votes;
+    state.eth1_deposit_index = altair.eth1_deposit_index;
+    state.validators = altair.validators;
+    state.balances = altair.balances;
+    state.randao_mixes = altair.randao_mixes;
+    state.slashings = altair.slashings;
+    state.previous_epoch_participation = altair.previous_epoch_participation;
+    state.current_epoch_participation = altair.current_epoch_participation;
+    state.justification_bits = altair.justification_bits;
+    state.previous_justified_checkpoint = altair.previous_justified_checkpoint;
+    state.current_justified_checkpoint = altair.current_justified_checkpoint;
+    state.finalized_checkpoint = altair.finalized_checkpoint;
+    state.inactivity_scores = altair.inactivity_scores;
+    state.current_sync_committee = altair.current_sync_committee;
+    state.next_sync_committee = altair.next_sync_committee;
+    // electra-only fields + execution payload header + withdrawal fields +
+    // historical_summaries intentionally NOT overwritten.
+}
+
 /// Project an `electra::BeaconState` into a `deneb::BeaconState`.
 ///
 /// The execution-payload header is byte-identical between Electra and Deneb, so

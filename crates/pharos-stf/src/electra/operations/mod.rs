@@ -2,6 +2,10 @@
 //!
 //! Per `specs/electra/beacon-chain.md` Block processing.
 
+mod process_operations;
+
+pub use process_operations::process_operations_electra;
+
 pub mod attestation;
 pub mod block_header;
 pub mod consolidation_request;

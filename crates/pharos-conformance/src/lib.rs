@@ -274,6 +274,13 @@ fn enumerate_row(
             row_ordinal,
         )),
 
+        // ── electra/fork (upgrade_to_electra fixtures under electra/fork/fork) ──
+        ("electra", "fork", preset) => Some(transition::enumerate_fork_upgrade(
+            root,
+            preset,
+            row_ordinal,
+        )),
+
         // ── light_client ──────────────────────────────────────────────────────
         (fork, "light_client", preset) => Some(light_client::enumerate_light_client(
             root,

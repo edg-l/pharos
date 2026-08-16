@@ -25,7 +25,7 @@ pub struct RowSpec {
 /// call in `lib.rs::run()`.
 const FORK_CHOICE_Q1_FOOTNOTE: &str = "Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures. Resolved by M3b (commit `784d75b`): altair containers landed so anchor states now decode and the rows show real pass counts. The skip-unknown-step-keys policy is retained for bellatrix+ step types. Decision recorded in `docs/decisions.md` (Q1).";
 
-/// All 107 conformance rows in the exact order that `lib.rs::run()` emits them.
+/// All 117 conformance rows in the exact order that `lib.rs::run()` emits them.
 ///
 /// The order here MUST match the top-to-bottom row emission in `run()`.
 /// Row 0-based index corresponds to `row_ordinal` used by `CaseTask`.
@@ -168,8 +168,21 @@ pub fn row_table() -> &'static [RowSpec] {
         r("electra", "ssz_static", "-"),       // 105
         r("electra", "operations", "mainnet"), // 106
         r("electra", "operations", "minimal"), // 107
+        r("electra", "fork", "mainnet"),       // 108
+        r("electra", "fork", "minimal"),       // 109
+        r("electra", "finality", "mainnet"),   // 110
+        r("electra", "finality", "minimal"),   // 111
+        // NOTE: `electra/{transition,sanity,random}` are intentionally NOT wired
+        // here yet. Their runners + enumerate arms exist and pass their pure
+        // block/single-epoch cases, but a subset of fixtures crosses post-fork
+        // epoch boundaries and depends on the EIP-7251 electra-native epoch steps
+        // (registry / effective-balance / pending-deposit / consolidation) that
+        // land in Phase 4. Wiring them now would make `m0_acceptance` red. They
+        // get wired here once P4 turns them green. See
+        // `docs/m12-electra-plan.md` Phase 4c. (random is fully epoch-crossing;
+        // transition 4/6-per-preset and sanity ~11-14 failures are all P4 epoch.)
         // ── future forks (placeholders) ──────────────────────────────────────
-        r("fulu", "ssz_static", "-"), // 108
+        r("fulu", "ssz_static", "-"), // 112
     ];
     TABLE
 }
@@ -304,6 +317,11 @@ mod tests {
             ("electra", "ssz_static", "-"),
             ("electra", "operations", "mainnet"),
             ("electra", "operations", "minimal"),
+            ("electra", "fork", "mainnet"),
+            ("electra", "fork", "minimal"),
+            ("electra", "finality", "mainnet"),
+            ("electra", "finality", "minimal"),
+            // electra/{transition,sanity,random} intentionally unwired until P4.
             // future placeholders
             ("fulu", "ssz_static", "-"),
         ];
@@ -385,9 +403,9 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 109.
+    /// Total row count is exactly 113.
     #[test]
-    fn row_count_is_109() {
-        assert_eq!(row_table().len(), 109);
+    fn row_count_is_113() {
+        assert_eq!(row_table().len(), 113);
     }
 }

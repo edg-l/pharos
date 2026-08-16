@@ -1063,7 +1063,9 @@ where
     E::DenebBeaconState: DenebProcessBlockForProduction<E, ExecutionEngineHandle>
         + TreeHash
         + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
         + GetExpectedWithdrawalsDispatch<E>,
+    E::ElectraBeaconState: pharos_stf::ElectraProcessSlotsDispatch<E>,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -1456,7 +1458,8 @@ where
     E::AltairBeaconState: AltairProcessSlotsDispatch<E>,
     E::BellatrixBeaconState: BellatrixProcessSlotsDispatch<E>,
     E::CapellaBeaconState: CapellaProcessSlotsDispatch<E> + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: DenebProcessSlotsDispatch<E>,
+    E::DenebBeaconState: DenebProcessSlotsDispatch<E> + pharos_stf::DenebUpgradeDispatch<E>,
+    E::ElectraBeaconState: pharos_stf::ElectraProcessSlotsDispatch<E>,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::AltairBeaconState: AltairUpgradeDispatch<E>,
     E::BellatrixBeaconState: BellatrixUpgradeDispatch<E>,
@@ -1524,7 +1527,8 @@ where
     E::AltairBeaconState: AltairProcessSlotsDispatch<E>,
     E::BellatrixBeaconState: BellatrixProcessSlotsDispatch<E>,
     E::CapellaBeaconState: CapellaProcessSlotsDispatch<E> + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: DenebProcessSlotsDispatch<E>,
+    E::DenebBeaconState: DenebProcessSlotsDispatch<E> + pharos_stf::DenebUpgradeDispatch<E>,
+    E::ElectraBeaconState: pharos_stf::ElectraProcessSlotsDispatch<E>,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::AltairBeaconState: AltairUpgradeDispatch<E>,
     E::BellatrixBeaconState: BellatrixUpgradeDispatch<E>,

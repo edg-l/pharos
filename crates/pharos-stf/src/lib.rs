@@ -32,6 +32,9 @@ pub use capella::state_transition::{
     GetExpectedWithdrawalsDispatch,
 };
 pub use deneb::state_transition::{DenebDispatch, DenebJaFDispatch, DenebProcessSlotsDispatch};
+pub use electra::state_transition::{
+    ElectraDispatch, ElectraJaFDispatch, ElectraProcessSlotsDispatch,
+};
 pub use phase0::block::process_block;
 pub use phase0::epoch::justification_and_finalization::process_justification_and_finalization;
 pub use phase0::epoch::process_epoch;
@@ -475,6 +478,101 @@ where
     }
 }
 
+/// Dispatch trait for upgrading a Deneb state to Electra.
+///
+/// Implemented via blanket impl on `deneb::BeaconState<...>`. Called from
+/// `process_slots_fork` when it reaches the Electra fork epoch boundary.
+pub trait DenebUpgradeDispatch<E: EthSpec>: Sized {
+    /// Upgrade `self` (Deneb inner state) to an Electra inner state.
+    fn upgrade_to_electra_dispatch(
+        self,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<E::ElectraBeaconState, StateTransitionError>;
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    E,
+> DenebUpgradeDispatch<E>
+    for pharos_types::deneb::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    E: EthSpec<
+            DenebBeaconState = pharos_types::deneb::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            ElectraBeaconState = pharos_types::electra::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                PENDING_DEPOSITS_LIMIT,
+                PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+                PENDING_CONSOLIDATIONS_LIMIT,
+            >,
+        >,
+    pharos_utils::BLSPubkey: Default + Clone,
+{
+    fn upgrade_to_electra_dispatch(
+        self,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<E::ElectraBeaconState, StateTransitionError> {
+        electra::upgrade::upgrade_to_electra::<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            PENDING_DEPOSITS_LIMIT,
+            PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+            PENDING_CONSOLIDATIONS_LIMIT,
+            E,
+        >(self, runtime_cfg)
+    }
+}
+
 /// `state_transition` per `specs/phase0/beacon-chain.md:1370-1393`.
 ///
 /// Dispatches on the `BeaconState` fork variant:
@@ -535,7 +633,9 @@ where
         + CapellaProcessSlotsDispatch<E>
         + CapellaUpgradeDispatch<E>
         + TreeHash,
-    E::DenebBeaconState: DenebDispatch<E, EE> + DenebProcessSlotsDispatch<E> + TreeHash,
+    E::DenebBeaconState:
+        DenebDispatch<E, EE> + DenebProcessSlotsDispatch<E> + DenebUpgradeDispatch<E> + TreeHash,
+    E::ElectraBeaconState: ElectraDispatch<E, EE> + ElectraProcessSlotsDispatch<E> + TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
     // Advance the state through any fork boundaries to the block's target slot.
@@ -634,8 +734,22 @@ where
             return Ok((wrapped, payload_status));
         }
         ForkVariant::Electra => {
-            // Electra STF not yet implemented (Phase 1 plumbing only).
-            return Err(StateTransitionError::UnsupportedFork);
+            // Unwrap fork-enum state and block to their inner electra types.
+            let electra_signed = E::unwrap_electra_signed_block(signed_block)
+                .ok_or(StateTransitionError::UnsupportedFork)?;
+            let electra_inner =
+                E::into_electra_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+            // Apply the electra state transition via the `ElectraDispatch` blanket impl.
+            let (updated, payload_status) = electra_inner.apply_signed_block(
+                electra_signed,
+                execution_engine,
+                validate_result,
+                runtime_cfg,
+            )?;
+            // Wrap the result back into the fork-enum + invalidate the root cache.
+            let mut wrapped = E::electra_into_state(updated);
+            wrapped.invalidate_root_cache();
+            return Ok((wrapped, payload_status));
         }
     }
     // STF mutated `state` (phase0 + altair arms operate on `&mut state`); reset
@@ -837,6 +951,7 @@ where
     E::BellatrixBeaconState: BellatrixJaFDispatch<E>,
     E::CapellaBeaconState: CapellaJaFDispatch<E>,
     E::DenebBeaconState: DenebJaFDispatch<E>,
+    E::ElectraBeaconState: ElectraJaFDispatch<E>,
     E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
             Attestation = pharos_types::phase0::Attestation<2048>,
         >,
@@ -871,7 +986,12 @@ where
             *state = E::deneb_into_state(inner);
             Ok(())
         }
-        ForkVariant::Electra => Err(EpochProcessingError::UnsupportedFork),
+        ForkVariant::Electra => {
+            let mut inner = E::into_electra_state(state.clone()).expect("fork_variant is Electra");
+            inner.process_jaf_electra()?;
+            *state = E::electra_into_state(inner);
+            Ok(())
+        }
     }
 }
 
@@ -915,7 +1035,8 @@ where
     E::AltairBeaconState: AltairProcessSlotsDispatch<E>,
     E::BellatrixBeaconState: BellatrixProcessSlotsDispatch<E>,
     E::CapellaBeaconState: CapellaProcessSlotsDispatch<E> + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: DenebProcessSlotsDispatch<E>,
+    E::DenebBeaconState: DenebProcessSlotsDispatch<E> + DenebUpgradeDispatch<E>,
+    E::ElectraBeaconState: ElectraProcessSlotsDispatch<E>,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::AltairBeaconState: AltairUpgradeDispatch<E>,
     E::BellatrixBeaconState: BellatrixUpgradeDispatch<E>,
@@ -992,8 +1113,10 @@ where
                 *state = E::deneb_into_state(inner);
             }
             ForkVariant::Electra => {
-                // Electra STF not yet implemented (Phase 1 plumbing only).
-                return Err(StateTransitionError::UnsupportedFork);
+                let mut inner =
+                    E::into_electra_state(state.clone()).expect("fork_variant is Electra");
+                inner.process_slots_electra(step_target, runtime_cfg)?;
+                *state = E::electra_into_state(inner);
             }
         }
 
@@ -1027,8 +1150,10 @@ where
                         *state = E::deneb_into_state(upgraded);
                     }
                     ForkVariant::Deneb => {
-                        // Electra STF not yet implemented; treat Deneb as terminal for now.
-                        break;
+                        let inner =
+                            E::into_deneb_state(state.clone()).expect("fork_variant is Deneb");
+                        let upgraded = inner.upgrade_to_electra_dispatch(runtime_cfg)?;
+                        *state = E::electra_into_state(upgraded);
                     }
                     ForkVariant::Electra => {
                         // Electra is the last plumbed fork; no successor boundary.

@@ -290,6 +290,10 @@ impl<E: EthSpec> StateRegenService<E> {
             + pharos_stf::CapellaUpgradeDispatch<E>,
         E::DenebBeaconState: pharos_stf::DenebDispatch<E, NullExecutionEngine>
             + pharos_stf::DenebProcessSlotsDispatch<E>
+            + pharos_stf::DenebUpgradeDispatch<E>
+            + pharos_ssz::TreeHash,
+        E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
+            + pharos_stf::ElectraProcessSlotsDispatch<E>
             + pharos_ssz::TreeHash,
         E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
         E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
@@ -428,6 +432,10 @@ impl<E: EthSpec> StateRegenService<E> {
             + pharos_stf::CapellaUpgradeDispatch<E>,
         E::DenebBeaconState: pharos_stf::DenebDispatch<E, NullExecutionEngine>
             + pharos_stf::DenebProcessSlotsDispatch<E>
+            + pharos_stf::DenebUpgradeDispatch<E>
+            + pharos_ssz::TreeHash,
+        E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
+            + pharos_stf::ElectraProcessSlotsDispatch<E>
             + pharos_ssz::TreeHash,
         E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
         E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
@@ -489,6 +497,10 @@ impl<E: EthSpec> StateRegenService<E> {
             + pharos_stf::CapellaUpgradeDispatch<E>,
         E::DenebBeaconState: pharos_stf::DenebDispatch<E, NullExecutionEngine>
             + pharos_stf::DenebProcessSlotsDispatch<E>
+            + pharos_stf::DenebUpgradeDispatch<E>
+            + pharos_ssz::TreeHash,
+        E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
+            + pharos_stf::ElectraProcessSlotsDispatch<E>
             + pharos_ssz::TreeHash,
         E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
         E::BellatrixSignedBeaconBlock: pharos_ssz::Decode

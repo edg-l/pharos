@@ -52,7 +52,8 @@ use pharos_types::{
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
     load_bellatrix_state, load_capella_signed_block, load_capella_state, load_deneb_signed_block,
-    load_deneb_state, load_phase0_signed_block, load_phase0_state, walk_category,
+    load_deneb_state, load_electra_signed_block, load_electra_state, load_phase0_signed_block,
+    load_phase0_state, walk_category,
 };
 use crate::fs_util::dir_name;
 use crate::snappy::decompress_raw;
@@ -180,7 +181,7 @@ pub fn enumerate_transition(
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
                 }),
-                _ => Box::new(move || {
+                ("deneb", _) => Box::new(move || {
                     let Some(fe) = fork_epoch else {
                         return CaseOutcome::Skip;
                     };
@@ -188,6 +189,32 @@ pub fn enumerate_transition(
                         return CaseOutcome::Skip;
                     };
                     match run_deneb_case_minimal(&case_dir, &case_name, Epoch(fe), n) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("electra", "mainnet") => Box::new(move || {
+                    let Some(fe) = fork_epoch else {
+                        return CaseOutcome::Skip;
+                    };
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_electra_case_mainnet(&case_dir, &case_name, Epoch(fe), n) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                _ => Box::new(move || {
+                    let Some(fe) = fork_epoch else {
+                        return CaseOutcome::Skip;
+                    };
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_electra_case_minimal(&case_dir, &case_name, Epoch(fe), n) {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Skip => CaseOutcome::Skip,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
@@ -482,6 +509,10 @@ where
         + CapellaUpgradeDispatch<E>,
     E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
         + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::BeaconState:
@@ -669,6 +700,10 @@ where
         + CapellaUpgradeDispatch<E>,
     E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
         + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::BeaconState:
         pharos_stf::phase0::BeaconStateWrite + pharos_ssz::TreeHash + pharos_ssz::Encode,
@@ -922,6 +957,10 @@ where
         + CapellaUpgradeDispatch<E>,
     E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
         + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
     E::CapellaSignedBeaconBlock: pharos_ssz::Decode,
@@ -1184,6 +1223,10 @@ where
     E::DenebBeaconState: pharos_ssz::Decode
         + pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
         + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::CapellaSignedBeaconBlock: pharos_ssz::Decode,
     E::DenebSignedBeaconBlock: pharos_ssz::Decode,
@@ -1314,6 +1357,441 @@ where
     } else {
         CaseResult::Fail(format!(
             "{case_name}: state mismatch after deneb transition"
+        ))
+    }
+}
+
+// ── Electra transition (deneb → electra) ──────────────────────────────────────
+
+fn run_electra_case_mainnet(
+    case_dir: &Path,
+    case_name: &str,
+    fork_epoch: Epoch,
+    blocks_count: u64,
+) -> CaseResult {
+    type E = MainnetEthSpec;
+
+    let pre = match load_deneb_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_electra_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(s) => s,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut cfg = E::default_runtime_config();
+    cfg.electra_fork_epoch = fork_epoch.0;
+    let fork_slot = Slot(fork_epoch.0 * E::SLOTS_PER_EPOCH);
+
+    run_electra_transition_blocks::<E, _>(
+        case_dir,
+        case_name,
+        ElectraBlocksCaseParams {
+            current: pre,
+            expected,
+            fork_slot,
+            blocks_count,
+        },
+        |deneb_inner, cfg| {
+            pharos_stf::electra::upgrade::upgrade_to_electra::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                134_217_728,
+                134_217_728,
+                262_144,
+                E,
+            >(deneb_inner, cfg)
+            .map(E::electra_into_state)
+            .map_err(|e| format!("{e}"))
+        },
+        &cfg,
+    )
+}
+
+fn run_electra_case_minimal(
+    case_dir: &Path,
+    case_name: &str,
+    fork_epoch: Epoch,
+    blocks_count: u64,
+) -> CaseResult {
+    type E = MinimalEthSpec;
+
+    let pre = match load_deneb_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_electra_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(s) => s,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut cfg = E::default_runtime_config();
+    cfg.electra_fork_epoch = fork_epoch.0;
+    let fork_slot = Slot(fork_epoch.0 * E::SLOTS_PER_EPOCH);
+
+    run_electra_transition_blocks::<E, _>(
+        case_dir,
+        case_name,
+        ElectraBlocksCaseParams {
+            current: pre,
+            expected,
+            fork_slot,
+            blocks_count,
+        },
+        |deneb_inner, cfg| {
+            pharos_stf::electra::upgrade::upgrade_to_electra::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                134_217_728,
+                64,
+                64,
+                E,
+            >(deneb_inner, cfg)
+            .map(E::electra_into_state)
+            .map_err(|e| format!("{e}"))
+        },
+        &cfg,
+    )
+}
+
+struct ElectraBlocksCaseParams<S> {
+    current: S,
+    expected: S,
+    fork_slot: Slot,
+    blocks_count: u64,
+}
+
+/// Drive the block sequence through the deneb → electra fork transition.
+#[allow(clippy::type_complexity)]
+fn run_electra_transition_blocks<E, F>(
+    case_dir: &Path,
+    case_name: &str,
+    params: ElectraBlocksCaseParams<E::BeaconState>,
+    do_upgrade: F,
+    cfg: &pharos_types::config::RuntimeConfig,
+) -> CaseResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateView,
+    E::AltairBeaconState:
+        pharos_stf::AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::DenebBeaconState: pharos_ssz::Decode
+        + pharos_types::views::BeaconStateView
+        + pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_ssz::Decode
+        + pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::DenebSignedBeaconBlock: pharos_ssz::Decode,
+    E::ElectraSignedBeaconBlock: pharos_ssz::Decode,
+    E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
+    E::BeaconState:
+        pharos_stf::phase0::BeaconStateWrite + pharos_ssz::TreeHash + pharos_ssz::Encode,
+    E::Phase0BeaconBlock: pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: pharos_ssz::TreeHash
+        + pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    F: Fn(
+        E::DenebBeaconState,
+        &pharos_types::config::RuntimeConfig,
+    ) -> Result<E::BeaconState, String>,
+{
+    let ElectraBlocksCaseParams {
+        mut current,
+        expected,
+        fork_slot,
+        blocks_count,
+    } = params;
+    let mut did_upgrade = false;
+
+    for i in 0..blocks_count {
+        let block_file = format!("blocks_{i}.ssz_snappy");
+        let block_slot = match peek_block_slot(case_dir, &block_file) {
+            Some(s) => s,
+            None => {
+                return CaseResult::Fail(format!(
+                    "{case_name}: failed to peek slot from {block_file}"
+                ));
+            }
+        };
+
+        if !did_upgrade && block_slot >= fork_slot {
+            let mut deneb_inner = match E::into_deneb_state(current) {
+                Some(s) => s,
+                None => {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: state is already electra before upgrade"
+                    ));
+                }
+            };
+            if deneb_inner.slot() < fork_slot {
+                if let Err(e) = deneb_inner.process_slots_deneb(fork_slot, cfg) {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: process_slots to fork before block {i}: {e}"
+                    ));
+                }
+            }
+            match do_upgrade(deneb_inner, cfg) {
+                Ok(s) => current = s,
+                Err(e) => {
+                    return CaseResult::Fail(format!("{case_name}: upgrade_to_electra: {e}"));
+                }
+            }
+            did_upgrade = true;
+        }
+
+        if !did_upgrade {
+            let block = match load_deneb_signed_block::<E>(case_dir, &block_file) {
+                Ok(v) => v,
+                Err(e) => return CaseResult::Fail(format!("{case_name}: block {i}: {e}")),
+            };
+            match pharos_stf::state_transition::<E, pharos_stf::NullExecutionEngine>(
+                current,
+                &block,
+                &pharos_stf::NullExecutionEngine,
+                false,
+                cfg,
+            ) {
+                Ok((s, _)) => current = s,
+                Err(e) => {
+                    return CaseResult::Fail(format!("{case_name}: block {i} (deneb): {e}"));
+                }
+            }
+        } else {
+            let block = match load_electra_signed_block::<E>(case_dir, &block_file) {
+                Ok(v) => v,
+                Err(e) => return CaseResult::Fail(format!("{case_name}: block {i}: {e}")),
+            };
+            match pharos_stf::state_transition::<E, pharos_stf::NullExecutionEngine>(
+                current,
+                &block,
+                &pharos_stf::NullExecutionEngine,
+                false,
+                cfg,
+            ) {
+                Ok((s, _)) => current = s,
+                Err(e) => {
+                    return CaseResult::Fail(format!("{case_name}: block {i} (electra): {e}"));
+                }
+            }
+        }
+    }
+
+    if !did_upgrade {
+        let mut deneb_inner = match E::into_deneb_state(current) {
+            Some(s) => s,
+            None => {
+                return CaseResult::Fail(format!("{case_name}: already electra before upgrade"));
+            }
+        };
+        if deneb_inner.slot() < fork_slot {
+            if let Err(e) = deneb_inner.process_slots_deneb(fork_slot, cfg) {
+                return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
+            }
+        }
+        match do_upgrade(deneb_inner, cfg) {
+            Ok(s) => current = s,
+            Err(e) => return CaseResult::Fail(format!("{case_name}: upgrade_to_electra: {e}")),
+        }
+    }
+
+    let expected_bytes = {
+        let electra = match E::into_electra_state(expected) {
+            Some(s) => s,
+            None => return CaseResult::Fail(format!("{case_name}: expected state not electra")),
+        };
+        E::electra_into_state(electra).as_ssz_bytes()
+    };
+
+    if current.as_ssz_bytes() == expected_bytes {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!(
+            "{case_name}: state mismatch after electra transition"
+        ))
+    }
+}
+
+// ── Electra fork-upgrade (electra/fork/fork) ──────────────────────────────────
+//
+// The `electra/fork/fork` fixtures exercise `upgrade_to_electra` in isolation:
+// `pre.ssz_snappy` is a deneb state, `post.ssz_snappy` is the upgraded electra
+// state. No blocks; the runner just applies the upgrade and compares.
+
+/// Produce one `CaseTask` per `electra/fork/fork` upgrade case.
+pub fn enumerate_fork_upgrade(
+    root: &Path,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    let opts = WalkOpts {
+        meta_required: true,
+        inner_dir: Some("pyspec_tests"),
+    };
+
+    let cases: Vec<(PathBuf, _)> =
+        walk_category(root, preset, "electra", "fork", Some("fork"), opts).collect();
+
+    cases
+        .into_iter()
+        .enumerate()
+        .map(|(i, (case_dir, _meta))| {
+            let case_ordinal = i as u32;
+            let case_name = format!("electra/fork/fork/{preset}/{}", dir_name(&case_dir));
+
+            let run: CaseFn = match preset {
+                "mainnet" => {
+                    Box::new(
+                        move || match run_fork_electra_mainnet(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        },
+                    )
+                }
+                _ => Box::new(
+                    move || match run_fork_electra_minimal(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    },
+                ),
+            };
+
+            CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            }
+        })
+        .collect()
+}
+
+fn run_fork_electra_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
+    type E = MainnetEthSpec;
+
+    let pre = match load_deneb_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_electra_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(s) => s,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let deneb_inner = match E::into_deneb_state(pre) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not deneb state")),
+    };
+
+    let cfg = E::default_runtime_config();
+    let post = match pharos_stf::electra::upgrade::upgrade_to_electra::<
+        8192,
+        16_777_216,
+        2048,
+        1_099_511_627_776,
+        65536,
+        8192,
+        4,
+        512,
+        256,
+        32,
+        134_217_728,
+        134_217_728,
+        262_144,
+        E,
+    >(deneb_inner, &cfg)
+    {
+        Ok(s) => E::electra_into_state(s),
+        Err(e) => return CaseResult::Fail(format!("{case_name}: upgrade_to_electra: {e}")),
+    };
+
+    if post.as_ssz_bytes() == expected.as_ssz_bytes() {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!(
+            "{case_name}: state mismatch after upgrade_to_electra"
+        ))
+    }
+}
+
+fn run_fork_electra_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
+    type E = MinimalEthSpec;
+
+    let pre = match load_deneb_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_electra_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(s) => s,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let deneb_inner = match E::into_deneb_state(pre) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not deneb state")),
+    };
+
+    let cfg = E::default_runtime_config();
+    let post = match pharos_stf::electra::upgrade::upgrade_to_electra::<
+        64,
+        16_777_216,
+        32,
+        1_099_511_627_776,
+        64,
+        64,
+        4,
+        32,
+        256,
+        32,
+        134_217_728,
+        64,
+        64,
+        E,
+    >(deneb_inner, &cfg)
+    {
+        Ok(s) => E::electra_into_state(s),
+        Err(e) => return CaseResult::Fail(format!("{case_name}: upgrade_to_electra: {e}")),
+    };
+
+    if post.as_ssz_bytes() == expected.as_ssz_bytes() {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!(
+            "{case_name}: state mismatch after upgrade_to_electra"
         ))
     }
 }

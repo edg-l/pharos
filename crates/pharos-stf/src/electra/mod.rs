@@ -7,5 +7,9 @@
 //! STF helpers live in `helpers`; operations / block / epoch / upgrade land in
 //! later phases.
 
+pub mod block;
+pub mod epoch;
 pub mod helpers;
 pub mod operations;
+pub mod state_transition;
+pub mod upgrade;
