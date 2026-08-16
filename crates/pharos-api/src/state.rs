@@ -1675,7 +1675,14 @@ where
             return Ok(Some(b.to_block_for_api()?));
         }
         if let Some(b) = E::unwrap_fulu_signed_block(&block) {
-            return Ok(Some(b.to_block_for_api()?));
+            // Fulu reuses the Electra `SignedBeaconBlock` type, so the shared
+            // `BlockApiSerializer` impl tags the DTO `ForkVariant::Electra`. The
+            // outer enum variant is the authoritative fork here — override the
+            // tag so the `version` field and `Eth-Consensus-Version` header read
+            // `fulu` (the DTO body is structurally identical to Electra).
+            let mut for_api = b.to_block_for_api()?;
+            for_api.variant = pharos_types::views::ForkVariant::Fulu;
+            return Ok(Some(for_api));
         }
         // All seven forks (phase0/altair/bellatrix/capella/deneb/electra/fulu) are
         // exhaustive. Reaching here indicates a new unknown fork variant.
