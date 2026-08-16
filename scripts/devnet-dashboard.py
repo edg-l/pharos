@@ -624,12 +624,18 @@ PAGE = r"""<!DOCTYPE html>
            scrollbar-width:none; -ms-overflow-style:none; }
   .ftree::-webkit-scrollbar { display:none; }
   .ftree svg { display:block; }
-  /* new-node entrance animations (only applied to genuinely new roots) */
+  /* new-node entrance: the edge "draws" from the parent, then the node pops in
+     at its end (delayed to land as the line arrives). Only genuinely new roots. */
+  @keyframes fcdraw { from{stroke-dashoffset:1;} to{stroke-dashoffset:0;} }
   @keyframes fcpop { 0%{opacity:0;transform:scale(.2);} 100%{opacity:1;transform:scale(1);} }
   @keyframes fcring { 0%{opacity:.85;transform:scale(.5);} 100%{opacity:0;transform:scale(2.6);} }
-  .ftree circle.new { animation:fcpop .45s ease-out; transform-box:fill-box; transform-origin:center; }
+  .ftree path.drawedge { stroke-dasharray:1; stroke-dashoffset:1;
+    animation:fcdraw .4s ease-out forwards; }
+  .ftree circle.new { animation:fcpop .4s ease-out .38s both;
+    transform-box:fill-box; transform-origin:center; }
   .ftree circle.newring { fill:none; stroke:#4aa8ff; stroke-width:2;
-    animation:fcring .9s ease-out forwards; transform-box:fill-box; transform-origin:center; }
+    animation:fcring .8s ease-out .38s forwards; transform-box:fill-box;
+    transform-origin:center; }
   .legend { display:flex; gap:18px; margin-top:12px; font-size:12px; color:var(--muted);
             flex-wrap:wrap; }
   .legend i { display:inline-block; width:10px; height:10px; border-radius:50%;
@@ -736,7 +742,9 @@ function renderForkTree(fc){
   nodes.forEach(n=>{
     const p=byRoot[n.parent];
     if(p){ const c=canon.has(n.root)&&canon.has(p.root);
-      edges+=`<path d="M${cx(p)},${cy(p)} C${(cx(p)+cx(n))/2},${cy(p)} ${(cx(p)+cx(n))/2},${cy(n)} ${cx(n)},${cy(n)}" `+
+      const isNew = seen && !seen.has(n.root);
+      edges+=`<path class="${isNew?'drawedge':''}"${isNew?' pathLength="1"':''} `+
+             `d="M${cx(p)},${cy(p)} C${(cx(p)+cx(n))/2},${cy(p)} ${(cx(p)+cx(n))/2},${cy(n)} ${cx(n)},${cy(n)}" `+
              `fill="none" stroke="${c?'#34d399':'#3a4658'}" stroke-width="${c?2.4:1.6}" opacity="${c?0.9:0.7}"/>`;
     }
   });
