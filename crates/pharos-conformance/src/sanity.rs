@@ -29,7 +29,7 @@ use pharos_stf::phase0::BeaconStateWrite;
 use pharos_stf::process_slots;
 use pharos_types::config::RuntimeConfig;
 use pharos_types::{
-    BeaconStateView, EthSpec, MainnetEthSpec, MinimalEthSpec,
+    BeaconSpec, BeaconStateView, MainnetBeaconSpec, MinimalBeaconSpec,
     phase0::{Attestation, Slot},
     views::BeaconBlockBodyView,
 };
@@ -87,168 +87,168 @@ pub fn enumerate_sanity(
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MainnetEthSpec, _, _>(
+                    run_blocks_case::<MainnetBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
                         &RuntimeConfig::default(),
-                        load_pre_post_phase0_state::<MainnetEthSpec>,
-                        load_phase0_signed_block::<MainnetEthSpec>,
+                        load_pre_post_phase0_state::<MainnetBeaconSpec>,
+                        load_phase0_signed_block::<MainnetBeaconSpec>,
                     )
                 }),
                 ("phase0", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MinimalEthSpec, _, _>(
+                    run_blocks_case::<MinimalBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
                         &RuntimeConfig::default(),
-                        load_pre_post_phase0_state::<MinimalEthSpec>,
-                        load_phase0_signed_block::<MinimalEthSpec>,
+                        load_pre_post_phase0_state::<MinimalBeaconSpec>,
+                        load_phase0_signed_block::<MinimalBeaconSpec>,
                     )
                 }),
                 ("altair", "mainnet") => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MainnetEthSpec, _, _>(
+                    run_blocks_case::<MainnetBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
                         &RuntimeConfig::default(),
-                        load_pre_post_altair_state::<MainnetEthSpec>,
-                        load_altair_signed_block::<MainnetEthSpec>,
+                        load_pre_post_altair_state::<MainnetBeaconSpec>,
+                        load_altair_signed_block::<MainnetBeaconSpec>,
                     )
                 }),
                 ("altair", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MinimalEthSpec, _, _>(
+                    run_blocks_case::<MinimalBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
                         &RuntimeConfig::default(),
-                        load_pre_post_altair_state::<MinimalEthSpec>,
-                        load_altair_signed_block::<MinimalEthSpec>,
+                        load_pre_post_altair_state::<MinimalBeaconSpec>,
+                        load_altair_signed_block::<MinimalBeaconSpec>,
                     )
                 }),
                 ("bellatrix", "mainnet") => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MainnetEthSpec, _, _>(
+                    run_blocks_case::<MainnetBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                        &MainnetEthSpec::default_runtime_config(),
-                        load_pre_post_bellatrix_state::<MainnetEthSpec>,
-                        load_bellatrix_signed_block::<MainnetEthSpec>,
+                        &MainnetBeaconSpec::default_runtime_config(),
+                        load_pre_post_bellatrix_state::<MainnetBeaconSpec>,
+                        load_bellatrix_signed_block::<MainnetBeaconSpec>,
                     )
                 }),
                 ("bellatrix", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MinimalEthSpec, _, _>(
+                    run_blocks_case::<MinimalBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                        &MinimalEthSpec::default_runtime_config(),
-                        load_pre_post_bellatrix_state::<MinimalEthSpec>,
-                        load_bellatrix_signed_block::<MinimalEthSpec>,
+                        &MinimalBeaconSpec::default_runtime_config(),
+                        load_pre_post_bellatrix_state::<MinimalBeaconSpec>,
+                        load_bellatrix_signed_block::<MinimalBeaconSpec>,
                     )
                 }),
                 ("capella", "mainnet") => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MainnetEthSpec, _, _>(
+                    run_blocks_case::<MainnetBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                        &MainnetEthSpec::default_runtime_config(),
-                        load_pre_post_capella_state::<MainnetEthSpec>,
-                        load_capella_signed_block::<MainnetEthSpec>,
+                        &MainnetBeaconSpec::default_runtime_config(),
+                        load_pre_post_capella_state::<MainnetBeaconSpec>,
+                        load_capella_signed_block::<MainnetBeaconSpec>,
                     )
                 }),
                 ("capella", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MinimalEthSpec, _, _>(
+                    run_blocks_case::<MinimalBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                        &MinimalEthSpec::default_runtime_config(),
-                        load_pre_post_capella_state::<MinimalEthSpec>,
-                        load_capella_signed_block::<MinimalEthSpec>,
+                        &MinimalBeaconSpec::default_runtime_config(),
+                        load_pre_post_capella_state::<MinimalBeaconSpec>,
+                        load_capella_signed_block::<MinimalBeaconSpec>,
                     )
                 }),
                 ("deneb", "mainnet") => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MainnetEthSpec, _, _>(
+                    run_blocks_case::<MainnetBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                        &MainnetEthSpec::default_runtime_config(),
-                        load_pre_post_deneb_state::<MainnetEthSpec>,
-                        load_deneb_signed_block::<MainnetEthSpec>,
+                        &MainnetBeaconSpec::default_runtime_config(),
+                        load_pre_post_deneb_state::<MainnetBeaconSpec>,
+                        load_deneb_signed_block::<MainnetBeaconSpec>,
                     )
                 }),
                 ("deneb", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MinimalEthSpec, _, _>(
+                    run_blocks_case::<MinimalBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                        &MinimalEthSpec::default_runtime_config(),
-                        load_pre_post_deneb_state::<MinimalEthSpec>,
-                        load_deneb_signed_block::<MinimalEthSpec>,
+                        &MinimalBeaconSpec::default_runtime_config(),
+                        load_pre_post_deneb_state::<MinimalBeaconSpec>,
+                        load_deneb_signed_block::<MinimalBeaconSpec>,
                     )
                 }),
                 ("electra", "mainnet") => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MainnetEthSpec, _, _>(
+                    run_blocks_case::<MainnetBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                        &MainnetEthSpec::default_runtime_config(),
-                        load_pre_post_electra_state::<MainnetEthSpec>,
-                        load_electra_signed_block::<MainnetEthSpec>,
+                        &MainnetBeaconSpec::default_runtime_config(),
+                        load_pre_post_electra_state::<MainnetBeaconSpec>,
+                        load_electra_signed_block::<MainnetBeaconSpec>,
                     )
                 }),
                 _ => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    run_blocks_case::<MinimalEthSpec, _, _>(
+                    run_blocks_case::<MinimalBeaconSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                        &MinimalEthSpec::default_runtime_config(),
-                        load_pre_post_electra_state::<MinimalEthSpec>,
-                        load_electra_signed_block::<MinimalEthSpec>,
+                        &MinimalBeaconSpec::default_runtime_config(),
+                        load_pre_post_electra_state::<MinimalBeaconSpec>,
+                        load_electra_signed_block::<MinimalBeaconSpec>,
                     )
                 }),
             };
@@ -283,14 +283,14 @@ pub fn enumerate_sanity(
             let run: CaseFn =
                 match (fork, preset) {
                     ("phase0", "mainnet") => Box::new(move || {
-                        match run_slots_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                        match run_slots_case::<MainnetBeaconSpec>(&case_dir, &case_name) {
                             CaseResult::Pass => CaseOutcome::Pass,
                             CaseResult::Skip => CaseOutcome::Skip,
                             CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                         }
                     }),
                     ("phase0", _) => Box::new(move || {
-                        match run_slots_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                        match run_slots_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
                             CaseResult::Pass => CaseOutcome::Pass,
                             CaseResult::Skip => CaseOutcome::Skip,
                             CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
@@ -386,7 +386,7 @@ pub fn enumerate_sanity(
 
 fn run_slots_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconState: pharos_ssz::Decode,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
@@ -439,7 +439,7 @@ fn read_u64_yaml(path: &Path) -> Result<u64, String> {
 }
 
 fn run_altair_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
-    use pharos_types::MainnetEthSpec as E;
+    use pharos_types::MainnetBeaconSpec as E;
     let slots_path = case_dir.join("slots.yaml");
     let slots_count: u64 = match read_u64_yaml(&slots_path) {
         Ok(n) => n,
@@ -475,7 +475,7 @@ fn run_altair_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult
 }
 
 fn run_altair_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
-    use pharos_types::MinimalEthSpec as E;
+    use pharos_types::MinimalBeaconSpec as E;
     let slots_path = case_dir.join("slots.yaml");
     let slots_count: u64 = match read_u64_yaml(&slots_path) {
         Ok(n) => n,
@@ -510,7 +510,7 @@ fn run_altair_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult
 
 fn run_bellatrix_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::bellatrix::state_transition::process_slots_bellatrix;
-    use pharos_types::MainnetEthSpec as E;
+    use pharos_types::MainnetBeaconSpec as E;
 
     let slots_path = case_dir.join("slots.yaml");
     let slots_count: u64 = match read_u64_yaml(&slots_path) {
@@ -556,7 +556,7 @@ fn run_bellatrix_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseRes
 
 fn run_bellatrix_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::bellatrix::state_transition::process_slots_bellatrix;
-    use pharos_types::MinimalEthSpec as E;
+    use pharos_types::MinimalBeaconSpec as E;
 
     let slots_path = case_dir.join("slots.yaml");
     let slots_count: u64 = match read_u64_yaml(&slots_path) {
@@ -603,7 +603,7 @@ enum CaseResult {
 
 fn run_capella_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::capella::state_transition::process_slots_capella;
-    use pharos_types::MainnetEthSpec as E;
+    use pharos_types::MainnetBeaconSpec as E;
 
     let slots_path = case_dir.join("slots.yaml");
     let slots_count: u64 = match read_u64_yaml(&slots_path) {
@@ -648,7 +648,7 @@ fn run_capella_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResul
 }
 fn run_capella_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::capella::state_transition::process_slots_capella;
-    use pharos_types::MinimalEthSpec as E;
+    use pharos_types::MinimalBeaconSpec as E;
 
     let slots_path = case_dir.join("slots.yaml");
     let slots_count: u64 = match read_u64_yaml(&slots_path) {
@@ -686,7 +686,7 @@ fn run_capella_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResul
 
 fn run_deneb_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::deneb::state_transition::process_slots_deneb;
-    use pharos_types::MainnetEthSpec as E;
+    use pharos_types::MainnetBeaconSpec as E;
 
     let slots_path = case_dir.join("slots.yaml");
     let slots_count: u64 = match read_u64_yaml(&slots_path) {
@@ -732,7 +732,7 @@ fn run_deneb_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult 
 
 fn run_deneb_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::deneb::state_transition::process_slots_deneb;
-    use pharos_types::MinimalEthSpec as E;
+    use pharos_types::MinimalBeaconSpec as E;
 
     let slots_path = case_dir.join("slots.yaml");
     let slots_count: u64 = match read_u64_yaml(&slots_path) {
@@ -770,7 +770,7 @@ fn run_deneb_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult 
 
 fn run_electra_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::electra::state_transition::process_slots_electra_with_cfg;
-    use pharos_types::MainnetEthSpec as E;
+    use pharos_types::MainnetBeaconSpec as E;
 
     let slots_path = case_dir.join("slots.yaml");
     let slots_count: u64 = match read_u64_yaml(&slots_path) {
@@ -819,7 +819,7 @@ fn run_electra_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResul
 
 fn run_electra_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::electra::state_transition::process_slots_electra_with_cfg;
-    use pharos_types::MinimalEthSpec as E;
+    use pharos_types::MinimalBeaconSpec as E;
 
     let slots_path = case_dir.join("slots.yaml");
     let slots_count: u64 = match read_u64_yaml(&slots_path) {

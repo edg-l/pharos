@@ -10,7 +10,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     capella::{BeaconState, operations::SignedBLSToExecutionChange},
     fork::DOMAIN_BLS_TO_EXECUTION_CHANGE,
 };
@@ -41,7 +41,7 @@ pub fn process_bls_to_execution_change<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

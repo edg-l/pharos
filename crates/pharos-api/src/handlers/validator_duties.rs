@@ -47,7 +47,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::views::ForkVariant;
 use serde::{Deserialize, Serialize};
 
@@ -149,7 +149,7 @@ pub struct ValidatorIndicesBody(pub Vec<serde_json::Value>);
 /// Implements the same VRF as `get_beacon_proposer_index` but takes `slot`
 /// explicitly.  Uses the epoch seed (derived from state.randao_mixes) and the
 /// target slot bytes to match the spec.
-fn proposer_index_at_slot<E: EthSpec>(
+fn proposer_index_at_slot<E: BeaconSpec>(
     state: &E::BeaconState,
     slot: pharos_types::phase0::Slot,
 ) -> pharos_types::phase0::ValidatorIndex {
@@ -184,7 +184,7 @@ fn proposer_index_at_slot<E: EthSpec>(
 ///
 /// `get_block_root_at_slot(state, compute_start_slot_at_epoch(epoch) - 1)`.
 /// Falls back to genesis block root on epoch-0 underflow.
-fn proposer_dependent_root<E: EthSpec>(
+fn proposer_dependent_root<E: BeaconSpec>(
     state: &E::BeaconState,
     epoch: pharos_types::phase0::Epoch,
     genesis_block_root: pharos_types::phase0::Root,
@@ -203,7 +203,7 @@ fn proposer_dependent_root<E: EthSpec>(
 ///
 /// `get_block_root_at_slot(state, compute_start_slot_at_epoch(epoch - 1) - 1)`.
 /// Falls back to genesis block root on epoch-0 or epoch-1 underflow.
-fn attester_dependent_root<E: EthSpec>(
+fn attester_dependent_root<E: BeaconSpec>(
     state: &E::BeaconState,
     epoch: pharos_types::phase0::Epoch,
     genesis_block_root: pharos_types::phase0::Root,
@@ -259,7 +259,7 @@ fn parse_validator_indices(body: &ValidatorIndicesBody) -> Result<Vec<usize>, Ap
 ///
 /// Per `~/dev/beacon-APIs/apis/validator/duties/proposer.v2.yaml`.
 /// Sets `Eth-Consensus-Version` response header (fork of the resolved state).
-pub async fn get_proposer_duties<E: EthSpec>(
+pub async fn get_proposer_duties<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(epoch): Path<u64>,
 ) -> Response {
@@ -355,7 +355,7 @@ pub async fn get_proposer_duties<E: EthSpec>(
 ///
 /// Body: JSON array of validator indices (quoted or unquoted).
 /// Per `~/dev/beacon-APIs/apis/validator/duties/attester.yaml`.
-pub async fn post_attester_duties<E: EthSpec>(
+pub async fn post_attester_duties<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(epoch): Path<u64>,
     Json(body): Json<ValidatorIndicesBody>,
@@ -455,7 +455,7 @@ pub async fn post_attester_duties<E: EthSpec>(
 /// Per `~/dev/beacon-APIs/apis/validator/duties/sync.yaml`.
 ///
 /// Phase0 states have no sync committee; returns empty data with a note.
-pub async fn post_sync_duties<E: EthSpec>(
+pub async fn post_sync_duties<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(epoch): Path<u64>,
     Json(body): Json<ValidatorIndicesBody>,

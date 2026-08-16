@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 
-use pharos_types::{EthSpec, PayloadStatus, phase0::primitives::Root, views::BeaconBlockView};
+use pharos_types::{BeaconSpec, PayloadStatus, phase0::primitives::Root, views::BeaconBlockView};
 use pharos_utils::Hash256;
 
 use crate::pow_block::{block_is_execution_enabled, execution_block_hash_at_root};
@@ -53,7 +53,7 @@ pub const SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY: u64 = 128;
 /// is skipped and we fall through to the age test (Branch 2).  The block may
 /// still be a candidate if it is old enough (`block_slot +
 /// SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY <= current_slot`).
-pub fn is_optimistic_candidate_block<E: EthSpec>(
+pub fn is_optimistic_candidate_block<E: BeaconSpec>(
     store: &Store<E>,
     current_slot: u64,
     parent_root: Root,
@@ -92,7 +92,7 @@ pub fn is_optimistic_candidate_block<E: EthSpec>(
 /// Finalized blocks are never optimistic: the EL must have marked them
 /// `Valid` before the fork choice can finalize them. The derivation returns
 /// `false` for them naturally because `Valid` ≠ `NotValidated`.
-pub fn is_optimistic<E: EthSpec>(store: &Store<E>, root: Root) -> bool {
+pub fn is_optimistic<E: BeaconSpec>(store: &Store<E>, root: Root) -> bool {
     let block = match store.blocks.get(&root) {
         Some(b) => b,
         None => return false,
@@ -122,7 +122,7 @@ pub fn is_optimistic<E: EthSpec>(store: &Store<E>, root: Root) -> bool {
 /// says the engine SHOULD behave as if it were `null` (`block_in_question`).
 ///
 /// Per `consensus-specs/sync/optimistic.md:219-233`.
-pub fn resolve_invalid_block<E: EthSpec>(
+pub fn resolve_invalid_block<E: BeaconSpec>(
     store: &Store<E>,
     block_in_question: Root,
     latest_valid_hash: Option<Hash256>,
@@ -219,7 +219,7 @@ where
 /// VALID chain should never contain an Invalid ancestor) and a warning is logged.
 ///
 /// Per `consensus-specs/sync/optimistic.md:193-196`.
-pub fn promote_valid_ancestors<E: EthSpec>(store: &mut Store<E>, root: Root) {
+pub fn promote_valid_ancestors<E: BeaconSpec>(store: &mut Store<E>, root: Root) {
     let mut cur = root;
     loop {
         match store.payload_statuses.get(&cur) {
@@ -281,7 +281,7 @@ pub fn promote_valid_ancestors<E: EthSpec>(store: &mut Store<E>, root: Root) {
 /// `safe` or `finalized` in `forkchoiceUpdated`.
 ///
 /// Per `consensus-specs/sync/optimistic.md` "Validator assignments / Re-orgs".
-pub fn latest_verified_ancestor<E: EthSpec>(store: &Store<E>, root: Root) -> Root {
+pub fn latest_verified_ancestor<E: BeaconSpec>(store: &Store<E>, root: Root) -> Root {
     let mut cur = root;
     loop {
         // If the current root is non-optimistic, it is the verified ancestor.
@@ -340,7 +340,7 @@ pub fn latest_verified_ancestor<E: EthSpec>(store: &Store<E>, root: Root) -> Roo
 /// in sync committees."
 ///
 /// ADR `D-optimistic-node-no-viable-branch`.
-pub fn is_optimistic_node<E: EthSpec>(store: &Store<E>) -> bool
+pub fn is_optimistic_node<E: BeaconSpec>(store: &Store<E>) -> bool
 where
     E::BeaconBlock: pharos_types::views::BeaconBlockView + Clone,
     E::BeaconState: pharos_types::BeaconStateView,
@@ -401,7 +401,7 @@ where
 /// so weights for invalidated blocks are never applied.
 ///
 /// Per `consensus-specs/sync/optimistic.md:263-267`.
-pub fn apply_invalid_payload<E: EthSpec>(
+pub fn apply_invalid_payload<E: BeaconSpec>(
     store: &mut Store<E>,
     block_in_question: Root,
     latest_valid_hash: Option<Hash256>,
@@ -446,7 +446,7 @@ pub fn apply_invalid_payload<E: EthSpec>(
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use pharos_types::MinimalEthSpec;
+    use pharos_types::MinimalBeaconSpec;
     use pharos_utils::Hash256;
 
     use crate::store::get_forkchoice_store;
@@ -454,18 +454,18 @@ mod tests {
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /// Build a minimal store seeded with a genesis state/block (no real STF).
-    fn make_store() -> crate::store::Store<MinimalEthSpec> {
+    fn make_store() -> crate::store::Store<MinimalBeaconSpec> {
         use pharos_ssz::TreeHash;
         use pharos_types::phase0::{BeaconBlock, BeaconState};
 
-        let genesis_state: <MinimalEthSpec as pharos_types::EthSpec>::BeaconState =
+        let genesis_state: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconState =
             pharos_types::BeaconState::Phase0(BeaconState::default());
         // genesis_block must have state_root == tree_hash_root(genesis_state).
         let mut raw = BeaconBlock::default();
         raw.state_root = genesis_state.tree_hash_root();
-        let genesis_block: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let genesis_block: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(raw);
-        get_forkchoice_store::<MinimalEthSpec>(genesis_state, genesis_block)
+        get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, genesis_block)
     }
 
     // ── resolve_invalid_block tests ───────────────────────────────────────────
@@ -476,7 +476,7 @@ mod tests {
         let store = make_store();
         // Use an arbitrary root not in the store (no ancestors to walk).
         let root = Hash256::from_array([0xab; 32]);
-        let result = resolve_invalid_block::<MinimalEthSpec>(&store, root, None);
+        let result = resolve_invalid_block::<MinimalBeaconSpec>(&store, root, None);
         assert_eq!(result, root);
     }
 
@@ -486,11 +486,11 @@ mod tests {
         use pharos_ssz::TreeHash;
         use pharos_types::phase0::BeaconBlock;
         let mut store = make_store();
-        let block: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(BeaconBlock::default());
         let root = block.tree_hash_root();
         store.blocks.insert(root, block);
-        let result = resolve_invalid_block::<MinimalEthSpec>(&store, root, None);
+        let result = resolve_invalid_block::<MinimalBeaconSpec>(&store, root, None);
         assert_eq!(result, root);
     }
 
@@ -502,7 +502,7 @@ mod tests {
         let store = make_store();
         let root = Hash256::from_array([0x01; 32]);
         let result =
-            resolve_invalid_block::<MinimalEthSpec>(&store, root, Some(Hash256::default()));
+            resolve_invalid_block::<MinimalBeaconSpec>(&store, root, Some(Hash256::default()));
         assert_eq!(result, root);
     }
 
@@ -513,7 +513,7 @@ mod tests {
         let store = make_store();
         let root = Hash256::from_array([0x02; 32]);
         let unknown_hash = Hash256::from_array([0xff; 32]);
-        let result = resolve_invalid_block::<MinimalEthSpec>(&store, root, Some(unknown_hash));
+        let result = resolve_invalid_block::<MinimalBeaconSpec>(&store, root, Some(unknown_hash));
         assert_eq!(result, root);
     }
 
@@ -536,7 +536,7 @@ mod tests {
         raw_a.slot = Slot(1);
         raw_a.parent_root = genesis_root;
         raw_a.body.execution_payload.block_hash = pharos_utils::Hash256::from_array([0x01; 32]);
-        let block_a: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_a: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Bellatrix(raw_a);
         let root_a = block_a.tree_hash_root();
         store.blocks.insert(root_a, block_a);
@@ -546,7 +546,7 @@ mod tests {
         raw_b.slot = Slot(2);
         raw_b.parent_root = root_a;
         raw_b.body.execution_payload.block_hash = pharos_utils::Hash256::from_array([0x02; 32]);
-        let block_b: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_b: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Bellatrix(raw_b);
         let root_b = block_b.tree_hash_root();
         store.blocks.insert(root_b, block_b);
@@ -554,7 +554,7 @@ mod tests {
         // Zero LVH on block_b (the tip): must return block_a, the earliest
         // execution-enabled ancestor, NOT block_b.
         let result =
-            resolve_invalid_block::<MinimalEthSpec>(&store, root_b, Some(Hash256::default()));
+            resolve_invalid_block::<MinimalBeaconSpec>(&store, root_b, Some(Hash256::default()));
         assert_eq!(
             result, root_a,
             "zero LVH should return the earliest (genesis-ward) execution block"
@@ -570,12 +570,12 @@ mod tests {
         use pharos_ssz::TreeHash;
         use pharos_types::phase0::BeaconBlock;
 
-        let block: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(BeaconBlock::default());
         let root = block.tree_hash_root();
         store.blocks.insert(root, block);
 
-        apply_invalid_payload::<MinimalEthSpec>(&mut store, root, None);
+        apply_invalid_payload::<MinimalBeaconSpec>(&mut store, root, None);
 
         assert_eq!(
             store.payload_statuses.get(&root),
@@ -599,7 +599,7 @@ mod tests {
         let mut raw_a = BeaconBlock::default();
         raw_a.slot = Slot(1);
         raw_a.parent_root = genesis_root;
-        let block_a: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_a: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(raw_a);
         let root_a = block_a.tree_hash_root();
         store.blocks.insert(root_a, block_a);
@@ -607,13 +607,13 @@ mod tests {
         let mut raw_b = BeaconBlock::default();
         raw_b.slot = Slot(2);
         raw_b.parent_root = root_a;
-        let block_b: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_b: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(raw_b);
         let root_b = block_b.tree_hash_root();
         store.blocks.insert(root_b, block_b);
 
         // Invalidate block_a with null LVH: block_a + block_b must be marked.
-        apply_invalid_payload::<MinimalEthSpec>(&mut store, root_a, None);
+        apply_invalid_payload::<MinimalBeaconSpec>(&mut store, root_a, None);
 
         assert_eq!(
             store.payload_statuses.get(&root_a),
@@ -654,7 +654,7 @@ mod tests {
         let mut raw_a = BeaconBlock::default();
         raw_a.slot = Slot(1);
         raw_a.parent_root = anchor_root;
-        let block_a: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_a: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(raw_a);
         let root_a = block_a.tree_hash_root();
         store.blocks.insert(root_a, block_a);
@@ -664,14 +664,14 @@ mod tests {
         let mut raw_b = BeaconBlock::default();
         raw_b.slot = Slot(2);
         raw_b.parent_root = root_a;
-        let block_b: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_b: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(raw_b);
         let root_b = block_b.tree_hash_root();
         store.blocks.insert(root_b, block_b);
         store.mark_payload_status(root_b, PayloadStatus::NotValidated);
 
         // Promote from B.
-        promote_valid_ancestors::<MinimalEthSpec>(&mut store, root_b);
+        promote_valid_ancestors::<MinimalBeaconSpec>(&mut store, root_b);
 
         // B and A must be Valid.
         assert_eq!(
@@ -712,14 +712,14 @@ mod tests {
         let mut raw_a = BeaconBlock::default();
         raw_a.slot = Slot(1);
         raw_a.parent_root = anchor_root;
-        let block_a: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_a: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(raw_a);
         let root_a = block_a.tree_hash_root();
         store.blocks.insert(root_a, block_a);
         // Phase0 block: not execution-enabled → is_optimistic == false.
         // (No payload_statuses entry needed; block_is_execution_enabled returns false.)
 
-        let result = latest_verified_ancestor::<MinimalEthSpec>(&store, root_a);
+        let result = latest_verified_ancestor::<MinimalBeaconSpec>(&store, root_a);
         assert_eq!(
             result, root_a,
             "a non-optimistic block should return itself"
@@ -750,7 +750,7 @@ mod tests {
         raw_a.slot = Slot(1);
         raw_a.parent_root = anchor_root;
         raw_a.body.execution_payload.block_hash = Hash256::from_array([0x01; 32]);
-        let block_a: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_a: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Bellatrix(raw_a);
         let root_a = block_a.tree_hash_root();
         store.blocks.insert(root_a, block_a);
@@ -761,7 +761,7 @@ mod tests {
         raw_b.slot = Slot(2);
         raw_b.parent_root = root_a;
         raw_b.body.execution_payload.block_hash = Hash256::from_array([0x02; 32]);
-        let block_b: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_b: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Bellatrix(raw_b);
         let root_b = block_b.tree_hash_root();
         store.blocks.insert(root_b, block_b);
@@ -769,7 +769,7 @@ mod tests {
 
         // latest_verified_ancestor(B) must stop at anchor (the first non-optimistic root).
         // anchor is Phase0 → is_optimistic = false (not execution-enabled).
-        let result = latest_verified_ancestor::<MinimalEthSpec>(&store, root_b);
+        let result = latest_verified_ancestor::<MinimalBeaconSpec>(&store, root_b);
         assert_eq!(
             result, anchor_root,
             "should walk back to anchor (first non-optimistic ancestor)"
@@ -788,17 +788,17 @@ mod tests {
         use pharos_ssz::TreeHash;
         use pharos_types::phase0::{BeaconBlock, BeaconState};
 
-        let genesis_state: <MinimalEthSpec as pharos_types::EthSpec>::BeaconState =
+        let genesis_state: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconState =
             pharos_types::BeaconState::Phase0(BeaconState::default());
         let mut raw = BeaconBlock::default();
         raw.state_root = genesis_state.tree_hash_root();
-        let genesis_block: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let genesis_block: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(raw);
-        let store = get_forkchoice_store::<MinimalEthSpec>(genesis_state, genesis_block);
+        let store = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, genesis_block);
 
         // Phase0 genesis: not execution-enabled → is_optimistic = false → node not optimistic.
         assert!(
-            !is_optimistic_node::<MinimalEthSpec>(&store),
+            !is_optimistic_node::<MinimalBeaconSpec>(&store),
             "a pure Phase0 genesis store must not be optimistic"
         );
     }
@@ -814,13 +814,13 @@ mod tests {
         use pharos_types::phase0::{BeaconBlock, BeaconState, Slot};
 
         // Build genesis store.
-        let genesis_state: <MinimalEthSpec as pharos_types::EthSpec>::BeaconState =
+        let genesis_state: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconState =
             pharos_types::BeaconState::Phase0(BeaconState::default());
         let mut raw = BeaconBlock::default();
         raw.state_root = genesis_state.tree_hash_root();
-        let genesis_block: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let genesis_block: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(raw);
-        let mut store = get_forkchoice_store::<MinimalEthSpec>(genesis_state, genesis_block);
+        let mut store = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, genesis_block);
 
         let anchor_root = store.finalized_checkpoint.root;
 
@@ -829,7 +829,7 @@ mod tests {
         raw_exec.slot = Slot(1);
         raw_exec.parent_root = anchor_root;
         raw_exec.body.execution_payload.block_hash = Hash256::from_array([0xAA; 32]);
-        let exec_block: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let exec_block: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Bellatrix(raw_exec);
         let exec_root = exec_block.tree_hash_root();
         store.blocks.insert(exec_root, exec_block);
@@ -837,11 +837,11 @@ mod tests {
 
         // The head will now be exec_root (only child of anchor) and it is optimistic.
         assert!(
-            is_optimistic::<MinimalEthSpec>(&store, exec_root),
+            is_optimistic::<MinimalBeaconSpec>(&store, exec_root),
             "the execution block must be optimistic (NotValidated)"
         );
         assert!(
-            is_optimistic_node::<MinimalEthSpec>(&store),
+            is_optimistic_node::<MinimalBeaconSpec>(&store),
             "node must be optimistic when head is optimistic"
         );
     }
@@ -863,21 +863,21 @@ mod tests {
 
         // A minimal Bellatrix anchor state + block.
         let anchor_state_inner = MinimalBeaconState::default();
-        let anchor_state: <MinimalEthSpec as pharos_types::EthSpec>::BeaconState =
+        let anchor_state: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconState =
             pharos_types::BeaconState::Bellatrix(anchor_state_inner);
         let state_root = anchor_state.tree_hash_root();
         let mut raw = BellatrixBlock::default();
         raw.state_root = state_root;
         // Non-zero block_hash so `block_is_execution_enabled` returns true.
         raw.body.execution_payload.block_hash = Hash256::from_array([0xBE; 32]);
-        let anchor_block: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let anchor_block: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Bellatrix(raw);
 
         let anchor_root = anchor_block.tree_hash_root();
-        let store = get_forkchoice_store::<MinimalEthSpec>(anchor_state, anchor_block);
+        let store = get_forkchoice_store::<MinimalBeaconSpec>(anchor_state, anchor_block);
 
         assert!(
-            !is_optimistic::<MinimalEthSpec>(&store, anchor_root),
+            !is_optimistic::<MinimalBeaconSpec>(&store, anchor_root),
             "post-merge anchor must not be optimistic (payload_statuses[anchor] == Valid)"
         );
     }
@@ -905,7 +905,7 @@ mod tests {
         raw_a.slot = Slot(1);
         raw_a.parent_root = anchor_root;
         raw_a.body.execution_payload.block_hash = Hash256::from_array([0x01; 32]);
-        let block_a: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_a: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Bellatrix(raw_a);
         let root_a = block_a.tree_hash_root();
         store.blocks.insert(root_a, block_a);
@@ -919,7 +919,7 @@ mod tests {
         raw_b.slot = Slot(2);
         raw_b.parent_root = absent_parent;
         raw_b.body.execution_payload.block_hash = Hash256::from_array([0x02; 32]);
-        let block_b: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block_b: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Bellatrix(raw_b);
         let root_b = block_b.tree_hash_root();
         store.blocks.insert(root_b, block_b);
@@ -927,7 +927,7 @@ mod tests {
 
         // latest_verified_ancestor(root_b): root_b is optimistic, walks to absent_parent
         // (not in store) → must fall back to finalized_checkpoint.root (= anchor_root).
-        let result = latest_verified_ancestor::<MinimalEthSpec>(&store, root_b);
+        let result = latest_verified_ancestor::<MinimalBeaconSpec>(&store, root_b);
         assert_eq!(
             result, anchor_root,
             "absent-block fallback must return finalized_checkpoint.root, not the optimistic cur"
@@ -960,7 +960,7 @@ mod tests {
         raw.slot = Slot(1);
         raw.parent_root = anchor_root;
         raw.body.execution_payload.block_hash = Hash256::from_array([0xCC; 32]);
-        let block: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Bellatrix(raw);
         let root = block.tree_hash_root();
         store.blocks.insert(root, block);
@@ -970,7 +970,7 @@ mod tests {
         let base = effective_base(&store);
         let has_invalid_exec_child = store.blocks.iter().any(|(r, b)| {
             b.parent_root() == base
-                && block_is_execution_enabled::<MinimalEthSpec>(b)
+                && block_is_execution_enabled::<MinimalBeaconSpec>(b)
                 && matches!(store.payload_statuses.get(r), Some(PayloadStatus::Invalid))
         });
         assert!(
@@ -995,7 +995,7 @@ mod tests {
         raw.slot = Slot(1);
         raw.parent_root = anchor_root;
         raw.body.execution_payload.block_hash = Hash256::from_array([0xDD; 32]);
-        let block: <MinimalEthSpec as pharos_types::EthSpec>::BeaconBlock =
+        let block: <MinimalBeaconSpec as pharos_types::BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Bellatrix(raw);
         let root = block.tree_hash_root();
         store.blocks.insert(root, block);
@@ -1004,7 +1004,7 @@ mod tests {
         // head == effective_base (the Invalid child is pruned by filter_block_tree,
         // so get_head returns the base).  The child is Invalid → condition (2) fires.
         assert!(
-            is_optimistic_node::<MinimalEthSpec>(&store),
+            is_optimistic_node::<MinimalBeaconSpec>(&store),
             "node must be optimistic when all execution children are Invalid"
         );
     }

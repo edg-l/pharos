@@ -4,7 +4,7 @@
 //!
 //! spec: specs/phase0/beacon-chain.md:1804-1812 (unchanged in Altair)
 
-use pharos_types::{EthSpec, altair::BeaconState};
+use pharos_types::{BeaconSpec, altair::BeaconState};
 
 use crate::error::EpochProcessingError;
 
@@ -37,7 +37,7 @@ pub fn process_eth1_data_reset<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

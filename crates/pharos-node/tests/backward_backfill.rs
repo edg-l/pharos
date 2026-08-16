@@ -1,7 +1,7 @@
 //! Backward state-backfill integration test (M11 Phase 2, Task 2.7).
 //!
 //! Builds a known minimal-preset Bellatrix chain past two restore-point
-//! intervals (`SLOTS_PER_HISTORICAL_ROOT = 64` for `MinimalEthSpec`, so a chain
+//! intervals (`SLOTS_PER_HISTORICAL_ROOT = 64` for `MinimalBeaconSpec`, so a chain
 //! to slot 130 covers restore points at slots 64 and 128), persists every block
 //! via `run_backfill_loop` (the Phase-1 import path: block + slot-index +
 //! state-summary on disk), then:
@@ -27,7 +27,7 @@ use pharos_stf::phase0::helpers::{DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO};
 use pharos_stf::{ForkEpochs, NullExecutionEngine, process_slots_fork, state_transition};
 use pharos_storage::{RocksStore, RocksStoreConfig, Store as DbStore};
 use pharos_types::{
-    EthSpec, MinimalEthSpec,
+    BeaconSpec, MinimalBeaconSpec,
     altair::{MinimalSyncAggregate, MinimalSyncCommittee},
     bellatrix::{
         MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
@@ -130,7 +130,7 @@ fn build_genesis_for_test() -> (
 
     let validator = Validator {
         pubkey: test_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -141,7 +141,7 @@ fn build_genesis_for_test() -> (
     let sync_committee = MinimalSyncCommittee {
         pubkeys: SszVector::from_vec(vec![
             test_pubkey();
-            MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+            MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
         ])
         .unwrap(),
         aggregate_pubkey: test_pubkey(),
@@ -152,7 +152,7 @@ fn build_genesis_for_test() -> (
         slot: Slot(0),
         fork: pharos_types::phase0::Fork {
             previous_version: Version::from_array([0x01, 0x00, 0x00, 0x01]),
-            current_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+            current_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
             epoch: Epoch(0),
         },
         latest_block_header: BeaconBlockHeader {
@@ -165,7 +165,7 @@ fn build_genesis_for_test() -> (
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         )
         .unwrap(),
         previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
@@ -200,8 +200,8 @@ fn build_chain(
     use pharos_types::bellatrix::execution_payload::MinimalExecutionPayload;
 
     let runtime_cfg = pharos_types::config::RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         ..Default::default()
     };
     let null_engine = NullExecutionEngine;
@@ -216,7 +216,7 @@ fn build_chain(
         let slot = Slot(i);
 
         let mut pre_state_advanced = state.clone();
-        process_slots_fork::<MinimalEthSpec>(
+        process_slots_fork::<MinimalBeaconSpec>(
             &mut pre_state_advanced,
             slot,
             ForkEpochs::never(),
@@ -229,8 +229,8 @@ fn build_chain(
                 ForkMinState::Bellatrix(s) => s,
                 _ => panic!("expected Bellatrix state"),
             };
-            let epoch = slot.0 / MinimalEthSpec::SLOTS_PER_EPOCH;
-            let idx = (epoch % MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
+            let epoch = slot.0 / MinimalBeaconSpec::SLOTS_PER_EPOCH;
+            let idx = (epoch % MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
             let randao = s.randao_mixes.get(idx).copied().unwrap_or_default();
             let ts = s.genesis_time + slot.0 * runtime_cfg.seconds_per_slot;
             (randao, ts)
@@ -259,9 +259,9 @@ fn build_chain(
             ..Default::default()
         };
 
-        let randao_epoch = get_current_epoch::<MinimalEthSpec>(&pre_state_advanced);
+        let randao_epoch = get_current_epoch::<MinimalBeaconSpec>(&pre_state_advanced);
         let randao_domain =
-            get_domain::<MinimalEthSpec>(&pre_state_advanced, DOMAIN_RANDAO, Some(randao_epoch));
+            get_domain::<MinimalBeaconSpec>(&pre_state_advanced, DOMAIN_RANDAO, Some(randao_epoch));
         let randao_signing_root = compute_signing_root(&randao_epoch, randao_domain);
         let randao_reveal = test_sign(randao_signing_root.as_slice());
 
@@ -293,7 +293,7 @@ fn build_chain(
             message: draft,
             signature: BLSSignature::from_array([0u8; 96]),
         });
-        let (post_draft, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_draft, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             state.clone(),
             &draft_signed,
             &null_engine,
@@ -313,7 +313,7 @@ fn build_chain(
         let block_root: Root = final_block.tree_hash_root();
 
         let domain =
-            get_domain::<MinimalEthSpec>(&pre_state_advanced, DOMAIN_BEACON_PROPOSER, None);
+            get_domain::<MinimalBeaconSpec>(&pre_state_advanced, DOMAIN_BEACON_PROPOSER, None);
         let signing_root = compute_signing_root(&final_block, domain);
         let real_sig = test_sign(signing_root.as_slice());
 
@@ -321,7 +321,7 @@ fn build_chain(
             message: final_block,
             signature: real_sig,
         });
-        let (post_final, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_final, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             state.clone(),
             &fork_signed,
             &null_engine,
@@ -361,7 +361,7 @@ impl FixtureBlockProvider {
     }
 }
 
-impl BackfillBlockProvider<MinimalEthSpec> for FixtureBlockProvider {
+impl BackfillBlockProvider<MinimalBeaconSpec> for FixtureBlockProvider {
     async fn blocks_by_range(
         &self,
         _start_slot: Slot,
@@ -376,7 +376,7 @@ impl BackfillBlockProvider<MinimalEthSpec> for FixtureBlockProvider {
 
 struct Harness {
     store: Arc<RocksStore>,
-    fc_store: Arc<RwLock<pharos_fork_choice::Store<MinimalEthSpec>>>,
+    fc_store: Arc<RwLock<pharos_fork_choice::Store<MinimalBeaconSpec>>>,
     runtime_cfg: Arc<pharos_types::config::RuntimeConfig>,
     n_blocks: u64,
 }
@@ -390,15 +390,15 @@ async fn seed_persisted_chain(n_blocks: u64) -> Harness {
 
     let tmpdir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     let store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
         .expect("open RocksStore"),
     );
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
-    fc.runtime_cfg = MinimalEthSpec::default_runtime_config();
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state.clone(), anchor_block);
+    fc.runtime_cfg = MinimalBeaconSpec::default_runtime_config();
     fc.time = 10_000_000;
     fc.set_terminal_config(
         pharos_utils::Uint256::default(),
@@ -409,10 +409,10 @@ async fn seed_persisted_chain(n_blocks: u64) -> Harness {
 
     let gvr = Root::default();
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -423,11 +423,11 @@ async fn seed_persisted_chain(n_blocks: u64) -> Harness {
         genesis_validators_root: gvr,
     };
     let runtime_cfg = Arc::new(pharos_types::config::RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         ..Default::default()
     });
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         Arc::clone(&store),
         Arc::clone(&fc_store),
         gvr,
@@ -445,7 +445,7 @@ async fn seed_persisted_chain(n_blocks: u64) -> Harness {
     // Serve 64 blocks per chunk so the forward loop drains in several calls.
     let provider = FixtureBlockProvider::chunked(signed_blocks, 64);
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let notify = Arc::new(Notify::new());
     // Discard the forward progress signal here; the test drives the backward loop
@@ -455,7 +455,7 @@ async fn seed_persisted_chain(n_blocks: u64) -> Harness {
     let fc_for_loop = Arc::clone(&fc_store);
     let handle = tokio::spawn(async move {
         run_backfill_loop::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             _,
             NullExecutionEngine,
             pharos_fork_choice::NoopPowBlockProvider,
@@ -481,7 +481,7 @@ async fn seed_persisted_chain(n_blocks: u64) -> Harness {
     loop {
         let head_slot = {
             let s = fc_store.read();
-            let root = get_head::<MinimalEthSpec>(&s);
+            let root = get_head::<MinimalBeaconSpec>(&s);
             s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
         };
         if head_slot.0 >= n_blocks {
@@ -514,7 +514,7 @@ fn block_state_root_at(store: &RocksStore, slot: Slot) -> Root {
         .block_root_at_slot(slot)
         .expect("slot index read")
         .unwrap_or_else(|| panic!("no block at slot {slot}"));
-    <RocksStore as DbStore<MinimalEthSpec>>::get_state_summary(store, &block_root)
+    <RocksStore as DbStore<MinimalBeaconSpec>>::get_state_summary(store, &block_root)
         .expect("state-summary read")
         .unwrap_or_else(|| panic!("no state-summary for block at slot {slot}"))
         .state_root
@@ -527,11 +527,11 @@ async fn backward_backfill_reconstructs_restore_points() {
     // SLOTS_PER_HISTORICAL_ROOT = 64 (minimal). Build to slot 130 so restore
     // points at slots 64 and 128 both have source blocks and a block to validate
     // against.
-    let interval = MinimalEthSpec::SLOTS_PER_HISTORICAL_ROOT;
+    let interval = MinimalBeaconSpec::SLOTS_PER_HISTORICAL_ROOT;
     assert_eq!(interval, 64);
     let h = seed_persisted_chain(130).await;
 
-    let regen = Arc::new(StateRegenService::<MinimalEthSpec>::new(
+    let regen = Arc::new(StateRegenService::<MinimalBeaconSpec>::new(
         Arc::clone(&h.store),
         Arc::clone(&h.fc_store),
         Arc::clone(&h.runtime_cfg),
@@ -543,7 +543,7 @@ async fn backward_backfill_reconstructs_restore_points() {
     // Keep the sender alive for the duration of the loop.
     let _lowest_tx = lowest_tx;
 
-    let result = run_backward_backfill_loop::<MinimalEthSpec>(
+    let result = run_backward_backfill_loop::<MinimalBeaconSpec>(
         Arc::clone(&regen),
         Arc::clone(&h.store),
         Arc::clone(&h.fc_store),
@@ -556,7 +556,7 @@ async fn backward_backfill_reconstructs_restore_points() {
     // Both restore points (64 and 128) must be persisted and root-correct.
     for &slot_u64 in &[64u64, 128] {
         let slot = Slot(slot_u64);
-        let cold = <RocksStore as DbStore<MinimalEthSpec>>::get_cold_state(&h.store, slot)
+        let cold = <RocksStore as DbStore<MinimalBeaconSpec>>::get_cold_state(&h.store, slot)
             .expect("cold state read")
             .unwrap_or_else(|| panic!("restore point at slot {slot_u64} not persisted"));
         let got = cold.tree_hash_root();
@@ -568,7 +568,7 @@ async fn backward_backfill_reconstructs_restore_points() {
 
         // The restore-points index must also record the slot → state_root entry.
         let (rp_slot, rp_root) =
-            <RocksStore as DbStore<MinimalEthSpec>>::nearest_restore_point(&h.store, slot)
+            <RocksStore as DbStore<MinimalBeaconSpec>>::nearest_restore_point(&h.store, slot)
                 .expect("nearest_restore_point read")
                 .unwrap_or_else(|| panic!("no restore-point index at slot {slot_u64}"));
         assert_eq!(rp_slot, slot, "nearest restore point slot mismatch");
@@ -584,7 +584,7 @@ async fn backward_backfill_reconstructs_restore_points() {
 async fn backward_backfill_parks_until_progress_signal() {
     let h = seed_persisted_chain(130).await;
 
-    let regen = Arc::new(StateRegenService::<MinimalEthSpec>::new(
+    let regen = Arc::new(StateRegenService::<MinimalBeaconSpec>::new(
         Arc::clone(&h.store),
         Arc::clone(&h.fc_store),
         Arc::clone(&h.runtime_cfg),
@@ -598,7 +598,7 @@ async fn backward_backfill_parks_until_progress_signal() {
 
     let store_for_loop = Arc::clone(&h.store);
     let mut handle = tokio::spawn(async move {
-        run_backward_backfill_loop::<MinimalEthSpec>(
+        run_backward_backfill_loop::<MinimalBeaconSpec>(
             regen,
             store_for_loop,
             Arc::clone(&h.fc_store),
@@ -618,7 +618,7 @@ async fn backward_backfill_parks_until_progress_signal() {
     );
 
     // While parked it must not have written any restore point at slot 128.
-    let cold = <RocksStore as DbStore<MinimalEthSpec>>::get_cold_state(&h.store, Slot(128))
+    let cold = <RocksStore as DbStore<MinimalBeaconSpec>>::get_cold_state(&h.store, Slot(128))
         .expect("cold state read");
     assert!(
         cold.is_none(),
@@ -638,7 +638,7 @@ async fn backward_backfill_parks_until_progress_signal() {
     );
 
     // Now the restore point at slot 128 must be present.
-    let cold = <RocksStore as DbStore<MinimalEthSpec>>::get_cold_state(&h.store, Slot(128))
+    let cold = <RocksStore as DbStore<MinimalBeaconSpec>>::get_cold_state(&h.store, Slot(128))
         .expect("cold state read");
     assert!(
         cold.is_some(),

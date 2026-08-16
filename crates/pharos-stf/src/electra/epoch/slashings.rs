@@ -13,7 +13,7 @@
 //! unchanged.
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, electra::BeaconState, phase0::ValidatorIndex};
+use pharos_types::{BeaconSpec, electra::BeaconState, phase0::ValidatorIndex};
 use pharos_utils::Gwei;
 
 use crate::electra::helpers::{
@@ -37,7 +37,7 @@ pub fn process_slashings<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

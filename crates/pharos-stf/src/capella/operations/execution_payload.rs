@@ -10,7 +10,7 @@
 
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     capella::{
         BeaconBlockBody, BeaconState, execution_payload::ExecutionPayloadHeader as CapellaHeader,
     },
@@ -90,7 +90,7 @@ pub fn process_execution_payload<
     runtime_cfg: &pharos_types::config::RuntimeConfig,
 ) -> Result<PayloadVerificationStatus, StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         CapellaBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

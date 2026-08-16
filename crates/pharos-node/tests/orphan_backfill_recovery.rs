@@ -41,7 +41,7 @@ use pharos_types::state::{
     SignedBeaconBlock as ForkSignedBeaconBlock,
 };
 use pharos_types::views::BeaconBlockView as _;
-use pharos_types::{EthSpec, MinimalEthSpec};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 use pharos_utils::{BLSPubkey, Hash256};
 use tokio::sync::{Notify, mpsc, watch};
 
@@ -127,7 +127,7 @@ fn build_genesis() -> (
 
     let validator = Validator {
         pubkey: test_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -138,7 +138,7 @@ fn build_genesis() -> (
     let sync_committee = MinimalSyncCommittee {
         pubkeys: SszVector::from_vec(vec![
             test_pubkey();
-            MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+            MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
         ])
         .unwrap(),
         aggregate_pubkey: test_pubkey(),
@@ -149,7 +149,7 @@ fn build_genesis() -> (
         slot: Slot(0),
         fork: Fork {
             previous_version: Version::from_array([0x01, 0x00, 0x00, 0x01]),
-            current_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+            current_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
             epoch: Epoch(0),
         },
         latest_block_header: BeaconBlockHeader {
@@ -162,7 +162,7 @@ fn build_genesis() -> (
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         )
         .unwrap(),
         previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
@@ -203,7 +203,7 @@ impl FixtureBlockProvider {
     }
 }
 
-impl BackfillBlockProvider<MinimalEthSpec> for FixtureBlockProvider {
+impl BackfillBlockProvider<MinimalBeaconSpec> for FixtureBlockProvider {
     async fn blocks_by_range(
         &self,
         _start_slot: Slot,
@@ -223,7 +223,7 @@ async fn orphan_defers_and_backfill_heals() {
     // ── Build fork-choice store at slot 0 ────────────────────────────────────
 
     let (genesis_state, anchor_block) = build_genesis();
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state.clone(), anchor_block);
     // Install the minimal-preset runtime config + fork-epoch schedule, exactly as
     // `main.rs` does after rehydration. `get_forkchoice_store` defaults `runtime_cfg`
     // to mainnet (12s slots); the backfill import path threads this cfg into
@@ -231,7 +231,7 @@ async fn orphan_defers_and_backfill_heals() {
     // bellatrix payload timestamps against `genesis_time + slot * 12` and rejects
     // every block — the head never advances (same root cause as the
     // checkpoint_backfill_pipeline / lookup_replay fixes).
-    let minimal_cfg = MinimalEthSpec::default_runtime_config();
+    let minimal_cfg = MinimalBeaconSpec::default_runtime_config();
     fc.set_fork_epochs(
         minimal_cfg.altair_fork_epoch,
         minimal_cfg.bellatrix_fork_epoch,
@@ -250,7 +250,7 @@ async fn orphan_defers_and_backfill_heals() {
 
     let tmpdir = tempfile::tempdir().unwrap();
     let db = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -258,10 +258,10 @@ async fn orphan_defers_and_backfill_heals() {
     );
     let genesis_validators_root = Root::default();
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -271,7 +271,7 @@ async fn orphan_defers_and_backfill_heals() {
         electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         db,
         Arc::clone(&fc_store),
         genesis_validators_root,
@@ -283,7 +283,7 @@ async fn orphan_defers_and_backfill_heals() {
     // ── Build shared channels ─────────────────────────────────────────────────
 
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
 
     // ── Part A: Notify fires when ingestion defers an orphan ─────────────────
     //
@@ -294,8 +294,8 @@ async fn orphan_defers_and_backfill_heals() {
 
     // Construct a dummy NetworkCommandSender (receiver dropped; used only to
     // satisfy IngestionEgress's type — no publish calls happen in this test).
-    let (net_cmd_tx, _net_cmd_rx) = mpsc::channel::<NetworkCommand<MinimalEthSpec>>(4);
-    let net_sender = NetworkCommandSender::<MinimalEthSpec>::new(net_cmd_tx);
+    let (net_cmd_tx, _net_cmd_rx) = mpsc::channel::<NetworkCommand<MinimalBeaconSpec>>(4);
+    let net_sender = NetworkCommandSender::<MinimalBeaconSpec>::new(net_cmd_tx);
 
     // IngestionEgress with the shared Notify.
     let _egress = IngestionEgress {
@@ -342,7 +342,7 @@ async fn orphan_defers_and_backfill_heals() {
     // Head must still be at slot 0 (orphan was not applied).
     let head_slot_after = {
         let s = fc_store.read();
-        let root = get_head::<MinimalEthSpec>(&s);
+        let root = get_head::<MinimalBeaconSpec>(&s);
         s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
     };
     assert_eq!(
@@ -370,7 +370,7 @@ async fn orphan_defers_and_backfill_heals() {
 
     let backfill_handle = tokio::spawn(async move {
         run_backfill_loop::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             _,
             NullExecutionEngine,
             pharos_fork_choice::NoopPowBlockProvider,
@@ -396,7 +396,7 @@ async fn orphan_defers_and_backfill_heals() {
     loop {
         let hs = {
             let s = fc_for_assert.read();
-            let root = get_head::<MinimalEthSpec>(&s);
+            let root = get_head::<MinimalBeaconSpec>(&s);
             s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
         };
         if hs.0 >= 1 {
@@ -416,7 +416,7 @@ async fn orphan_defers_and_backfill_heals() {
 
     let final_head = {
         let s = fc_for_assert.read();
-        let root = get_head::<MinimalEthSpec>(&s);
+        let root = get_head::<MinimalBeaconSpec>(&s);
         s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
     };
     assert_eq!(

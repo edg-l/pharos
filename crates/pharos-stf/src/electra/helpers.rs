@@ -8,7 +8,7 @@
 
 use pharos_ssz::{Bitvector, Encode, SszSequence};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     deneb::BeaconState as DenebBeaconState,
     electra::{BeaconState, attestation::Attestation, attestation::IndexedAttestation},
@@ -356,7 +356,7 @@ pub(crate) fn get_current_epoch_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -392,7 +392,7 @@ pub(crate) fn get_total_active_balance_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -533,7 +533,7 @@ pub(crate) fn increase_balance_electra<
 ///
 /// Generic over `E::BeaconState` via the `BeaconStateView` trait, mirroring the
 /// phase0 helper.
-pub fn compute_proposer_index_electra<E: EthSpec>(
+pub fn compute_proposer_index_electra<E: BeaconSpec>(
     state: &E::BeaconState,
     indices: &[ValidatorIndex],
     seed: &Hash256,
@@ -569,7 +569,7 @@ pub fn compute_proposer_index_electra<E: EthSpec>(
 ///
 /// Identical to the phase0 derivation of the seed (DOMAIN_BEACON_PROPOSER +
 /// slot) but uses the electra `compute_proposer_index_electra`.
-pub fn get_beacon_proposer_index_electra<E: EthSpec>(state: &E::BeaconState) -> ValidatorIndex {
+pub fn get_beacon_proposer_index_electra<E: BeaconSpec>(state: &E::BeaconState) -> ValidatorIndex {
     use pharos_types::BeaconStateView;
 
     let epoch = get_current_epoch::<E>(state);
@@ -592,12 +592,14 @@ pub fn get_beacon_proposer_index_electra<E: EthSpec>(state: &E::BeaconState) -> 
 /// `is_compounding_withdrawal_credential` per `specs/electra/beacon-chain.md:493-495`.
 ///
 /// Returns `true` when `withdrawal_credentials[0] == COMPOUNDING_WITHDRAWAL_PREFIX (0x02)`.
-pub fn is_compounding_withdrawal_credential<E: EthSpec>(withdrawal_credentials: &Bytes32) -> bool {
+pub fn is_compounding_withdrawal_credential<E: BeaconSpec>(
+    withdrawal_credentials: &Bytes32,
+) -> bool {
     withdrawal_credentials.as_slice()[0] == E::COMPOUNDING_WITHDRAWAL_PREFIX as u8
 }
 
 /// `has_compounding_withdrawal_credential` per `specs/electra/beacon-chain.md:500-505`.
-pub fn has_compounding_withdrawal_credential<E: EthSpec>(
+pub fn has_compounding_withdrawal_credential<E: BeaconSpec>(
     validator: &pharos_types::phase0::Validator,
 ) -> bool {
     is_compounding_withdrawal_credential::<E>(&validator.withdrawal_credentials)
@@ -606,7 +608,7 @@ pub fn has_compounding_withdrawal_credential<E: EthSpec>(
 /// `has_execution_withdrawal_credential` per `specs/electra/beacon-chain.md:510-518`.
 ///
 /// Returns `true` when the validator has a `0x01` or `0x02` prefixed credential.
-pub fn has_execution_withdrawal_credential<E: EthSpec>(
+pub fn has_execution_withdrawal_credential<E: BeaconSpec>(
     validator: &pharos_types::phase0::Validator,
 ) -> bool {
     has_eth1_withdrawal_credential(validator)
@@ -617,7 +619,9 @@ pub fn has_execution_withdrawal_credential<E: EthSpec>(
 ///
 /// Compounding validators get `MAX_EFFECTIVE_BALANCE_ELECTRA`; everyone else
 /// gets `MIN_ACTIVATION_BALANCE`.
-pub fn get_max_effective_balance<E: EthSpec>(validator: &pharos_types::phase0::Validator) -> Gwei {
+pub fn get_max_effective_balance<E: BeaconSpec>(
+    validator: &pharos_types::phase0::Validator,
+) -> Gwei {
     if has_compounding_withdrawal_credential::<E>(validator) {
         Gwei(E::MAX_EFFECTIVE_BALANCE_ELECTRA)
     } else {
@@ -640,7 +644,7 @@ pub fn get_balance_churn_limit_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -693,7 +697,7 @@ pub fn get_activation_exit_churn_limit_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -745,7 +749,7 @@ pub fn get_consolidation_churn_limit_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -858,7 +862,7 @@ pub fn compute_exit_epoch_and_update_churn_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -933,7 +937,7 @@ pub fn compute_consolidation_epoch_and_update_churn_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1016,7 +1020,7 @@ pub fn queue_excess_active_balance_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1092,7 +1096,7 @@ pub fn switch_to_compounding_validator_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1162,7 +1166,7 @@ pub fn initiate_validator_exit_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1272,7 +1276,7 @@ pub fn slash_validator_electra<
     whistleblower_index: Option<ValidatorIndex>,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         ElectraBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -1443,7 +1447,7 @@ pub fn get_committee_indices<const MAX_COMMITTEES_PER_SLOT: u64>(
 pub fn get_attesting_indices_electra<
     const MAX_AGGREGATION_BITS: u64,
     const MAX_COMMITTEES_PER_SLOT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &E::BeaconState,
     attestation: &Attestation<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT>,
@@ -1475,7 +1479,7 @@ pub fn get_attesting_indices_electra<
 pub fn get_indexed_attestation_electra<
     const MAX_AGGREGATION_BITS: u64,
     const MAX_COMMITTEES_PER_SLOT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &E::BeaconState,
     attestation: &Attestation<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT>,
@@ -1503,7 +1507,7 @@ pub fn get_indexed_attestation_electra<
 ///
 /// EIP-7251: uses `has_execution_withdrawal_credential` (0x01 or 0x02) instead
 /// of `has_eth1_withdrawal_credential`.
-pub fn is_fully_withdrawable_validator_electra<E: EthSpec>(
+pub fn is_fully_withdrawable_validator_electra<E: BeaconSpec>(
     validator: &pharos_types::phase0::Validator,
     balance: Gwei,
     epoch: Epoch,
@@ -1518,7 +1522,7 @@ pub fn is_fully_withdrawable_validator_electra<E: EthSpec>(
 ///
 /// EIP-7251: uses `get_max_effective_balance` (compounding-aware) and
 /// `has_execution_withdrawal_credential`.
-pub fn is_partially_withdrawable_validator_electra<E: EthSpec>(
+pub fn is_partially_withdrawable_validator_electra<E: BeaconSpec>(
     validator: &pharos_types::phase0::Validator,
     balance: Gwei,
 ) -> bool {
@@ -1531,7 +1535,7 @@ pub fn is_partially_withdrawable_validator_electra<E: EthSpec>(
 }
 
 /// `is_eligible_for_partial_withdrawals` per `specs/electra/beacon-chain.md:568-578`.
-pub fn is_eligible_for_partial_withdrawals_electra<E: EthSpec>(
+pub fn is_eligible_for_partial_withdrawals_electra<E: BeaconSpec>(
     validator: &pharos_types::phase0::Validator,
     balance: Gwei,
 ) -> bool {
@@ -1549,7 +1553,7 @@ pub fn is_eligible_for_partial_withdrawals_electra<E: EthSpec>(
 /// `GENESIS_FORK_VERSION` and a zero `genesis_validators_root`). NOT shared with
 /// the phase0 `apply_deposit`; electra `process_deposit_request` /
 /// `apply_deposit` call this directly.
-pub fn is_valid_deposit_signature<E: EthSpec>(
+pub fn is_valid_deposit_signature<E: BeaconSpec>(
     pubkey: &BLSPubkey,
     withdrawal_credentials: &Bytes32,
     amount: u64,
@@ -1596,7 +1600,7 @@ pub fn get_next_sync_committee_indices_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1705,7 +1709,7 @@ fn get_seed_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1757,7 +1761,7 @@ pub fn get_next_sync_committee_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1941,7 +1945,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use pharos_ssz::Decode;
-    use pharos_types::MinimalEthSpec;
+    use pharos_types::MinimalBeaconSpec;
     use pharos_types::electra::{
         BeaconState as ElectraConcreteState, MinimalBeaconBlock, MinimalBeaconState,
     };
@@ -1998,8 +2002,8 @@ mod tests {
         let pre: MinimalBeaconState = load_ssz_snappy(&case_dir.join("pre.ssz_snappy"));
         let block: MinimalBeaconBlock = load_ssz_snappy(&case_dir.join("block.ssz_snappy"));
 
-        let enum_state = MinimalEthSpec::electra_into_state(pre);
-        let computed = get_beacon_proposer_index_electra::<MinimalEthSpec>(&enum_state);
+        let enum_state = MinimalBeaconSpec::electra_into_state(pre);
+        let computed = get_beacon_proposer_index_electra::<MinimalBeaconSpec>(&enum_state);
 
         assert_eq!(
             computed, block.proposer_index,
@@ -2034,16 +2038,16 @@ mod tests {
             return;
         }
         let pre: MinimalBeaconState = load_ssz_snappy(&case_dir.join("pre.ssz_snappy"));
-        let enum_state = MinimalEthSpec::electra_into_state(pre);
+        let enum_state = MinimalBeaconSpec::electra_into_state(pre);
 
         let slot = {
             use pharos_types::BeaconStateView;
             enum_state.slot()
         };
 
-        let committees_per_slot = get_committee_count_per_slot::<MinimalEthSpec>(
+        let committees_per_slot = get_committee_count_per_slot::<MinimalBeaconSpec>(
             &enum_state,
-            compute_epoch_at_slot(slot, MinimalEthSpec::SLOTS_PER_EPOCH),
+            compute_epoch_at_slot(slot, MinimalBeaconSpec::SLOTS_PER_EPOCH),
         );
         // Need at least two committees for a meaningful cross-committee test.
         if committees_per_slot < 2 {
@@ -2054,19 +2058,19 @@ mod tests {
             return;
         }
 
-        let committee0 = get_beacon_committee::<MinimalEthSpec>(&enum_state, slot, 0);
-        let committee1 = get_beacon_committee::<MinimalEthSpec>(&enum_state, slot, 1);
+        let committee0 = get_beacon_committee::<MinimalBeaconSpec>(&enum_state, slot, 0);
+        let committee1 = get_beacon_committee::<MinimalBeaconSpec>(&enum_state, slot, 1);
         let total_bits = committee0.len() + committee1.len();
 
         // committee_bits: bits 0 and 1 set.
         let mut committee_bits =
-            Bitvector::<{ MinimalEthSpec::MAX_COMMITTEES_PER_SLOT }>::default();
+            Bitvector::<{ MinimalBeaconSpec::MAX_COMMITTEES_PER_SLOT }>::default();
         committee_bits.set(0, true);
         committee_bits.set(1, true);
 
         // aggregation_bits: all `total_bits` bits set (both committees fully attest).
         let mut agg =
-            pharos_ssz::Bitlist::<{ MinimalEthSpec::MAX_AGGREGATION_BITS_ELECTRA }>::with_capacity(
+            pharos_ssz::Bitlist::<{ MinimalBeaconSpec::MAX_AGGREGATION_BITS_ELECTRA }>::with_capacity(
                 total_bits,
             );
         for _ in 0..total_bits {
@@ -2074,8 +2078,8 @@ mod tests {
         }
 
         let attestation: Attestation<
-            { MinimalEthSpec::MAX_AGGREGATION_BITS_ELECTRA },
-            { MinimalEthSpec::MAX_COMMITTEES_PER_SLOT },
+            { MinimalBeaconSpec::MAX_AGGREGATION_BITS_ELECTRA },
+            { MinimalBeaconSpec::MAX_COMMITTEES_PER_SLOT },
         > = Attestation {
             aggregation_bits: agg,
             data: AttestationData {
@@ -2087,9 +2091,9 @@ mod tests {
         };
 
         let attesters = get_attesting_indices_electra::<
-            { MinimalEthSpec::MAX_AGGREGATION_BITS_ELECTRA },
-            { MinimalEthSpec::MAX_COMMITTEES_PER_SLOT },
-            MinimalEthSpec,
+            { MinimalBeaconSpec::MAX_AGGREGATION_BITS_ELECTRA },
+            { MinimalBeaconSpec::MAX_COMMITTEES_PER_SLOT },
+            MinimalBeaconSpec,
         >(&enum_state, &attestation);
 
         let mut expected: Vec<ValidatorIndex> = committee0.clone();
@@ -2149,75 +2153,75 @@ mod tests {
     #[test]
     fn churn_accessors_minimal() {
         type C = ElectraConcreteState<
-            { MinimalEthSpec::SLOTS_PER_HISTORICAL_ROOT },
-            { MinimalEthSpec::HISTORICAL_ROOTS_LIMIT },
-            { MinimalEthSpec::ETH1_DATA_VOTES_LIMIT },
-            { MinimalEthSpec::VALIDATOR_REGISTRY_LIMIT },
-            { MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR },
-            { MinimalEthSpec::EPOCHS_PER_SLASHINGS_VECTOR },
-            { MinimalEthSpec::JUSTIFICATION_BITS_LENGTH },
-            { MinimalEthSpec::SYNC_COMMITTEE_SIZE },
-            { MinimalEthSpec::BYTES_PER_LOGS_BLOOM },
-            { MinimalEthSpec::MAX_EXTRA_DATA_BYTES },
-            { MinimalEthSpec::MAX_PENDING_DEPOSITS_LIMIT },
-            { MinimalEthSpec::MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT },
-            { MinimalEthSpec::MAX_PENDING_CONSOLIDATIONS_LIMIT },
+            { MinimalBeaconSpec::SLOTS_PER_HISTORICAL_ROOT },
+            { MinimalBeaconSpec::HISTORICAL_ROOTS_LIMIT },
+            { MinimalBeaconSpec::ETH1_DATA_VOTES_LIMIT },
+            { MinimalBeaconSpec::VALIDATOR_REGISTRY_LIMIT },
+            { MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR },
+            { MinimalBeaconSpec::EPOCHS_PER_SLASHINGS_VECTOR },
+            { MinimalBeaconSpec::JUSTIFICATION_BITS_LENGTH },
+            { MinimalBeaconSpec::SYNC_COMMITTEE_SIZE },
+            { MinimalBeaconSpec::BYTES_PER_LOGS_BLOOM },
+            { MinimalBeaconSpec::MAX_EXTRA_DATA_BYTES },
+            { MinimalBeaconSpec::MAX_PENDING_DEPOSITS_LIMIT },
+            { MinimalBeaconSpec::MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT },
+            { MinimalBeaconSpec::MAX_PENDING_CONSOLIDATIONS_LIMIT },
         >;
 
         fn balance_churn(state: &C) -> u64 {
             get_balance_churn_limit_electra::<
-                { MinimalEthSpec::SLOTS_PER_HISTORICAL_ROOT },
-                { MinimalEthSpec::HISTORICAL_ROOTS_LIMIT },
-                { MinimalEthSpec::ETH1_DATA_VOTES_LIMIT },
-                { MinimalEthSpec::VALIDATOR_REGISTRY_LIMIT },
-                { MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR },
-                { MinimalEthSpec::EPOCHS_PER_SLASHINGS_VECTOR },
-                { MinimalEthSpec::JUSTIFICATION_BITS_LENGTH },
-                { MinimalEthSpec::SYNC_COMMITTEE_SIZE },
-                { MinimalEthSpec::BYTES_PER_LOGS_BLOOM },
-                { MinimalEthSpec::MAX_EXTRA_DATA_BYTES },
-                { MinimalEthSpec::MAX_PENDING_DEPOSITS_LIMIT },
-                { MinimalEthSpec::MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT },
-                { MinimalEthSpec::MAX_PENDING_CONSOLIDATIONS_LIMIT },
-                MinimalEthSpec,
+                { MinimalBeaconSpec::SLOTS_PER_HISTORICAL_ROOT },
+                { MinimalBeaconSpec::HISTORICAL_ROOTS_LIMIT },
+                { MinimalBeaconSpec::ETH1_DATA_VOTES_LIMIT },
+                { MinimalBeaconSpec::VALIDATOR_REGISTRY_LIMIT },
+                { MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR },
+                { MinimalBeaconSpec::EPOCHS_PER_SLASHINGS_VECTOR },
+                { MinimalBeaconSpec::JUSTIFICATION_BITS_LENGTH },
+                { MinimalBeaconSpec::SYNC_COMMITTEE_SIZE },
+                { MinimalBeaconSpec::BYTES_PER_LOGS_BLOOM },
+                { MinimalBeaconSpec::MAX_EXTRA_DATA_BYTES },
+                { MinimalBeaconSpec::MAX_PENDING_DEPOSITS_LIMIT },
+                { MinimalBeaconSpec::MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT },
+                { MinimalBeaconSpec::MAX_PENDING_CONSOLIDATIONS_LIMIT },
+                MinimalBeaconSpec,
             >(state)
             .0
         }
         fn activation_exit_churn(state: &C) -> u64 {
             get_activation_exit_churn_limit_electra::<
-                { MinimalEthSpec::SLOTS_PER_HISTORICAL_ROOT },
-                { MinimalEthSpec::HISTORICAL_ROOTS_LIMIT },
-                { MinimalEthSpec::ETH1_DATA_VOTES_LIMIT },
-                { MinimalEthSpec::VALIDATOR_REGISTRY_LIMIT },
-                { MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR },
-                { MinimalEthSpec::EPOCHS_PER_SLASHINGS_VECTOR },
-                { MinimalEthSpec::JUSTIFICATION_BITS_LENGTH },
-                { MinimalEthSpec::SYNC_COMMITTEE_SIZE },
-                { MinimalEthSpec::BYTES_PER_LOGS_BLOOM },
-                { MinimalEthSpec::MAX_EXTRA_DATA_BYTES },
-                { MinimalEthSpec::MAX_PENDING_DEPOSITS_LIMIT },
-                { MinimalEthSpec::MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT },
-                { MinimalEthSpec::MAX_PENDING_CONSOLIDATIONS_LIMIT },
-                MinimalEthSpec,
+                { MinimalBeaconSpec::SLOTS_PER_HISTORICAL_ROOT },
+                { MinimalBeaconSpec::HISTORICAL_ROOTS_LIMIT },
+                { MinimalBeaconSpec::ETH1_DATA_VOTES_LIMIT },
+                { MinimalBeaconSpec::VALIDATOR_REGISTRY_LIMIT },
+                { MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR },
+                { MinimalBeaconSpec::EPOCHS_PER_SLASHINGS_VECTOR },
+                { MinimalBeaconSpec::JUSTIFICATION_BITS_LENGTH },
+                { MinimalBeaconSpec::SYNC_COMMITTEE_SIZE },
+                { MinimalBeaconSpec::BYTES_PER_LOGS_BLOOM },
+                { MinimalBeaconSpec::MAX_EXTRA_DATA_BYTES },
+                { MinimalBeaconSpec::MAX_PENDING_DEPOSITS_LIMIT },
+                { MinimalBeaconSpec::MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT },
+                { MinimalBeaconSpec::MAX_PENDING_CONSOLIDATIONS_LIMIT },
+                MinimalBeaconSpec,
             >(state)
             .0
         }
         fn consolidation_churn(state: &C) -> u64 {
             get_consolidation_churn_limit_electra::<
-                { MinimalEthSpec::SLOTS_PER_HISTORICAL_ROOT },
-                { MinimalEthSpec::HISTORICAL_ROOTS_LIMIT },
-                { MinimalEthSpec::ETH1_DATA_VOTES_LIMIT },
-                { MinimalEthSpec::VALIDATOR_REGISTRY_LIMIT },
-                { MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR },
-                { MinimalEthSpec::EPOCHS_PER_SLASHINGS_VECTOR },
-                { MinimalEthSpec::JUSTIFICATION_BITS_LENGTH },
-                { MinimalEthSpec::SYNC_COMMITTEE_SIZE },
-                { MinimalEthSpec::BYTES_PER_LOGS_BLOOM },
-                { MinimalEthSpec::MAX_EXTRA_DATA_BYTES },
-                { MinimalEthSpec::MAX_PENDING_DEPOSITS_LIMIT },
-                { MinimalEthSpec::MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT },
-                { MinimalEthSpec::MAX_PENDING_CONSOLIDATIONS_LIMIT },
-                MinimalEthSpec,
+                { MinimalBeaconSpec::SLOTS_PER_HISTORICAL_ROOT },
+                { MinimalBeaconSpec::HISTORICAL_ROOTS_LIMIT },
+                { MinimalBeaconSpec::ETH1_DATA_VOTES_LIMIT },
+                { MinimalBeaconSpec::VALIDATOR_REGISTRY_LIMIT },
+                { MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR },
+                { MinimalBeaconSpec::EPOCHS_PER_SLASHINGS_VECTOR },
+                { MinimalBeaconSpec::JUSTIFICATION_BITS_LENGTH },
+                { MinimalBeaconSpec::SYNC_COMMITTEE_SIZE },
+                { MinimalBeaconSpec::BYTES_PER_LOGS_BLOOM },
+                { MinimalBeaconSpec::MAX_EXTRA_DATA_BYTES },
+                { MinimalBeaconSpec::MAX_PENDING_DEPOSITS_LIMIT },
+                { MinimalBeaconSpec::MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT },
+                { MinimalBeaconSpec::MAX_PENDING_CONSOLIDATIONS_LIMIT },
+                MinimalBeaconSpec,
             >(state)
             .0
         }
@@ -2234,26 +2238,26 @@ mod tests {
         // compute_exit_epoch_and_update_churn: exit a 32 ETH validator.
         let mut state = synthetic_state();
         let exit_epoch = compute_exit_epoch_and_update_churn_electra::<
-            { MinimalEthSpec::SLOTS_PER_HISTORICAL_ROOT },
-            { MinimalEthSpec::HISTORICAL_ROOTS_LIMIT },
-            { MinimalEthSpec::ETH1_DATA_VOTES_LIMIT },
-            { MinimalEthSpec::VALIDATOR_REGISTRY_LIMIT },
-            { MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR },
-            { MinimalEthSpec::EPOCHS_PER_SLASHINGS_VECTOR },
-            { MinimalEthSpec::JUSTIFICATION_BITS_LENGTH },
-            { MinimalEthSpec::SYNC_COMMITTEE_SIZE },
-            { MinimalEthSpec::BYTES_PER_LOGS_BLOOM },
-            { MinimalEthSpec::MAX_EXTRA_DATA_BYTES },
-            { MinimalEthSpec::MAX_PENDING_DEPOSITS_LIMIT },
-            { MinimalEthSpec::MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT },
-            { MinimalEthSpec::MAX_PENDING_CONSOLIDATIONS_LIMIT },
-            MinimalEthSpec,
+            { MinimalBeaconSpec::SLOTS_PER_HISTORICAL_ROOT },
+            { MinimalBeaconSpec::HISTORICAL_ROOTS_LIMIT },
+            { MinimalBeaconSpec::ETH1_DATA_VOTES_LIMIT },
+            { MinimalBeaconSpec::VALIDATOR_REGISTRY_LIMIT },
+            { MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR },
+            { MinimalBeaconSpec::EPOCHS_PER_SLASHINGS_VECTOR },
+            { MinimalBeaconSpec::JUSTIFICATION_BITS_LENGTH },
+            { MinimalBeaconSpec::SYNC_COMMITTEE_SIZE },
+            { MinimalBeaconSpec::BYTES_PER_LOGS_BLOOM },
+            { MinimalBeaconSpec::MAX_EXTRA_DATA_BYTES },
+            { MinimalBeaconSpec::MAX_PENDING_DEPOSITS_LIMIT },
+            { MinimalBeaconSpec::MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT },
+            { MinimalBeaconSpec::MAX_PENDING_CONSOLIDATIONS_LIMIT },
+            MinimalBeaconSpec,
         >(&mut state, Gwei(32_000_000_000));
         // earliest_exit_epoch = max(0, current_epoch+1+MAX_SEED_LOOKAHEAD)
         //                     = 0 + 1 + 4 = 5; 32 ETH < 64 ETH churn so fits.
         assert_eq!(
             exit_epoch.0,
-            1 + MinimalEthSpec::MAX_SEED_LOOKAHEAD,
+            1 + MinimalBeaconSpec::MAX_SEED_LOOKAHEAD,
             "exit queue epoch"
         );
         assert_eq!(
@@ -2285,26 +2289,26 @@ mod tests {
             ..Validator::default()
         };
 
-        assert!(!has_compounding_withdrawal_credential::<MinimalEthSpec>(
+        assert!(!has_compounding_withdrawal_credential::<MinimalBeaconSpec>(
             &eth1_v
         ));
-        assert!(has_compounding_withdrawal_credential::<MinimalEthSpec>(
+        assert!(has_compounding_withdrawal_credential::<MinimalBeaconSpec>(
             &comp_v
         ));
-        assert!(has_execution_withdrawal_credential::<MinimalEthSpec>(
+        assert!(has_execution_withdrawal_credential::<MinimalBeaconSpec>(
             &eth1_v
         ));
-        assert!(has_execution_withdrawal_credential::<MinimalEthSpec>(
+        assert!(has_execution_withdrawal_credential::<MinimalBeaconSpec>(
             &comp_v
         ));
 
         assert_eq!(
-            get_max_effective_balance::<MinimalEthSpec>(&eth1_v).0,
-            MinimalEthSpec::MIN_ACTIVATION_BALANCE
+            get_max_effective_balance::<MinimalBeaconSpec>(&eth1_v).0,
+            MinimalBeaconSpec::MIN_ACTIVATION_BALANCE
         );
         assert_eq!(
-            get_max_effective_balance::<MinimalEthSpec>(&comp_v).0,
-            MinimalEthSpec::MAX_EFFECTIVE_BALANCE_ELECTRA
+            get_max_effective_balance::<MinimalBeaconSpec>(&comp_v).0,
+            MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE_ELECTRA
         );
     }
 
@@ -2322,7 +2326,7 @@ mod tests {
         creds[0] = 0x02;
         let v = Validator {
             withdrawal_credentials: Bytes32::from_array(creds),
-            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE_ELECTRA),
+            effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE_ELECTRA),
             activation_epoch: pharos_types::phase0::Epoch(0),
             exit_epoch: pharos_types::phase0::Epoch(FAR_FUTURE_EPOCH),
             ..Validator::default()
@@ -2330,20 +2334,20 @@ mod tests {
         state.validators = state.validators.with_push(v).unwrap();
         state.balances = state
             .balances
-            .with_push(Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE_ELECTRA))
+            .with_push(Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE_ELECTRA))
             .unwrap();
 
-        let enum_state = MinimalEthSpec::electra_into_state(state);
-        let idx = get_beacon_proposer_index_electra::<MinimalEthSpec>(&enum_state);
+        let enum_state = MinimalBeaconSpec::electra_into_state(state);
+        let idx = get_beacon_proposer_index_electra::<MinimalBeaconSpec>(&enum_state);
         assert_eq!(idx.0, 0, "only validator must be the proposer");
     }
 
     // ── get_execution_requests_list ───────────────────────────────────────────
 
     type TestExecRequests = pharos_types::electra::requests::ExecutionRequests<
-        { MinimalEthSpec::MAX_DEPOSIT_REQUESTS_PER_PAYLOAD },
-        { MinimalEthSpec::MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD },
-        { MinimalEthSpec::MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD },
+        { MinimalBeaconSpec::MAX_DEPOSIT_REQUESTS_PER_PAYLOAD },
+        { MinimalBeaconSpec::MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD },
+        { MinimalBeaconSpec::MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD },
     >;
 
     #[test]
@@ -2377,8 +2381,10 @@ mod tests {
 
         // Payload bytes must be SSZ of a one-element list of DepositRequest.
         let expected_payload = {
-            let tmp: SszList<DepositRequest, { MinimalEthSpec::MAX_DEPOSIT_REQUESTS_PER_PAYLOAD }> =
-                SszList::from_vec(vec![deposit]).unwrap();
+            let tmp: SszList<
+                DepositRequest,
+                { MinimalBeaconSpec::MAX_DEPOSIT_REQUESTS_PER_PAYLOAD },
+            > = SszList::from_vec(vec![deposit]).unwrap();
             tmp.as_ssz_bytes()
         };
         assert_eq!(

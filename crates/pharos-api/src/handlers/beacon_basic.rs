@@ -19,7 +19,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use serde::Serialize;
 
 use crate::error::ApiError;
@@ -47,7 +47,7 @@ pub struct GenesisResponse {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 /// `GET /eth/v1/beacon/genesis`
-pub async fn get_genesis<E: EthSpec>(
+pub async fn get_genesis<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     headers: HeaderMap,
 ) -> Response {

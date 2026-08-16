@@ -11,7 +11,7 @@ pub use execution_payload::process_execution_payload;
 pub use voluntary_exit::process_voluntary_exit;
 
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     config::RuntimeConfig,
     deneb::BeaconState,
     phase0::{Attestation, AttesterSlashing, Deposit},
@@ -98,7 +98,7 @@ pub fn process_operations_deneb<
     runtime_cfg: &RuntimeConfig,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

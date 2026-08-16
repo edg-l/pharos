@@ -2,7 +2,7 @@
 //!
 //! Per-fork containers organized as `enum`-of-forks (`BeaconState`,
 //! `BeaconBlock`, `BeaconBlockBody`, ...). Preset constants live behind the
-//! `EthSpec` trait (`MainnetEthSpec`, `MinimalEthSpec`, ...).
+//! `BeaconSpec` trait (`MainnetBeaconSpec`, `MinimalBeaconSpec`, ...).
 //!
 //! # Phase-2 Tree-backend Decision Table
 //!
@@ -69,7 +69,7 @@ pub mod views;
 pub mod weak_subjectivity;
 
 pub use config::{ConfigError, RuntimeConfig, load_config_dir};
-pub use eth_spec::{EthSpec, MainnetEthSpec, MinimalEthSpec};
+pub use eth_spec::{BeaconSpec, MainnetBeaconSpec, MinimalBeaconSpec};
 pub use payload_status::PayloadStatus;
 pub use pools::{BlockOperations, OperationPools};
 pub use state::{BeaconBlock, BeaconBlockBody, BeaconState, SignedBeaconBlock};

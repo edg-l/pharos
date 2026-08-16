@@ -40,7 +40,7 @@ use libp2p::PeerId;
 use libp2p::core::ConnectedPoint;
 use libp2p::identity::Keypair;
 use pharos_network::NetworkBuilder;
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::phase0::primitives::ForkDigest;
 
 use common::TestHost;
@@ -79,7 +79,7 @@ async fn dial_dedup_suppresses_second_concurrent_dial() {
     let local_key = Keypair::generate_secp256k1();
     let discv5_addr: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
     let (mut network, handle, _discovery_handle) =
-        NetworkBuilder::<MainnetEthSpec, TestHost, _>::new(TestHost::new(fd()))
+        NetworkBuilder::<MainnetBeaconSpec, TestHost, _>::new(TestHost::new(fd()))
             .local_key(local_key)
             .tcp_listen_port(0)
             .discv5_addr(discv5_addr)
@@ -142,7 +142,7 @@ async fn dial_dedup_cleared_on_mutual_dial_second_connection() {
     let local_key = Keypair::generate_secp256k1();
     let discv5_addr: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
     let (mut network, handle, _discovery_handle) =
-        NetworkBuilder::<MainnetEthSpec, TestHost, _>::new(TestHost::new(fd()))
+        NetworkBuilder::<MainnetBeaconSpec, TestHost, _>::new(TestHost::new(fd()))
             .local_key(local_key)
             .tcp_listen_port(0)
             .discv5_addr(discv5_addr)
@@ -181,7 +181,7 @@ async fn dial_dedup_distinct_peers_are_independent() {
     let local_key = Keypair::generate_secp256k1();
     let discv5_addr: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
     let (mut network, handle, _discovery_handle) =
-        NetworkBuilder::<MainnetEthSpec, TestHost, _>::new(TestHost::new(fd()))
+        NetworkBuilder::<MainnetBeaconSpec, TestHost, _>::new(TestHost::new(fd()))
             .local_key(local_key)
             .tcp_listen_port(0)
             .discv5_addr(discv5_addr)

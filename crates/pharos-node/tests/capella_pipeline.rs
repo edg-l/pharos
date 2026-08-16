@@ -47,7 +47,7 @@ use pharos_types::state::{
     MinimalBeaconState as ForkMinimalBeaconState, SignedBeaconBlock as ForkSignedBeaconBlock,
 };
 use pharos_types::views::BeaconBlockView as _;
-use pharos_types::{EthSpec, MinimalEthSpec};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 use pharos_utils::{BLSPubkey, BLSSignature, Epoch as UtilsEpoch, Hash256};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -231,7 +231,7 @@ fn build_capella_anchor(
 
     let validator = Validator {
         pubkey: test_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -242,7 +242,7 @@ fn build_capella_anchor(
     let sync_committee = MinimalSyncCommittee {
         pubkeys: SszVector::from_vec(vec![
             test_pubkey();
-            MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+            MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
         ])
         .unwrap(),
         aggregate_pubkey: test_pubkey(),
@@ -252,8 +252,8 @@ fn build_capella_anchor(
         genesis_time,
         slot,
         fork: Fork {
-            previous_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
-            current_version: Version::from_array(MinimalEthSpec::CAPELLA_FORK_VERSION),
+            previous_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
+            current_version: Version::from_array(MinimalBeaconSpec::CAPELLA_FORK_VERSION),
             epoch: UtilsEpoch(0),
         },
         latest_block_header: BeaconBlockHeader {
@@ -266,7 +266,7 @@ fn build_capella_anchor(
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         )
         .unwrap(),
         previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
@@ -309,7 +309,7 @@ fn build_capella_chain(
     // The ingestion loop uses `RuntimeConfig::default()` which is mainnet (12 s/slot).
     // The chain builder must match so that `timestamp` and `seconds_per_slot` agree.
     let runtime_cfg = pharos_types::config::RuntimeConfig {
-        capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+        capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
         capella_fork_epoch: 0,
         ..Default::default()
     };
@@ -325,7 +325,7 @@ fn build_capella_chain(
 
         // Advance a clone to `slot` to derive randao_mix and timestamp.
         let mut pre_state_advanced = state.clone();
-        process_slots_fork::<MinimalEthSpec>(
+        process_slots_fork::<MinimalBeaconSpec>(
             &mut pre_state_advanced,
             slot,
             pharos_stf::ForkEpochs::never(),
@@ -338,8 +338,8 @@ fn build_capella_chain(
                 ForkMinimalBeaconState::Capella(s) => s,
                 other => panic!("expected Capella state, got {other:?}"),
             };
-            let epoch = slot.0 / MinimalEthSpec::SLOTS_PER_EPOCH;
-            let idx = (epoch % MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
+            let epoch = slot.0 / MinimalBeaconSpec::SLOTS_PER_EPOCH;
+            let idx = (epoch % MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
             let randao = s.randao_mixes.get(idx).copied().unwrap_or_default();
             let ts = s.genesis_time + slot.0 * runtime_cfg.seconds_per_slot;
             (randao, ts)
@@ -400,7 +400,7 @@ fn build_capella_chain(
             signature: BLSSignature::from_array([0u8; 96]),
         });
 
-        let (post_state_draft, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_state_draft, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             state.clone(),
             &draft_signed,
             &null_engine,
@@ -425,7 +425,7 @@ fn build_capella_chain(
         });
 
         // Final STF pass with correct state_root.
-        let (post_state, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_state, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             state.clone(),
             &fork_signed,
             &null_engine,
@@ -462,7 +462,7 @@ async fn capella_pipeline_drives_v2_engine_calls() {
         "anchor block state_root must match genesis state"
     );
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state.clone(), anchor_block);
 
     // Advance store time so on_block's future-slot guard passes.
     fc.time = 10_000_000;
@@ -500,14 +500,14 @@ async fn capella_pipeline_drives_v2_engine_calls() {
     let engine_handle = spawn_engine_actor(client, None);
 
     let (head_tx, head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(16);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(16);
 
     {
         let fc_clone = Arc::clone(&fc);
         let eng = engine_handle.clone();
         let head_tx_driver = head_tx.clone();
         tokio::spawn(async move {
-            run_engine_driver_loop::<MinimalEthSpec, pharos_fork_choice::NoopPowBlockProvider>(
+            run_engine_driver_loop::<MinimalBeaconSpec, pharos_fork_choice::NoopPowBlockProvider>(
                 eng,
                 fc_clone,
                 head_rx,
@@ -522,7 +522,7 @@ async fn capella_pipeline_drives_v2_engine_calls() {
     // 5. Build HostImpl + spawn block-ingestion loop.
     let tmpdir = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        pharos_storage::RocksStore::open::<MinimalEthSpec>(pharos_storage::RocksStoreConfig {
+        pharos_storage::RocksStore::open::<MinimalBeaconSpec>(pharos_storage::RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -533,12 +533,12 @@ async fn capella_pipeline_drives_v2_engine_calls() {
 
     // Capella-at-genesis schedule: all four epochs = 0 (immediate capella from slot 0).
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: UtilsEpoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: UtilsEpoch(0),
-        capella_fork_version: Version::from_array(MinimalEthSpec::CAPELLA_FORK_VERSION),
+        capella_fork_version: Version::from_array(MinimalBeaconSpec::CAPELLA_FORK_VERSION),
         capella_fork_epoch: UtilsEpoch(0),
         deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
         deneb_fork_epoch: UtilsEpoch(u64::MAX),
@@ -547,14 +547,14 @@ async fn capella_pipeline_drives_v2_engine_calls() {
         genesis_validators_root,
     };
 
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         store,
         Arc::clone(&fc),
         genesis_validators_root,
         fork_schedule,
         0,
         Arc::new(pharos_types::RuntimeConfig {
-            capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+            capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
             capella_fork_epoch: 0,
             ..Default::default()
         }),
@@ -580,7 +580,7 @@ async fn capella_pipeline_drives_v2_engine_calls() {
         tokio::spawn(async move {
             use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
             if let Err(e) = run_block_ingestion_loop::<
-                MinimalEthSpec,
+                MinimalBeaconSpec,
                 NullExecutionEngine,
                 NoopDataAvailabilityChecker,
             >(
@@ -678,7 +678,7 @@ async fn capella_pipeline_drives_v2_engine_calls() {
         );
 
         // (c continued) Head advanced past the anchor slot.
-        let head = get_head::<MinimalEthSpec>(&store);
+        let head = get_head::<MinimalBeaconSpec>(&store);
         let last_block_root = *block_roots.last().unwrap();
         assert_eq!(
             head, last_block_root,

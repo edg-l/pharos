@@ -46,7 +46,7 @@ use pharos_types::state::{
     MinimalBeaconBlock as ForkMinimalBeaconBlock, MinimalBeaconState as ForkMinimalBeaconState,
     MinimalSignedBeaconBlock as ForkMinimalSignedBeaconBlock,
 };
-use pharos_types::{EthSpec, MinimalEthSpec, RuntimeConfig};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec, RuntimeConfig};
 use pharos_utils::{BLSPubkey, BLSSignature};
 use tokio::sync::{mpsc, watch};
 
@@ -82,14 +82,17 @@ fn build_altair_anchor() -> (AltairMinimalBeaconState, AltairMinimalBeaconBlock,
     let pubkey = BLSPubkey::from_array(sk.sk_to_pk().compress());
 
     let sync_committee = MinimalSyncCommittee {
-        pubkeys: SszVector::from_vec(vec![pubkey; MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize])
-            .unwrap(),
+        pubkeys: SszVector::from_vec(vec![
+            pubkey;
+            MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
+        ])
+        .unwrap(),
         aggregate_pubkey: pubkey,
     };
 
     let validator = Validator {
         pubkey,
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -124,7 +127,7 @@ fn build_altair_anchor() -> (AltairMinimalBeaconState, AltairMinimalBeaconBlock,
         slot: Slot(0),
         fork: Fork {
             previous_version: Version::from_array([0x00, 0x00, 0x00, 0x01]),
-            current_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+            current_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
             epoch: Epoch(0),
         },
         latest_block_header: BeaconBlockHeader {
@@ -137,7 +140,7 @@ fn build_altair_anchor() -> (AltairMinimalBeaconState, AltairMinimalBeaconBlock,
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         )
         .unwrap(),
         previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
@@ -211,8 +214,8 @@ fn build_altair_signed_block(slot: u64, parent_root: Root) -> ForkMinimalSignedB
 /// alive for the duration of the test.
 #[allow(clippy::type_complexity)]
 fn build_altair_test_infra() -> (
-    Arc<RwLock<pharos_fork_choice::Store<MinimalEthSpec>>>,
-    Arc<HostImpl<MinimalEthSpec>>,
+    Arc<RwLock<pharos_fork_choice::Store<MinimalBeaconSpec>>>,
+    Arc<HostImpl<MinimalBeaconSpec>>,
     Arc<EnginePowBlockProvider>,
     tempfile::TempDir,
 ) {
@@ -221,7 +224,7 @@ fn build_altair_test_infra() -> (
     let fork_anchor_state = ForkMinimalBeaconState::Altair(anchor_state_inner);
     let fork_anchor_block = ForkMinimalBeaconBlock::Altair(anchor_block_inner);
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(fork_anchor_state, fork_anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(fork_anchor_state, fork_anchor_block);
 
     // Insert a dummy Altair block keyed by DUMMY_FINALIZED_ROOT so the LC
     // snapshot writer finds a non-None finalized_block and writes a
@@ -237,7 +240,7 @@ fn build_altair_test_infra() -> (
 
     let tmpdir = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        pharos_storage::RocksStore::open::<MinimalEthSpec>(pharos_storage::RocksStoreConfig {
+        pharos_storage::RocksStore::open::<MinimalBeaconSpec>(pharos_storage::RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -247,10 +250,10 @@ fn build_altair_test_infra() -> (
     let genesis_validators_root = Root::default();
     // Altair-at-genesis schedule: altair_fork_epoch = 0, bellatrix = FAR_FUTURE.
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(u64::MAX),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -260,7 +263,7 @@ fn build_altair_test_infra() -> (
         electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         store,
         Arc::clone(&fc),
         genesis_validators_root,
@@ -299,7 +302,7 @@ async fn snapshots_written_after_altair_block() {
 
     // Wire up the ingestion loop.
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(4);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(4);
     let (net_tx, _net_rx) = mpsc::channel(4);
     let net_sender = pharos_network::NetworkCommandSender::new(net_tx);
 
@@ -319,7 +322,7 @@ async fn snapshots_written_after_altair_block() {
     tokio::spawn(async move {
         use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
         let _ = run_block_ingestion_loop::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             NullExecutionEngine,
             NoopDataAvailabilityChecker,
         >(
@@ -391,10 +394,10 @@ async fn publish_called_after_head_change() {
     let signed_block = build_altair_signed_block(1, anchor_block_root);
 
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(4);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(4);
 
     // Spy channel: capture NetworkCommand messages sent by the ingestion loop.
-    let (net_tx, mut net_rx) = mpsc::channel::<NetworkCommand<MinimalEthSpec>>(16);
+    let (net_tx, mut net_rx) = mpsc::channel::<NetworkCommand<MinimalBeaconSpec>>(16);
     let net_sender = pharos_network::NetworkCommandSender::new(net_tx);
 
     let egress = IngestionEgress {
@@ -413,7 +416,7 @@ async fn publish_called_after_head_change() {
     tokio::spawn(async move {
         use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
         let _ = run_block_ingestion_loop::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             NullExecutionEngine,
             NoopDataAvailabilityChecker,
         >(
@@ -537,7 +540,7 @@ async fn no_publish_for_phase0_block() {
 
     let validator = Validator {
         pubkey,
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -560,7 +563,7 @@ async fn no_publish_for_phase0_block() {
         slot: Slot(0),
         fork: Fork {
             previous_version: Version::from_array([0u8; 4]),
-            current_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
+            current_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
             epoch: Epoch(0),
         },
         latest_block_header: BeaconBlockHeader {
@@ -573,7 +576,7 @@ async fn no_publish_for_phase0_block() {
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         )
         .unwrap(),
         ..pharos_types::phase0::BeaconState::default()
@@ -592,13 +595,13 @@ async fn no_publish_for_phase0_block() {
     let fork_anchor_block = ForkMinimalBeaconBlock::Phase0(p0_anchor_block_inner.clone());
     let p0_anchor_block_root = fork_anchor_block.tree_hash_root();
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(fork_state, fork_anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(fork_state, fork_anchor_block);
     fc.time = 10_000_000;
     let fc = Arc::new(RwLock::new(fc));
 
     let tmpdir = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        pharos_storage::RocksStore::open::<MinimalEthSpec>(pharos_storage::RocksStoreConfig {
+        pharos_storage::RocksStore::open::<MinimalBeaconSpec>(pharos_storage::RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -607,10 +610,10 @@ async fn no_publish_for_phase0_block() {
     let genesis_validators_root = Root::default();
     // Phase0-only schedule: altair/bellatrix epochs = FAR_FUTURE.
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(u64::MAX),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(u64::MAX),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -620,7 +623,7 @@ async fn no_publish_for_phase0_block() {
         electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         store,
         Arc::clone(&fc),
         genesis_validators_root,
@@ -658,10 +661,10 @@ async fn no_publish_for_phase0_block() {
     });
 
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(4);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(4);
 
     // Spy on publish calls.
-    let (net_tx, mut net_rx) = mpsc::channel::<NetworkCommand<MinimalEthSpec>>(16);
+    let (net_tx, mut net_rx) = mpsc::channel::<NetworkCommand<MinimalBeaconSpec>>(16);
     let net_sender = pharos_network::NetworkCommandSender::new(net_tx);
 
     let egress = IngestionEgress {
@@ -680,7 +683,7 @@ async fn no_publish_for_phase0_block() {
     tokio::spawn(async move {
         use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
         let _ = run_block_ingestion_loop::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             NullExecutionEngine,
             NoopDataAvailabilityChecker,
         >(

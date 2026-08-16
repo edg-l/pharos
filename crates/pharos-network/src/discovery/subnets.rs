@@ -4,7 +4,7 @@
 //! `specs/phase0/p2p-interface.md:1732-1751`.
 
 use discv5::enr::NodeId;
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::shuffling::compute_shuffled_index;
 use pharos_utils::Hash256;
@@ -51,7 +51,7 @@ pub const EPOCHS_PER_SUBNET_SUBSCRIPTION: u64 = 256;
 /// 5. For each `index in 0..SUBNETS_PER_NODE`:
 ///    `permuted_prefix = compute_shuffled_index(node_id_prefix, 64, seed, E::SHUFFLE_ROUND_COUNT)`.
 /// 6. `subnet = (permuted_prefix + index) mod ATTESTATION_SUBNET_COUNT`.
-pub fn compute_subscribed_subnets<E: EthSpec>(
+pub fn compute_subscribed_subnets<E: BeaconSpec>(
     node_id: NodeId,
     epoch: u64,
 ) -> [SubnetId; SUBNETS_PER_NODE] {
@@ -95,7 +95,7 @@ pub fn compute_subscribed_subnets<E: EthSpec>(
 
 #[cfg(test)]
 mod tests {
-    use pharos_types::MainnetEthSpec;
+    use pharos_types::MainnetBeaconSpec;
 
     use super::*;
 
@@ -129,7 +129,7 @@ mod tests {
     fn subnet_vector_1() {
         let raw: [u8; 32] = core::array::from_fn(|i| (i + 1) as u8); // 0x01..0x20
         let node_id = NodeId::from(raw);
-        let result = compute_subscribed_subnets::<MainnetEthSpec>(node_id, 100);
+        let result = compute_subscribed_subnets::<MainnetBeaconSpec>(node_id, 100);
         assert_eq!(result, [49, 50], "vector 1: expected [49, 50]");
     }
 
@@ -145,7 +145,7 @@ mod tests {
         raw[0] = 0xAB;
         raw[1] = 0xCD;
         let node_id = NodeId::from(raw);
-        let result = compute_subscribed_subnets::<MainnetEthSpec>(node_id, 42);
+        let result = compute_subscribed_subnets::<MainnetBeaconSpec>(node_id, 42);
         assert_eq!(result, [0, 1], "vector 2: expected [0, 1]");
     }
 }

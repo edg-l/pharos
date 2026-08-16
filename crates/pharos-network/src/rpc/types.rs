@@ -2,7 +2,7 @@
 //!
 //! Per `specs/phase0/p2p-interface.md:1303-1310`.
 
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::deneb::{BlobSidecar, BlobSidecarsByRangeRequest, BlobSidecarsByRootRequest};
 use pharos_types::phase0::{
@@ -169,9 +169,9 @@ impl RpcRequest {
 
 /// An inbound or outbound Ethereum CL req-resp response.
 ///
-/// Generic over `EthSpec` because `BlocksByRange` / `BlocksByRoot` / light-client
+/// Generic over `BeaconSpec` because `BlocksByRange` / `BlocksByRoot` / light-client
 /// responses carry preset-stamped types.
-pub enum RpcResponse<E: EthSpec> {
+pub enum RpcResponse<E: BeaconSpec> {
     /// Status response.
     Status(Status),
     /// Goodbye acknowledgement — carries the echoed reason code.
@@ -210,7 +210,7 @@ pub enum RpcResponse<E: EthSpec> {
 
 // Manual Clone; derive cannot express `E::SignedBeaconBlock: Clone` without
 // the bound living on the impl, not the struct.
-impl<E: EthSpec> Clone for RpcResponse<E>
+impl<E: BeaconSpec> Clone for RpcResponse<E>
 where
     E::SignedBeaconBlock: Clone,
 {
@@ -235,7 +235,7 @@ where
     }
 }
 
-impl<E: EthSpec> std::fmt::Debug for RpcResponse<E>
+impl<E: BeaconSpec> std::fmt::Debug for RpcResponse<E>
 where
     E::SignedBeaconBlock: std::fmt::Debug,
 {

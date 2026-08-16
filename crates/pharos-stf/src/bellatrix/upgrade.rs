@@ -13,7 +13,7 @@
 //! No validator-registry mutation.
 
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     bellatrix::{BeaconState as BellatrixBeaconState, ExecutionPayloadHeader},
     config::RuntimeConfig,
@@ -66,7 +66,7 @@ pub fn upgrade_to_bellatrix<
     StateTransitionError,
 >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

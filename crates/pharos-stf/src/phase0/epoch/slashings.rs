@@ -4,7 +4,7 @@
 //! withdrawal delay, proportional to `sum(state.slashings) * PROPORTIONAL_SLASHING_MULTIPLIER`
 //! relative to `total_balance`.
 
-use pharos_types::{BeaconStateView, EthSpec, phase0::ValidatorIndex};
+use pharos_types::{BeaconSpec, BeaconStateView, phase0::ValidatorIndex};
 
 use crate::error::EpochProcessingError;
 use crate::phase0::{
@@ -15,7 +15,9 @@ use crate::phase0::{
 use pharos_utils::Gwei;
 
 /// `process_slashings` per `specs/phase0/beacon-chain.md:1782-1802`.
-pub fn process_slashings<E: EthSpec>(state: &mut E::BeaconState) -> Result<(), EpochProcessingError>
+pub fn process_slashings<E: BeaconSpec>(
+    state: &mut E::BeaconState,
+) -> Result<(), EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
 {

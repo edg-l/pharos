@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use serde::Serialize;
 
 use crate::respond::{ApiResponse, parse_accept};
@@ -44,7 +44,7 @@ struct ForkScheduleResponse {
 ///
 /// Returns all known forks from the `RuntimeConfig` fork schedule.
 /// Per `~/dev/beacon-APIs/apis/config/fork_schedule.yaml`.
-pub async fn get_fork_schedule<E: EthSpec>(
+pub async fn get_fork_schedule<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     headers: HeaderMap,
 ) -> Response {
@@ -113,7 +113,7 @@ struct DepositContractResponse {
 ///
 /// Returns the deposit contract address and chain ID from `RuntimeConfig`.
 /// Per `~/dev/beacon-APIs/apis/config/deposit_contract.yaml`.
-pub async fn get_deposit_contract<E: EthSpec>(
+pub async fn get_deposit_contract<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     headers: HeaderMap,
 ) -> Response {

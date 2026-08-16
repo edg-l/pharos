@@ -2,7 +2,7 @@
 //!
 //! Per `specs/phase0/p2p-interface.md:346-353`.
 
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 
 /// Minimum number of epochs of block history a node must serve.
 ///
@@ -11,7 +11,7 @@ use pharos_types::EthSpec;
 ///
 /// Mainnet: 256 + 65536 / 2 = 33024 epochs.
 /// Minimal: 256 + 32 / 2   = 272 epochs.
-pub const fn compute_min_epochs_for_block_requests<E: EthSpec>() -> u64 {
+pub const fn compute_min_epochs_for_block_requests<E: BeaconSpec>() -> u64 {
     E::MIN_VALIDATOR_WITHDRAWABILITY_DELAY + E::CHURN_LIMIT_QUOTIENT / 2
 }
 
@@ -20,12 +20,12 @@ pub const fn compute_min_epochs_for_block_requests<E: EthSpec>() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pharos_types::MainnetEthSpec;
+    use pharos_types::MainnetBeaconSpec;
 
     #[test]
     fn mainnet_min_epochs_is_33024() {
         assert_eq!(
-            compute_min_epochs_for_block_requests::<MainnetEthSpec>(),
+            compute_min_epochs_for_block_requests::<MainnetBeaconSpec>(),
             33024
         );
     }

@@ -30,7 +30,8 @@ use pharos_stf::phase0::{
     },
 };
 use pharos_types::{
-    EthSpec, MainnetEthSpec, MinimalEthSpec, phase0::Attestation, views::BeaconBlockBodyView,
+    BeaconSpec, MainnetBeaconSpec, MinimalBeaconSpec, phase0::Attestation,
+    views::BeaconBlockBodyView,
 };
 
 use crate::fixture_walker::{
@@ -83,7 +84,7 @@ pub fn enumerate_epoch_processing(
     match (fork, preset) {
         // ── phase0 ────────────────────────────────────────────────────────────
         ("phase0", "mainnet") => {
-            enumerate_phase0_ep_subs::<MainnetEthSpec>(
+            enumerate_phase0_ep_subs::<MainnetBeaconSpec>(
                 root,
                 preset,
                 row_ordinal,
@@ -92,7 +93,7 @@ pub fn enumerate_epoch_processing(
             );
         }
         ("phase0", _) => {
-            enumerate_phase0_ep_subs::<MinimalEthSpec>(
+            enumerate_phase0_ep_subs::<MinimalBeaconSpec>(
                 root,
                 preset,
                 row_ordinal,
@@ -161,7 +162,7 @@ fn enumerate_phase0_ep_subs<E>(
     ordinal: &mut u32,
     tasks: &mut Vec<CaseTask>,
 ) where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite + pharos_ssz::Decode,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
@@ -257,7 +258,7 @@ fn enumerate_altair_ep_subs_mainnet(
         process_slashings_reset as altair_slash_reset,
         process_sync_committee_updates as altair_sync_committee,
     };
-    use pharos_types::{MainnetEthSpec as E, altair::MainnetBeaconState as S};
+    use pharos_types::{MainnetBeaconSpec as E, altair::MainnetBeaconState as S};
 
     type ApplyFn = fn(&mut S) -> Result<(), String>;
     let subs: &[(&'static str, ApplyFn)] = &[
@@ -384,7 +385,7 @@ fn enumerate_altair_ep_subs_minimal(
         process_slashings_reset as altair_slash_reset,
         process_sync_committee_updates as altair_sync_committee,
     };
-    use pharos_types::{MinimalEthSpec as E, altair::MinimalBeaconState as S};
+    use pharos_types::{MinimalBeaconSpec as E, altair::MinimalBeaconState as S};
 
     type ApplyFn = fn(&mut S) -> Result<(), String>;
     let subs: &[(&'static str, ApplyFn)] = &[
@@ -498,7 +499,7 @@ fn enumerate_bellatrix_ep_subs_mainnet(
         process_rewards_and_penalties_bellatrix, process_slashings_bellatrix,
     };
     use pharos_stf::bellatrix::helpers::{bellatrix_state_to_altair, update_bellatrix_from_altair};
-    use pharos_types::{MainnetEthSpec as E, bellatrix::MainnetBeaconState as S};
+    use pharos_types::{MainnetBeaconSpec as E, bellatrix::MainnetBeaconState as S};
 
     type ApplyFn = fn(&mut S) -> Result<(), String>;
     let subs: &[(&'static str, ApplyFn)] = &[
@@ -696,7 +697,7 @@ fn enumerate_bellatrix_ep_subs_minimal(
         process_rewards_and_penalties_bellatrix, process_slashings_bellatrix,
     };
     use pharos_stf::bellatrix::helpers::{bellatrix_state_to_altair, update_bellatrix_from_altair};
-    use pharos_types::{MinimalEthSpec as E, bellatrix::MinimalBeaconState as S};
+    use pharos_types::{MinimalBeaconSpec as E, bellatrix::MinimalBeaconState as S};
 
     type ApplyFn = fn(&mut S) -> Result<(), String>;
     let subs: &[(&'static str, ApplyFn)] = &[
@@ -868,7 +869,7 @@ fn enumerate_capella_ep_subs_mainnet(
         process_slashings_capella,
     };
     use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
-    use pharos_types::{MainnetEthSpec as E, capella::MainnetBeaconState as S};
+    use pharos_types::{MainnetBeaconSpec as E, capella::MainnetBeaconState as S};
 
     type ApplyFn = fn(&mut S) -> Result<(), String>;
     let subs: &[(&'static str, ApplyFn)] = &[
@@ -1073,7 +1074,7 @@ fn enumerate_capella_ep_subs_minimal(
         process_slashings_capella,
     };
     use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
-    use pharos_types::{MinimalEthSpec as E, capella::MinimalBeaconState as S};
+    use pharos_types::{MinimalBeaconSpec as E, capella::MinimalBeaconState as S};
 
     type ApplyFn = fn(&mut S) -> Result<(), String>;
     let subs: &[(&'static str, ApplyFn)] = &[
@@ -1253,7 +1254,7 @@ fn enumerate_deneb_ep_subs_mainnet(
     use pharos_stf::deneb::epoch::registry_updates::process_registry_updates as process_registry_updates_deneb;
     use pharos_stf::deneb::epoch::{process_rewards_and_penalties_deneb, process_slashings_deneb};
     use pharos_stf::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
-    use pharos_types::{MainnetEthSpec as E, deneb::MainnetBeaconState as S};
+    use pharos_types::{MainnetBeaconSpec as E, deneb::MainnetBeaconState as S};
 
     type ApplyFn = fn(&mut S) -> Result<(), String>;
     let subs: &[(&'static str, ApplyFn)] = &[
@@ -1483,7 +1484,7 @@ fn enumerate_deneb_ep_subs_minimal(
     use pharos_stf::deneb::epoch::registry_updates::process_registry_updates as process_registry_updates_deneb;
     use pharos_stf::deneb::epoch::{process_rewards_and_penalties_deneb, process_slashings_deneb};
     use pharos_stf::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
-    use pharos_types::{MinimalEthSpec as E, deneb::MinimalBeaconState as S};
+    use pharos_types::{MinimalBeaconSpec as E, deneb::MinimalBeaconState as S};
 
     type ApplyFn = fn(&mut S) -> Result<(), String>;
     let subs: &[(&'static str, ApplyFn)] = &[
@@ -1695,7 +1696,7 @@ fn enumerate_electra_ep_subs_mainnet(
     use pharos_stf::electra::epoch::slashings::process_slashings as process_slashings_electra;
     use pharos_stf::electra::epoch::sync_committee_updates::process_sync_committee_updates as process_sync_committee_updates_electra;
     use pharos_stf::electra::helpers::{electra_state_to_deneb, update_electra_from_deneb};
-    use pharos_types::{MainnetEthSpec as E, electra::MainnetBeaconState as S};
+    use pharos_types::{MainnetBeaconSpec as E, electra::MainnetBeaconState as S};
 
     type ApplyFn = fn(&mut S) -> Result<(), String>;
     let subs: &[(&'static str, ApplyFn)] = &[
@@ -1998,7 +1999,7 @@ fn enumerate_electra_ep_subs_minimal(
     use pharos_stf::electra::epoch::slashings::process_slashings as process_slashings_electra;
     use pharos_stf::electra::epoch::sync_committee_updates::process_sync_committee_updates as process_sync_committee_updates_electra;
     use pharos_stf::electra::helpers::{electra_state_to_deneb, update_electra_from_deneb};
-    use pharos_types::{MinimalEthSpec as E, electra::MinimalBeaconState as S};
+    use pharos_types::{MinimalBeaconSpec as E, electra::MinimalBeaconState as S};
 
     type ApplyFn = fn(&mut S) -> Result<(), String>;
     let subs: &[(&'static str, ApplyFn)] = &[
@@ -2277,7 +2278,7 @@ enum CaseResult {
 
 fn run_epoch_case<E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite + pharos_ssz::Decode,
     F: Fn(&mut E::BeaconState) -> Result<(), String>,
 {
@@ -2310,7 +2311,7 @@ where
 fn run_altair_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
 where
     S: pharos_ssz::Decode + pharos_ssz::Encode,
-    E: EthSpec<AltairBeaconState = S>,
+    E: BeaconSpec<AltairBeaconState = S>,
     F: Fn(&mut S) -> Result<(), String>,
 {
     let (mut pre, post) = match load_pre_post_altair_state::<E>(case_dir) {
@@ -2348,7 +2349,7 @@ where
 fn run_bellatrix_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
 where
     S: pharos_ssz::Decode + pharos_ssz::Encode,
-    E: EthSpec<BellatrixBeaconState = S>,
+    E: BeaconSpec<BellatrixBeaconState = S>,
     F: Fn(&mut S) -> Result<(), String>,
 {
     let (pre, post) = match load_pre_post_bellatrix_state::<E>(case_dir) {
@@ -2383,7 +2384,7 @@ where
 }
 fn run_electra_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
 where
-    E: EthSpec<ElectraBeaconState = S>,
+    E: BeaconSpec<ElectraBeaconState = S>,
     S: pharos_ssz::Decode + pharos_ssz::Encode,
     F: Fn(&mut S) -> Result<(), String>,
 {
@@ -2419,7 +2420,7 @@ where
 }
 fn run_capella_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
 where
-    E: EthSpec<CapellaBeaconState = S>,
+    E: BeaconSpec<CapellaBeaconState = S>,
     S: pharos_ssz::Decode + pharos_ssz::Encode,
     F: Fn(&mut S) -> Result<(), String>,
 {
@@ -2455,7 +2456,7 @@ where
 }
 fn run_deneb_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
 where
-    E: EthSpec<DenebBeaconState = S>,
+    E: BeaconSpec<DenebBeaconState = S>,
     S: pharos_ssz::Decode + pharos_ssz::Encode,
     F: Fn(&mut S) -> Result<(), String>,
 {

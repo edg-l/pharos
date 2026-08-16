@@ -51,7 +51,7 @@ use pharos_ssz::TreeHash;
 use pharos_stf::phase0::state_write::BeaconStateWrite;
 use pharos_types::PayloadStatus;
 use pharos_types::{
-    MinimalEthSpec,
+    MinimalBeaconSpec,
     phase0::{Epoch, Gwei, Root, Slot, Validator, ValidatorIndex},
 };
 use pharos_utils::{BLSPubkey, Bytes32, Hash256};
@@ -62,7 +62,7 @@ use pharos_utils::{BLSPubkey, Bytes32, Hash256};
 type MinState = pharos_types::phase0::MinimalBeaconState;
 type MinBlock = pharos_types::phase0::MinimalBeaconBlock;
 
-// The fork-enum wrappers that Store<MinimalEthSpec> actually stores.
+// The fork-enum wrappers that Store<MinimalBeaconSpec> actually stores.
 type ForkMinState = pharos_types::state::MinimalBeaconState;
 type ForkMinBlock = pharos_types::state::MinimalBeaconBlock;
 
@@ -125,7 +125,7 @@ fn make_block(slot: u64, parent_root: Root) -> MinBlock {
 
 /// Insert a block and a cloned-genesis state at `slot` directly into `store`.
 fn insert_block(
-    store: &mut Store<MinimalEthSpec>,
+    store: &mut Store<MinimalBeaconSpec>,
     block: MinBlock,
     anchor_state: &MinState,
 ) -> Root {
@@ -142,7 +142,7 @@ fn insert_block(
 }
 
 /// Cast `n` votes (from validator indices `0..n`) for `voted_root` at `epoch`.
-fn cast_votes(store: &mut Store<MinimalEthSpec>, voted_root: Root, epoch: Epoch, n: usize) {
+fn cast_votes(store: &mut Store<MinimalBeaconSpec>, voted_root: Root, epoch: Epoch, n: usize) {
     for i in 0..n {
         store.latest_messages.insert(
             ValidatorIndex(i as u64),
@@ -173,7 +173,7 @@ fn lmd_ghost_basic_weight_switch() {
 
     // Seed checkpoint state so get_weight can read it.
     // get_forkchoice_store expects E::BeaconState and E::BeaconBlock (fork-enum).
-    let mut store = get_forkchoice_store::<MinimalEthSpec>(
+    let mut store = get_forkchoice_store::<MinimalBeaconSpec>(
         ForkMinState::Phase0(anchor_state.clone()),
         ForkMinBlock::Phase0(anchor_block.clone()),
     );
@@ -226,7 +226,7 @@ fn lmd_ghost_basic_weight_switch() {
     }
 
     // B has more weight than C: get_head must be B.
-    let head = get_head::<MinimalEthSpec>(&store);
+    let head = get_head::<MinimalBeaconSpec>(&store);
     assert_eq!(
         head, root_b,
         "expected head=B when 7/10 validators voted for B chain"
@@ -235,7 +235,7 @@ fn lmd_ghost_basic_weight_switch() {
     // ── Round 2: swing all votes to C ─────────────────────────────────────────
     cast_votes(&mut store, root_c, Epoch(1), n_validators);
 
-    let head = get_head::<MinimalEthSpec>(&store);
+    let head = get_head::<MinimalBeaconSpec>(&store);
     assert_eq!(
         head, root_c,
         "expected head=C after all validators switched to C"
@@ -254,7 +254,7 @@ fn filter_block_tree_skips_invalid_payload() {
         state_root: anchor_state.tree_hash_root(),
         ..MinBlock::default()
     };
-    let mut store = get_forkchoice_store::<MinimalEthSpec>(
+    let mut store = get_forkchoice_store::<MinimalBeaconSpec>(
         ForkMinState::Phase0(anchor_state.clone()),
         ForkMinBlock::Phase0(anchor_block.clone()),
     );
@@ -279,7 +279,7 @@ fn filter_block_tree_skips_invalid_payload() {
     cast_votes(&mut store, root_b, Epoch(0), n_validators);
 
     // Sanity: without any payload-status marks, head = B (heaviest leaf).
-    let head_before = get_head::<MinimalEthSpec>(&store);
+    let head_before = get_head::<MinimalBeaconSpec>(&store);
     assert_eq!(
         head_before, root_b,
         "expected head=B before marking A invalid"
@@ -287,7 +287,7 @@ fn filter_block_tree_skips_invalid_payload() {
 
     // Mark A invalid; this also makes B unreachable through A.
     store.mark_payload_status(root_a, PayloadStatus::Invalid);
-    let head_after = get_head::<MinimalEthSpec>(&store);
+    let head_after = get_head::<MinimalBeaconSpec>(&store);
     assert_eq!(
         head_after, genesis_root,
         "expected head=genesis after A marked Invalid"

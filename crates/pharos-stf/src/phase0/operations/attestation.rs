@@ -1,7 +1,7 @@
 //! `process_attestation` per `specs/phase0/beacon-chain.md:2004-2086`.
 
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     phase0::{Attestation, PendingAttestation},
     views::BeaconBlockBodyView,
 };
@@ -20,7 +20,7 @@ use crate::phase0::{
 };
 
 /// `process_attestation` per `specs/phase0/beacon-chain.md:2004-2086`.
-pub fn process_attestation<E: EthSpec>(
+pub fn process_attestation<E: BeaconSpec>(
     state: &mut E::BeaconState,
     attestation: &Attestation<2048>,
     verify_signatures: bool,

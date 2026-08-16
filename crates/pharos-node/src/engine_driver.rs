@@ -34,7 +34,7 @@ use pharos_stf::{
     phase0::accessors::{get_current_epoch, get_randao_mix},
 };
 use pharos_types::{
-    BeaconStateView, EthSpec, PayloadStatus,
+    BeaconSpec, BeaconStateView, PayloadStatus,
     config::RuntimeConfig,
     phase0::primitives::Root,
     views::{BeaconBlockView, ForkVariant},
@@ -493,12 +493,12 @@ pub struct HeadChange {
 ///
 /// V1 carries a Bellatrix payload; V2 carries a Capella payload (with withdrawals).
 /// The driver dispatches `engine_newPayloadV1` or `engine_newPayloadV2` accordingly.
-pub struct NewPayloadRequest<E: EthSpec> {
+pub struct NewPayloadRequest<E: BeaconSpec> {
     /// CL block root of the block that contains this payload.
     pub block_root: Root,
     /// The wire-format execution payload (fork-discriminated).
     pub payload: NewPayloadWire,
-    /// `_marker` lets the struct carry the `E: EthSpec` bound without storing
+    /// `_marker` lets the struct carry the `E: BeaconSpec` bound without storing
     /// an `E`-typed value (the payload itself is fork-agnostic at wire level).
     pub _marker: std::marker::PhantomData<E>,
 }
@@ -521,7 +521,7 @@ pub struct NewPayloadRequest<E: EthSpec> {
 ///    NEVER sent to the EL as `safe`.
 ///
 /// ADR `D-safe-hash-verified-ancestor`.
-pub fn compute_safe_block_hash<E: EthSpec>(store: &FcStore<E>) -> Hash256
+pub fn compute_safe_block_hash<E: BeaconSpec>(store: &FcStore<E>) -> Hash256
 where
     E::BeaconBlock: pharos_types::views::BeaconBlockView + Clone,
     E::BeaconState: pharos_types::BeaconStateView,
@@ -547,7 +547,7 @@ where
 /// so an optimistically-imported block is NEVER sent to the EL as `finalized`.
 /// Per `consensus-specs/sync/optimistic.md` "Validator assignments / Re-orgs".
 /// ADR `D-fcu-safe-finalized-verified-ancestor`.
-pub fn compute_finalized_block_hash<E: EthSpec>(store: &FcStore<E>) -> Hash256 {
+pub fn compute_finalized_block_hash<E: BeaconSpec>(store: &FcStore<E>) -> Hash256 {
     use pharos_fork_choice::{execution_block_hash_at_root, latest_verified_ancestor};
     let verified = latest_verified_ancestor::<E>(store, store.finalized_checkpoint.root);
     execution_block_hash_at_root(store, verified)
@@ -625,7 +625,7 @@ impl From<EngineError> for PreparePayloadError {
 /// - `withdrawals`         = `get_expected_withdrawals(state)` for the proposal slot
 ///
 /// Per `execution-apis/src/engine/shanghai.md` `PayloadAttributesV2`.
-pub fn build_payload_attributes_v2<E: EthSpec>(
+pub fn build_payload_attributes_v2<E: BeaconSpec>(
     state: &E::BeaconState,
     capella_inner: &E::CapellaBeaconState,
     slot: pharos_types::phase0::Slot,
@@ -671,7 +671,7 @@ where
 /// - `parent_beacon_block_root` = `hash_tree_root(state.latest_block_header)` (per deneb/validator.md)
 ///
 /// Per `execution-apis/src/engine/cancun.md` `PayloadAttributesV3`.
-pub fn build_payload_attributes_v3<E: EthSpec>(
+pub fn build_payload_attributes_v3<E: BeaconSpec>(
     state: &E::BeaconState,
     withdrawals: Vec<WithdrawalV1>,
     slot: pharos_types::phase0::Slot,
@@ -699,7 +699,7 @@ pub fn build_payload_attributes_v3<E: EthSpec>(
 ///
 /// Per `execution-apis/src/engine/paris.md` `PayloadAttributesV1`.
 /// No `withdrawals` field (Bellatrix pre-dates withdrawals).
-pub fn build_payload_attributes_v1<E: EthSpec>(
+pub fn build_payload_attributes_v1<E: BeaconSpec>(
     state: &E::BeaconState,
     slot: pharos_types::phase0::Slot,
     fee_recipient: String,
@@ -862,7 +862,7 @@ pub fn prepare_execution_payload_v4(
 /// removing invalidated blocks from the canonical chain); the next call to
 /// `engine_forkchoiceUpdated` (triggered by the emitted `HeadChange`) will
 /// inform the EL of the updated head.
-fn maybe_emit_head_change<E: EthSpec>(
+fn maybe_emit_head_change<E: BeaconSpec>(
     store: &Arc<RwLock<FcStore<E>>>,
     new_head: Root,
     prev_head: Root,
@@ -919,7 +919,7 @@ fn maybe_emit_head_change<E: EthSpec>(
 /// Per `D-engine-head-driver` (M4a Phase 4) and `D-latest-valid-hash-resolution` (M8 Phase 3).
 ///
 /// The loop exits when both `head_rx` and `payload_rx` are dropped.
-pub async fn run_engine_driver_loop<E: EthSpec, P: PowBlockProvider + Send + Sync + 'static>(
+pub async fn run_engine_driver_loop<E: BeaconSpec, P: PowBlockProvider + Send + Sync + 'static>(
     engine: EngineHandle,
     store: Arc<RwLock<FcStore<E>>>,
     mut head_rx: watch::Receiver<Option<HeadChange>>,

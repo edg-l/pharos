@@ -13,7 +13,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     electra::{
         BeaconState,
         attestation::{AttesterSlashing, IndexedAttestation},
@@ -86,7 +86,7 @@ pub fn process_attestation_electra<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -391,7 +391,7 @@ pub fn process_attester_slashing_electra<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         ElectraBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -572,7 +572,7 @@ fn is_valid_indexed_attestation_electra<
 fn get_indexed_attestation_electra_inner<
     const MAX_AGGREGATION_BITS: u64,
     const MAX_COMMITTEES_PER_SLOT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &E::BeaconState,
     attestation: &pharos_types::electra::Attestation<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT>,

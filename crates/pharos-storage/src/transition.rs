@@ -6,7 +6,7 @@
 //! block, state, fork-choice snapshot, slot-index, state-summary, metadata,
 //! and payload-status updates are either all committed or all absent.
 
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::PayloadStatus;
 use pharos_types::deneb::BlobSidecar;
 use pharos_types::phase0::primitives::{Root, Slot};
@@ -20,7 +20,7 @@ use crate::state_summary::StateSummary;
 /// Build one per `on_block` call; pass to `Store::write_block_transition`.
 /// The `RocksStore` impl translates each non-`None` field into a `WriteBatch`
 /// entry before issuing a single `db.write(batch)`.
-pub struct BlockTransition<E: EthSpec> {
+pub struct BlockTransition<E: BeaconSpec> {
     /// Optional block to store: `(block_root, SignedBeaconBlock)`.
     pub block: Option<(Root, E::SignedBeaconBlock)>,
 
@@ -80,7 +80,7 @@ pub struct BlockTransition<E: EthSpec> {
     pub blob_sidecars: Vec<(Root, u64, BlobSidecar)>,
 }
 
-impl<E: EthSpec> BlockTransition<E> {
+impl<E: BeaconSpec> BlockTransition<E> {
     /// Returns an all-`None` / empty transition.
     ///
     /// Populate fields as needed before passing to `Store::write_block_transition`.
@@ -98,7 +98,7 @@ impl<E: EthSpec> BlockTransition<E> {
     }
 }
 
-impl<E: EthSpec> Default for BlockTransition<E> {
+impl<E: BeaconSpec> Default for BlockTransition<E> {
     fn default() -> Self {
         Self::new()
     }

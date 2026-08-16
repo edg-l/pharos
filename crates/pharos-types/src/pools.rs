@@ -33,7 +33,7 @@ use std::sync::Arc;
 use lru::LruCache;
 use parking_lot::RwLock;
 
-use crate::EthSpec;
+use crate::BeaconSpec;
 use crate::altair::{SyncAggregate, SyncCommitteeMessage};
 use crate::capella::operations::SignedBLSToExecutionChange;
 use crate::phase0::operations::{
@@ -126,7 +126,7 @@ pub struct SyncMessageKey {
 
 /// Assembled operations ready to be placed into a produced `BeaconBlock`.
 ///
-/// Each list is capped at the corresponding `EthSpec` `MAX_*` constant by
+/// Each list is capped at the corresponding `BeaconSpec` `MAX_*` constant by
 /// `drain_for_block`. Deposits are always empty — see `D-no-deposit-source`.
 #[derive(Default)]
 pub struct BlockOperations {
@@ -152,7 +152,7 @@ pub struct BlockOperations {
 ///
 /// Lives in `pharos-types` so `pharos-api` can reference it directly without
 /// creating a `pharos-api → pharos-node` dependency.
-pub struct OperationPools<E: EthSpec> {
+pub struct OperationPools<E: BeaconSpec> {
     /// Aggregated attestations.
     attestations: RwLock<LruCache<AttKey, Attestation<VALIDATORS_PER_COMMITTEE>>>,
     /// Attester slashings.
@@ -169,7 +169,7 @@ pub struct OperationPools<E: EthSpec> {
     _phantom: std::marker::PhantomData<E>,
 }
 
-impl<E: EthSpec> OperationPools<E> {
+impl<E: BeaconSpec> OperationPools<E> {
     /// Construct a new empty pool with `MAX_POOL_ENTRIES` capacity per map.
     pub fn new() -> Arc<Self> {
         let cap = NonZeroUsize::new(MAX_POOL_ENTRIES).unwrap();
@@ -365,7 +365,7 @@ impl<E: EthSpec> OperationPools<E> {
     // ── drain helpers ─────────────────────────────────────────────────────────
 
     /// Drain all pooled operations, returning them capped at their respective
-    /// `EthSpec` `MAX_*` constants.
+    /// `BeaconSpec` `MAX_*` constants.
     ///
     /// Only attestations whose data slot falls within the spec inclusion window
     /// relative to `block_slot` are retained. Deposits are always empty.
@@ -575,7 +575,7 @@ impl<E: EthSpec> OperationPools<E> {
     }
 }
 
-impl<E: EthSpec> Default for OperationPools<E> {
+impl<E: BeaconSpec> Default for OperationPools<E> {
     fn default() -> Self {
         let cap = NonZeroUsize::new(MAX_POOL_ENTRIES).unwrap();
         Self {
@@ -635,12 +635,12 @@ mod tests {
     use crate::phase0::misc::{AttestationData, Checkpoint};
     use crate::phase0::operations::VoluntaryExit;
     use crate::phase0::primitives::{CommitteeIndex, Epoch, Slot, ValidatorIndex};
-    use crate::{EthSpec, MinimalEthSpec};
+    use crate::{BeaconSpec, MinimalBeaconSpec};
     use pharos_ssz::Bitlist;
     use pharos_utils::BLSSignature;
     use pharos_utils::bls::{BLSSecretKey, aggregate as bls_aggregate};
 
-    type E = MinimalEthSpec;
+    type E = MinimalBeaconSpec;
     type Att = Attestation<VALIDATORS_PER_COMMITTEE>;
 
     fn make_att_data(slot: u64, index: u64) -> AttestationData {
@@ -734,7 +734,7 @@ mod tests {
         pools.insert_attestation(make_att_one_bit(10, 0, 0, zero_sig()));
         assert_eq!(pools.drain_for_block(10).attestations.len(), 0);
 
-        let too_late = 1 + <E as EthSpec>::SLOTS_PER_EPOCH + 1;
+        let too_late = 1 + <E as BeaconSpec>::SLOTS_PER_EPOCH + 1;
         pools.insert_attestation(make_att_one_bit(1, 0, 0, zero_sig()));
         assert_eq!(pools.drain_for_block(too_late).attestations.len(), 0);
 
@@ -798,14 +798,14 @@ mod tests {
     fn sync_aggregate_empty_when_no_messages() {
         let pools = OperationPools::<E>::new();
         let committee: Vec<[u8; 48]> =
-            vec![[0u8; 48]; MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize];
-        let agg = pools.drain_sync_aggregate::<{ MinimalEthSpec::SYNC_COMMITTEE_SIZE }>(
+            vec![[0u8; 48]; MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize];
+        let agg = pools.drain_sync_aggregate::<{ MinimalBeaconSpec::SYNC_COMMITTEE_SIZE }>(
             Slot(10),
             Root::default(),
             &committee,
             |_| None,
         );
-        for i in 0..(MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize) {
+        for i in 0..(MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize) {
             assert_eq!(agg.sync_committee_bits.get(i), Some(false));
         }
         // An empty sync aggregate signs as the G2 point at infinity (0xc0 || 0*95),
@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn drain_sync_aggregate_uses_true_committee_position() {
         let pools = OperationPools::<E>::new();
-        const SIZE: usize = MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize;
+        const SIZE: usize = MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize;
         let mut committee: Vec<[u8; 48]> = vec![[0u8; 48]; SIZE];
         let val7_pubkey = [0x07u8; 48];
         committee[5] = val7_pubkey;
@@ -833,7 +833,7 @@ mod tests {
         };
         pools.insert_sync_message(msg, 0);
 
-        let agg = pools.drain_sync_aggregate::<{ MinimalEthSpec::SYNC_COMMITTEE_SIZE }>(
+        let agg = pools.drain_sync_aggregate::<{ MinimalBeaconSpec::SYNC_COMMITTEE_SIZE }>(
             Slot(1),
             Root::default(),
             &committee,
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn drain_for_block_filters_by_inclusion_window() {
-        type E = MinimalEthSpec;
+        type E = MinimalBeaconSpec;
         let min_delay = E::MIN_ATTESTATION_INCLUSION_DELAY;
         let spe = E::SLOTS_PER_EPOCH;
         let block_slot = 10u64;

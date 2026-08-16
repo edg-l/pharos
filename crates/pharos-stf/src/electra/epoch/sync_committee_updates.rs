@@ -6,7 +6,7 @@
 //! delegation would produce the wrong next-sync-committee, so this operates on
 //! the concrete electra state directly.
 
-use pharos_types::{EthSpec, electra::BeaconState};
+use pharos_types::{BeaconSpec, electra::BeaconState};
 use pharos_utils::BLSPubkey;
 
 use crate::electra::helpers::{get_current_epoch_electra, get_next_sync_committee_electra};
@@ -33,7 +33,7 @@ pub fn process_sync_committee_updates<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

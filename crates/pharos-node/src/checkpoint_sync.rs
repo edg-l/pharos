@@ -16,7 +16,7 @@
 
 use pharos_ssz::{Decode, TreeHash};
 use pharos_storage::{BlockTransition, ForkChoiceSnapshot, RocksStore, Store};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::PayloadStatus;
 use pharos_types::phase0::misc::Checkpoint;
 use pharos_types::phase0::operations::BeaconBlockHeader;
@@ -31,7 +31,7 @@ use reqwest::header::ACCEPT;
 
 /// Validated checkpoint anchor fetched from a Beacon API endpoint.
 #[derive(Debug)]
-pub struct CheckpointAnchor<E: EthSpec> {
+pub struct CheckpointAnchor<E: BeaconSpec> {
     /// The finalised beacon state.
     pub state: E::BeaconState,
     /// The signed beacon block whose `message.state_root` equals `state_root`.
@@ -122,7 +122,7 @@ pub enum CheckpointSyncError {
 /// 7. Validate: `block.message.proposer_index == state.latest_block_header.proposer_index`.
 /// 8. Validate: `block.message.state_root == computed_state_root`, `block.slot == state.slot`.
 /// 9. If `expected_block_root` is `Some`, assert the derived `block_root` matches (`TamperFlagMismatch`).
-pub async fn fetch_checkpoint<E: EthSpec>(
+pub async fn fetch_checkpoint<E: BeaconSpec>(
     url: &reqwest::Url,
     http: &reqwest::Client,
     expected_block_root: Option<Root>,
@@ -289,7 +289,7 @@ where
 /// state's `genesis_time`. `ignore_ws_period` bypasses the rejection (logging a
 /// `WARN` at the call site) for the `--ignore-weak-subjectivity-period` escape
 /// hatch.
-pub fn apply_anchor<E: EthSpec>(
+pub fn apply_anchor<E: BeaconSpec>(
     anchor: CheckpointAnchor<E>,
     store: &RocksStore,
     current_slot: u64,
@@ -426,7 +426,7 @@ pub fn apply_anchor<E: EthSpec>(
 /// seven hot list/vector fields per `D-no-tree-backend-on-decode`, so the
 /// downstream `apply_anchor` write and any post-anchor STF reuses the
 /// per-node hash cache.
-fn decode_state<E: EthSpec>(
+fn decode_state<E: BeaconSpec>(
     fork: &str,
     bytes: &[u8],
 ) -> Result<(E::BeaconState, Root), CheckpointSyncError> {
@@ -490,7 +490,7 @@ fn decode_state<E: EthSpec>(
 }
 
 /// SSZ-decode the raw bytes as the per-fork `E::SignedBeaconBlock`.
-fn decode_signed_block<E: EthSpec>(
+fn decode_signed_block<E: BeaconSpec>(
     fork: &str,
     bytes: &[u8],
 ) -> Result<E::SignedBeaconBlock, CheckpointSyncError> {
@@ -535,10 +535,10 @@ fn decode_signed_block<E: EthSpec>(
 /// root derived from `state.latest_block_header`.
 ///
 /// Uses explicit `TreeHash` where-clause bounds on each fork's `Message` type.
-/// `BeaconBlockView` does not require `TreeHash`, but all concrete `EthSpec`
+/// `BeaconBlockView` does not require `TreeHash`, but all concrete `BeaconSpec`
 /// implementations satisfy these bounds (their `Message` types are concrete
 /// `BeaconBlock` structs that derive `TreeHash`).
-fn extract_block_message_root<E: EthSpec>(
+fn extract_block_message_root<E: BeaconSpec>(
     signed: &E::SignedBeaconBlock,
 ) -> Result<Root, CheckpointSyncError>
 where
@@ -574,7 +574,7 @@ where
 ///
 /// Uses the per-variant unwrap helpers because the fork-enum
 /// `SignedBeaconBlockView::message()` is unimplemented (see `state.rs`).
-fn extract_block_fields<E: EthSpec>(
+fn extract_block_fields<E: BeaconSpec>(
     signed: &E::SignedBeaconBlock,
 ) -> Result<(Root, Slot, ValidatorIndex), CheckpointSyncError> {
     if let Some(inner) = E::unwrap_phase0_signed_block(signed) {
@@ -614,7 +614,7 @@ mod tests {
     use axum::http::{HeaderMap, StatusCode};
     use axum::{Router, routing::get};
     use pharos_ssz::TreeHash;
-    use pharos_types::MinimalEthSpec;
+    use pharos_types::MinimalBeaconSpec;
     use pharos_types::bellatrix::{
         MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
     };
@@ -729,7 +729,7 @@ mod tests {
 
         let url = reqwest::Url::parse(&format!("http://{addr}/")).unwrap();
         let http = reqwest::Client::new();
-        let result = fetch_checkpoint::<MinimalEthSpec>(&url, &http, None).await;
+        let result = fetch_checkpoint::<MinimalBeaconSpec>(&url, &http, None).await;
 
         handle.abort();
 
@@ -827,7 +827,7 @@ mod tests {
         let handle = tokio::spawn(axum::serve(listener, app).into_future());
         let url = reqwest::Url::parse(&format!("http://{addr}/")).unwrap();
         let http = reqwest::Client::new();
-        let result = fetch_checkpoint::<MinimalEthSpec>(&url, &http, None).await;
+        let result = fetch_checkpoint::<MinimalBeaconSpec>(&url, &http, None).await;
         handle.abort();
 
         // Blocker 1 fires first: the tampered block's tree_hash_root differs from
@@ -922,7 +922,7 @@ mod tests {
 
         let url = reqwest::Url::parse(&format!("http://{addr}/")).unwrap();
         let http = reqwest::Client::new();
-        let result = fetch_checkpoint::<MinimalEthSpec>(&url, &http, None).await;
+        let result = fetch_checkpoint::<MinimalBeaconSpec>(&url, &http, None).await;
 
         handle.abort();
 
@@ -966,7 +966,7 @@ mod tests {
         let handle = tokio::spawn(axum::serve(listener, app).into_future());
         let url = reqwest::Url::parse(&format!("http://{addr}/")).unwrap();
         let http = reqwest::Client::new();
-        let result = fetch_checkpoint::<MinimalEthSpec>(&url, &http, None).await;
+        let result = fetch_checkpoint::<MinimalBeaconSpec>(&url, &http, None).await;
         handle.abort();
 
         assert!(
@@ -991,7 +991,7 @@ mod tests {
         let handle = tokio::spawn(axum::serve(listener, app).into_future());
         let url = reqwest::Url::parse(&format!("http://{addr}/")).unwrap();
         let http = reqwest::Client::new();
-        let result = fetch_checkpoint::<MinimalEthSpec>(&url, &http, None).await;
+        let result = fetch_checkpoint::<MinimalBeaconSpec>(&url, &http, None).await;
         handle.abort();
 
         assert!(
@@ -1013,7 +1013,7 @@ mod tests {
         let handle = tokio::spawn(axum::serve(listener, app).into_future());
         let url = reqwest::Url::parse(&format!("http://{addr}/")).unwrap();
         let http = reqwest::Client::new();
-        let result = fetch_checkpoint::<MinimalEthSpec>(&url, &http, None).await;
+        let result = fetch_checkpoint::<MinimalBeaconSpec>(&url, &http, None).await;
         handle.abort();
 
         assert!(
@@ -1109,7 +1109,7 @@ mod tests {
         let handle = tokio::spawn(axum::serve(listener, app).into_future());
         let url = reqwest::Url::parse(&format!("http://{addr}/")).unwrap();
         let http = reqwest::Client::new();
-        let result = fetch_checkpoint::<MinimalEthSpec>(&url, &http, None).await;
+        let result = fetch_checkpoint::<MinimalBeaconSpec>(&url, &http, None).await;
         handle.abort();
 
         assert!(
@@ -1204,7 +1204,7 @@ mod tests {
 
         // Supply a wrong expected_block_root — operator expects a different root.
         let wrong_expected = Root::from([0xBBu8; 32]);
-        let result = fetch_checkpoint::<MinimalEthSpec>(&url, &http, Some(wrong_expected)).await;
+        let result = fetch_checkpoint::<MinimalBeaconSpec>(&url, &http, Some(wrong_expected)).await;
         handle.abort();
 
         assert!(
@@ -1238,7 +1238,7 @@ mod tests {
         use pharos_types::PayloadStatus;
 
         let dir = tempfile::TempDir::new().unwrap();
-        let rocks = RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        let rocks = RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: dir.path().join("db"),
             create_if_missing: true,
         })
@@ -1279,7 +1279,7 @@ mod tests {
 
         // Build the CheckpointAnchor manually (bypassing the HTTP fetch).
         let fork_signed_block =
-            <MinimalEthSpec as pharos_types::EthSpec>::bellatrix_into_signed_block(
+            <MinimalBeaconSpec as pharos_types::BeaconSpec>::bellatrix_into_signed_block(
                 signed_block_inner,
             );
 
@@ -1294,11 +1294,11 @@ mod tests {
         // The minimal default state has no active validators, so bypass the WS
         // freshness gate here (this test exercises payload-status seeding, not
         // the WS check, which has its own dedicated tests below).
-        apply_anchor::<MinimalEthSpec>(anchor, &rocks, 64, true).expect("apply_anchor");
+        apply_anchor::<MinimalBeaconSpec>(anchor, &rocks, 64, true).expect("apply_anchor");
 
         // Confirm the persisted status is Valid.
         let stored_status =
-            <RocksStore as StoreTrait<MinimalEthSpec>>::payload_status(&rocks, block_root)
+            <RocksStore as StoreTrait<MinimalBeaconSpec>>::payload_status(&rocks, block_root)
                 .expect("payload_status lookup")
                 .expect("status must be present after apply_anchor");
         assert_eq!(
@@ -1330,10 +1330,10 @@ mod tests {
         };
         let anchor_block2 = pharos_types::BeaconBlock::Bellatrix(raw_block);
 
-        let fc_store = get_forkchoice_store::<MinimalEthSpec>(anchor_fork_state2, anchor_block2);
+        let fc_store = get_forkchoice_store::<MinimalBeaconSpec>(anchor_fork_state2, anchor_block2);
         let anchor_root2 = fc_store.finalized_checkpoint.root;
         assert!(
-            !is_optimistic::<MinimalEthSpec>(&fc_store, anchor_root2),
+            !is_optimistic::<MinimalBeaconSpec>(&fc_store, anchor_root2),
             "post-merge anchor must not be optimistic in get_forkchoice_store"
         );
     }
@@ -1348,7 +1348,7 @@ mod tests {
         anchor_slot: u64,
         n_validators: u64,
     ) -> (
-        CheckpointAnchor<MinimalEthSpec>,
+        CheckpointAnchor<MinimalBeaconSpec>,
         pharos_storage::RocksStore,
         tempfile::TempDir,
     ) {
@@ -1359,7 +1359,7 @@ mod tests {
         use pharos_utils::Gwei;
 
         let dir = tempfile::TempDir::new().unwrap();
-        let rocks = RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        let rocks = RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: dir.path().join("db"),
             create_if_missing: true,
         })
@@ -1406,7 +1406,7 @@ mod tests {
             h.tree_hash_root()
         };
         let fork_signed_block =
-            <MinimalEthSpec as pharos_types::EthSpec>::bellatrix_into_signed_block(
+            <MinimalBeaconSpec as pharos_types::BeaconSpec>::bellatrix_into_signed_block(
                 signed_block_inner,
             );
         let anchor = CheckpointAnchor {
@@ -1423,10 +1423,10 @@ mod tests {
     /// inside the period → `apply_anchor` accepts.
     #[test]
     fn apply_anchor_accepts_fresh_checkpoint() {
-        let anchor_slot = 100 * MinimalEthSpec::SLOTS_PER_EPOCH; // epoch 100
+        let anchor_slot = 100 * MinimalBeaconSpec::SLOTS_PER_EPOCH; // epoch 100
         let (anchor, rocks, _dir) = make_ws_anchor(anchor_slot, 16);
-        let current_slot = 101 * MinimalEthSpec::SLOTS_PER_EPOCH; // epoch 101
-        let res = apply_anchor::<MinimalEthSpec>(anchor, &rocks, current_slot, false);
+        let current_slot = 101 * MinimalBeaconSpec::SLOTS_PER_EPOCH; // epoch 101
+        let res = apply_anchor::<MinimalBeaconSpec>(anchor, &rocks, current_slot, false);
         assert!(res.is_ok(), "fresh anchor should be accepted: {res:?}");
     }
 
@@ -1435,12 +1435,12 @@ mod tests {
     #[test]
     fn apply_anchor_rejects_stale_checkpoint() {
         let anchor_epoch = 100u64;
-        let anchor_slot = anchor_epoch * MinimalEthSpec::SLOTS_PER_EPOCH;
+        let anchor_slot = anchor_epoch * MinimalBeaconSpec::SLOTS_PER_EPOCH;
         let (anchor, rocks, _dir) = make_ws_anchor(anchor_slot, 16);
         // Period is 256 for this set; go one epoch past the boundary.
         let current_epoch = anchor_epoch + 256 + 1;
-        let current_slot = current_epoch * MinimalEthSpec::SLOTS_PER_EPOCH;
-        let res = apply_anchor::<MinimalEthSpec>(anchor, &rocks, current_slot, false);
+        let current_slot = current_epoch * MinimalBeaconSpec::SLOTS_PER_EPOCH;
+        let res = apply_anchor::<MinimalBeaconSpec>(anchor, &rocks, current_slot, false);
         assert!(
             matches!(
                 res,
@@ -1459,10 +1459,10 @@ mod tests {
     #[test]
     fn apply_anchor_ignore_flag_bypasses_stale_check() {
         let anchor_epoch = 100u64;
-        let anchor_slot = anchor_epoch * MinimalEthSpec::SLOTS_PER_EPOCH;
+        let anchor_slot = anchor_epoch * MinimalBeaconSpec::SLOTS_PER_EPOCH;
         let (anchor, rocks, _dir) = make_ws_anchor(anchor_slot, 16);
-        let current_slot = (anchor_epoch + 256 + 1) * MinimalEthSpec::SLOTS_PER_EPOCH;
-        let res = apply_anchor::<MinimalEthSpec>(anchor, &rocks, current_slot, true);
+        let current_slot = (anchor_epoch + 256 + 1) * MinimalBeaconSpec::SLOTS_PER_EPOCH;
+        let res = apply_anchor::<MinimalBeaconSpec>(anchor, &rocks, current_slot, true);
         assert!(
             res.is_ok(),
             "ignore flag must bypass the WS gate even for a stale anchor: {res:?}"

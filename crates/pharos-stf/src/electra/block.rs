@@ -18,7 +18,7 @@
 
 use pharos_ssz::{SszSequence as _, TreeHash as _};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     config::RuntimeConfig,
     electra::{BeaconBlock, BeaconState},
@@ -114,7 +114,7 @@ pub fn process_block<
     runtime_cfg: &RuntimeConfig,
 ) -> Result<Option<PayloadVerificationStatus>, StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

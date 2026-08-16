@@ -12,7 +12,7 @@
 
 use pharos_ssz::{SszSequence, SszVector, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     electra::{BeaconState, requests::PendingDeposit},
     phase0::{Deposit, Epoch, Slot, Validator},
 };
@@ -63,7 +63,7 @@ pub fn process_deposit_electra<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         ElectraBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -144,7 +144,7 @@ fn apply_deposit_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -236,7 +236,7 @@ pub(crate) fn add_validator_to_registry_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -286,7 +286,7 @@ pub(crate) fn add_validator_to_registry_electra<
 ///
 /// `effective_balance` is gated by `get_max_effective_balance`, which uses
 /// `MAX_EFFECTIVE_BALANCE_ELECTRA` for compounding-credential validators.
-fn get_validator_from_deposit_electra<E: EthSpec>(
+fn get_validator_from_deposit_electra<E: BeaconSpec>(
     pubkey: &BLSPubkey,
     withdrawal_credentials: &Bytes32,
     amount: u64,

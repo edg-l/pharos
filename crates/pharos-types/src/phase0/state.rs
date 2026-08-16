@@ -13,7 +13,7 @@ use crate::phase0::primitives::{Gwei, Root, Slot};
 
 /// `BeaconState` per `specs/phase0/beacon-chain.md:566-588`.
 ///
-/// On stable Rust, associated consts from a generic `E: EthSpec` type
+/// On stable Rust, associated consts from a generic `E: BeaconSpec` type
 /// parameter cannot appear directly in const-generic field-type positions
 /// (the `generic_const_exprs` feature is nightly-only). Instead, each
 /// preset-specific limit is expressed as an explicit `const` parameter.

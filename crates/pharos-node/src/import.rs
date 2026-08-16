@@ -27,7 +27,7 @@ use pharos_storage::{BlockTransition, RocksStore, StateSummary, StorageError, St
 use pharos_types::config::RuntimeConfig;
 use pharos_types::deneb::KZGCommitment;
 use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _, ForkVariant};
-use pharos_types::{EthSpec, PayloadStatus, phase0::primitives::Root};
+use pharos_types::{BeaconSpec, PayloadStatus, phase0::primitives::Root};
 
 use crate::data_availability::{DataAvailabilityChecker, DataAvailabilityVerdict};
 
@@ -102,7 +102,7 @@ pub enum ImportError {
 
 /// Result of a successful `import_block` call.
 #[allow(dead_code)]
-pub struct ImportOutcome<E: EthSpec> {
+pub struct ImportOutcome<E: BeaconSpec> {
     /// The new head after this block was applied to the fork-choice store.
     pub head_change: HeadChange,
     /// The block root (hash_tree_root of the message).
@@ -130,7 +130,7 @@ pub struct ImportOutcome<E: EthSpec> {
 /// real slice. BOTH blob-carrying forks must be unwrapped here: an Electra block
 /// whose commitments were read as empty would silently bypass the DA gate on the
 /// live fork.
-pub(crate) fn extract_blob_kzg_commitments<E: EthSpec>(
+pub(crate) fn extract_blob_kzg_commitments<E: BeaconSpec>(
     signed_block: &E::SignedBeaconBlock,
 ) -> Vec<KZGCommitment>
 where
@@ -164,7 +164,7 @@ where
 /// `unwrap_capella_signed_block`) so the entire inner block is never cloned —
 /// only the 32-byte `block_hash` field is read. Bellatrix and Capella blocks
 /// with a zeroed `block_hash` are pre-merge and return `false`.
-fn signed_block_is_execution_enabled<E: EthSpec>(b: &E::SignedBeaconBlock) -> bool {
+fn signed_block_is_execution_enabled<E: BeaconSpec>(b: &E::SignedBeaconBlock) -> bool {
     use pharos_types::views::{
         BeaconBlockBodyView as _, BeaconBlockView as _, SignedBeaconBlockView as _,
     };
@@ -202,7 +202,7 @@ fn signed_block_is_execution_enabled<E: EthSpec>(b: &E::SignedBeaconBlock) -> bo
 /// Covers phase0 / altair / bellatrix / capella / deneb / electra in one
 /// place so callers do not duplicate the per-fork match. Adding a new fork
 /// requires extending this function — a missing arm is a compile error.
-pub fn signed_block_slot<E: EthSpec>(
+pub fn signed_block_slot<E: BeaconSpec>(
     b: &E::SignedBeaconBlock,
 ) -> pharos_types::phase0::primitives::Slot {
     use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
@@ -228,7 +228,7 @@ pub fn signed_block_slot<E: EthSpec>(
 /// Mirrors [`signed_block_slot`]: no single trait-dispatch accessor covers all
 /// variants, so each fork is unwrapped here in ONE place. Adding a new fork
 /// requires extending this function — a missing arm is a compile error.
-pub fn signed_block_state_root<E: EthSpec>(
+pub fn signed_block_state_root<E: BeaconSpec>(
     b: &E::SignedBeaconBlock,
 ) -> pharos_types::phase0::primitives::Root {
     use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
@@ -255,7 +255,7 @@ pub fn signed_block_state_root<E: EthSpec>(
 /// trait-dispatch accessor covers every variant, so each fork is unwrapped here
 /// in ONE place. Adding a fork requires extending this function — a missing arm
 /// is a compile error.
-pub fn signed_block_header<E: EthSpec>(
+pub fn signed_block_header<E: BeaconSpec>(
     b: &E::SignedBeaconBlock,
 ) -> pharos_types::phase0::operations::SignedBeaconBlockHeader {
     use crate::slasher::proposer::header_from_parts;
@@ -335,7 +335,7 @@ pub async fn import_block<E, EE, PP, DA>(
 ) -> Result<ImportOutcome<E>, ImportError>
 where
     DA: DataAvailabilityChecker<E> + 'static,
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + Clone,
     E::BeaconBlock: pharos_types::views::BeaconBlockView + pharos_ssz::TreeHash + Clone,
     E::SignedBeaconBlock: pharos_ssz::Decode
@@ -952,7 +952,7 @@ mod tests {
     use pharos_types::state::{
         MinimalBeaconState as ForkMinimalBeaconState, SignedBeaconBlock as ForkSignedBeaconBlock,
     };
-    use pharos_types::{EthSpec, MinimalEthSpec};
+    use pharos_types::{BeaconSpec, MinimalBeaconSpec};
     use pharos_utils::{BLSPubkey, BLSSignature, Hash256};
     use tokio::sync::mpsc;
 
@@ -1092,7 +1092,7 @@ mod tests {
 
         let validator = Validator {
             pubkey: test_pubkey(),
-            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             activation_epoch: Epoch(0),
             exit_epoch: Epoch(u64::MAX),
             withdrawable_epoch: Epoch(u64::MAX),
@@ -1103,7 +1103,7 @@ mod tests {
         let sync_committee = MinimalSyncCommittee {
             pubkeys: SszVector::from_vec(vec![
                 test_pubkey();
-                MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+                MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
             ])
             .unwrap(),
             aggregate_pubkey: test_pubkey(),
@@ -1114,7 +1114,7 @@ mod tests {
             slot: Slot(0),
             fork: Fork {
                 previous_version: Version::from_array([0x01, 0x00, 0x00, 0x01]),
-                current_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+                current_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
                 epoch: Epoch(0),
             },
             latest_block_header: BeaconBlockHeader {
@@ -1127,7 +1127,7 @@ mod tests {
             validators: SszList::empty_tree().with_push(validator).unwrap(),
             balances: SszList::with_push(
                 &SszList::default(),
-                Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             )
             .unwrap(),
             previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
@@ -1215,8 +1215,8 @@ mod tests {
         use pharos_stf::state_transition;
 
         let runtime_cfg = pharos_types::config::RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
             bellatrix_fork_epoch: 0, // Bellatrix from genesis
             altair_fork_epoch: 0,    // Altair from genesis
             ..Default::default()
@@ -1272,7 +1272,7 @@ mod tests {
             signature: BLSSignature::from_array([0u8; 96]),
         });
 
-        let (post_state, _) = state_transition::<MinimalEthSpec, EE>(
+        let (post_state, _) = state_transition::<MinimalBeaconSpec, EE>(
             genesis_state,
             &draft_signed,
             ee,
@@ -1305,17 +1305,17 @@ mod tests {
     /// Scaffold shared by both gate tests:
     /// - RocksStore at a tempdir
     /// - fc_store with Bellatrix anchor (zeroed block_hash, NOT execution-enabled)
-    /// - `fc_store.time = 6` → `current_slot = 1` (MinimalEthSpec: 6-second slots)
+    /// - `fc_store.time = 6` → `current_slot = 1` (MinimalBeaconSpec: 6-second slots)
     /// - Terminal-block-hash override so the merge-transition guard passes
     fn build_scaffold(
         tmpdir: &tempfile::TempDir,
     ) -> (
-        Arc<RwLock<pharos_fork_choice::Store<MinimalEthSpec>>>,
+        Arc<RwLock<pharos_fork_choice::Store<MinimalBeaconSpec>>>,
         Root,
         Arc<RocksStore>,
     ) {
         let store = Arc::new(
-            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
                 path: tmpdir.path().join("chain_db"),
                 create_if_missing: true,
             })
@@ -1334,9 +1334,9 @@ mod tests {
             _ => unreachable!("anchor is always Bellatrix"),
         };
 
-        let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+        let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, anchor_block);
 
-        // Set time so current_slot = 1 (MinimalEthSpec SLOT_DURATION_MS = 6000):
+        // Set time so current_slot = 1 (MinimalBeaconSpec SLOT_DURATION_MS = 6000):
         // slot = (time - genesis_time) * 1000 / SLOT_DURATION_MS = 6 * 1000 / 6000 = 1.
         // The candidate gate at import_block step (c) reads this BEFORE on_block
         // advances the clock to wall-now, so the gate sees current_slot = 1.
@@ -1375,19 +1375,19 @@ mod tests {
         let block = build_execution_block(genesis_state, anchor_root, &NullExecutionEngine);
 
         let runtime_cfg = pharos_types::config::RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
             bellatrix_fork_epoch: 0,
             altair_fork_epoch: 0,
             ..Default::default()
         };
 
         let (payload_tx, _payload_rx) =
-            mpsc::channel::<EngineNewPayloadRequest<MinimalEthSpec>>(16);
+            mpsc::channel::<EngineNewPayloadRequest<MinimalBeaconSpec>>(16);
         let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
 
         let result = import_block::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             SyncingEE,
             pharos_fork_choice::NoopPowBlockProvider,
             NoopDataAvailabilityChecker,
@@ -1437,19 +1437,19 @@ mod tests {
         let block = build_execution_block(genesis_state, anchor_root, &NullExecutionEngine);
 
         let runtime_cfg = pharos_types::config::RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
             bellatrix_fork_epoch: 0,
             altair_fork_epoch: 0,
             ..Default::default()
         };
 
         let (payload_tx, _payload_rx) =
-            mpsc::channel::<EngineNewPayloadRequest<MinimalEthSpec>>(16);
+            mpsc::channel::<EngineNewPayloadRequest<MinimalBeaconSpec>>(16);
         let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
 
         let result = import_block::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             ValidEE,
             pharos_fork_choice::NoopPowBlockProvider,
             NoopDataAvailabilityChecker,
@@ -1497,12 +1497,12 @@ mod tests {
     fn build_candidate_scaffold(
         tmpdir: &tempfile::TempDir,
     ) -> (
-        Arc<RwLock<pharos_fork_choice::Store<MinimalEthSpec>>>,
+        Arc<RwLock<pharos_fork_choice::Store<MinimalBeaconSpec>>>,
         Root,
         Arc<RocksStore>,
     ) {
         let store = Arc::new(
-            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
                 path: tmpdir.path().join("chain_db"),
                 create_if_missing: true,
             })
@@ -1521,7 +1521,7 @@ mod tests {
             _ => unreachable!("anchor is always Bellatrix"),
         };
 
-        let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+        let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, anchor_block);
 
         // time = 129 * 6 = 774  →  current_slot = (774 - 0) * 1000 / 6000 = 129.
         // With block_slot = 1: `1 + 128 = 129 <= 129` → candidate via Branch 2.
@@ -1572,8 +1572,8 @@ mod tests {
         };
 
         let runtime_cfg = pharos_types::config::RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
             bellatrix_fork_epoch: 0,
             altair_fork_epoch: 0,
             ..Default::default()
@@ -1581,8 +1581,9 @@ mod tests {
 
         // Capacity 1; pre-fill with a dummy request so the next try_send fails
         // (exercises the drop-on-full path in import_block step (f)).
-        let (payload_tx, _payload_rx) = mpsc::channel::<EngineNewPayloadRequest<MinimalEthSpec>>(1);
-        let dummy = EngineNewPayloadRequest::<MinimalEthSpec> {
+        let (payload_tx, _payload_rx) =
+            mpsc::channel::<EngineNewPayloadRequest<MinimalBeaconSpec>>(1);
+        let dummy = EngineNewPayloadRequest::<MinimalBeaconSpec> {
             block_root: Root::default(),
             payload: pharos_engine::NewPayloadWire::V1(pharos_engine::ExecutionPayloadV1 {
                 parent_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -1619,7 +1620,7 @@ mod tests {
 
         let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
         let result = import_block::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             SyncingEE,
             pharos_fork_choice::NoopPowBlockProvider,
             NoopDataAvailabilityChecker,
@@ -1694,21 +1695,21 @@ mod tests {
         };
 
         let runtime_cfg = pharos_types::config::RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
             bellatrix_fork_epoch: 0,
             altair_fork_epoch: 0,
             ..Default::default()
         };
 
         let (payload_tx, _payload_rx) =
-            mpsc::channel::<EngineNewPayloadRequest<MinimalEthSpec>>(16);
+            mpsc::channel::<EngineNewPayloadRequest<MinimalBeaconSpec>>(16);
         let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
 
         // ── Phase A: import with SYNCING EL ──────────────────────────────────
 
         let result = import_block::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             SyncingEE,
             pharos_fork_choice::NoopPowBlockProvider,
             NoopDataAvailabilityChecker,
@@ -1747,7 +1748,7 @@ mod tests {
 
             // (b) Block must be optimistic (execution-enabled + not Valid).
             assert!(
-                is_optimistic::<MinimalEthSpec>(&store, block_root),
+                is_optimistic::<MinimalBeaconSpec>(&store, block_root),
                 "block must be optimistic after import with SYNCING EL"
             );
 
@@ -1773,7 +1774,7 @@ mod tests {
         {
             let mut store = fc_store.write();
             store.mark_payload_status(block_root, PayloadStatus::Valid);
-            promote_valid_ancestors::<MinimalEthSpec>(&mut store, block_root);
+            promote_valid_ancestors::<MinimalBeaconSpec>(&mut store, block_root);
         }
 
         {
@@ -1781,7 +1782,7 @@ mod tests {
 
             // (e) Block must no longer be optimistic.
             assert!(
-                !is_optimistic::<MinimalEthSpec>(&store, block_root),
+                !is_optimistic::<MinimalBeaconSpec>(&store, block_root),
                 "block must NOT be optimistic after VALID promotion"
             );
 

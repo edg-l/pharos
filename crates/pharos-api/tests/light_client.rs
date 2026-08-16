@@ -21,7 +21,7 @@ use pharos_types::config::RuntimeConfig;
 use pharos_types::phase0::primitives::{Epoch, Root, Slot};
 use pharos_types::phase0::{BeaconBlockHeader, Checkpoint};
 use pharos_types::views::ForkVariant;
-use pharos_types::{EthSpec, MainnetEthSpec};
+use pharos_types::{BeaconSpec, MainnetBeaconSpec};
 use tower::ServiceExt as _;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ impl MockLc {
     fn new() -> Self {
         Self {
             identity: make_identity(),
-            runtime_cfg: Arc::new(MainnetEthSpec::default_runtime_config()),
+            runtime_cfg: Arc::new(MainnetBeaconSpec::default_runtime_config()),
             bootstrap: None,
             updates: None,
             finality: None,
@@ -97,7 +97,7 @@ impl MockLc {
     }
 }
 
-impl ChainStateApi<MainnetEthSpec> for MockLc {
+impl ChainStateApi<MainnetBeaconSpec> for MockLc {
     fn head_root(&self) -> Root {
         Root::from([0xab; 32])
     }
@@ -108,7 +108,7 @@ impl ChainStateApi<MainnetEthSpec> for MockLc {
         (
             0,
             Root::from(TEST_GVR),
-            <MainnetEthSpec as EthSpec>::GENESIS_FORK_VERSION,
+            <MainnetBeaconSpec as BeaconSpec>::GENESIS_FORK_VERSION,
         )
     }
     fn finalized_checkpoint(&self) -> Checkpoint {
@@ -144,10 +144,16 @@ impl ChainStateApi<MainnetEthSpec> for MockLc {
     fn node_identity(&self) -> &NodeIdentityCache {
         &self.identity
     }
-    fn state_by_block_root(&self, _root: Root) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+    fn state_by_block_root(
+        &self,
+        _root: Root,
+    ) -> Option<<MainnetBeaconSpec as BeaconSpec>::BeaconState> {
         None
     }
-    fn state_by_state_root(&self, _root: Root) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+    fn state_by_state_root(
+        &self,
+        _root: Root,
+    ) -> Option<<MainnetBeaconSpec as BeaconSpec>::BeaconState> {
         None
     }
     fn block_root_for_slot(&self, _slot: Slot) -> Option<Root> {
@@ -174,7 +180,7 @@ impl ChainStateApi<MainnetEthSpec> for MockLc {
     fn regenerate_state(
         &self,
         _target: RegenTarget,
-    ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, ApiError> {
+    ) -> Result<<MainnetBeaconSpec as BeaconSpec>::BeaconState, ApiError> {
         Err(ApiError::NotFound("regen not available in mock".into()))
     }
     fn fork_choice_dump(&self) -> Result<serde_json::Value, ApiError> {
@@ -189,9 +195,9 @@ impl ChainStateApi<MainnetEthSpec> for MockLc {
     }
     fn state_to_json(
         &self,
-        state: <MainnetEthSpec as EthSpec>::BeaconState,
+        state: <MainnetBeaconSpec as BeaconSpec>::BeaconState,
     ) -> Result<serde_json::Value, ApiError> {
-        pharos_api::beacon_state_to_json_full::<MainnetEthSpec>(state)
+        pharos_api::beacon_state_to_json_full::<MainnetBeaconSpec>(state)
     }
 
     // ── LC overrides ──────────────────────────────────────────────────────────
@@ -239,7 +245,7 @@ impl ChainStateApi<MainnetEthSpec> for MockLc {
 }
 
 fn make_router(mock: MockLc) -> axum::Router {
-    let chain: Arc<dyn ChainStateApi<MainnetEthSpec>> = Arc::new(mock);
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> = Arc::new(mock);
     let state = ApiState::new(chain);
     build_router(state)
 }
@@ -248,7 +254,7 @@ fn make_router(mock: MockLc) -> axum::Router {
 /// assert the clamped count that reached `light_client_updates`.
 fn make_router_with_counter(mock: MockLc) -> (axum::Router, Arc<AtomicU64>) {
     let counter = Arc::clone(&mock.count_seen);
-    let chain: Arc<dyn ChainStateApi<MainnetEthSpec>> = Arc::new(mock);
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> = Arc::new(mock);
     let state = ApiState::new(chain);
     (build_router(state), counter)
 }
@@ -406,7 +412,7 @@ async fn updates_ssz_frame_length_prefix() {
     let gvr = pharos_types::phase0::primitives::Root::from(TEST_GVR);
     let altair_digest = pharos_types::fork::compute_fork_digest(
         pharos_types::phase0::primitives::Version::from_array(
-            <MainnetEthSpec as EthSpec>::ALTAIR_FORK_VERSION,
+            <MainnetBeaconSpec as BeaconSpec>::ALTAIR_FORK_VERSION,
         ),
         &gvr,
     );
@@ -427,7 +433,7 @@ async fn updates_ssz_frame_length_prefix() {
     assert_eq!(frame1, 4 + 2, "item1 frame_len should be 6");
     let capella_digest = pharos_types::fork::compute_fork_digest(
         pharos_types::phase0::primitives::Version::from_array(
-            <MainnetEthSpec as EthSpec>::CAPELLA_FORK_VERSION,
+            <MainnetBeaconSpec as BeaconSpec>::CAPELLA_FORK_VERSION,
         ),
         &gvr,
     );

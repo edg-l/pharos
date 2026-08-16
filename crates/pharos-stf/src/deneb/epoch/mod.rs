@@ -11,8 +11,9 @@ pub mod registry_updates;
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec, altair::BeaconState as AltairBeaconState, capella::BeaconState as CapellaBeaconState,
-    config::RuntimeConfig, deneb::BeaconState, phase0::ValidatorIndex,
+    BeaconSpec, altair::BeaconState as AltairBeaconState,
+    capella::BeaconState as CapellaBeaconState, config::RuntimeConfig, deneb::BeaconState,
+    phase0::ValidatorIndex,
 };
 use pharos_utils::{BLSPubkey, Gwei};
 
@@ -60,7 +61,7 @@ pub fn process_epoch<
     runtime_cfg: &RuntimeConfig,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -510,7 +511,7 @@ pub fn process_slashings_deneb<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         DenebBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -625,7 +626,7 @@ pub fn process_rewards_and_penalties_deneb<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

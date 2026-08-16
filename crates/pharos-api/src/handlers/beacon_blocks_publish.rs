@@ -27,7 +27,7 @@ use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use serde_json::Value as JsonValue;
 
 use crate::error::ApiError;
@@ -38,7 +38,7 @@ use crate::state::ApiState;
 /// `POST /eth/v1/beacon/blocks`
 ///
 /// Accepts a `SignedBeaconBlock` JSON object. Imports and broadcasts.
-pub async fn post_beacon_block_v1<E: EthSpec>(
+pub async fn post_beacon_block_v1<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Json(body): Json<JsonValue>,
 ) -> Response {
@@ -67,7 +67,7 @@ pub async fn post_beacon_block_v1<E: EthSpec>(
 /// Accepts a fork-tagged `SignedBeaconBlock`. The `Eth-Consensus-Version`
 /// header indicates the fork; `Content-Type: application/octet-stream`
 /// triggers SSZ decode; JSON envelopes carry `version` in the body.
-pub async fn post_beacon_block_v2<E: EthSpec>(
+pub async fn post_beacon_block_v2<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     request: Request,
 ) -> Response {

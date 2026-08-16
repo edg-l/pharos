@@ -21,7 +21,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     fork::compute_fork_digest,
     phase0::primitives::{Root, Version},
 };
@@ -80,7 +80,7 @@ fn fork_version_for_variant(
 /// `GET /eth/v1/beacon/light_client/bootstrap/{block_root}`
 ///
 /// Per `beacon-APIs/apis/beacon/light_client/bootstrap.yaml`.
-pub async fn get_bootstrap<E: EthSpec>(
+pub async fn get_bootstrap<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(block_root_str): Path<String>,
     headers: HeaderMap,
@@ -115,7 +115,7 @@ pub async fn get_bootstrap<E: EthSpec>(
 ///
 /// Per `beacon-APIs/apis/beacon/light_client/updates.yaml` and
 /// `specs/altair/light-client/p2p-interface.md:29-35`.
-pub async fn get_updates<E: EthSpec>(
+pub async fn get_updates<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Query(params): Query<UpdatesQuery>,
     headers: HeaderMap,
@@ -202,7 +202,7 @@ pub async fn get_updates<E: EthSpec>(
 /// `GET /eth/v1/beacon/light_client/finality_update`
 ///
 /// Per `beacon-APIs/apis/beacon/light_client/finality_update.yaml`.
-pub async fn get_finality_update<E: EthSpec>(
+pub async fn get_finality_update<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     headers: HeaderMap,
 ) -> Response {
@@ -226,7 +226,7 @@ pub async fn get_finality_update<E: EthSpec>(
 /// `GET /eth/v1/beacon/light_client/optimistic_update`
 ///
 /// Per `beacon-APIs/apis/beacon/light_client/optimistic_update.yaml`.
-pub async fn get_optimistic_update<E: EthSpec>(
+pub async fn get_optimistic_update<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     headers: HeaderMap,
 ) -> Response {

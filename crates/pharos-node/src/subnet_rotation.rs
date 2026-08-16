@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use pharos_network::NodeId;
 use pharos_ssz::Bitvector;
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
@@ -45,7 +45,7 @@ use pharos_network::types::ForkDigest;
 /// at epoch 0 (suitable for tests).
 ///
 /// Per `specs/phase0/p2p-interface.md:1732-1751` and `EPOCHS_PER_SUBNET_SUBSCRIPTION = 256`.
-pub async fn run_subnet_rotation_loop<E: EthSpec>(
+pub async fn run_subnet_rotation_loop<E: BeaconSpec>(
     cmd: NetworkCommandSender<E>,
     fork_schedule: Arc<ForkSchedule>,
     node_id: NodeId,
@@ -152,7 +152,7 @@ pub async fn run_subnet_rotation_loop<E: EthSpec>(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Send a fire-and-forget `Subscribe` command; wait for the reply but ignore errors.
-async fn send_subscribe<E: EthSpec>(
+async fn send_subscribe<E: BeaconSpec>(
     cmd: &NetworkCommandSender<E>,
     topic: GossipTopic,
 ) -> Result<(), pharos_network::NetworkError> {
@@ -168,7 +168,7 @@ async fn send_subscribe<E: EthSpec>(
 }
 
 /// Send a fire-and-forget `Unsubscribe` command; wait for the reply but ignore errors.
-async fn send_unsubscribe<E: EthSpec>(
+async fn send_unsubscribe<E: BeaconSpec>(
     cmd: &NetworkCommandSender<E>,
     topic: GossipTopic,
 ) -> Result<(), pharos_network::NetworkError> {

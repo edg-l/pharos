@@ -11,7 +11,7 @@
 use rayon::prelude::*;
 
 use pharos_ssz::TreeHash;
-use pharos_types::{BeaconStateView, EthSpec, phase0::HistoricalBatch};
+use pharos_types::{BeaconSpec, BeaconStateView, phase0::HistoricalBatch};
 use pharos_utils::Gwei;
 
 use crate::error::EpochProcessingError;
@@ -23,7 +23,7 @@ use crate::phase0::{
 /// `process_eth1_data_reset` per `specs/phase0/beacon-chain.md:1804-1812`.
 ///
 /// Resets `eth1_data_votes` at the end of each `EPOCHS_PER_ETH1_VOTING_PERIOD`.
-pub fn process_eth1_data_reset<E: EthSpec>(
+pub fn process_eth1_data_reset<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where
@@ -39,7 +39,7 @@ where
 /// `process_effective_balance_updates` per `specs/phase0/beacon-chain.md:1814-1831`.
 ///
 /// Updates effective balances with hysteresis to prevent thrashing.
-pub fn process_effective_balance_updates<E: EthSpec>(
+pub fn process_effective_balance_updates<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where
@@ -98,7 +98,7 @@ where
 /// `process_slashings_reset` per `specs/phase0/beacon-chain.md:1833-1841`.
 ///
 /// Zeros the slashings entry for the next epoch's slot in the rolling vector.
-pub fn process_slashings_reset<E: EthSpec>(
+pub fn process_slashings_reset<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where
@@ -114,7 +114,7 @@ where
 /// `process_randao_mixes_reset` per `specs/phase0/beacon-chain.md:1842-1851`.
 ///
 /// Copies the current epoch's randao mix into the next epoch's slot.
-pub fn process_randao_mixes_reset<E: EthSpec>(
+pub fn process_randao_mixes_reset<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where
@@ -133,7 +133,7 @@ where
 ///
 /// Appends the Merkle root of a `HistoricalBatch` every
 /// `SLOTS_PER_HISTORICAL_ROOT / SLOTS_PER_EPOCH` epochs.
-pub fn process_historical_roots_update<E: EthSpec>(
+pub fn process_historical_roots_update<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where
@@ -182,7 +182,9 @@ where
 ///
 /// If future presets add a new `SLOTS_PER_HISTORICAL_ROOT` value, add a new
 /// branch here.
-fn compute_historical_batch_root<E: EthSpec>(state: &E::BeaconState) -> pharos_types::phase0::Root {
+fn compute_historical_batch_root<E: BeaconSpec>(
+    state: &E::BeaconState,
+) -> pharos_types::phase0::Root {
     use pharos_ssz::SszVector;
     use pharos_types::phase0::Root;
 
@@ -224,7 +226,7 @@ fn compute_historical_batch_root<E: EthSpec>(state: &E::BeaconState) -> pharos_t
 /// `specs/phase0/beacon-chain.md:1867-1872`.
 ///
 /// Rotates current → previous; clears current.
-pub fn process_participation_record_updates<E: EthSpec>(
+pub fn process_participation_record_updates<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where

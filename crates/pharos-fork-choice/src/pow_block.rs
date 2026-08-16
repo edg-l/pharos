@@ -10,7 +10,7 @@ use pharos_utils::{Hash256, Uint256};
 use thiserror::Error;
 
 use crate::store::Store;
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 
 // ── PowBlock ──────────────────────────────────────────────────────────────────
 
@@ -206,7 +206,7 @@ pub fn validate_merge_block<P: PowBlockProvider>(
 ///
 /// Used by the engine driver to compute `safe_block_hash` and
 /// `finalized_block_hash` per `specs/bellatrix/fork-choice.md:93-100`.
-pub fn execution_block_hash_at_root<E: EthSpec>(store: &Store<E>, root: Root) -> Hash256
+pub fn execution_block_hash_at_root<E: BeaconSpec>(store: &Store<E>, root: Root) -> Hash256
 where
     E::BeaconBlock: pharos_types::views::BeaconBlockView,
 {
@@ -233,7 +233,7 @@ where
 /// Per `specs/sync/optimistic.md` "Helpers" — `is_execution_block` definition:
 /// a block is an execution block iff it contains an execution payload with a
 /// non-default `block_hash`.
-pub fn block_is_execution_enabled<E: EthSpec>(block: &E::BeaconBlock) -> bool {
+pub fn block_is_execution_enabled<E: BeaconSpec>(block: &E::BeaconBlock) -> bool {
     match E::get_execution_block_hash(block) {
         Some(hash) => hash != Hash256::default(),
         None => false,

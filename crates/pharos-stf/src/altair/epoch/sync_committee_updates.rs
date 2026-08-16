@@ -5,7 +5,7 @@
 //!
 //! spec: specs/altair/beacon-chain.md:777-790
 
-use pharos_types::{EthSpec, altair::BeaconState};
+use pharos_types::{BeaconSpec, altair::BeaconState};
 use pharos_utils::BLSPubkey;
 
 use crate::error::EpochProcessingError;
@@ -42,7 +42,7 @@ pub fn process_sync_committee_updates<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -95,13 +95,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use pharos_types::{EthSpec, MainnetEthSpec, MinimalEthSpec};
+    use pharos_types::{BeaconSpec, MainnetBeaconSpec, MinimalBeaconSpec};
 
     /// Verify sync committee period boundary condition:
     /// the rotation triggers at `next_epoch % EPOCHS_PER_SYNC_COMMITTEE_PERIOD == 0`.
     #[test]
     fn mainnet_period_trigger_at_expected_epoch() {
-        let period = MainnetEthSpec::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        let period = MainnetBeaconSpec::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
         // First rotation: next_epoch = period, so current_epoch = period - 1.
         assert_eq!((period - 1 + 1) % period, 0);
         // Just before: no rotation.
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn minimal_period_trigger_at_expected_epoch() {
-        let period = MinimalEthSpec::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        let period = MinimalBeaconSpec::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
         assert_eq!((period - 1 + 1) % period, 0);
         assert_ne!((period - 2 + 1) % period, 0);
     }

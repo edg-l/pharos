@@ -34,7 +34,7 @@ use libp2p::PeerId;
 use libp2p::core::ConnectedPoint;
 use libp2p::identity::Keypair;
 use pharos_network::NetworkBuilder;
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::phase0::primitives::ForkDigest;
 
 use common::TestHost;
@@ -74,7 +74,7 @@ async fn num_established_gate_preserves_peer_on_redundant_connection() {
     let local_key = Keypair::generate_secp256k1();
     let discv5_addr: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
     let (mut network, handle, _discovery_handle) =
-        NetworkBuilder::<MainnetEthSpec, TestHost, _>::new(TestHost::new(fd()))
+        NetworkBuilder::<MainnetBeaconSpec, TestHost, _>::new(TestHost::new(fd()))
             .local_key(local_key)
             .tcp_listen_port(0)
             .discv5_addr(discv5_addr)
@@ -140,7 +140,7 @@ async fn single_connection_lifecycle_is_clean() {
     let local_key = Keypair::generate_secp256k1();
     let discv5_addr: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
     let (mut network, _handle, _discovery_handle) =
-        NetworkBuilder::<MainnetEthSpec, TestHost, _>::new(TestHost::new(fd()))
+        NetworkBuilder::<MainnetBeaconSpec, TestHost, _>::new(TestHost::new(fd()))
             .local_key(local_key)
             .tcp_listen_port(0)
             .discv5_addr(discv5_addr)
@@ -185,7 +185,7 @@ async fn redundant_establish_then_non_last_close_leaves_peer_intact() {
     let local_key = Keypair::generate_secp256k1();
     let discv5_addr: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
     let (mut network, _handle, _discovery_handle) =
-        NetworkBuilder::<MainnetEthSpec, TestHost, _>::new(TestHost::new(fd()))
+        NetworkBuilder::<MainnetBeaconSpec, TestHost, _>::new(TestHost::new(fd()))
             .local_key(local_key)
             .tcp_listen_port(0)
             .discv5_addr(discv5_addr)

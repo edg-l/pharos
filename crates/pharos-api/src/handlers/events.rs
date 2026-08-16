@@ -25,7 +25,7 @@ use axum::extract::{RawQuery, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures::stream;
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::debug;
 
@@ -44,7 +44,7 @@ use crate::state::ApiState;
 /// as an SSE frame with `event: <topic>` and `data: <json>`.
 ///
 /// Returns 400 when any topic string is not recognised by the spec.
-pub async fn get_events<E: EthSpec>(
+pub async fn get_events<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     RawQuery(raw_query): RawQuery,
 ) -> Response {

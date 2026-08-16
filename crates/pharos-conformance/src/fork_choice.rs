@@ -41,7 +41,7 @@ use pharos_ssz::{Decode, SszList, SszSequence, TreeHash};
 use pharos_stf::phase0::BeaconStateWrite;
 use pharos_stf::{NullExecutionEngine, state_transition};
 use pharos_types::{
-    BeaconStateView, EthSpec, MainnetEthSpec, MinimalEthSpec,
+    BeaconSpec, BeaconStateView, MainnetBeaconSpec, MinimalBeaconSpec,
     deneb::{Blob, KZGCommitment},
     phase0::{Attestation, AttesterSlashing, Checkpoint, Deposit, Epoch, Root, Slot},
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
@@ -66,7 +66,7 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 /// attestation feed-through route through this trait, implemented once per
 /// preset. Both impls drive `on_attestation_electra` (the EIP-7549
 /// committee-bits extractor) so the LMD votes use the electra attester set.
-trait ElectraFcSpec: EthSpec {
+trait ElectraFcSpec: BeaconSpec {
     /// Decode `<attestation>.ssz_snappy` as the preset's electra `Attestation`
     /// and run `on_attestation_electra` (standalone `attestation` step).
     fn run_electra_attestation_step(
@@ -91,7 +91,7 @@ trait ElectraFcSpec: EthSpec {
     fn electra_block_commitments(signed: &Self::ElectraSignedBeaconBlock) -> Vec<KZGCommitment>;
 }
 
-impl ElectraFcSpec for MainnetEthSpec {
+impl ElectraFcSpec for MainnetBeaconSpec {
     fn run_electra_attestation_step(
         store: &mut Store<Self>,
         case_dir: &Path,
@@ -125,7 +125,7 @@ impl ElectraFcSpec for MainnetEthSpec {
     }
 }
 
-impl ElectraFcSpec for MinimalEthSpec {
+impl ElectraFcSpec for MinimalBeaconSpec {
     fn run_electra_attestation_step(
         store: &mut Store<Self>,
         case_dir: &Path,
@@ -222,106 +222,99 @@ pub fn enumerate_fork_choice(
                 dir_name(&case_dir)
             );
 
-            let run: CaseFn = match (fork, preset) {
-                // phase0 rows → altair case driver (Q1: altair fixtures used)
-                ("phase0", "mainnet") => {
-                    Box::new(
-                        move || match run_case::<MainnetEthSpec>(&case_dir, &case_name) {
+            let run: CaseFn =
+                match (fork, preset) {
+                    // phase0 rows → altair case driver (Q1: altair fixtures used)
+                    ("phase0", "mainnet") => Box::new(move || {
+                        match run_case::<MainnetBeaconSpec>(&case_dir, &case_name) {
                             CaseResult::Pass => CaseOutcome::Pass,
                             CaseResult::Skip => CaseOutcome::Skip,
                             CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                        },
-                    )
-                }
-                ("phase0", _) => {
-                    Box::new(
-                        move || match run_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                        }
+                    }),
+                    ("phase0", _) => Box::new(move || {
+                        match run_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
                             CaseResult::Pass => CaseOutcome::Pass,
                             CaseResult::Skip => CaseOutcome::Skip,
                             CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                        },
-                    )
-                }
-                // bellatrix rows → bellatrix case driver
-                ("bellatrix", "mainnet") => Box::new(move || {
-                    match run_bellatrix_case::<MainnetEthSpec>(&case_dir, &case_name) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
-                }),
-                ("bellatrix", _) => Box::new(move || {
-                    match run_bellatrix_case::<MinimalEthSpec>(&case_dir, &case_name) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
-                }),
-                // capella rows → capella case driver
-                ("capella", "mainnet") => Box::new(move || {
-                    match run_capella_case::<MainnetEthSpec>(&case_dir, &case_name) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
-                }),
-                ("capella", _) => Box::new(move || {
-                    match run_capella_case::<MinimalEthSpec>(&case_dir, &case_name) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
-                }),
-                // deneb rows → deneb case driver
-                ("deneb", "mainnet") => Box::new(move || {
-                    match run_deneb_case::<MainnetEthSpec>(&case_dir, &case_name) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
-                }),
-                ("deneb", _) => Box::new(move || {
-                    match run_deneb_case::<MinimalEthSpec>(&case_dir, &case_name) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
-                }),
-                // electra rows → electra case driver (EIP-7549)
-                ("electra", "mainnet") => Box::new(move || {
-                    match run_electra_case::<MainnetEthSpec>(&case_dir, &case_name) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
-                }),
-                ("electra", _) => Box::new(move || {
-                    match run_electra_case::<MinimalEthSpec>(&case_dir, &case_name) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
-                }),
-                // Fallback: altair case driver (also handles "altair" if ever added)
-                (_, "mainnet") => {
-                    Box::new(
-                        move || match run_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                        }
+                    }),
+                    // bellatrix rows → bellatrix case driver
+                    ("bellatrix", "mainnet") => Box::new(move || {
+                        match run_bellatrix_case::<MainnetBeaconSpec>(&case_dir, &case_name) {
                             CaseResult::Pass => CaseOutcome::Pass,
                             CaseResult::Skip => CaseOutcome::Skip,
                             CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                        },
-                    )
-                }
-                (_, _) => {
-                    Box::new(
-                        move || match run_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                        }
+                    }),
+                    ("bellatrix", _) => Box::new(move || {
+                        match run_bellatrix_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
                             CaseResult::Pass => CaseOutcome::Pass,
                             CaseResult::Skip => CaseOutcome::Skip,
                             CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                        },
-                    )
-                }
-            };
+                        }
+                    }),
+                    // capella rows → capella case driver
+                    ("capella", "mainnet") => Box::new(move || {
+                        match run_capella_case::<MainnetBeaconSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("capella", _) => Box::new(move || {
+                        match run_capella_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    // deneb rows → deneb case driver
+                    ("deneb", "mainnet") => Box::new(move || {
+                        match run_deneb_case::<MainnetBeaconSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("deneb", _) => Box::new(move || {
+                        match run_deneb_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    // electra rows → electra case driver (EIP-7549)
+                    ("electra", "mainnet") => Box::new(move || {
+                        match run_electra_case::<MainnetBeaconSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("electra", _) => Box::new(move || {
+                        match run_electra_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    // Fallback: altair case driver (also handles "altair" if ever added)
+                    (_, "mainnet") => Box::new(move || {
+                        match run_case::<MainnetBeaconSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    (_, _) => Box::new(move || {
+                        match run_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                };
 
             tasks.push(CaseTask {
                 row_ordinal,
@@ -344,7 +337,7 @@ enum CaseResult {
 
 fn run_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
@@ -666,7 +659,7 @@ where
 ///   When the YAML expects `true`, the assertion is skipped (M4a always returns `false`).
 fn run_bellatrix_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
@@ -1084,7 +1077,7 @@ where
 /// (M4a always returns `false`; full re-org logic deferred to M11).
 fn run_bellatrix_checks<E>(store: &Store<E>, checks: &Checks) -> Result<(), String>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,
 {
@@ -1105,7 +1098,7 @@ where
 
 fn run_checks<E>(store: &Store<E>, checks: &Checks) -> Result<(), String>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,
 {
@@ -1452,7 +1445,7 @@ fn deneb_data_available(
 
 fn run_capella_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
@@ -1936,7 +1929,7 @@ where
 
 fn run_deneb_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
@@ -2529,7 +2522,7 @@ where
 #[allow(clippy::too_many_lines)]
 fn run_electra_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
-    E: EthSpec + ElectraFcSpec,
+    E: BeaconSpec + ElectraFcSpec,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>

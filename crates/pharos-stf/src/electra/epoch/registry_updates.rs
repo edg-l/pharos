@@ -12,7 +12,7 @@
 //!    `is_eligible_for_activation` validator is activated unconditionally.
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, electra::BeaconState, phase0::Validator, phase0::ValidatorIndex};
+use pharos_types::{BeaconSpec, electra::BeaconState, phase0::Validator, phase0::ValidatorIndex};
 use pharos_utils::BLSPubkey;
 
 use crate::electra::helpers::{get_current_epoch_electra, initiate_validator_exit_electra};
@@ -28,7 +28,7 @@ const EJECTION_BALANCE: u64 = 16_000_000_000;
 ///
 /// `MIN_ACTIVATION_BALANCE` with `>=` replaces the phase0 `MAX_EFFECTIVE_BALANCE`
 /// equality check.
-fn is_eligible_for_activation_queue_electra<E: EthSpec>(validator: &Validator) -> bool {
+fn is_eligible_for_activation_queue_electra<E: BeaconSpec>(validator: &Validator) -> bool {
     validator.activation_eligibility_epoch.0 == FAR_FUTURE_EPOCH
         && validator.effective_balance.0 >= E::MIN_ACTIVATION_BALANCE
 }
@@ -49,7 +49,7 @@ pub fn process_registry_updates<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

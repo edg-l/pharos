@@ -23,7 +23,7 @@
 //! blob breakdown: 6 IGNORE + 14 REJECT).
 //!
 //! `"block: unrecognised fork variant"` was removed in M7 commit 2598fb5: the
-//! `EthSpec::signed_block_message` refactor made an unrecognised fork a compile
+//! `BeaconSpec::signed_block_message` refactor made an unrecognised fork a compile
 //! error (exhaustive match), so the runtime Reject string no longer exists.
 //!
 //! This test is the gating mechanism for spec rule audit. Do not modify the list

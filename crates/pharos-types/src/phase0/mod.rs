@@ -5,10 +5,10 @@
 //! ## Stable-Rust const-generic constraint
 //!
 //! On stable Rust, the `generic_const_exprs` feature is not available, which
-//! means associated consts from a generic `E: EthSpec` type parameter cannot
+//! means associated consts from a generic `E: BeaconSpec` type parameter cannot
 //! be used directly as const-generic arguments in struct field types (e.g.,
 //! `SszList<T, { E::CONST }>` does not compile). The plan's B2/B3 resolution
-//! specifies flat associated consts on `EthSpec`; this module implements those
+//! specifies flat associated consts on `BeaconSpec`; this module implements those
 //! as explicit `const` parameters on each generic container struct.
 //!
 //! Preset-specific type aliases (`MainnetBeaconState`, `MinimalBeaconState`,

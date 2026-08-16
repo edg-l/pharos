@@ -5,7 +5,7 @@
 //! `compute_pulled_up_tip` (Phase 8); hence `pub`.
 
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     phase0::{Attestation, Checkpoint},
     views::BeaconBlockBodyView,
 };
@@ -27,7 +27,7 @@ use super::helpers::{get_attesting_balance, get_matching_target_attestations};
 ///
 /// **Must be `pub`**: Phase 8 (`compute_pulled_up_tip`) calls this directly
 /// from `pharos-fork-choice` to compute unrealized justification.
-pub fn process_justification_and_finalization<E: EthSpec>(
+pub fn process_justification_and_finalization<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where
@@ -61,7 +61,7 @@ where
 
 /// `weigh_justification_and_finalization` per
 /// `specs/phase0/beacon-chain.md:1513-1537`.
-fn weigh_justification_and_finalization<E: EthSpec>(
+fn weigh_justification_and_finalization<E: BeaconSpec>(
     state: &mut E::BeaconState,
     total_active_balance: u64,
     previous_epoch_target_balance: u64,

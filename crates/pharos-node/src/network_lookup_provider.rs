@@ -21,7 +21,7 @@ use pharos_network::{
 };
 use pharos_ssz::SszList;
 use pharos_types::deneb::{BlobIdentifier, BlobSidecar, BlobSidecarsByRootRequest};
-use pharos_types::{EthSpec, phase0::BeaconBlocksByRootRequest, phase0::primitives::Root};
+use pharos_types::{BeaconSpec, phase0::BeaconBlocksByRootRequest, phase0::primitives::Root};
 
 use crate::lookup::{LOOKUP_REQ_TIMEOUT, LookupBlockProvider, LookupError, MAX_LOOKUP_DEPTH};
 use crate::network_backfill_provider::PeerPicker;
@@ -34,19 +34,19 @@ use crate::network_backfill_provider::PeerPicker;
 /// `LookupBlockProvider` uses native `async fn` in trait (Rust 1.85 stable)
 /// because it is only used as a monomorphised generic; no `async-trait` is
 /// needed on the impl.
-pub struct NetworkLookupProvider<E: EthSpec> {
+pub struct NetworkLookupProvider<E: BeaconSpec> {
     cmd: NetworkCommandSender<E>,
     peer_picker: Arc<dyn PeerPicker>,
 }
 
-impl<E: EthSpec> NetworkLookupProvider<E> {
+impl<E: BeaconSpec> NetworkLookupProvider<E> {
     /// Create a new provider using the given command sender and peer picker.
     pub fn new(cmd: NetworkCommandSender<E>, peer_picker: Arc<dyn PeerPicker>) -> Self {
         Self { cmd, peer_picker }
     }
 }
 
-impl<E: EthSpec> LookupBlockProvider<E> for NetworkLookupProvider<E>
+impl<E: BeaconSpec> LookupBlockProvider<E> for NetworkLookupProvider<E>
 where
     E::SignedBeaconBlock: Send + Sync + 'static,
 {

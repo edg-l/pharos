@@ -908,7 +908,7 @@ pub struct ElectraSignedBlockDto {
 /// A trait implemented by concrete per-fork `SignedBeaconBlock` types in `pharos-api`.
 ///
 /// This sidesteps the Rust limitation that prevents pattern-matching on opaque
-/// associated types (`E::Phase0SignedBeaconBlock`) inside a generic `impl<E: EthSpec>`
+/// associated types (`E::Phase0SignedBeaconBlock`) inside a generic `impl<E: BeaconSpec>`
 /// block. By implementing this trait for each concrete preset alias, the
 /// `NodeChainState` impl can call `to_block_for_api()` on the unwrapped inner type.
 pub trait BlockApiSerializer {

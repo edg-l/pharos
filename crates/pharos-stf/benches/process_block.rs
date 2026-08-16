@@ -4,8 +4,8 @@ use criterion::{Criterion, criterion_group, criterion_main};
 
 use pharos_ssz::Decode;
 use pharos_stf::{NullExecutionEngine, state_transition};
-use pharos_types::EthSpec;
-use pharos_types::MainnetEthSpec as E;
+use pharos_types::BeaconSpec;
+use pharos_types::MainnetBeaconSpec as E;
 use pharos_types::config::RuntimeConfig;
 
 // ── Fixture loader ────────────────────────────────────────────────────────────
@@ -58,8 +58,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     // ── phase0 ────────────────────────────────────────────────────────────────
     let (phase0_pre, phase0_block) = {
         let (pre_inner, block_inner) = load_fixture::<
-            <E as EthSpec>::Phase0BeaconState,
-            <E as EthSpec>::Phase0SignedBeaconBlock,
+            <E as BeaconSpec>::Phase0BeaconState,
+            <E as BeaconSpec>::Phase0SignedBeaconBlock,
         >("phase0", "empty_block_transition");
         (
             E::phase0_into_state(pre_inner),
@@ -84,8 +84,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     // ── altair ────────────────────────────────────────────────────────────────
     let (altair_pre, altair_block) = {
         let (pre_inner, block_inner) = load_fixture::<
-            <E as EthSpec>::AltairBeaconState,
-            <E as EthSpec>::AltairSignedBeaconBlock,
+            <E as BeaconSpec>::AltairBeaconState,
+            <E as BeaconSpec>::AltairSignedBeaconBlock,
         >("altair", "empty_block_transition");
         (
             E::altair_into_state(pre_inner),
@@ -110,8 +110,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     // ── bellatrix ─────────────────────────────────────────────────────────────
     let (bellatrix_pre, bellatrix_block) = {
         let (pre_inner, block_inner) = load_fixture::<
-            <E as EthSpec>::BellatrixBeaconState,
-            <E as EthSpec>::BellatrixSignedBeaconBlock,
+            <E as BeaconSpec>::BellatrixBeaconState,
+            <E as BeaconSpec>::BellatrixSignedBeaconBlock,
         >("bellatrix", "empty_block_transition");
         (
             E::bellatrix_into_state(pre_inner),

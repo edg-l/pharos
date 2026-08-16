@@ -17,7 +17,7 @@ use pharos_network::{
     NetworkCommandSender,
     rpc::types::{RpcRequest, RpcResponse},
 };
-use pharos_types::{EthSpec, phase0::BeaconBlocksByRangeRequest, phase0::primitives::Slot};
+use pharos_types::{BeaconSpec, phase0::BeaconBlocksByRangeRequest, phase0::primitives::Slot};
 
 use crate::backfill::{BACKFILL_REQ_TIMEOUT, BackfillBlockProvider, BackfillError};
 
@@ -58,11 +58,11 @@ impl PeerPicker for NoopPeerPicker {
 /// network task via the clonable `NetworkCommandSender`.
 ///
 /// Constraint: must be called from within an `async` context (tokio runtime).
-pub struct NetworkHandlePeerPicker<E: EthSpec> {
+pub struct NetworkHandlePeerPicker<E: BeaconSpec> {
     sender: NetworkCommandSender<E>,
 }
 
-impl<E: EthSpec> NetworkHandlePeerPicker<E> {
+impl<E: BeaconSpec> NetworkHandlePeerPicker<E> {
     /// Create a new picker wrapping the given command sender.
     pub fn new(sender: NetworkCommandSender<E>) -> Self {
         Self { sender }
@@ -70,7 +70,7 @@ impl<E: EthSpec> NetworkHandlePeerPicker<E> {
 }
 
 #[async_trait]
-impl<E: EthSpec> PeerPicker for NetworkHandlePeerPicker<E> {
+impl<E: BeaconSpec> PeerPicker for NetworkHandlePeerPicker<E> {
     async fn pick_highest_head_peer(&self) -> Option<PeerId> {
         use pharos_network::NetworkCommand;
         use tokio::sync::oneshot;
@@ -96,19 +96,19 @@ impl<E: EthSpec> PeerPicker for NetworkHandlePeerPicker<E> {
 /// `BackfillBlockProvider` uses native `async fn` in trait (Rust 1.85 stable)
 /// because it is only used as a monomorphised generic; no `async-trait` is
 /// needed on the impl.
-pub struct NetworkBackfillProvider<E: EthSpec> {
+pub struct NetworkBackfillProvider<E: BeaconSpec> {
     cmd: NetworkCommandSender<E>,
     peer_picker: Arc<dyn PeerPicker>,
 }
 
-impl<E: EthSpec> NetworkBackfillProvider<E> {
+impl<E: BeaconSpec> NetworkBackfillProvider<E> {
     /// Create a new provider using the given command sender and peer picker.
     pub fn new(cmd: NetworkCommandSender<E>, peer_picker: Arc<dyn PeerPicker>) -> Self {
         Self { cmd, peer_picker }
     }
 }
 
-impl<E: EthSpec> BackfillBlockProvider<E> for NetworkBackfillProvider<E>
+impl<E: BeaconSpec> BackfillBlockProvider<E> for NetworkBackfillProvider<E>
 where
     E::SignedBeaconBlock: Send + Sync + 'static,
 {

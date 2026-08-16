@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::{get, post};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 
 use crate::auth::validator_auth_layer;
 use crate::handlers::beacon_basic;
@@ -99,7 +99,7 @@ use crate::state::ApiState;
 ///
 /// The validator sub-router has `validator_auth_layer` applied; `None` means
 /// no auth (default).  The debug and pool routes are unauthenticated.
-pub fn build_router<E: EthSpec>(state: Arc<ApiState<E>>) -> Router {
+pub fn build_router<E: BeaconSpec>(state: Arc<ApiState<E>>) -> Router {
     build_router_with_auth::<E>(state, None)
 }
 
@@ -108,7 +108,7 @@ pub fn build_router<E: EthSpec>(state: Arc<ApiState<E>>) -> Router {
 /// When `validator_token` is `Some(t)`, requests to `/eth/v1/validator/*`
 /// must carry `Authorization: Bearer <t>`; missing/wrong token → 401/403.
 /// When `None`, the validator routes are unauthenticated (default).
-pub fn build_router_with_auth<E: EthSpec>(
+pub fn build_router_with_auth<E: BeaconSpec>(
     state: Arc<ApiState<E>>,
     validator_token: Option<String>,
 ) -> Router {

@@ -3,7 +3,7 @@
 //! Per `specs/phase0/beacon-chain.md` "Beacon state accessors" (lines 985-1197)
 //! and "Misc" / "Crypto" subsections (lines 905-984).
 //!
-//! All functions are generic over `<E: EthSpec>` and take `&E::BeaconState`.
+//! All functions are generic over `<E: BeaconSpec>` and take `&E::BeaconState`.
 //! State fields are accessed via the `BeaconStateView` trait. None mutate state.
 
 use pharos_ssz::TreeHash;
@@ -11,7 +11,7 @@ use pharos_types::phase0::{
     Attestation, AttestationData, Domain, Epoch, IndexedAttestation, Root, SigningData, Slot,
     ValidatorIndex,
 };
-use pharos_types::{BeaconStateView, EthSpec, views::BeaconBlockBodyView};
+use pharos_types::{BeaconSpec, BeaconStateView, views::BeaconBlockBodyView};
 use pharos_utils::hash::hash;
 use pharos_utils::{Bytes4, Gwei, Hash256};
 
@@ -44,12 +44,12 @@ pub fn compute_activation_exit_epoch(epoch: Epoch, max_seed_lookahead: u64) -> E
 // ── State accessors ───────────────────────────────────────────────────────────
 
 /// `get_current_epoch` per `specs/phase0/beacon-chain.md:990-994`.
-pub fn get_current_epoch<E: EthSpec>(state: &E::BeaconState) -> Epoch {
+pub fn get_current_epoch<E: BeaconSpec>(state: &E::BeaconState) -> Epoch {
     compute_epoch_at_slot(state.slot(), E::SLOTS_PER_EPOCH)
 }
 
 /// `get_previous_epoch` per `specs/phase0/beacon-chain.md:999-1005`.
-pub fn get_previous_epoch<E: EthSpec>(state: &E::BeaconState) -> Epoch {
+pub fn get_previous_epoch<E: BeaconSpec>(state: &E::BeaconState) -> Epoch {
     let current = get_current_epoch::<E>(state);
     if current.0 == GENESIS_EPOCH {
         Epoch(GENESIS_EPOCH)
@@ -59,7 +59,7 @@ pub fn get_previous_epoch<E: EthSpec>(state: &E::BeaconState) -> Epoch {
 }
 
 /// `get_block_root_at_slot` per `specs/phase0/beacon-chain.md:1021-1026`.
-pub fn get_block_root_at_slot<E: EthSpec>(
+pub fn get_block_root_at_slot<E: BeaconSpec>(
     state: &E::BeaconState,
     slot: Slot,
 ) -> Result<Root, StateTransitionError> {
@@ -73,7 +73,7 @@ pub fn get_block_root_at_slot<E: EthSpec>(
 }
 
 /// `get_block_root` per `specs/phase0/beacon-chain.md:1011-1015`.
-pub fn get_block_root<E: EthSpec>(
+pub fn get_block_root<E: BeaconSpec>(
     state: &E::BeaconState,
     epoch: Epoch,
 ) -> Result<Root, StateTransitionError> {
@@ -84,13 +84,13 @@ pub fn get_block_root<E: EthSpec>(
 }
 
 /// `get_randao_mix` per `specs/phase0/beacon-chain.md:1030-1035`.
-pub fn get_randao_mix<E: EthSpec>(state: &E::BeaconState, epoch: Epoch) -> Hash256 {
+pub fn get_randao_mix<E: BeaconSpec>(state: &E::BeaconState, epoch: Epoch) -> Hash256 {
     let idx = (epoch.0 % E::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
     state.randao_mix_at(idx).unwrap_or_default()
 }
 
 /// `get_active_validator_indices` per `specs/phase0/beacon-chain.md:1042-1047`.
-pub fn get_active_validator_indices<E: EthSpec>(
+pub fn get_active_validator_indices<E: BeaconSpec>(
     state: &E::BeaconState,
     epoch: Epoch,
 ) -> Vec<ValidatorIndex> {
@@ -108,13 +108,17 @@ pub fn get_active_validator_indices<E: EthSpec>(
 }
 
 /// `get_validator_churn_limit` per `specs/phase0/beacon-chain.md:1054-1061`.
-pub fn get_validator_churn_limit<E: EthSpec>(state: &E::BeaconState) -> u64 {
+pub fn get_validator_churn_limit<E: BeaconSpec>(state: &E::BeaconState) -> u64 {
     let active = get_active_validator_indices::<E>(state, get_current_epoch::<E>(state));
     (active.len() as u64 / E::CHURN_LIMIT_QUOTIENT).max(E::MIN_PER_EPOCH_CHURN_LIMIT)
 }
 
 /// `get_seed` per `specs/phase0/beacon-chain.md:1067-1074`.
-pub fn get_seed<E: EthSpec>(state: &E::BeaconState, epoch: Epoch, domain_type: Bytes4) -> Hash256 {
+pub fn get_seed<E: BeaconSpec>(
+    state: &E::BeaconState,
+    epoch: Epoch,
+    domain_type: Bytes4,
+) -> Hash256 {
     // Modular arithmetic to avoid underflow (spec: epoch + EPOCHS_PER_HISTORICAL_VECTOR
     // - MIN_SEED_LOOKAHEAD - 1).
     let mix_epoch_raw = epoch
@@ -132,7 +136,7 @@ pub fn get_seed<E: EthSpec>(state: &E::BeaconState, epoch: Epoch, domain_type: B
 }
 
 /// `get_committee_count_per_slot` per `specs/phase0/beacon-chain.md:1080-1092`.
-pub fn get_committee_count_per_slot<E: EthSpec>(state: &E::BeaconState, epoch: Epoch) -> u64 {
+pub fn get_committee_count_per_slot<E: BeaconSpec>(state: &E::BeaconState, epoch: Epoch) -> u64 {
     let active = get_active_validator_indices::<E>(state, epoch);
     (active.len() as u64 / E::SLOTS_PER_EPOCH / E::TARGET_COMMITTEE_SIZE)
         .max(1)
@@ -159,7 +163,7 @@ pub fn compute_committee(
 }
 
 /// `get_beacon_committee` per `specs/phase0/beacon-chain.md:1098-1111`.
-pub fn get_beacon_committee<E: EthSpec>(
+pub fn get_beacon_committee<E: BeaconSpec>(
     state: &E::BeaconState,
     slot: Slot,
     index: u64,
@@ -184,7 +188,7 @@ pub fn get_beacon_committee<E: EthSpec>(
 }
 
 /// `compute_proposer_index` per `specs/phase0/beacon-chain.md:859-875`.
-pub fn compute_proposer_index<E: EthSpec>(
+pub fn compute_proposer_index<E: BeaconSpec>(
     state: &E::BeaconState,
     indices: &[ValidatorIndex],
     seed: &Hash256,
@@ -215,7 +219,7 @@ pub fn compute_proposer_index<E: EthSpec>(
 }
 
 /// `get_beacon_proposer_index` per `specs/phase0/beacon-chain.md:1117-1124`.
-pub fn get_beacon_proposer_index<E: EthSpec>(state: &E::BeaconState) -> ValidatorIndex {
+pub fn get_beacon_proposer_index<E: BeaconSpec>(state: &E::BeaconState) -> ValidatorIndex {
     let epoch = get_current_epoch::<E>(state);
     let seed_base = get_seed::<E>(
         state,
@@ -232,7 +236,10 @@ pub fn get_beacon_proposer_index<E: EthSpec>(state: &E::BeaconState) -> Validato
 }
 
 /// `get_total_balance` per `specs/phase0/beacon-chain.md:1130-1141`.
-pub fn get_total_balance<E: EthSpec>(state: &E::BeaconState, indices: &[ValidatorIndex]) -> Gwei {
+pub fn get_total_balance<E: BeaconSpec>(
+    state: &E::BeaconState,
+    indices: &[ValidatorIndex],
+) -> Gwei {
     let sum: u64 = indices
         .iter()
         .map(|i| {
@@ -246,7 +253,7 @@ pub fn get_total_balance<E: EthSpec>(state: &E::BeaconState, indices: &[Validato
 }
 
 /// `get_total_active_balance` per `specs/phase0/beacon-chain.md:1147-1154`.
-pub fn get_total_active_balance<E: EthSpec>(state: &E::BeaconState) -> Gwei {
+pub fn get_total_active_balance<E: BeaconSpec>(state: &E::BeaconState) -> Gwei {
     // Fused active-filter + balance-sum in a single index-ordered pass: avoids
     // collecting an intermediate `Vec<ValidatorIndex>` and the per-index tree
     // re-descent in `get_total_balance`. Identical addends in identical
@@ -279,7 +286,7 @@ pub fn compute_domain(
 }
 
 /// `get_domain` per `specs/phase0/beacon-chain.md:1161-1170`.
-pub fn get_domain<E: EthSpec>(
+pub fn get_domain<E: BeaconSpec>(
     state: &E::BeaconState,
     domain_type: [u8; 4],
     epoch: Option<Epoch>,
@@ -309,7 +316,7 @@ pub fn compute_signing_root<T: TreeHash>(ssz_object: &T, domain: Domain) -> Root
 /// `phase0::Attestation<2048>` in all current presets. The `Bitlist<2048>`
 /// parameter is the concrete capacity from that binding; no
 /// `generic_const_exprs` is required.
-pub fn get_attesting_indices<E: EthSpec>(
+pub fn get_attesting_indices<E: BeaconSpec>(
     state: &E::BeaconState,
     data: &AttestationData,
     aggregation_bits: &pharos_ssz::Bitlist<2048>,
@@ -335,7 +342,7 @@ where
 ///
 /// Accepts `&Attestation<2048>` directly; the concrete attestation type used
 /// in all current presets.
-pub fn get_indexed_attestation<E: EthSpec>(
+pub fn get_indexed_attestation<E: BeaconSpec>(
     state: &E::BeaconState,
     attestation: &Attestation<2048>,
 ) -> IndexedAttestation<2048>
@@ -358,7 +365,7 @@ where
 ///
 /// Returns the gossip subnet index for a given attestation.
 /// `committees_per_slot` should be obtained via `get_committee_count_per_slot`.
-pub fn compute_subnet_for_attestation<E: EthSpec>(
+pub fn compute_subnet_for_attestation<E: BeaconSpec>(
     committees_per_slot: u64,
     slot: Slot,
     committee_index: u64,
@@ -371,11 +378,11 @@ pub fn compute_subnet_for_attestation<E: EthSpec>(
 #[cfg(test)]
 mod subnet_tests {
     use super::*;
-    use pharos_types::MinimalEthSpec;
+    use pharos_types::MinimalBeaconSpec;
 
     /// Spec-fixture cases for `compute_subnet_for_attestation`.
     ///
-    /// MinimalEthSpec: SLOTS_PER_EPOCH = 8.
+    /// MinimalBeaconSpec: SLOTS_PER_EPOCH = 8.
     /// At slot=0, idx=0, committees_per_slot=1:
     ///   slots_since_epoch_start = 0, committees_since = 0, subnet = 0 % 64 = 0.
     /// Mid-epoch: slot=4, idx=2, committees_per_slot=2:
@@ -386,19 +393,19 @@ mod subnet_tests {
     fn compute_subnet_for_attestation_matches_spec() {
         // Case 1: slot=0, idx=0 → 0
         assert_eq!(
-            compute_subnet_for_attestation::<MinimalEthSpec>(1, Slot(0), 0),
+            compute_subnet_for_attestation::<MinimalBeaconSpec>(1, Slot(0), 0),
             0,
         );
 
         // Case 2: mid-epoch slot=4, idx=2, committees_per_slot=2 → 10
         assert_eq!(
-            compute_subnet_for_attestation::<MinimalEthSpec>(2, Slot(4), 2),
+            compute_subnet_for_attestation::<MinimalBeaconSpec>(2, Slot(4), 2),
             10,
         );
 
         // Case 3: epoch-end slot=7, idx=1, committees_per_slot=2 → 15
         assert_eq!(
-            compute_subnet_for_attestation::<MinimalEthSpec>(2, Slot(7), 1),
+            compute_subnet_for_attestation::<MinimalBeaconSpec>(2, Slot(7), 1),
             15,
         );
     }

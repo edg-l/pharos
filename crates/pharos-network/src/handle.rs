@@ -15,7 +15,7 @@ use arc_swap::ArcSwap;
 use discv5::enr::NodeId;
 use libp2p::{Multiaddr, PeerId};
 use pharos_ssz::Encode;
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use tokio::sync::{mpsc, oneshot};
 
@@ -32,9 +32,9 @@ use crate::types::PeerInfo;
 /// Multiple producers can hold a `NetworkCommandSender` to issue commands
 /// without requiring ownership of the full `NetworkHandle`.
 #[derive(Clone)]
-pub struct NetworkCommandSender<E: EthSpec>(pub(crate) mpsc::Sender<NetworkCommand<E>>);
+pub struct NetworkCommandSender<E: BeaconSpec>(pub(crate) mpsc::Sender<NetworkCommand<E>>);
 
-impl<E: EthSpec> NetworkCommandSender<E> {
+impl<E: BeaconSpec> NetworkCommandSender<E> {
     /// Construct a `NetworkCommandSender` from a raw mpsc sender.
     ///
     /// Exposed for test code in external crates that need a dummy sender whose
@@ -133,7 +133,7 @@ impl<E: EthSpec> NetworkCommandSender<E> {
 ///   receiver (`mpsc::Receiver`) must not be shared.
 /// - For multi-producer command use, clone the `NetworkCommandSender` obtained
 ///   from `command_sender()`.
-pub struct NetworkHandle<E: EthSpec> {
+pub struct NetworkHandle<E: BeaconSpec> {
     /// Send commands to the `Network` event loop.
     cmd_tx: mpsc::Sender<NetworkCommand<E>>,
     /// Receive events emitted by the `Network` event loop.
@@ -161,7 +161,7 @@ pub struct NetworkHandle<E: EthSpec> {
     host_metadata: Arc<ArcSwap<AltairMetaData>>,
 }
 
-impl<E: EthSpec> NetworkHandle<E> {
+impl<E: BeaconSpec> NetworkHandle<E> {
     /// Construct a new handle from the channel endpoints created by `NetworkBuilder::build`.
     pub(crate) fn new(
         cmd_tx: mpsc::Sender<NetworkCommand<E>>,

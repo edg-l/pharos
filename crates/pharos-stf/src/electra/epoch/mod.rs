@@ -23,8 +23,9 @@ pub mod slashings;
 pub mod sync_committee_updates;
 
 use pharos_types::{
-    EthSpec, altair::BeaconState as AltairBeaconState, capella::BeaconState as CapellaBeaconState,
-    config::RuntimeConfig, deneb::BeaconState as DenebBeaconState, electra::BeaconState,
+    BeaconSpec, altair::BeaconState as AltairBeaconState,
+    capella::BeaconState as CapellaBeaconState, config::RuntimeConfig,
+    deneb::BeaconState as DenebBeaconState, electra::BeaconState,
 };
 
 use crate::altair::epoch;
@@ -93,7 +94,7 @@ pub fn process_epoch<
     _runtime_cfg: &RuntimeConfig,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

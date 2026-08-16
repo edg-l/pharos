@@ -9,7 +9,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use libp2p::PeerId;
 use pharos_ssz::{SszList, SszSequence as _};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::{ErrorMessage, MetaData as Phase0MetaData, Status};
 
@@ -41,7 +41,7 @@ pub async fn handle_request<E, H, S>(
     negotiated_protocol_id: &str,
 ) -> RpcResponse<E>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     H: Host<E> + LightClientProvider<E> + BlobProvider<E>,
     S: PeerScorer,
 {
@@ -231,7 +231,7 @@ fn handle_metadata<E>(
     negotiated_protocol_id: &str,
 ) -> RpcResponse<E>
 where
-    E: EthSpec,
+    E: BeaconSpec,
 {
     // Read live metadata from the ArcSwap cache so peers see updates issued
     // by the subnet rotation driver (NetworkCommand::UpdateMetaData).
@@ -253,7 +253,7 @@ where
 
 fn build_local_status<E, H>(host: &H) -> Status
 where
-    E: EthSpec,
+    E: BeaconSpec,
     H: Host<E>,
 {
     let checkpoint = host.finalized_checkpoint();
@@ -288,7 +288,7 @@ mod tests {
     use crate::scoring::NoopScorer;
     use crate::scoring::RpcMethod;
     use crate::types::{ConnectionDirection, PeerState, SubnetId};
-    use pharos_types::MainnetEthSpec;
+    use pharos_types::MainnetBeaconSpec;
     use pharos_types::altair::MetaData as AltairMetaData;
     use pharos_types::phase0::primitives::{ForkDigest, Root};
     use pharos_types::phase0::{
@@ -339,18 +339,18 @@ mod tests {
         }
     }
 
-    impl BlockProvider<MainnetEthSpec> for MockHost {
+    impl BlockProvider<MainnetBeaconSpec> for MockHost {
         fn block_by_root(
             &self,
             _root: Root,
-        ) -> Option<<MainnetEthSpec as EthSpec>::SignedBeaconBlock> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::SignedBeaconBlock> {
             None
         }
         fn blocks_by_range(
             &self,
             _start: Slot,
             _count: u64,
-        ) -> Vec<<MainnetEthSpec as EthSpec>::SignedBeaconBlock> {
+        ) -> Vec<<MainnetBeaconSpec as BeaconSpec>::SignedBeaconBlock> {
             Vec::new()
         }
         fn finalized_checkpoint(&self) -> Checkpoint {
@@ -364,10 +364,10 @@ mod tests {
         }
     }
 
-    impl GossipValidator<MainnetEthSpec> for MockHost {
+    impl GossipValidator<MainnetBeaconSpec> for MockHost {
         fn validate_beacon_block(
             &self,
-            _b: &<MainnetEthSpec as EthSpec>::SignedBeaconBlock,
+            _b: &<MainnetBeaconSpec as BeaconSpec>::SignedBeaconBlock,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
@@ -398,19 +398,19 @@ mod tests {
         }
         fn validate_sync_committee_contribution_and_proof(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::AltairSignedContributionAndProof,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::AltairSignedContributionAndProof,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
         fn validate_light_client_finality_update(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientFinalityUpdate,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::AltairLightClientFinalityUpdate,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
         fn validate_light_client_optimistic_update(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::AltairLightClientOptimisticUpdate,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
@@ -424,14 +424,14 @@ mod tests {
 
         fn validate_capella_light_client_finality_update(
             &self,
-            _msg: &<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientFinalityUpdate,
+            _msg: &<MainnetBeaconSpec as pharos_types::BeaconSpec>::CapellaLightClientFinalityUpdate,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
 
         fn validate_capella_light_client_optimistic_update(
             &self,
-            _msg: &<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientOptimisticUpdate,
+            _msg: &<MainnetBeaconSpec as pharos_types::BeaconSpec>::CapellaLightClientOptimisticUpdate,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
@@ -445,69 +445,69 @@ mod tests {
         }
     }
 
-    impl LightClientProvider<MainnetEthSpec> for MockHost {
+    impl LightClientProvider<MainnetBeaconSpec> for MockHost {
         fn light_client_bootstrap(
             &self,
             _block_root: Root,
-        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientBootstrap> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::AltairLightClientBootstrap> {
             None
         }
         fn light_client_updates_by_range(
             &self,
             _start_period: u64,
             _count: u64,
-        ) -> Vec<<MainnetEthSpec as EthSpec>::AltairLightClientUpdate> {
+        ) -> Vec<<MainnetBeaconSpec as BeaconSpec>::AltairLightClientUpdate> {
             Vec::new()
         }
         fn light_client_finality_update(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientFinalityUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::AltairLightClientFinalityUpdate> {
             None
         }
         fn light_client_optimistic_update(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::AltairLightClientOptimisticUpdate> {
             None
         }
 
         fn light_client_finality_update_capella(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::CapellaLightClientFinalityUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::CapellaLightClientFinalityUpdate> {
             None
         }
 
         fn light_client_optimistic_update_capella(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::CapellaLightClientOptimisticUpdate> {
             None
         }
 
         fn light_client_finality_update_deneb(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::DenebLightClientFinalityUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::DenebLightClientFinalityUpdate> {
             None
         }
 
         fn light_client_optimistic_update_deneb(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::DenebLightClientOptimisticUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::DenebLightClientOptimisticUpdate> {
             None
         }
 
         fn light_client_finality_update_electra(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::ElectraLightClientFinalityUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::ElectraLightClientFinalityUpdate> {
             None
         }
 
         fn light_client_optimistic_update_electra(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::ElectraLightClientOptimisticUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::ElectraLightClientOptimisticUpdate> {
             None
         }
     }
 
-    impl BlobProvider<MainnetEthSpec> for MockHost {
+    impl BlobProvider<MainnetBeaconSpec> for MockHost {
         fn blobs_by_range(
             &self,
             _start_slot: pharos_types::phase0::primitives::Slot,
@@ -550,7 +550,7 @@ mod tests {
         let mut pm = make_peer_manager();
         let peer = PeerId::random();
 
-        let resp = handle_request::<MainnetEthSpec, _, _>(
+        let resp = handle_request::<MainnetBeaconSpec, _, _>(
             &host,
             &md,
             peer,
@@ -574,7 +574,7 @@ mod tests {
         let mut pm = make_peer_manager();
         let peer = PeerId::random();
 
-        let resp = handle_request::<MainnetEthSpec, _, _>(
+        let resp = handle_request::<MainnetBeaconSpec, _, _>(
             &host,
             &md,
             peer,
@@ -599,7 +599,7 @@ mod tests {
         let peer = PeerId::random();
 
         let v1_protocol = RpcMethod::MetaDataV1.protocol_id();
-        let resp = handle_request::<MainnetEthSpec, _, _>(
+        let resp = handle_request::<MainnetBeaconSpec, _, _>(
             &host,
             &md,
             peer,
@@ -631,7 +631,7 @@ mod tests {
         };
         md.store(Arc::new(updated));
 
-        let resp = handle_request::<MainnetEthSpec, _, _>(
+        let resp = handle_request::<MainnetBeaconSpec, _, _>(
             &host,
             &md,
             peer,
@@ -665,7 +665,7 @@ mod tests {
             ..Status::default()
         };
         let md = make_md(0);
-        let resp = handle_request::<MainnetEthSpec, _, _>(
+        let resp = handle_request::<MainnetBeaconSpec, _, _>(
             &host,
             &md,
             peer,
@@ -701,7 +701,7 @@ mod tests {
             ..Status::default()
         };
         let md = make_md(0);
-        let resp = handle_request::<MainnetEthSpec, _, _>(
+        let resp = handle_request::<MainnetBeaconSpec, _, _>(
             &host,
             &md,
             peer,

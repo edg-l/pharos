@@ -27,7 +27,7 @@ use pharos_stf::phase0::{
     },
 };
 use pharos_types::{
-    EthSpec, MainnetEthSpec, MinimalEthSpec,
+    BeaconSpec, MainnetBeaconSpec, MinimalBeaconSpec,
     phase0::{Attestation, AttesterSlashing, Deposit, ProposerSlashing, SignedVoluntaryExit},
     views::{BeaconBlockBodyView, BeaconBlockView},
 };
@@ -164,8 +164,8 @@ where
 ///   block_header, proposer_slashing, attester_slashing, deposit, attestation, voluntary_exit
 ///
 /// Each entry is `(sub_name, apply_closure)`. The `apply_closure` is `Fn` +
-/// `Clone` + `Send` + `Sync` + `'static` (Resolution C3). EthSpec bounds are
-/// stated once on this builder — `apply_op` itself carries no EthSpec bound
+/// `Clone` + `Send` + `Sync` + `'static` (Resolution C3). BeaconSpec bounds are
+/// stated once on this builder — `apply_op` itself carries no BeaconSpec bound
 /// (D-apply-op-no-ethspec-bound).
 #[allow(clippy::type_complexity)]
 fn phase0_op_table<E>() -> Vec<(
@@ -181,7 +181,7 @@ fn phase0_op_table<E>() -> Vec<(
     >,
 )>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlock: BeaconBlockView + Decode,
     <E::Phase0BeaconBlock as BeaconBlockView>::Body: pharos_ssz::TreeHash,
@@ -307,7 +307,7 @@ fn enumerate_operations_phase0<E>(
     row_ordinal: u32,
 ) -> Vec<crate::task::CaseTask>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlock: BeaconBlockView + Decode,
     <E::Phase0BeaconBlock as BeaconBlockView>::Body: pharos_ssz::TreeHash,
@@ -354,8 +354,8 @@ fn altair_ops_walk_opts() -> WalkOpts {
 /// block_header and sync_aggregate are bespoke (concrete preset types,
 /// projection through `E::altair_into_state`). The 5 shared subs follow the
 /// same pattern inline. All closures return `CaseOutcome` directly.
-/// EthSpec bounds are stated once on this builder; `apply_op` carries no
-/// EthSpec bound (D-apply-op-no-ethspec-bound).
+/// BeaconSpec bounds are stated once on this builder; `apply_op` carries no
+/// BeaconSpec bound (D-apply-op-no-ethspec-bound).
 #[allow(clippy::type_complexity)]
 fn altair_op_table_mainnet() -> Vec<(
     &'static str,
@@ -369,7 +369,7 @@ fn altair_op_table_mainnet() -> Vec<(
             + Sync,
     >,
 )> {
-    use pharos_types::MainnetEthSpec as E;
+    use pharos_types::MainnetBeaconSpec as E;
     vec![
         // block_header: bespoke — loads raw altair::MainnetBeaconState, projects via altair_into_state.
         (
@@ -811,7 +811,7 @@ fn altair_op_table_minimal() -> Vec<(
             + Sync,
     >,
 )> {
-    use pharos_types::MinimalEthSpec as E;
+    use pharos_types::MinimalBeaconSpec as E;
     vec![
         // block_header: bespoke.
         (
@@ -1304,8 +1304,8 @@ fn bellatrix_ops_walk_opts() -> WalkOpts {
 /// preset types, projection through `bellatrix_state_to_altair` /
 /// `update_bellatrix_from_altair`). The 5 shared subs operate directly on the
 /// bellatrix state. All closures return `CaseOutcome` directly.
-/// EthSpec bounds (D-apply-op-no-ethspec-bound): none on this builder; each
-/// closure names `MainnetEthSpec` directly.
+/// BeaconSpec bounds (D-apply-op-no-ethspec-bound): none on this builder; each
+/// closure names `MainnetBeaconSpec` directly.
 #[allow(clippy::type_complexity)]
 fn bellatrix_op_table_mainnet() -> Vec<(
     &'static str,
@@ -1319,7 +1319,7 @@ fn bellatrix_op_table_mainnet() -> Vec<(
             + Sync,
     >,
 )> {
-    use pharos_types::MainnetEthSpec as E;
+    use pharos_types::MainnetBeaconSpec as E;
     vec![
         // block_header: bespoke — projects via bellatrix_state_to_altair, patches body_root.
         (
@@ -1860,7 +1860,7 @@ fn bellatrix_op_table_minimal() -> Vec<(
             + Sync,
     >,
 )> {
-    use pharos_types::MinimalEthSpec as E;
+    use pharos_types::MinimalBeaconSpec as E;
     vec![
         // block_header: bespoke — projects via bellatrix_state_to_altair, patches body_root.
         (
@@ -2455,7 +2455,7 @@ fn capella_op_table_mainnet() -> Vec<(
             + Sync,
     >,
 )> {
-    use pharos_types::MainnetEthSpec as E;
+    use pharos_types::MainnetBeaconSpec as E;
     vec![
         // block_header: bespoke — projects via capella_state_to_altair, patches body_root.
         (
@@ -3118,7 +3118,7 @@ fn capella_op_table_minimal() -> Vec<(
             + Sync,
     >,
 )> {
-    use pharos_types::MinimalEthSpec as E;
+    use pharos_types::MinimalBeaconSpec as E;
     vec![
         // block_header: bespoke — projects via capella_state_to_altair, patches body_root.
         (
@@ -3820,7 +3820,7 @@ fn deneb_op_table_mainnet() -> Vec<(
             + Sync,
     >,
 )> {
-    use pharos_types::MainnetEthSpec as E;
+    use pharos_types::MainnetBeaconSpec as E;
     vec![
         // block_header: bespoke — deneb→capella→altair projection, patches body_root.
         (
@@ -4547,7 +4547,7 @@ fn deneb_op_table_minimal() -> Vec<(
             + Sync,
     >,
 )> {
-    use pharos_types::MinimalEthSpec as E;
+    use pharos_types::MinimalBeaconSpec as E;
     vec![
         // block_header: bespoke — deneb→capella→altair projection, patches body_root.
         (
@@ -5317,7 +5317,7 @@ fn electra_op_table_mainnet() -> Vec<(
         process_proposer_slashing_electra, process_sync_aggregate_electra,
         process_voluntary_exit_electra, process_withdrawal_request,
     };
-    use pharos_types::MainnetEthSpec as E;
+    use pharos_types::MainnetBeaconSpec as E;
     vec![
         // block_header: direct on electra state (electra proposer index).
         (
@@ -6084,7 +6084,7 @@ fn electra_op_table_minimal() -> Vec<(
         process_proposer_slashing_electra, process_sync_aggregate_electra,
         process_voluntary_exit_electra, process_withdrawal_request,
     };
-    use pharos_types::MinimalEthSpec as E;
+    use pharos_types::MinimalBeaconSpec as E;
     vec![
         // block_header: direct on electra state (electra proposer index).
         (
@@ -6869,10 +6869,10 @@ pub fn enumerate_operations(
 ) -> Vec<crate::task::CaseTask> {
     match (fork, preset) {
         ("phase0", "mainnet") => {
-            enumerate_operations_phase0::<MainnetEthSpec>(root, "mainnet", row_ordinal)
+            enumerate_operations_phase0::<MainnetBeaconSpec>(root, "mainnet", row_ordinal)
         }
         ("phase0", "minimal") => {
-            enumerate_operations_phase0::<MinimalEthSpec>(root, "minimal", row_ordinal)
+            enumerate_operations_phase0::<MinimalBeaconSpec>(root, "minimal", row_ordinal)
         }
         ("altair", "mainnet") => enumerate_operations_altair(root, "mainnet", row_ordinal),
         ("altair", "minimal") => enumerate_operations_altair(root, "minimal", row_ordinal),

@@ -6,7 +6,7 @@
 
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState,
     phase0::{Deposit, DepositMessage, Epoch, Validator},
 };
@@ -48,7 +48,7 @@ pub fn process_deposit<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -110,7 +110,7 @@ fn apply_deposit_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

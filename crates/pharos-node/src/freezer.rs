@@ -22,7 +22,7 @@ use std::collections::HashSet;
 
 use pharos_storage::{ColdMigrationBatch, RocksStore, Store as DbStore};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     phase0::primitives::{Root, Slot},
 };
 use tokio::sync::watch;
@@ -49,7 +49,7 @@ pub const SPLIT_SLOT_KEY: &[u8] = b"split_slot";
 /// - `restore_point_interval_epochs`: how many epochs between cold state
 ///   snapshots (default `DEFAULT_RESTORE_POINT_INTERVAL_EPOCHS`).
 /// - `shutdown_rx`: set to `true` on Ctrl-C to break the loop.
-pub async fn run_freezer_loop<E: EthSpec>(
+pub async fn run_freezer_loop<E: BeaconSpec>(
     mut head_rx: watch::Receiver<Option<HeadChange>>,
     store: Arc<RocksStore>,
     fork_choice: Arc<RwLock<FcStore<E>>>,
@@ -324,7 +324,7 @@ pub async fn run_freezer_loop<E: EthSpec>(
 ///
 /// Per `D-cold-granularity-restore-points-only`, `D-freezer-in-rocksdb`,
 /// `D-prune-behind-finalized`, `D-restore-point-interval`.
-fn select_restore_point_states<E: EthSpec>(
+fn select_restore_point_states<E: BeaconSpec>(
     store: &RocksStore,
     split_slot: Slot,
     finalized_slot: Slot,
@@ -406,7 +406,7 @@ where
 ///
 /// Read lock: collect the eviction set while reading.
 /// Write lock: held only for the `HashMap::remove` loop (minimal duration).
-fn evict_finalized_from_fc<E: EthSpec>(
+fn evict_finalized_from_fc<E: BeaconSpec>(
     fork_choice: &Arc<RwLock<FcStore<E>>>,
     evict_roots: &[Root],
     finalized_slot: Slot,

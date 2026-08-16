@@ -16,7 +16,7 @@
 
 use pharos_ssz::SszList;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     bellatrix::BeaconState as BellatrixBeaconState,
     capella::{
         BeaconState as CapellaBeaconState,
@@ -74,7 +74,7 @@ pub fn upgrade_to_capella<
     StateTransitionError,
 >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             BellatrixBeaconState = BellatrixBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

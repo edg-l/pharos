@@ -17,7 +17,7 @@ use crate::phase0::primitives::{Root, Slot, ValidatorIndex};
 /// `BeaconBlockBody` per `specs/phase0/beacon-chain.md:539-548`.
 ///
 /// Generic over the operation list limits. On stable Rust, associated consts
-/// from a generic `E: EthSpec` type parameter cannot appear directly in
+/// from a generic `E: BeaconSpec` type parameter cannot appear directly in
 /// const-generic field-type positions; instead, each limit is an explicit
 /// `const` parameter. Use the preset-specific type aliases:
 /// - `MainnetBeaconBlockBody` (all mainnet limits)

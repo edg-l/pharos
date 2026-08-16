@@ -6,7 +6,7 @@
 //! which internally derives the proposer reward via the Electra proposer index.
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, electra::BeaconState, phase0::ProposerSlashing};
+use pharos_types::{BeaconSpec, electra::BeaconState, phase0::ProposerSlashing};
 
 use crate::electra::helpers::slash_validator_electra;
 use crate::error::{ProposerSlashingInvalidReason, StateTransitionError};
@@ -54,7 +54,7 @@ pub fn process_proposer_slashing_electra<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         ElectraBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

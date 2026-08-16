@@ -6,7 +6,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     capella::execution_payload::WithdrawalIndex,
     deneb::execution_payload::Withdrawal,
     electra::{BeaconState, requests::PendingPartialWithdrawal},
@@ -103,7 +103,7 @@ pub fn get_pending_partial_withdrawals<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -236,7 +236,7 @@ pub fn get_validators_sweep_withdrawals_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -372,7 +372,7 @@ pub fn get_expected_withdrawals_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -601,7 +601,7 @@ fn update_next_withdrawal_validator_index_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -664,7 +664,7 @@ pub fn process_withdrawals_electra<
     const MAX_BYTES_PER_TRANSACTION: u64,
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

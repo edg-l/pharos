@@ -23,7 +23,7 @@ use crate::error::StateTransitionError;
 /// `push_{current,previous}_epoch_attestation` because trait method
 /// signatures cannot return / accept types parameterised by
 /// `E::MAX_VALIDATORS_PER_COMMITTEE` on stable Rust 1.85 (needs unstable
-/// `generic_const_exprs`). Both `MainnetEthSpec` and `MinimalEthSpec`
+/// `generic_const_exprs`). Both `MainnetBeaconSpec` and `MinimalBeaconSpec`
 /// bind `MAX_VALIDATORS_PER_COMMITTEE = 2048`, so the literal is correct
 /// for every current preset. Revisit if a future preset diverges.
 pub trait BeaconStateWrite: BeaconStateView {

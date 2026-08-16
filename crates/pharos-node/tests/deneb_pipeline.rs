@@ -61,7 +61,7 @@ use pharos_types::state::{
     MinimalBeaconState as ForkMinimalBeaconState, SignedBeaconBlock as ForkSignedBeaconBlock,
 };
 use pharos_types::views::BeaconBlockView as _;
-use pharos_types::{EthSpec, MinimalEthSpec};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 use pharos_utils::{BLSPubkey, BLSSignature, Epoch as UtilsEpoch, Hash256};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -87,7 +87,7 @@ mod common;
 /// `Irrelevant` bypass that an empty-commitments block would take.
 struct AvailableDAChecker;
 
-impl DataAvailabilityChecker<MinimalEthSpec> for AvailableDAChecker {
+impl DataAvailabilityChecker<MinimalBeaconSpec> for AvailableDAChecker {
     fn is_data_available(
         &self,
         _block_root: Root,
@@ -277,7 +277,7 @@ fn build_capella_anchor(
 
     let validator = Validator {
         pubkey: test_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -288,7 +288,7 @@ fn build_capella_anchor(
     let sync_committee = MinimalSyncCommittee {
         pubkeys: SszVector::from_vec(vec![
             test_pubkey();
-            MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+            MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
         ])
         .unwrap(),
         aggregate_pubkey: test_pubkey(),
@@ -298,8 +298,8 @@ fn build_capella_anchor(
         genesis_time,
         slot: Slot(0),
         fork: Fork {
-            previous_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
-            current_version: Version::from_array(MinimalEthSpec::CAPELLA_FORK_VERSION),
+            previous_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
+            current_version: Version::from_array(MinimalBeaconSpec::CAPELLA_FORK_VERSION),
             epoch: UtilsEpoch(0),
         },
         latest_block_header: BeaconBlockHeader {
@@ -316,7 +316,7 @@ fn build_capella_anchor(
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         )
         .unwrap(),
         previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
@@ -363,8 +363,13 @@ fn build_deneb_block(
     // at the epoch 1 boundary (slot 8) inside process_slots_fork.
     let fork_epochs = ForkEpochs::from_runtime_cfg(runtime_cfg);
     let mut pre_state_advanced = genesis_state.clone();
-    process_slots_fork::<MinimalEthSpec>(&mut pre_state_advanced, slot, fork_epochs, runtime_cfg)
-        .expect("process_slots_fork for deneb block must succeed");
+    process_slots_fork::<MinimalBeaconSpec>(
+        &mut pre_state_advanced,
+        slot,
+        fork_epochs,
+        runtime_cfg,
+    )
+    .expect("process_slots_fork for deneb block must succeed");
 
     // The advanced state should now be Deneb.
     assert!(
@@ -378,8 +383,8 @@ fn build_deneb_block(
             ForkMinimalBeaconState::Deneb(s) => s,
             _ => unreachable!(),
         };
-        let epoch = slot.0 / MinimalEthSpec::SLOTS_PER_EPOCH;
-        let idx = (epoch % MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
+        let epoch = slot.0 / MinimalBeaconSpec::SLOTS_PER_EPOCH;
+        let idx = (epoch % MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
         let randao = s.randao_mixes.get(idx).copied().unwrap_or_default();
         let ts = s.genesis_time + slot.0 * runtime_cfg.seconds_per_slot;
         (randao, ts)
@@ -436,7 +441,7 @@ fn build_deneb_block(
         signature: BLSSignature::from_array([0u8; 96]),
     });
 
-    let (post_state, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+    let (post_state, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
         genesis_state,
         &draft_signed,
         &null_engine,
@@ -492,7 +497,7 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
 
     let _ = state_inner; // used above for state construction
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(fork_state.clone(), anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(fork_state.clone(), anchor_block);
 
     // Advance store time so on_block's future-slot guard passes.
     fc.time = 10_000_000;
@@ -508,11 +513,11 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
     // The test uses genesis_time=0 and slot 9, so timestamp = 9 * 12 = 108.
     let runtime_cfg = RuntimeConfig {
         altair_fork_epoch: 0,
-        altair_fork_version: MinimalEthSpec::ALTAIR_FORK_VERSION,
+        altair_fork_version: MinimalBeaconSpec::ALTAIR_FORK_VERSION,
         bellatrix_fork_epoch: 0,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         capella_fork_epoch: 0,
-        capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+        capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
         deneb_fork_epoch: DENEB_FORK_EPOCH,
         deneb_fork_version: [0x04, 0x00, 0x00, 0x01],
         ..RuntimeConfig::default()
@@ -577,7 +582,7 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
 
     let tmpdir = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -588,19 +593,19 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
     let engine_handle = spawn_engine_actor(client, None);
 
     let (head_tx, head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
 
     // ── 5. Build HostImpl ─────────────────────────────────────────────────────
 
     let genesis_validators_root = Root::default();
     // Capella-at-genesis, deneb at epoch 1.
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: UtilsEpoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: UtilsEpoch(0),
-        capella_fork_version: Version::from_array(MinimalEthSpec::CAPELLA_FORK_VERSION),
+        capella_fork_version: Version::from_array(MinimalBeaconSpec::CAPELLA_FORK_VERSION),
         capella_fork_epoch: UtilsEpoch(0),
         deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x01]),
         deneb_fork_epoch: UtilsEpoch(DENEB_FORK_EPOCH),
@@ -609,7 +614,7 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
         genesis_validators_root,
     };
 
-    let mut host = HostImpl::<MinimalEthSpec>::new(
+    let mut host = HostImpl::<MinimalBeaconSpec>::new(
         Arc::clone(&store),
         Arc::clone(&fc),
         genesis_validators_root,
@@ -627,7 +632,7 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
         let eng = engine_handle.clone();
         let head_tx_driver = head_tx.clone();
         tokio::spawn(async move {
-            run_engine_driver_loop::<MinimalEthSpec, pharos_fork_choice::NoopPowBlockProvider>(
+            run_engine_driver_loop::<MinimalBeaconSpec, pharos_fork_choice::NoopPowBlockProvider>(
                 eng,
                 fc_clone,
                 head_rx,
@@ -647,7 +652,7 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
     // import_block runs: DA gate (commitments present → Available) → STF
     // (upgrade_to_deneb fires) → on_block → payload_tx push → head update.
     let import_result = import_block::<
-        MinimalEthSpec,
+        MinimalBeaconSpec,
         NullExecutionEngine,
         EnginePowBlockProvider,
         AvailableDAChecker,
@@ -672,7 +677,7 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
 
     // ── 8. Assert (a): head advanced to the deneb block slot ─────────────────
 
-    let head = get_head::<MinimalEthSpec>(&fc.read());
+    let head = get_head::<MinimalBeaconSpec>(&fc.read());
     assert_eq!(
         head, deneb_block_root,
         "fork-choice head must be the deneb block root after import"
@@ -733,7 +738,7 @@ struct BlobRecordingProvider {
     blobs_called: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl LookupBlockProvider<MinimalEthSpec> for BlobRecordingProvider {
+impl LookupBlockProvider<MinimalBeaconSpec> for BlobRecordingProvider {
     async fn blocks_by_root(
         &self,
         _roots: Vec<Root>,
@@ -775,7 +780,7 @@ async fn lookup_runs_real_da_gate_for_deneb_block() {
     let anchor_block = pharos_types::state::BeaconBlock::Capella(anchor_signed.message.clone());
     let anchor_root: Root = anchor_block.tree_hash_root();
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(fork_state.clone(), anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(fork_state.clone(), anchor_block);
     fc.time = 10_000_000;
     fc.set_terminal_config(
         pharos_utils::Uint256::ZERO,
@@ -784,11 +789,11 @@ async fn lookup_runs_real_da_gate_for_deneb_block() {
     );
     let runtime_cfg = RuntimeConfig {
         altair_fork_epoch: 0,
-        altair_fork_version: MinimalEthSpec::ALTAIR_FORK_VERSION,
+        altair_fork_version: MinimalBeaconSpec::ALTAIR_FORK_VERSION,
         bellatrix_fork_epoch: 0,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         capella_fork_epoch: 0,
-        capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+        capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
         deneb_fork_epoch: DENEB_FORK_EPOCH,
         deneb_fork_version: [0x04, 0x00, 0x00, 0x01],
         ..RuntimeConfig::default()
@@ -807,7 +812,7 @@ async fn lookup_runs_real_da_gate_for_deneb_block() {
     // Host + store (no engine: DA rejects before the STF, so the engine is never hit).
     let tmpdir = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -815,12 +820,12 @@ async fn lookup_runs_real_da_gate_for_deneb_block() {
     );
     let genesis_validators_root = Root::default();
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: UtilsEpoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: UtilsEpoch(0),
-        capella_fork_version: Version::from_array(MinimalEthSpec::CAPELLA_FORK_VERSION),
+        capella_fork_version: Version::from_array(MinimalBeaconSpec::CAPELLA_FORK_VERSION),
         capella_fork_epoch: UtilsEpoch(0),
         deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x01]),
         deneb_fork_epoch: UtilsEpoch(DENEB_FORK_EPOCH),
@@ -828,7 +833,7 @@ async fn lookup_runs_real_da_gate_for_deneb_block() {
         electra_fork_epoch: UtilsEpoch(u64::MAX),
         genesis_validators_root,
     };
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         Arc::clone(&store),
         Arc::clone(&fc),
         genesis_validators_root,
@@ -839,7 +844,7 @@ async fn lookup_runs_real_da_gate_for_deneb_block() {
 
     // Channels for run_lookup_loop.
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
     let (lookup_tx, lookup_rx) = mpsc::channel::<LookupRequest>(64);
     let (reinject_tx, _reinject_rx) =
         mpsc::channel::<pharos_node::block_ingestion::ReinjectBlock>(64);
@@ -858,7 +863,7 @@ async fn lookup_runs_real_da_gate_for_deneb_block() {
     let fc_for_assert = Arc::clone(&fc);
 
     let loop_handle = tokio::spawn(run_lookup_loop::<
-        MinimalEthSpec,
+        MinimalBeaconSpec,
         BlobRecordingProvider,
         NullExecutionEngine,
         pharos_fork_choice::NoopPowBlockProvider,
@@ -908,7 +913,7 @@ async fn lookup_runs_real_da_gate_for_deneb_block() {
     // Give the import a moment to (not) complete, then assert head is unchanged:
     // the DA gate returned NotAvailable, so the deneb block was NOT imported.
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let head = get_head::<MinimalEthSpec>(&fc_for_assert.read());
+    let head = get_head::<MinimalBeaconSpec>(&fc_for_assert.read());
     assert_eq!(
         head, anchor_root,
         "deneb block with unavailable blobs must NOT be imported via lookup"

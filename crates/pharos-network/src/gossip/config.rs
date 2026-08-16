@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use libp2p::gossipsub::{self, MessageAuthenticity, ValidationMode};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 
 use crate::codec::MAX_PAYLOAD_SIZE;
 use crate::error::NetworkError;
@@ -32,7 +32,7 @@ const fn max_message_size() -> usize {
 /// per `specs/altair/p2p-interface.md:163-171`.
 ///
 /// Parameters per `p2p-interface.md:439-450`.
-pub fn gossipsub_config<E: EthSpec>(
+pub fn gossipsub_config<E: BeaconSpec>(
     phase0_fork_digest: ForkDigest,
 ) -> Result<gossipsub::Config, NetworkError> {
     let cache_ms = E::SLOT_DURATION_MS
@@ -75,7 +75,7 @@ pub fn gossipsub_config<E: EthSpec>(
 ///
 /// `phase0_fork_digest` is used to dispatch between the phase-0 and altair
 /// message-id formulas per `specs/altair/p2p-interface.md:163-171`.
-pub fn gossipsub_behaviour<E: EthSpec>(
+pub fn gossipsub_behaviour<E: BeaconSpec>(
     phase0_fork_digest: ForkDigest,
 ) -> Result<gossipsub::Behaviour, NetworkError> {
     let cfg = gossipsub_config::<E>(phase0_fork_digest)?;
@@ -88,18 +88,18 @@ pub fn gossipsub_behaviour<E: EthSpec>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pharos_types::MainnetEthSpec;
+    use pharos_types::MainnetBeaconSpec;
 
     fn dummy_fork_digest() -> ForkDigest {
         ForkDigest::from_array([0x00, 0x00, 0x00, 0x01])
     }
 
-    /// `gossipsub_config::<MainnetEthSpec>()` succeeds and produces a config
+    /// `gossipsub_config::<MainnetBeaconSpec>()` succeeds and produces a config
     /// where `mesh_n_low <= mesh_n <= mesh_n_high`.
     #[test]
     fn config_builds_for_mainnet() {
-        let cfg =
-            gossipsub_config::<MainnetEthSpec>(dummy_fork_digest()).expect("config build failed");
+        let cfg = gossipsub_config::<MainnetBeaconSpec>(dummy_fork_digest())
+            .expect("config build failed");
         assert!(
             cfg.mesh_n_low() <= cfg.mesh_n() && cfg.mesh_n() <= cfg.mesh_n_high(),
             "mesh invariant violated: low={} n={} high={}",
@@ -112,8 +112,8 @@ mod tests {
     /// Verify the specific mesh parameters match the spec.
     #[test]
     fn config_mesh_params() {
-        let cfg =
-            gossipsub_config::<MainnetEthSpec>(dummy_fork_digest()).expect("config build failed");
+        let cfg = gossipsub_config::<MainnetBeaconSpec>(dummy_fork_digest())
+            .expect("config build failed");
         assert_eq!(cfg.mesh_n(), 8);
         assert_eq!(cfg.mesh_n_low(), 6);
         assert_eq!(cfg.mesh_n_high(), 12);

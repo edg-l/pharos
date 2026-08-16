@@ -30,7 +30,7 @@ use pharos_network::topics::{GossipTopic, GossipTopicKind};
 use pharos_storage::Store as DbStore;
 use pharos_types::deneb::{BlobIdentifier, BlobSidecar};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     phase0::primitives::{ForkDigest, Root},
 };
 
@@ -129,7 +129,7 @@ impl From<ImportError> for LookupError {
 /// Native `async fn` in trait (Rust 1.85 stable).  This trait is only used as
 /// a monomorphised generic `P: LookupBlockProvider<E>` on `run_lookup_loop`;
 /// it is never invoked through `dyn`.  No `async-trait` dependency is needed.
-pub trait LookupBlockProvider<E: EthSpec>: Send + Sync + 'static {
+pub trait LookupBlockProvider<E: BeaconSpec>: Send + Sync + 'static {
     fn blocks_by_root(
         &self,
         roots: Vec<Root>,
@@ -182,7 +182,7 @@ pub async fn run_lookup_loop<E, P, EE, PP>(
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), LookupError>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     P: LookupBlockProvider<E>,
     EE: pharos_stf::ExecutionEngine + 'static,
     PP: pharos_fork_choice::PowBlockProvider + Send + Sync + 'static,
@@ -402,7 +402,7 @@ async fn try_import<E, P, EE, PP>(
     head_tx: &watch::Sender<Option<HeadChange>>,
 ) -> ImportAttempt
 where
-    E: EthSpec,
+    E: BeaconSpec,
     P: LookupBlockProvider<E>,
     EE: pharos_stf::ExecutionEngine + 'static,
     PP: pharos_fork_choice::PowBlockProvider + Send + Sync + 'static,
@@ -550,7 +550,7 @@ async fn run_import<E, EE, PP, DA>(
     head_tx: &watch::Sender<Option<HeadChange>>,
 ) -> ImportAttempt
 where
-    E: EthSpec,
+    E: BeaconSpec,
     EE: pharos_stf::ExecutionEngine + 'static,
     PP: pharos_fork_choice::PowBlockProvider + Send + Sync + 'static,
     DA: crate::data_availability::DataAvailabilityChecker<E> + 'static,
@@ -645,7 +645,7 @@ where
 /// earlier fork.
 fn fork_digest_of_block<E>(host: &Arc<HostImpl<E>>, signed: &E::SignedBeaconBlock) -> ForkDigest
 where
-    E: EthSpec,
+    E: BeaconSpec,
 {
     use pharos_network::types::Fork as NetworkFork;
     if E::unwrap_phase0_signed_block(signed).is_some() {
@@ -700,7 +700,7 @@ async fn fetch_and_walk<E, P, EE, PP>(
     notify_backfill: &Arc<Notify>,
     reinject_tx: &mpsc::Sender<ReinjectBlock>,
 ) where
-    E: EthSpec,
+    E: BeaconSpec,
     P: LookupBlockProvider<E>,
     EE: pharos_stf::ExecutionEngine + 'static,
     PP: pharos_fork_choice::PowBlockProvider + Send + Sync + 'static,
@@ -913,7 +913,7 @@ async fn drain_and_replay<E, P, EE, PP>(
     head_tx: &watch::Sender<Option<HeadChange>>,
     reinject_tx: &mpsc::Sender<ReinjectBlock>,
 ) where
-    E: EthSpec,
+    E: BeaconSpec,
     P: LookupBlockProvider<E>,
     EE: pharos_stf::ExecutionEngine + 'static,
     PP: pharos_fork_choice::PowBlockProvider + Send + Sync + 'static,

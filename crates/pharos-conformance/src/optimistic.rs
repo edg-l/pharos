@@ -61,7 +61,7 @@ use pharos_ssz::{Decode, TreeHash};
 use pharos_stf::phase0::BeaconStateWrite;
 use pharos_stf::{NullExecutionEngine, state_transition};
 use pharos_types::{
-    BeaconStateView, EthSpec, MainnetEthSpec, MinimalEthSpec,
+    BeaconSpec, BeaconStateView, MainnetBeaconSpec, MinimalBeaconSpec,
     phase0::{Attestation, AttesterSlashing, Checkpoint, Deposit, Epoch, Root, Slot},
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
@@ -99,14 +99,14 @@ pub fn enumerate_optimistic(root: &Path, preset: &'static str, row_ordinal: u32)
 
             let run: CaseFn = match preset {
                 "mainnet" => Box::new(move || {
-                    match run_optimistic_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                    match run_optimistic_case::<MainnetBeaconSpec>(&case_dir, &case_name) {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Skip => CaseOutcome::Skip,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
                 }),
                 _ => Box::new(move || {
-                    match run_optimistic_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                    match run_optimistic_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Skip => CaseOutcome::Skip,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
@@ -138,11 +138,11 @@ enum CaseResult {
 /// Preset-specific electra attestation feed for the optimistic runner.
 /// Feeds block body electra attestations into the fork-choice store via
 /// `on_attestation_electra` with the correct const generics per preset.
-trait OptimisticElectraFeed: EthSpec {
+trait OptimisticElectraFeed: BeaconSpec {
     fn feed_electra_attestations(store: &mut Store<Self>, signed: &Self::ElectraSignedBeaconBlock);
 }
 
-impl OptimisticElectraFeed for MainnetEthSpec {
+impl OptimisticElectraFeed for MainnetBeaconSpec {
     fn feed_electra_attestations(
         store: &mut Store<Self>,
         signed: &pharos_types::electra::MainnetSignedBeaconBlock,
@@ -153,7 +153,7 @@ impl OptimisticElectraFeed for MainnetEthSpec {
     }
 }
 
-impl OptimisticElectraFeed for MinimalEthSpec {
+impl OptimisticElectraFeed for MinimalBeaconSpec {
     fn feed_electra_attestations(
         store: &mut Store<Self>,
         signed: &pharos_types::electra::MinimalSignedBeaconBlock,
@@ -168,7 +168,7 @@ impl OptimisticElectraFeed for MinimalEthSpec {
 
 fn run_optimistic_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
-    E: EthSpec + OptimisticElectraFeed,
+    E: BeaconSpec + OptimisticElectraFeed,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
@@ -696,7 +696,7 @@ where
 ///
 /// `latest_valid_hash` is only meaningful for INVALID (used by
 /// `resolve_invalid_block` for the 3-case LVH table).
-fn apply_payload_verdict<E: EthSpec>(
+fn apply_payload_verdict<E: BeaconSpec>(
     store: &mut Store<E>,
     cl_root: Root,
     status: &str,
@@ -741,7 +741,7 @@ fn apply_payload_verdict<E: EthSpec>(
 
 fn run_checks<E>(store: &Store<E>, checks: &Checks) -> Result<(), String>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,
 {

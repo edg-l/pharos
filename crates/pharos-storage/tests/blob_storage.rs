@@ -13,14 +13,14 @@
 //!   (v3 is below the migration baseline, so it stays resync-only).
 
 use pharos_storage::{BlockTransition, RocksStore, RocksStoreConfig, StorageError, Store};
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::deneb::BlobSidecar;
 use pharos_types::phase0::primitives::{Root, Slot};
 
 // ── Type aliases ──────────────────────────────────────────────────────────────
 
 type S = RocksStore;
-type E = MainnetEthSpec;
+type E = MainnetBeaconSpec;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use pharos_types::{
-    BeaconStateView, EthSpec, PayloadStatus,
+    BeaconSpec, BeaconStateView, PayloadStatus,
     phase0::{Epoch, Root, Slot, ValidatorIndex},
     views::BeaconBlockView,
 };
@@ -32,21 +32,21 @@ const PROPOSER_REORG_CUTOFF_BPS: u64 = 1_667;
 ///
 /// Shared by `get_slots_since_genesis` and `on_tick`. Saturating-subtracts so
 /// invalid stores (`time < genesis_time`) yield slot 0 rather than panicking.
-pub(crate) fn slot_from_time<E: EthSpec>(time: u64, genesis_time: u64) -> u64 {
+pub(crate) fn slot_from_time<E: BeaconSpec>(time: u64, genesis_time: u64) -> u64 {
     time.saturating_sub(genesis_time) * 1000 / E::SLOT_DURATION_MS
 }
 
 /// Wall-clock time at the start of `slot`, inverse of `slot_from_time`.
 ///
 /// Shared by `on_tick` and `get_forkchoice_store`.
-pub(crate) fn slot_start_time<E: EthSpec>(slot: u64, genesis_time: u64) -> u64 {
+pub(crate) fn slot_start_time<E: BeaconSpec>(slot: u64, genesis_time: u64) -> u64 {
     genesis_time + slot * E::SLOT_DURATION_MS / 1000
 }
 
 /// Milliseconds elapsed within the current slot of `store`.
 ///
 /// Shared by `is_proposing_on_time` and `record_block_timeliness`.
-pub(crate) fn time_into_current_slot_ms<E: EthSpec>(store: &Store<E>) -> u64 {
+pub(crate) fn time_into_current_slot_ms<E: BeaconSpec>(store: &Store<E>) -> u64 {
     let seconds_since_genesis = store.time.saturating_sub(store.genesis_time);
     seconds_to_milliseconds(seconds_since_genesis) % E::SLOT_DURATION_MS
 }
@@ -54,23 +54,23 @@ pub(crate) fn time_into_current_slot_ms<E: EthSpec>(store: &Store<E>) -> u64 {
 // ── Slot/epoch helpers ────────────────────────────────────────────────────────
 
 /// `get_slots_since_genesis` per `specs/phase0/fork-choice.md:224-226`.
-pub fn get_slots_since_genesis<E: EthSpec>(store: &Store<E>) -> u64 {
+pub fn get_slots_since_genesis<E: BeaconSpec>(store: &Store<E>) -> u64 {
     slot_from_time::<E>(store.time, store.genesis_time)
 }
 
 /// `get_current_slot` per `specs/phase0/fork-choice.md:229-231`.
-pub fn get_current_slot<E: EthSpec>(store: &Store<E>) -> Slot {
+pub fn get_current_slot<E: BeaconSpec>(store: &Store<E>) -> Slot {
     Slot(get_slots_since_genesis(store))
 }
 
 /// `get_current_store_epoch` per `specs/phase0/fork-choice.md:234-236`.
-pub fn get_current_store_epoch<E: EthSpec>(store: &Store<E>) -> Epoch {
+pub fn get_current_store_epoch<E: BeaconSpec>(store: &Store<E>) -> Epoch {
     use pharos_stf::phase0::accessors::compute_epoch_at_slot;
     compute_epoch_at_slot(get_current_slot(store), E::SLOTS_PER_EPOCH)
 }
 
 /// `compute_slots_since_epoch_start` per `specs/phase0/fork-choice.md:239-241`.
-pub fn compute_slots_since_epoch_start<E: EthSpec>(slot: Slot) -> u64 {
+pub fn compute_slots_since_epoch_start<E: BeaconSpec>(slot: Slot) -> u64 {
     use pharos_stf::phase0::accessors::compute_epoch_at_slot;
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
     let epoch = compute_epoch_at_slot(slot, E::SLOTS_PER_EPOCH);
@@ -84,7 +84,7 @@ pub fn compute_slots_since_epoch_start<E: EthSpec>(slot: Slot) -> u64 {
 ///
 /// Walk the chain from `root` backwards until a block at `slot` or earlier is
 /// found, then return its root.
-pub fn get_ancestor<E: EthSpec>(store: &Store<E>, root: Root, slot: Slot) -> Root
+pub fn get_ancestor<E: BeaconSpec>(store: &Store<E>, root: Root, slot: Slot) -> Root
 where
     E::BeaconBlock: BeaconBlockView,
 {
@@ -105,7 +105,7 @@ where
 }
 
 /// `get_checkpoint_block` per `specs/phase0/fork-choice.md:270-276`.
-pub fn get_checkpoint_block<E: EthSpec>(store: &Store<E>, root: Root, epoch: Epoch) -> Root
+pub fn get_checkpoint_block<E: BeaconSpec>(store: &Store<E>, root: Root, epoch: Epoch) -> Root
 where
     E::BeaconBlock: BeaconBlockView,
 {
@@ -124,7 +124,7 @@ where
 /// (`get_current_epoch(state)`) and the resulting active set depend only on that
 /// one state and never vary by `root`. Computing it once and reusing it across
 /// roots avoids rebuilding an O(validators) `Vec` per weighed root.
-fn active_indices_for_justified<E: EthSpec>(store: &Store<E>) -> Vec<ValidatorIndex>
+fn active_indices_for_justified<E: BeaconSpec>(store: &Store<E>) -> Vec<ValidatorIndex>
 where
     E::BeaconState: BeaconStateView,
 {
@@ -145,7 +145,7 @@ where
 /// `get_current_epoch(state)` (see `active_indices_for_justified`); callers pass
 /// it in so it is built once per `get_head` / `get_proposer_head` call rather
 /// than rebuilt per root.
-fn get_attestation_score<E: EthSpec>(
+fn get_attestation_score<E: BeaconSpec>(
     store: &Store<E>,
     root: Root,
     state: &E::BeaconState,
@@ -182,7 +182,7 @@ where
 }
 
 /// `compute_proposer_score` per `specs/phase0/fork-choice.md:303-307`.
-pub fn compute_proposer_score<E: EthSpec>(state: &E::BeaconState) -> u64
+pub fn compute_proposer_score<E: BeaconSpec>(state: &E::BeaconState) -> u64
 where
     E::BeaconState: BeaconStateView,
 {
@@ -192,7 +192,7 @@ where
 }
 
 /// `get_proposer_score` per `specs/phase0/fork-choice.md:310-313`.
-pub fn get_proposer_score<E: EthSpec>(store: &Store<E>) -> u64
+pub fn get_proposer_score<E: BeaconSpec>(store: &Store<E>) -> u64
 where
     E::BeaconState: BeaconStateView,
 {
@@ -206,7 +206,7 @@ where
 /// `get_weight` per `specs/phase0/fork-choice.md:316-333`.
 ///
 /// Returns the LMD-GHOST vote weight for `root`, including proposer boost.
-pub fn get_weight<E: EthSpec>(store: &Store<E>, root: Root) -> u64
+pub fn get_weight<E: BeaconSpec>(store: &Store<E>, root: Root) -> u64
 where
     E::BeaconState: BeaconStateView,
     E::BeaconBlock: BeaconBlockView,
@@ -221,7 +221,7 @@ where
 /// `active_indices_for_justified(store)`. Splitting it out lets a single
 /// `get_proposer_head` call build the active set once and reuse it across the
 /// (head, parent) roots it weighs.
-fn get_weight_with<E: EthSpec>(
+fn get_weight_with<E: BeaconSpec>(
     store: &Store<E>,
     root: Root,
     active_indices: &[ValidatorIndex],
@@ -254,7 +254,7 @@ where
 // ── Voting source ─────────────────────────────────────────────────────────────
 
 /// `get_voting_source` per `specs/phase0/fork-choice.md:336-353`.
-fn get_voting_source<E: EthSpec>(
+fn get_voting_source<E: BeaconSpec>(
     store: &Store<E>,
     block_root: Root,
 ) -> pharos_types::phase0::Checkpoint
@@ -295,7 +295,7 @@ where
 /// single pass. `filter_block_tree` and `get_head` both need to enumerate a
 /// block's children; without this they each rescan the whole map per node,
 /// which is O(n^2) over the block set on every `get_head` call.
-fn children_index<E: EthSpec>(blocks: &HashMap<Root, E::BeaconBlock>) -> HashMap<Root, Vec<Root>>
+fn children_index<E: BeaconSpec>(blocks: &HashMap<Root, E::BeaconBlock>) -> HashMap<Root, Vec<Root>>
 where
     E::BeaconBlock: BeaconBlockView,
 {
@@ -312,7 +312,7 @@ where
 /// into `blocks`.
 ///
 /// External calls MUST set `block_root` to `store.justified_checkpoint.root`.
-pub fn filter_block_tree<E: EthSpec>(
+pub fn filter_block_tree<E: BeaconSpec>(
     store: &Store<E>,
     block_root: Root,
     blocks: &mut HashMap<Root, E::BeaconBlock>,
@@ -404,7 +404,7 @@ where
 /// finalized root, which after checkpoint sync is the trusted anchor and is
 /// always present in `blocks`. In genesis operation the justified root is always
 /// present, so this is a no-op there.
-pub(crate) fn effective_base<E: EthSpec>(store: &Store<E>) -> Root
+pub(crate) fn effective_base<E: BeaconSpec>(store: &Store<E>) -> Root
 where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,
@@ -417,7 +417,7 @@ where
 }
 
 /// `get_filtered_block_tree` per `specs/phase0/fork-choice.md:408-419`.
-fn get_filtered_block_tree<E: EthSpec>(store: &Store<E>) -> HashMap<Root, E::BeaconBlock>
+fn get_filtered_block_tree<E: BeaconSpec>(store: &Store<E>) -> HashMap<Root, E::BeaconBlock>
 where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,
@@ -441,7 +441,7 @@ where
 /// whose justified/finalized roots are both pre-anchor and unfetched). Callers
 /// MUST handle absence defensively (return an error / fall back) rather than
 /// `expect`/`unwrap` the lookup — a missing head must never panic the node.
-pub fn get_head<E: EthSpec>(store: &Store<E>) -> Root
+pub fn get_head<E: BeaconSpec>(store: &Store<E>) -> Root
 where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,
@@ -484,7 +484,10 @@ where
 // ── calculate_committee_fraction ─────────────────────────────────────────────
 
 /// `calculate_committee_fraction` per `specs/phase0/fork-choice.md:261-265`.
-fn calculate_committee_fraction<E: EthSpec>(state: &E::BeaconState, committee_percent: u64) -> u64
+fn calculate_committee_fraction<E: BeaconSpec>(
+    state: &E::BeaconState,
+    committee_percent: u64,
+) -> u64
 where
     E::BeaconState: BeaconStateView,
 {
@@ -501,17 +504,17 @@ pub(crate) fn seconds_to_milliseconds(seconds: u64) -> u64 {
 }
 
 /// `get_slot_component_duration_ms` per `specs/phase0/fork-choice.md:501-507`.
-pub(crate) fn get_slot_component_duration_ms<E: EthSpec>(basis_points: u64) -> u64 {
+pub(crate) fn get_slot_component_duration_ms<E: BeaconSpec>(basis_points: u64) -> u64 {
     basis_points * E::SLOT_DURATION_MS / E::BASIS_POINTS
 }
 
 /// `get_proposer_reorg_cutoff_ms` per `specs/phase0/fork-choice.md:519-521`.
-fn get_proposer_reorg_cutoff_ms<E: EthSpec>() -> u64 {
+fn get_proposer_reorg_cutoff_ms<E: BeaconSpec>() -> u64 {
     get_slot_component_duration_ms::<E>(PROPOSER_REORG_CUTOFF_BPS)
 }
 
 /// `is_head_late` per `specs/phase0/fork-choice.md:535-537`.
-pub fn is_head_late<E: EthSpec>(store: &Store<E>, head_root: Root) -> bool {
+pub fn is_head_late<E: BeaconSpec>(store: &Store<E>, head_root: Root) -> bool {
     !store
         .block_timeliness
         .get(&head_root)
@@ -520,12 +523,12 @@ pub fn is_head_late<E: EthSpec>(store: &Store<E>, head_root: Root) -> bool {
 }
 
 /// `is_shuffling_stable` per `specs/phase0/fork-choice.md:541-543`.
-pub fn is_shuffling_stable<E: EthSpec>(slot: Slot) -> bool {
+pub fn is_shuffling_stable<E: BeaconSpec>(slot: Slot) -> bool {
     slot.0 % E::SLOTS_PER_EPOCH != 0
 }
 
 /// `is_ffg_competitive` per `specs/phase0/fork-choice.md:547-551`.
-pub fn is_ffg_competitive<E: EthSpec>(
+pub fn is_ffg_competitive<E: BeaconSpec>(
     store: &Store<E>,
     head_root: Root,
     parent_root: Root,
@@ -539,7 +542,7 @@ pub fn is_ffg_competitive<E: EthSpec>(
 }
 
 /// `is_finalization_ok` per `specs/phase0/fork-choice.md:555-558`.
-pub fn is_finalization_ok<E: EthSpec>(store: &Store<E>, slot: Slot) -> bool {
+pub fn is_finalization_ok<E: BeaconSpec>(store: &Store<E>, slot: Slot) -> bool {
     use pharos_stf::phase0::accessors::compute_epoch_at_slot;
     let current_epoch = compute_epoch_at_slot(slot, E::SLOTS_PER_EPOCH);
     let epochs_since_finalization = current_epoch
@@ -549,12 +552,12 @@ pub fn is_finalization_ok<E: EthSpec>(store: &Store<E>, slot: Slot) -> bool {
 }
 
 /// `is_proposing_on_time` per `specs/phase0/fork-choice.md:561-565`.
-pub fn is_proposing_on_time<E: EthSpec>(store: &Store<E>) -> bool {
+pub fn is_proposing_on_time<E: BeaconSpec>(store: &Store<E>) -> bool {
     time_into_current_slot_ms::<E>(store) <= get_proposer_reorg_cutoff_ms::<E>()
 }
 
 /// `is_head_weak` per `specs/phase0/fork-choice.md:577-582`.
-pub fn is_head_weak<E: EthSpec>(store: &Store<E>, head_root: Root) -> bool
+pub fn is_head_weak<E: BeaconSpec>(store: &Store<E>, head_root: Root) -> bool
 where
     E::BeaconState: BeaconStateView,
     E::BeaconBlock: BeaconBlockView,
@@ -566,7 +569,7 @@ where
 
 /// `is_head_weak` with the active-validator set hoisted and a per-call weight
 /// memo threaded by the caller. Identical result to `is_head_weak`.
-fn is_head_weak_with<E: EthSpec>(
+fn is_head_weak_with<E: BeaconSpec>(
     store: &Store<E>,
     head_root: Root,
     active_indices: &[ValidatorIndex],
@@ -588,7 +591,7 @@ where
 }
 
 /// `is_parent_strong` per `specs/phase0/fork-choice.md:586-592`.
-pub fn is_parent_strong<E: EthSpec>(store: &Store<E>, root: Root) -> bool
+pub fn is_parent_strong<E: BeaconSpec>(store: &Store<E>, root: Root) -> bool
 where
     E::BeaconState: BeaconStateView,
     E::BeaconBlock: BeaconBlockView,
@@ -600,7 +603,7 @@ where
 
 /// `is_parent_strong` with the active-validator set hoisted and a per-call
 /// weight memo threaded by the caller. Identical result to `is_parent_strong`.
-fn is_parent_strong_with<E: EthSpec>(
+fn is_parent_strong_with<E: BeaconSpec>(
     store: &Store<E>,
     root: Root,
     active_indices: &[ValidatorIndex],
@@ -626,7 +629,7 @@ where
 }
 
 /// `is_proposer_equivocation` per `specs/phase0/fork-choice.md:596-611`.
-pub fn is_proposer_equivocation<E: EthSpec>(store: &Store<E>, root: Root) -> bool
+pub fn is_proposer_equivocation<E: BeaconSpec>(store: &Store<E>, root: Root) -> bool
 where
     E::BeaconBlock: BeaconBlockView,
 {
@@ -651,7 +654,7 @@ where
 /// Returns `parent_root` when all re-org conditions hold, otherwise `head_root`.
 /// Each predicate is a `pub fn` so Phase 9 conformance can exercise them
 /// individually.
-pub fn get_proposer_head<E: EthSpec>(store: &Store<E>, head_root: Root, slot: Slot) -> Root
+pub fn get_proposer_head<E: BeaconSpec>(store: &Store<E>, head_root: Root, slot: Slot) -> Root
 where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,
@@ -723,17 +726,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use pharos_types::{
-        EthSpec, MinimalEthSpec,
+        BeaconSpec, MinimalBeaconSpec,
         phase0::{Checkpoint, Root},
     };
     use pharos_utils::{Hash256, Uint256};
 
     use crate::store::Store;
 
-    /// Build a bare `Store<MinimalEthSpec>` with all maps empty and the given
+    /// Build a bare `Store<MinimalBeaconSpec>` with all maps empty and the given
     /// `genesis_time`/`time`.  Only the fields consulted by `get_current_slot`
     /// matter; everything else is zeroed/defaulted.
-    fn minimal_store(genesis_time: u64, time: u64) -> Store<MinimalEthSpec> {
+    fn minimal_store(genesis_time: u64, time: u64) -> Store<MinimalBeaconSpec> {
         let cp = Checkpoint::default();
         Store {
             time,
@@ -778,7 +781,7 @@ mod tests {
             .expect("system clock before epoch")
             .as_secs();
 
-        let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000;
+        let seconds_per_slot = MinimalBeaconSpec::SLOT_DURATION_MS / 1000;
 
         // 1. genesis == now → slot 0.
         let store = minimal_store(wall_now, wall_now);
@@ -807,7 +810,7 @@ mod tests {
         let anchor_root = Hash256::from_array([0x11; 32]);
         let absent_justified_root = Hash256::from_array([0x22; 32]);
 
-        let block: <MinimalEthSpec as EthSpec>::BeaconBlock =
+        let block: <MinimalBeaconSpec as BeaconSpec>::BeaconBlock =
             pharos_types::BeaconBlock::Phase0(Phase0BeaconBlock::default());
 
         let mut store = minimal_store(0, 0);

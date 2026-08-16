@@ -24,7 +24,7 @@ use std::time::Duration;
 use common::{NetworkEvent, TestHost};
 use libp2p::identity::Keypair;
 use pharos_network::{NetworkBuilder, NetworkCommand};
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::phase0::primitives::ForkDigest;
 use serial_test::serial;
 use tokio::time::{sleep, timeout};
@@ -141,7 +141,7 @@ async fn no_events_dropped_slow_consumer() {
     const READ_INTERVAL_MS: u64 = 100; // 10 events/second
 
     let (mut handle, _disc) =
-        NetworkBuilder::<MainnetEthSpec, TestHost, _>::new(TestHost::new(fd()))
+        NetworkBuilder::<MainnetBeaconSpec, TestHost, _>::new(TestHost::new(fd()))
             .local_key(Keypair::generate_secp256k1())
             .listen_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))
             .discv5_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())
@@ -226,7 +226,7 @@ async fn timeout_warn_fires_on_stalled_consumer() {
     let baseline = counter.load(Ordering::Relaxed);
 
     let (mut handle, _disc) =
-        NetworkBuilder::<MainnetEthSpec, TestHost, _>::new(TestHost::new(fd()))
+        NetworkBuilder::<MainnetBeaconSpec, TestHost, _>::new(TestHost::new(fd()))
             .local_key(Keypair::generate_secp256k1())
             .listen_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))
             .discv5_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())

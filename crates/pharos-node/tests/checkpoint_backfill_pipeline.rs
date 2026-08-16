@@ -32,7 +32,7 @@ use pharos_stf::NullExecutionEngine;
 use pharos_storage::{ForkChoiceSnapshot, RocksStore, RocksStoreConfig};
 use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::primitives::{Root, Slot, Version};
-use pharos_types::{EthSpec, MinimalEthSpec};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 use pharos_utils::{Epoch, Hash256, Uint256};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -229,11 +229,11 @@ async fn spawn_beacon_api_mock(
 ///
 /// Not HTTP — `BeaconBlocksByRange` is a libp2p req-resp per `D-backfill-driver`.
 #[derive(Clone)]
-struct FixtureBlockProvider<E: EthSpec> {
+struct FixtureBlockProvider<E: BeaconSpec> {
     blocks: Arc<Mutex<Option<Vec<E::SignedBeaconBlock>>>>,
 }
 
-impl<E: EthSpec> FixtureBlockProvider<E> {
+impl<E: BeaconSpec> FixtureBlockProvider<E> {
     fn new(blocks: Vec<E::SignedBeaconBlock>) -> Self {
         Self {
             blocks: Arc::new(Mutex::new(Some(blocks))),
@@ -241,12 +241,12 @@ impl<E: EthSpec> FixtureBlockProvider<E> {
     }
 }
 
-impl BackfillBlockProvider<MinimalEthSpec> for FixtureBlockProvider<MinimalEthSpec> {
+impl BackfillBlockProvider<MinimalBeaconSpec> for FixtureBlockProvider<MinimalBeaconSpec> {
     async fn blocks_by_range(
         &self,
         _start_slot: Slot,
         _count: u64,
-    ) -> Result<Vec<<MinimalEthSpec as EthSpec>::SignedBeaconBlock>, BackfillError> {
+    ) -> Result<Vec<<MinimalBeaconSpec as BeaconSpec>::SignedBeaconBlock>, BackfillError> {
         let mut guard = self.blocks.lock();
         Ok(guard.take().unwrap_or_default())
     }
@@ -261,8 +261,8 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     // ── 1. Build fixture chain ────────────────────────────────────────────────
 
     // Anchor state at slot 64. genesis_time = wall_now - 64 * SECONDS_PER_SLOT.
-    // MinimalEthSpec::SLOT_DURATION_MS = 6_000, so SECONDS_PER_SLOT = 6.
-    let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000;
+    // MinimalBeaconSpec::SLOT_DURATION_MS = 6_000, so SECONDS_PER_SLOT = 6.
+    let seconds_per_slot = MinimalBeaconSpec::SLOT_DURATION_MS / 1000;
     let wall_now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -338,7 +338,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
 
     let tmpdir = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -348,7 +348,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     // ── 6. Fetch checkpoint via Beacon API ────────────────────────────────────
 
     let http = reqwest::Client::new();
-    let anchor = fetch_checkpoint::<MinimalEthSpec>(&beacon_api_url, &http, None)
+    let anchor = fetch_checkpoint::<MinimalBeaconSpec>(&beacon_api_url, &http, None)
         .await
         .expect("fetch_checkpoint must succeed");
 
@@ -365,7 +365,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         anchor.state.slot().0
     };
     let snapshot: ForkChoiceSnapshot =
-        apply_anchor::<MinimalEthSpec>(anchor, &store, anchor_current_slot, true)
+        apply_anchor::<MinimalBeaconSpec>(anchor, &store, anchor_current_slot, true)
             .expect("apply_anchor must succeed");
 
     // ── 8. Rehydrate fork-choice store ────────────────────────────────────────
@@ -373,9 +373,9 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     // Minimal-preset runtime config (6s slots, minimal fork epochs). Passed to
     // rehydrate so any hot-window replay uses the correct slot duration + fork
     // schedule, and re-installed on the fc store below (as `main.rs` does).
-    let minimal_cfg = MinimalEthSpec::default_runtime_config();
+    let minimal_cfg = MinimalBeaconSpec::default_runtime_config();
     let mut fc_store =
-        rehydrate_fork_choice_store::<MinimalEthSpec>(&store, &snapshot, &minimal_cfg)
+        rehydrate_fork_choice_store::<MinimalBeaconSpec>(&store, &snapshot, &minimal_cfg)
             .expect("rehydrate_fork_choice_store must succeed");
 
     // Install the minimal-preset runtime config + fork-epoch schedule, exactly as
@@ -397,7 +397,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     // `time >= genesis_time + (ANCHOR_SLOT + N_BACKFILL_BLOCKS) * seconds_per_slot`.
     // `FC_STORE_TIME_ADVANCE_SECS` (~11 days) past wall-clock satisfies this.
     // Use the public `on_tick` API rather than reaching into `fc_store.time`.
-    pharos_fork_choice::on_tick::<MinimalEthSpec>(
+    pharos_fork_choice::on_tick::<MinimalBeaconSpec>(
         &mut fc_store,
         wall_now + FC_STORE_TIME_ADVANCE_SECS,
     );
@@ -419,17 +419,17 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     // ── 10. Wire channels ─────────────────────────────────────────────────────
 
     let (head_tx, head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
 
     // ── 11. Build HostImpl and wire engine ────────────────────────────────────
 
     let genesis_validators_root = Root::default();
     // Bellatrix-at-genesis schedule: all three epochs = 0.
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -439,7 +439,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
-    let mut host = HostImpl::<MinimalEthSpec>::new(
+    let mut host = HostImpl::<MinimalBeaconSpec>::new(
         Arc::clone(&store),
         Arc::clone(&fc_store),
         genesis_validators_root,
@@ -457,7 +457,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         let eng = engine_handle.clone();
         let head_tx_driver = head_tx.clone();
         tokio::spawn(async move {
-            run_engine_driver_loop::<MinimalEthSpec, pharos_fork_choice::NoopPowBlockProvider>(
+            run_engine_driver_loop::<MinimalBeaconSpec, pharos_fork_choice::NoopPowBlockProvider>(
                 eng,
                 fc_clone,
                 head_rx,
@@ -473,7 +473,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
 
     let pow_provider = Arc::new(EnginePowBlockProvider::new(engine_handle.clone()));
     let exec_engine = Arc::new(NullExecutionEngine);
-    let provider = FixtureBlockProvider::<MinimalEthSpec>::new(chain_blocks);
+    let provider = FixtureBlockProvider::<MinimalBeaconSpec>::new(chain_blocks);
 
     // Use a far-past genesis_time for the backfill loop's wall-slot computation
     // so that wall_slot >> ANCHOR_SLOT + N_BACKFILL_BLOCKS. The backfill loop
@@ -490,8 +490,8 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         let pt = payload_tx.clone();
         tokio::spawn(async move {
             run_backfill_loop::<
-                MinimalEthSpec,
-                FixtureBlockProvider<MinimalEthSpec>,
+                MinimalBeaconSpec,
+                FixtureBlockProvider<MinimalBeaconSpec>,
                 NullExecutionEngine,
                 EnginePowBlockProvider,
             >(
@@ -521,7 +521,7 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         loop {
             let head_slot = {
                 let s = fc_for_assert.read();
-                let root = get_head::<MinimalEthSpec>(&s);
+                let root = get_head::<MinimalBeaconSpec>(&s);
                 s.blocks
                     .get(&root)
                     .map(|b| {

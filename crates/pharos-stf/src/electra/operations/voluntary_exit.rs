@@ -10,7 +10,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec, config::RuntimeConfig, electra::BeaconState, phase0::SignedVoluntaryExit,
+    BeaconSpec, config::RuntimeConfig, electra::BeaconState, phase0::SignedVoluntaryExit,
 };
 
 use crate::electra::helpers::{
@@ -63,7 +63,7 @@ pub fn process_voluntary_exit_electra<
     runtime_cfg: &RuntimeConfig,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         ElectraBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

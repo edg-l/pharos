@@ -15,7 +15,7 @@
 use pharos_kzg::kzg_commitment_to_versioned_hash;
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     deneb::{
         BeaconBlockBody, BeaconState, execution_payload::ExecutionPayloadHeader as DenebHeader,
     },
@@ -92,7 +92,7 @@ pub fn process_execution_payload<
     runtime_cfg: &pharos_types::config::RuntimeConfig,
 ) -> Result<PayloadVerificationStatus, StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         DenebBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

@@ -37,7 +37,7 @@ use pharos_types::state::{
     BeaconBlock as ForkBeaconBlock, MinimalBeaconState as ForkMinState,
     SignedBeaconBlock as ForkSignedBlock,
 };
-use pharos_types::{EthSpec, MinimalEthSpec};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 use pharos_utils::{BLSPubkey, BLSSignature, Hash256};
 use tokio::sync::mpsc;
 
@@ -116,7 +116,7 @@ impl ToggleDAChecker {
     }
 }
 
-impl DataAvailabilityChecker<MinimalEthSpec> for ToggleDAChecker {
+impl DataAvailabilityChecker<MinimalBeaconSpec> for ToggleDAChecker {
     fn is_data_available(
         &self,
         _block_root: Root,
@@ -152,7 +152,7 @@ fn build_anchor() -> (ForkMinState, MinForkBlock, Root) {
 
     let validator = Validator {
         pubkey: test_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -163,7 +163,7 @@ fn build_anchor() -> (ForkMinState, MinForkBlock, Root) {
     let sync_committee = MinimalSyncCommittee {
         pubkeys: SszVector::from_vec(vec![
             test_pubkey();
-            MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+            MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
         ])
         .unwrap(),
         aggregate_pubkey: test_pubkey(),
@@ -174,7 +174,7 @@ fn build_anchor() -> (ForkMinState, MinForkBlock, Root) {
         slot: Slot(0),
         fork: Fork {
             previous_version: Version::from_array([0x01, 0x00, 0x00, 0x01]),
-            current_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+            current_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
             epoch: Epoch(0),
         },
         latest_block_header: BeaconBlockHeader {
@@ -187,7 +187,7 @@ fn build_anchor() -> (ForkMinState, MinForkBlock, Root) {
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         )
         .unwrap(),
         previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
@@ -226,8 +226,8 @@ fn build_execution_block(genesis_state: ForkMinState, anchor_root: Root) -> MinF
     };
 
     let runtime_cfg = RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         bellatrix_fork_epoch: 0,
         altair_fork_epoch: 0,
         ..Default::default()
@@ -238,7 +238,7 @@ fn build_execution_block(genesis_state: ForkMinState, anchor_root: Root) -> MinF
 
     // Advance a clone to slot 1 to read randao_mix / timestamp.
     let mut pre_advanced = genesis_state.clone();
-    process_slots_fork::<MinimalEthSpec>(
+    process_slots_fork::<MinimalBeaconSpec>(
         &mut pre_advanced,
         slot,
         pharos_stf::ForkEpochs::never(),
@@ -251,8 +251,8 @@ fn build_execution_block(genesis_state: ForkMinState, anchor_root: Root) -> MinF
             ForkMinState::Bellatrix(s) => s,
             _ => unreachable!(),
         };
-        let epoch = slot.0 / MinimalEthSpec::SLOTS_PER_EPOCH;
-        let idx = (epoch % MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
+        let epoch = slot.0 / MinimalBeaconSpec::SLOTS_PER_EPOCH;
+        let idx = (epoch % MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
         let randao = s.randao_mixes.get(idx).copied().unwrap_or_default();
         let ts = s.genesis_time + slot.0 * runtime_cfg.seconds_per_slot;
         (randao, ts)
@@ -292,7 +292,7 @@ fn build_execution_block(genesis_state: ForkMinState, anchor_root: Root) -> MinF
         signature: BLSSignature::from_array([0u8; 96]),
     });
 
-    let (post_state, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+    let (post_state, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
         genesis_state,
         &draft_signed,
         &null_engine,
@@ -333,7 +333,7 @@ async fn blob_da_pipeline() {
 
     // ── Build fork-choice store ───────────────────────────────────────────────
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, anchor_block);
 
     // Set time = 6s so current_slot = 1.
     fc.time = 6;
@@ -350,7 +350,7 @@ async fn blob_da_pipeline() {
 
     let tmpdir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -359,7 +359,7 @@ async fn blob_da_pipeline() {
 
     // ── Channel setup ─────────────────────────────────────────────────────────
 
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(16);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(16);
     let (reinject_tx, mut reinject_rx) = mpsc::channel::<ReinjectBlock>(16);
 
     // ── DA checker + awaiting-blocks registry ─────────────────────────────────
@@ -370,15 +370,15 @@ async fn blob_da_pipeline() {
     // ── Import block 1 with DA blocked ────────────────────────────────────────
 
     let cfg = RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         bellatrix_fork_epoch: 0,
         altair_fork_epoch: 0,
         ..Default::default()
     };
 
     let import_result = pharos_node::import::import_block::<
-        MinimalEthSpec,
+        MinimalBeaconSpec,
         NullExecutionEngine,
         NoopPowBlockProvider,
         ToggleDAChecker,
@@ -404,7 +404,7 @@ async fn blob_da_pipeline() {
     // Fork-choice head must NOT have advanced (RI-1 invariant).
     {
         let fc = fc_store.read();
-        let head = get_head::<MinimalEthSpec>(&fc);
+        let head = get_head::<MinimalBeaconSpec>(&fc);
         assert_ne!(
             head, block1_root,
             "block1 must NOT be head while DA blocked"
@@ -452,7 +452,7 @@ async fn blob_da_pipeline() {
     // ── Import block 1 again (DA now open) ───────────────────────────────────
 
     let import_result2 = pharos_node::import::import_block::<
-        MinimalEthSpec,
+        MinimalBeaconSpec,
         NullExecutionEngine,
         NoopPowBlockProvider,
         ToggleDAChecker,
@@ -478,7 +478,7 @@ async fn blob_da_pipeline() {
     // Head must now be block1.
     {
         let fc = fc_store.read();
-        let head = get_head::<MinimalEthSpec>(&fc);
+        let head = get_head::<MinimalBeaconSpec>(&fc);
         assert_eq!(
             head, block1_root,
             "head must advance to block1 after DA satisfied"

@@ -14,7 +14,7 @@ use pharos_stf::phase0::{
     BeaconStateWrite,
     genesis::{BeaconStateMut, initialize_beacon_state_from_eth1, is_valid_genesis_state},
 };
-use pharos_types::{EthSpec, MinimalEthSpec, phase0::Deposit};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec, phase0::Deposit};
 
 use crate::fixture_walker::{WalkOpts, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
@@ -68,7 +68,7 @@ pub fn enumerate_genesis(
             dir_name(&case_dir)
         );
         let run: CaseFn = Box::new(move || {
-            match run_initialization_case::<MinimalEthSpec>(&case_dir, &case_name, meta) {
+            match run_initialization_case::<MinimalBeaconSpec>(&case_dir, &case_name, meta) {
                 CaseResult::Pass => CaseOutcome::Pass,
                 CaseResult::Skip => CaseOutcome::Skip,
                 CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
@@ -87,7 +87,7 @@ pub fn enumerate_genesis(
         let case_name = format!("phase0/genesis/minimal/validity/{}", dir_name(&case_dir));
         let run: CaseFn =
             Box::new(
-                move || match run_validity_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                move || match run_validity_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
                     CaseResult::Pass => CaseOutcome::Pass,
                     CaseResult::Skip => CaseOutcome::Skip,
                     CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
@@ -112,7 +112,7 @@ enum CaseResult {
     Skip,
 }
 
-fn run_initialization_case<E: EthSpec>(
+fn run_initialization_case<E: BeaconSpec>(
     case_dir: &Path,
     case_name: &str,
     meta: Option<crate::fixture_walker::MetaYaml>,
@@ -193,7 +193,7 @@ where
     }
 }
 
-fn run_validity_case<E: EthSpec>(case_dir: &Path, case_name: &str) -> CaseResult
+fn run_validity_case<E: BeaconSpec>(case_dir: &Path, case_name: &str) -> CaseResult
 where
     E::BeaconState: BeaconStateMut,
     E::Phase0BeaconState: Decode,

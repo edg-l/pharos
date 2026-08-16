@@ -5,7 +5,7 @@
 //! spec: specs/phase0/beacon-chain.md:1833-1841 (unchanged in Altair)
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, altair::BeaconState};
+use pharos_types::{BeaconSpec, altair::BeaconState};
 use pharos_utils::Gwei;
 
 use crate::error::EpochProcessingError;
@@ -39,7 +39,7 @@ pub fn process_slashings_reset<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

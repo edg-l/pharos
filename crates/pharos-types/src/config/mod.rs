@@ -4,24 +4,24 @@
 //! schedule. It is a runtime-owned value so the node can be pointed at an
 //! arbitrary network (mainnet, devnet, etc.) without recompiling.
 //!
-//! The `EthSpec` trait consts are compile-time bounds on container sizes; this
+//! The `BeaconSpec` trait consts are compile-time bounds on container sizes; this
 //! struct carries the same values as a flat struct that can be loaded from YAML
 //! at startup.
 //!
 //! Default impl returns the mainnet configuration via
-//! `MainnetEthSpec::default_runtime_config()`.
+//! `MainnetBeaconSpec::default_runtime_config()`.
 
 pub mod loader;
 pub use loader::{ConfigError, load_config_dir};
 
 use pharos_utils::{Hash256, Uint256};
 
-use crate::eth_spec::{EthSpec, MainnetEthSpec};
+use crate::eth_spec::{BeaconSpec, MainnetBeaconSpec};
 
 /// Runtime configuration snapshot.
 ///
 /// Carries the full preset numeric set (altair constants included) plus the
-/// fork schedule. Numeric fields mirror the corresponding `EthSpec` associated
+/// fork schedule. Numeric fields mirror the corresponding `BeaconSpec` associated
 /// consts; fork-schedule fields come from `configs/<network>.yaml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
@@ -159,31 +159,31 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     /// Returns the mainnet configuration.
     fn default() -> Self {
-        MainnetEthSpec::default_runtime_config()
+        MainnetBeaconSpec::default_runtime_config()
     }
 }
 
 impl RuntimeConfig {
     /// Assert that every numeric field that is shared between `RuntimeConfig`
-    /// and `E: EthSpec` matches the compile-time constant value.
+    /// and `E: BeaconSpec` matches the compile-time constant value.
     ///
     /// Per `D-ethspec-yaml-loader`, dimension-bearing fields
     /// (`SYNC_COMMITTEE_SIZE`, `VALIDATOR_REGISTRY_LIMIT`, etc.) cannot be
     /// overridden at runtime; mismatches here indicate that the operator must
-    /// recompile with the appropriate `EthSpec` preset binding. Non-dimension
+    /// recompile with the appropriate `BeaconSpec` preset binding. Non-dimension
     /// fields (fork epochs, slot durations, churn limits) may differ — the
     /// YAML values take precedence at runtime.
     ///
     /// Returns `Err` with a descriptive message on any dimension-field mismatch.
-    pub fn assert_matches_preset<E: EthSpec>(&self) -> Result<(), loader::ConfigError> {
+    pub fn assert_matches_preset<E: BeaconSpec>(&self) -> Result<(), loader::ConfigError> {
         macro_rules! check_field {
             ($field:expr, $cfg_val:expr, $spec_val:expr) => {
                 if $cfg_val != $spec_val {
                     return Err(loader::ConfigError::InvalidValue {
                         field: $field,
                         value: format!(
-                            "YAML value {} does not match compile-time EthSpec constant {} \
-                             — recompile with the appropriate EthSpec preset to use this config",
+                            "YAML value {} does not match compile-time BeaconSpec constant {} \
+                             — recompile with the appropriate BeaconSpec preset to use this config",
                             $cfg_val, $spec_val
                         ),
                     });
@@ -292,12 +292,12 @@ impl RuntimeConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::eth_spec::{EthSpec, MainnetEthSpec, MinimalEthSpec};
+    use crate::eth_spec::{BeaconSpec, MainnetBeaconSpec, MinimalBeaconSpec};
 
     #[test]
     fn mainnet_altair_fork_epoch() {
         assert_eq!(
-            MainnetEthSpec::default_runtime_config().altair_fork_epoch,
+            MainnetBeaconSpec::default_runtime_config().altair_fork_epoch,
             74_240,
         );
     }
@@ -305,18 +305,18 @@ mod tests {
     #[test]
     fn minimal_altair_fork_epoch() {
         assert_eq!(
-            MinimalEthSpec::default_runtime_config().altair_fork_epoch,
+            MinimalBeaconSpec::default_runtime_config().altair_fork_epoch,
             0,
         );
     }
 
     #[test]
     fn mainnet_sync_committee_size() {
-        assert_eq!(<MainnetEthSpec as EthSpec>::SYNC_COMMITTEE_SIZE, 512);
+        assert_eq!(<MainnetBeaconSpec as BeaconSpec>::SYNC_COMMITTEE_SIZE, 512);
     }
 
     #[test]
     fn minimal_sync_committee_size() {
-        assert_eq!(<MinimalEthSpec as EthSpec>::SYNC_COMMITTEE_SIZE, 32);
+        assert_eq!(<MinimalBeaconSpec as BeaconSpec>::SYNC_COMMITTEE_SIZE, 32);
     }
 }

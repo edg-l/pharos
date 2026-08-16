@@ -1,12 +1,12 @@
 //! `process_eth1_data` per `specs/phase0/beacon-chain.md:1926-1956`.
 
-use pharos_types::{EthSpec, views::BeaconBlockBodyView};
+use pharos_types::{BeaconSpec, views::BeaconBlockBodyView};
 
 use crate::error::StateTransitionError;
 use crate::phase0::state_write::BeaconStateWrite;
 
 /// `process_eth1_data` per `specs/phase0/beacon-chain.md:1926-1956`.
-pub fn process_eth1_data<E: EthSpec>(
+pub fn process_eth1_data<E: BeaconSpec>(
     state: &mut E::BeaconState,
     body: &E::Phase0BeaconBlockBody,
 ) -> Result<(), StateTransitionError>

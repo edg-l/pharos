@@ -26,7 +26,7 @@ use pharos_types::phase0::primitives::{Epoch, Gwei, Root, Slot, ValidatorIndex, 
 use pharos_types::state::{
     MinimalBeaconState as ForkMinimalBeaconState, SignedBeaconBlock as ForkSignedBeaconBlock,
 };
-use pharos_types::{EthSpec, MinimalEthSpec};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 use pharos_utils::bls::BLS_DST;
 use pharos_utils::{BLSPubkey, BLSSignature, Hash256};
 
@@ -112,7 +112,7 @@ pub fn build_anchor_bellatrix(
 
     let validator = Validator {
         pubkey: test_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -124,7 +124,7 @@ pub fn build_anchor_bellatrix(
     let sync_committee = MinimalSyncCommittee {
         pubkeys: SszVector::from_vec(vec![
             test_pubkey();
-            MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+            MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
         ])
         .unwrap(),
         aggregate_pubkey: test_pubkey(),
@@ -135,7 +135,7 @@ pub fn build_anchor_bellatrix(
         slot,
         fork: Fork {
             previous_version: Version::from_array([0x01, 0x00, 0x00, 0x01]),
-            current_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+            current_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
             epoch: Epoch(0),
         },
         latest_block_header: BeaconBlockHeader {
@@ -148,7 +148,7 @@ pub fn build_anchor_bellatrix(
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         )
         .unwrap(),
         previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
@@ -194,8 +194,8 @@ pub fn build_backfill_chain(
     count: u64,
 ) -> Vec<MinForkSignedBlock> {
     let runtime_cfg = RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         ..Default::default()
     };
     let null_engine = NullExecutionEngine;
@@ -229,7 +229,7 @@ pub fn build_backfill_chain(
 
         // Advance a clone to `slot` to read randao_mix and expected timestamp.
         let mut pre_state_advanced = state.clone();
-        process_slots_fork::<MinimalEthSpec>(
+        process_slots_fork::<MinimalBeaconSpec>(
             &mut pre_state_advanced,
             slot,
             pharos_stf::ForkEpochs::never(),
@@ -247,8 +247,8 @@ pub fn build_backfill_chain(
                 ForkMinimalBeaconState::Bellatrix(s) => s,
                 _ => panic!("expected Bellatrix state"),
             };
-            let epoch = slot.0 / MinimalEthSpec::SLOTS_PER_EPOCH;
-            let idx = (epoch % MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
+            let epoch = slot.0 / MinimalBeaconSpec::SLOTS_PER_EPOCH;
+            let idx = (epoch % MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
             let randao = s.randao_mixes.get(idx).copied().unwrap_or_default();
             let ts = s.genesis_time + slot.0 * runtime_cfg.seconds_per_slot;
             (randao, ts)
@@ -279,9 +279,9 @@ pub fn build_backfill_chain(
 
         // Produce a valid RANDAO reveal so process_randao with verify_signatures=true
         // passes in run_backfill_loop.
-        let randao_epoch = get_current_epoch::<MinimalEthSpec>(&pre_state_advanced);
+        let randao_epoch = get_current_epoch::<MinimalBeaconSpec>(&pre_state_advanced);
         let randao_domain =
-            get_domain::<MinimalEthSpec>(&pre_state_advanced, DOMAIN_RANDAO, Some(randao_epoch));
+            get_domain::<MinimalBeaconSpec>(&pre_state_advanced, DOMAIN_RANDAO, Some(randao_epoch));
         let randao_signing_root = compute_signing_root(&randao_epoch, randao_domain);
         let randao_reveal = test_sign(randao_signing_root.as_slice());
 
@@ -311,7 +311,7 @@ pub fn build_backfill_chain(
             signature: BLSSignature::from_array([0u8; 96]),
         });
 
-        let (post_state_draft, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_state_draft, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             state.clone(),
             &draft_signed,
             &null_engine,
@@ -339,7 +339,7 @@ pub fn build_backfill_chain(
         // Produce a valid BLS block signature so state_transition with
         // validate_result=true (used by run_backfill_loop) accepts the block.
         let domain =
-            get_domain::<MinimalEthSpec>(&pre_state_advanced, DOMAIN_BEACON_PROPOSER, None);
+            get_domain::<MinimalBeaconSpec>(&pre_state_advanced, DOMAIN_BEACON_PROPOSER, None);
         let signing_root = compute_signing_root(&final_block, domain);
         let real_sig = test_sign(signing_root.as_slice());
 
@@ -349,7 +349,7 @@ pub fn build_backfill_chain(
         });
 
         // Step 3: final STF pass with correct state_root.
-        let (post_state, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_state, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             state.clone(),
             &fork_signed,
             &null_engine,

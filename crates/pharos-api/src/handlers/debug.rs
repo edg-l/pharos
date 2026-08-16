@@ -20,7 +20,7 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use pharos_ssz::Encode;
-use pharos_types::{BeaconStateView, EthSpec};
+use pharos_types::{BeaconSpec, BeaconStateView};
 
 use crate::error::ApiError;
 use crate::fork_tag::ForkTagged;
@@ -34,7 +34,7 @@ use crate::state::ApiState;
 ///
 /// Dumps all in-memory fork-choice blocks.  Sources from
 /// `ChainStateApi::fork_choice_dump`.
-pub async fn get_fork_choice<E: EthSpec>(State(state): State<Arc<ApiState<E>>>) -> Response {
+pub async fn get_fork_choice<E: BeaconSpec>(State(state): State<Arc<ApiState<E>>>) -> Response {
     let chain = Arc::clone(&state.chain);
     let result = tokio::task::spawn_blocking(move || chain.fork_choice_dump())
         .await
@@ -50,7 +50,7 @@ pub async fn get_fork_choice<E: EthSpec>(State(state): State<Arc<ApiState<E>>>) 
 /// `GET /eth/v2/debug/beacon/heads`
 ///
 /// Returns the set of leaf nodes in the in-memory fork-choice tree.
-pub async fn get_beacon_heads<E: EthSpec>(State(state): State<Arc<ApiState<E>>>) -> Response {
+pub async fn get_beacon_heads<E: BeaconSpec>(State(state): State<Arc<ApiState<E>>>) -> Response {
     let chain = Arc::clone(&state.chain);
     let result = tokio::task::spawn_blocking(move || chain.fork_choice_heads())
         .await
@@ -71,7 +71,7 @@ pub async fn get_beacon_heads<E: EthSpec>(State(state): State<Arc<ApiState<E>>>)
 /// JSON: `ChainStateApi::state_to_json` — required method, produces complete
 /// fork-tagged fields via `beacon_state_to_json_full`.
 /// SSZ: raw `Encode::as_ssz_bytes`.
-pub async fn get_debug_state<E: EthSpec>(
+pub async fn get_debug_state<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     headers: HeaderMap,

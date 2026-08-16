@@ -19,7 +19,7 @@ use pharos_storage::{RocksStore, RocksStoreConfig};
 use pharos_types::phase0::MainnetBeaconState as Phase0MainnetBeaconState;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::state::{BeaconBlock as ForkBeaconBlock, MainnetBeaconState};
-use pharos_types::{EthSpec, MainnetEthSpec, load_config_dir};
+use pharos_types::{BeaconSpec, MainnetBeaconSpec, load_config_dir};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
@@ -143,7 +143,7 @@ struct Args {
     /// The loader appends `.yaml` to read the network config file, then
     /// discovers the preset files at `<repo>/presets/<PRESET_BASE>/`.
     ///
-    /// When absent, defaults to the `MainnetEthSpec` compile-time preset.
+    /// When absent, defaults to the `MainnetBeaconSpec` compile-time preset.
     #[arg(long, value_name = "PATH")]
     config_dir: Option<PathBuf>,
 
@@ -351,20 +351,20 @@ async fn main() -> anyhow::Result<()> {
     //
     // `--config-dir` absent: use compile-time mainnet defaults.
     // `--config-dir <path>`: load from YAML and assert the preset matches
-    // the binary's compile-time `MainnetEthSpec` constants.
+    // the binary's compile-time `MainnetBeaconSpec` constants.
     let runtime_cfg = if let Some(ref config_dir) = args.config_dir {
         info!(path = %config_dir.display(), "loading runtime config from YAML");
         let cfg = load_config_dir(config_dir)
             .with_context(|| format!("loading config from {:?}", config_dir))?;
-        cfg.assert_matches_preset::<MainnetEthSpec>()
-            .with_context(|| "runtime config does not match MainnetEthSpec preset")?;
+        cfg.assert_matches_preset::<MainnetBeaconSpec>()
+            .with_context(|| "runtime config does not match MainnetBeaconSpec preset")?;
         info!(
             altair_fork_epoch = cfg.altair_fork_epoch,
             "runtime config loaded"
         );
         cfg
     } else {
-        MainnetEthSpec::default_runtime_config()
+        MainnetBeaconSpec::default_runtime_config()
     };
 
     info!(version = env!("CARGO_PKG_VERSION"), "pharos starting");
@@ -411,7 +411,7 @@ async fn main() -> anyhow::Result<()> {
     info!(path = %chain_db_path.display(), "opening chain database");
 
     let store = Arc::new(
-        RocksStore::open::<MainnetEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MainnetBeaconSpec>(RocksStoreConfig {
             path: chain_db_path,
             create_if_missing: true,
         })
@@ -429,18 +429,18 @@ async fn main() -> anyhow::Result<()> {
     use pharos_types::views::BeaconStateView;
 
     let snapshot =
-        <RocksStore as pharos_storage::Store<MainnetEthSpec>>::get_forkchoice_snapshot(&store)
+        <RocksStore as pharos_storage::Store<MainnetBeaconSpec>>::get_forkchoice_snapshot(&store)
             .context("reading fork-choice snapshot")?;
 
     // `genesis_validators_root` is extracted from whichever anchor we land on.
     let (fc_store, genesis_validators_root) = if let Some(ref snap) = snapshot {
         info!("warm restart: rehydrating fork-choice store from snapshot");
-        let fc = rehydrate_fork_choice_store::<MainnetEthSpec>(&store, snap, &runtime_cfg)
+        let fc = rehydrate_fork_choice_store::<MainnetBeaconSpec>(&store, snap, &runtime_cfg)
             .context("rehydrating fork-choice store")?;
         // Derive genesis_validators_root from the anchor block's post-state.
         // The finalized_checkpoint.root is the block root; get the block to
         // find state_root, then load the state.
-        let anchor_block = <RocksStore as pharos_storage::Store<MainnetEthSpec>>::get_block(
+        let anchor_block = <RocksStore as pharos_storage::Store<MainnetBeaconSpec>>::get_block(
             &store,
             &snap.finalized_checkpoint.root,
         )
@@ -449,23 +449,24 @@ async fn main() -> anyhow::Result<()> {
             // Access the inner block via fork-unwrap to get state_root.
             use pharos_types::views::BeaconBlockView as _;
             use pharos_types::views::SignedBeaconBlockView as _;
-            let state_root =
-                if let Some(inner) = MainnetEthSpec::unwrap_phase0_signed_block(&signed) {
-                    inner.message().state_root()
-                } else if let Some(inner) = MainnetEthSpec::unwrap_altair_signed_block(&signed) {
-                    inner.message().state_root()
-                } else if let Some(inner) = MainnetEthSpec::unwrap_bellatrix_signed_block(&signed) {
-                    inner.message().state_root()
-                } else if let Some(inner) = MainnetEthSpec::unwrap_capella_signed_block(&signed) {
-                    inner.message().state_root()
-                } else if let Some(inner) = MainnetEthSpec::unwrap_deneb_signed_block(&signed) {
-                    inner.message().state_root()
-                } else if let Some(inner) = MainnetEthSpec::unwrap_electra_signed_block(&signed) {
-                    inner.message().state_root()
-                } else {
-                    unreachable!("unrecognised SignedBeaconBlock fork variant in warm restart")
-                };
-            let state = <RocksStore as pharos_storage::Store<MainnetEthSpec>>::get_state(
+            let state_root = if let Some(inner) =
+                MainnetBeaconSpec::unwrap_phase0_signed_block(&signed)
+            {
+                inner.message().state_root()
+            } else if let Some(inner) = MainnetBeaconSpec::unwrap_altair_signed_block(&signed) {
+                inner.message().state_root()
+            } else if let Some(inner) = MainnetBeaconSpec::unwrap_bellatrix_signed_block(&signed) {
+                inner.message().state_root()
+            } else if let Some(inner) = MainnetBeaconSpec::unwrap_capella_signed_block(&signed) {
+                inner.message().state_root()
+            } else if let Some(inner) = MainnetBeaconSpec::unwrap_deneb_signed_block(&signed) {
+                inner.message().state_root()
+            } else if let Some(inner) = MainnetBeaconSpec::unwrap_electra_signed_block(&signed) {
+                inner.message().state_root()
+            } else {
+                unreachable!("unrecognised SignedBeaconBlock fork variant in warm restart")
+            };
+            let state = <RocksStore as pharos_storage::Store<MainnetBeaconSpec>>::get_state(
                 &store,
                 &state_root,
             )
@@ -507,7 +508,7 @@ async fn main() -> anyhow::Result<()> {
             (None, None) => None,
         };
 
-        let anchor = fetch_checkpoint::<MainnetEthSpec>(&url, &http, expected_block_root)
+        let anchor = fetch_checkpoint::<MainnetBeaconSpec>(&url, &http, expected_block_root)
             .await
             .context("fetching checkpoint anchor")?;
 
@@ -515,7 +516,7 @@ async fn main() -> anyhow::Result<()> {
         // synced anchor's epoch matches it (block root already enforced via
         // `expected_block_root` → `TamperFlagMismatch`). Mismatch aborts startup.
         if let Some((ws_root, ws_epoch)) = ws_checkpoint {
-            let anchor_epoch = anchor.state.slot().0 / MainnetEthSpec::SLOTS_PER_EPOCH;
+            let anchor_epoch = anchor.state.slot().0 / MainnetBeaconSpec::SLOTS_PER_EPOCH;
             if anchor_epoch != ws_epoch {
                 bail!(
                     "weak-subjectivity checkpoint epoch mismatch: anchor at epoch {anchor_epoch}, \
@@ -535,7 +536,7 @@ async fn main() -> anyhow::Result<()> {
         // genesis_time so the weak-subjectivity freshness gate in apply_anchor
         // can reject a stale anchor (`specs/phase0/weak-subjectivity.md`).
         let genesis_time = anchor.state.genesis_time();
-        let seconds_per_slot = MainnetEthSpec::SLOT_DURATION_MS / 1000;
+        let seconds_per_slot = MainnetBeaconSpec::SLOT_DURATION_MS / 1000;
         let wall_now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("system time before UNIX_EPOCH")?
@@ -548,15 +549,16 @@ async fn main() -> anyhow::Result<()> {
         );
 
         let gvr = anchor.state.genesis_validators_root();
-        let synth_snap = apply_anchor::<MainnetEthSpec>(
+        let synth_snap = apply_anchor::<MainnetBeaconSpec>(
             anchor,
             &store,
             current_slot,
             args.ignore_weak_subjectivity_period,
         )
         .context("persisting checkpoint anchor")?;
-        let fc = rehydrate_fork_choice_store::<MainnetEthSpec>(&store, &synth_snap, &runtime_cfg)
-            .context("rehydrating fork-choice store from checkpoint anchor")?;
+        let fc =
+            rehydrate_fork_choice_store::<MainnetBeaconSpec>(&store, &synth_snap, &runtime_cfg)
+                .context("rehydrating fork-choice store from checkpoint anchor")?;
         (fc, gvr)
     } else if let Some(ref genesis_path) = args.genesis_state_path {
         info!("cold start: seeding fork-choice from genesis state");
@@ -579,7 +581,7 @@ async fn main() -> anyhow::Result<()> {
             state_root,
             ..pharos_types::phase0::MainnetBeaconBlock::default()
         });
-        let fc = get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
+        let fc = get_forkchoice_store::<MainnetBeaconSpec>(genesis_state, anchor_block);
 
         // Task 4.3 (genesis path): initialize split_slot and anchor_slot to 0.
         // On a genesis cold start there is no prior data, so the hot window
@@ -587,13 +589,13 @@ async fn main() -> anyhow::Result<()> {
         // BlockTransition): genesis has no associated block yet, and a crash
         // between them is harmless — both default to 0 when absent (the freezer /
         // regen / rehydrate all fall back to `Slot(0)` on a missing key).
-        <RocksStore as pharos_storage::Store<MainnetEthSpec>>::put_metadata(
+        <RocksStore as pharos_storage::Store<MainnetBeaconSpec>>::put_metadata(
             &store,
             b"split_slot",
             &0u64.to_be_bytes(),
         )
         .context("writing genesis split_slot metadata")?;
-        <RocksStore as pharos_storage::Store<MainnetEthSpec>>::put_metadata(
+        <RocksStore as pharos_storage::Store<MainnetBeaconSpec>>::put_metadata(
             &store,
             b"anchor_slot",
             &0u64.to_be_bytes(),
@@ -616,7 +618,7 @@ async fn main() -> anyhow::Result<()> {
         .duration_since(UNIX_EPOCH)
         .context("system time before UNIX_EPOCH")?
         .as_secs();
-    on_tick::<MainnetEthSpec>(&mut fc_store_mut, wall_clock_secs);
+    on_tick::<MainnetBeaconSpec>(&mut fc_store_mut, wall_clock_secs);
 
     // Set the Bellatrix terminal-block constants from the loaded RuntimeConfig.
     // These are read by `on_block`'s merge-transition guard (`validate_merge_block`)
@@ -690,7 +692,7 @@ async fn main() -> anyhow::Result<()> {
                             .unwrap_or_default()
                             .as_secs();
                         let mut store = fc.write();
-                        on_tick::<MainnetEthSpec>(&mut store, now);
+                        on_tick::<MainnetBeaconSpec>(&mut store, now);
                     }
                     _ = shutdown_rx.changed() => {
                         if *shutdown_rx.borrow() {
@@ -709,7 +711,7 @@ async fn main() -> anyhow::Result<()> {
     // The block-ingestion loop owns these senders and drives the engine driver
     // via `head_tx.send()` / `payload_tx.try_send()` directly.
     let (head_tx, head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MainnetEthSpec>>(64);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MainnetBeaconSpec>>(64);
 
     // Spawn the engine actor when an explicit JWT secret is given, when the
     // user has configured a non-default execution endpoint, or when checkpoint
@@ -852,7 +854,7 @@ async fn main() -> anyhow::Result<()> {
     // path. Clones of head_tx / payload_tx are used here; the block-ingestion
     // loop owns the originals (passed separately in Step 5b below).
     let store_arc = Arc::clone(&store);
-    let mut host_inner = HostImpl::<MainnetEthSpec>::new(
+    let mut host_inner = HostImpl::<MainnetBeaconSpec>::new(
         store,
         fork_choice.clone(),
         genesis_validators_root,
@@ -872,7 +874,7 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("creating network directory {}", network_dir.display()))?;
 
     let (mut handle, discovery_handle) =
-        NetworkBuilder::<MainnetEthSpec, Arc<HostImpl<MainnetEthSpec>>, NoopScorer>::new(
+        NetworkBuilder::<MainnetBeaconSpec, Arc<HostImpl<MainnetBeaconSpec>>, NoopScorer>::new(
             host.clone(),
         )
         .listen_ip(listen_ip)
@@ -901,7 +903,7 @@ async fn main() -> anyhow::Result<()> {
     // This bumps MetaData.seq_number from 0 to 1 exactly once at startup,
     // fulfilling the p2p-interface.md:391-393 requirement.
     let node_id = handle.local_node_id();
-    let subnets = compute_subscribed_subnets::<MainnetEthSpec>(node_id, 0u64);
+    let subnets = compute_subscribed_subnets::<MainnetBeaconSpec>(node_id, 0u64);
     let mut initial_attnets = Bitvector::<ATTESTATION_SUBNET_COUNT>::default();
     for subnet in subnets {
         initial_attnets.set(subnet as usize, true);
@@ -920,7 +922,7 @@ async fn main() -> anyhow::Result<()> {
         let sched = Arc::clone(&fork_schedule);
         let nid = node_id;
         tokio::spawn(async move {
-            run_subnet_rotation_loop::<MainnetEthSpec>(cmd, sched, nid, genesis_time_secs).await;
+            run_subnet_rotation_loop::<MainnetBeaconSpec>(cmd, sched, nid, genesis_time_secs).await;
         });
     }
 
@@ -932,7 +934,7 @@ async fn main() -> anyhow::Result<()> {
         let disc = discovery_handle.clone();
         let sched = Arc::clone(&fork_schedule);
         tokio::spawn(async move {
-            run_fork_migration_loop::<MainnetEthSpec>(cmd, disc, sched, genesis_time_secs).await;
+            run_fork_migration_loop::<MainnetBeaconSpec>(cmd, disc, sched, genesis_time_secs).await;
         });
     }
 
@@ -963,12 +965,12 @@ async fn main() -> anyhow::Result<()> {
         // Construct the Phase-2 state-regeneration service and wrap it in a
         // closure so that `NodeChainState` (in pharos-api) can call it without
         // a pharos-api → pharos-node dependency edge.
-        let regen_svc = Arc::new(StateRegenService::<MainnetEthSpec>::new(
+        let regen_svc = Arc::new(StateRegenService::<MainnetBeaconSpec>::new(
             Arc::clone(&store_arc),
             Arc::clone(&fork_choice),
             Arc::new(runtime_cfg.clone()),
         ));
-        let regen_fn: Arc<pharos_api::RegenFn<MainnetEthSpec>> = {
+        let regen_fn: Arc<pharos_api::RegenFn<MainnetBeaconSpec>> = {
             use pharos_api::ApiError;
             use pharos_api::RegenTarget;
             use pharos_node::state_regen::RegenError;
@@ -981,7 +983,7 @@ async fn main() -> anyhow::Result<()> {
                         // Find the slot for this block root via the state-summary CF.
                         use pharos_storage::Store as DbStore;
                         let summary_result = <pharos_storage::RocksStore as DbStore<
-                            MainnetEthSpec,
+                            MainnetBeaconSpec,
                         >>::get_state_summary(
                             svc.store_ref(), &block_root
                         )
@@ -1088,7 +1090,7 @@ async fn main() -> anyhow::Result<()> {
                     let fee_recipient = "0x0000000000000000000000000000000000000000".to_string();
 
                     let (signed_block, _post_state, exec_value, blob_sidecars) =
-                        produce_block::<MainnetEthSpec>(
+                        produce_block::<MainnetBeaconSpec>(
                             &produce_fc,
                             &produce_pools,
                             &produce_engine,
@@ -1214,7 +1216,7 @@ async fn main() -> anyhow::Result<()> {
             let produce_att_data_fn: Arc<pharos_api::ProduceAttDataFn> = Arc::new(
                 move |slot: pharos_types::phase0::Slot,
                       committee_index: pharos_types::phase0::primitives::CommitteeIndex| {
-                    produce_attestation_data::<MainnetEthSpec>(
+                    produce_attestation_data::<MainnetBeaconSpec>(
                         &att_fc,
                         slot,
                         committee_index,
@@ -1327,7 +1329,7 @@ async fn main() -> anyhow::Result<()> {
                     use pharos_node::data_availability::NoopDataAvailabilityChecker;
                     let noop_da = Arc::new(NoopDataAvailabilityChecker);
                     match import_block::<
-                        MainnetEthSpec,
+                        MainnetBeaconSpec,
                         NodeEEHandle,
                         PowProvider,
                         NoopDataAvailabilityChecker,
@@ -1404,7 +1406,7 @@ async fn main() -> anyhow::Result<()> {
                         // Persist to storage (one call per sidecar).
                         for sidecar in &cached_blob_sidecars {
                             if let Err(e) = <pharos_storage::RocksStore as pharos_storage::Store<
-                                MainnetEthSpec,
+                                MainnetBeaconSpec,
                             >>::put_blob_sidecar(
                                 &store_c, block_root, sidecar.index, sidecar
                             ) {
@@ -1420,7 +1422,7 @@ async fn main() -> anyhow::Result<()> {
                         // subnet_id = sidecar.index % BLOB_SIDECAR_SUBNET_COUNT (= 6 for mainnet).
                         for sidecar in &cached_blob_sidecars {
                             let subnet_id =
-                                sidecar.index % MainnetEthSpec::BLOB_SIDECAR_SUBNET_COUNT;
+                                sidecar.index % MainnetBeaconSpec::BLOB_SIDECAR_SUBNET_COUNT;
                             let sidecar_topic = GossipTopic {
                                 fork_digest,
                                 kind: GossipTopicKind::BlobSidecar(subnet_id),
@@ -1472,7 +1474,7 @@ async fn main() -> anyhow::Result<()> {
                       block_root: pharos_types::phase0::primitives::Root,
                       subc_idx: u64| {
                     use pharos_node::block_production::build_sync_contribution;
-                    let (positions, sig) = build_sync_contribution::<MainnetEthSpec>(
+                    let (positions, sig) = build_sync_contribution::<MainnetBeaconSpec>(
                         &sc_fc,
                         &sc_pools,
                         pharos_types::phase0::Slot(slot),
@@ -1481,7 +1483,7 @@ async fn main() -> anyhow::Result<()> {
                     )?;
                     // aggregation_bits is a fixed Bitvector[SYNC_SUBCOMMITTEE_SIZE]:
                     // no length-delimiter bit, byte i / bit i%8 little-endian.
-                    let subc_size = MainnetEthSpec::SYNC_SUBCOMMITTEE_SIZE as usize;
+                    let subc_size = MainnetBeaconSpec::SYNC_SUBCOMMITTEE_SIZE as usize;
                     let mut bits = vec![0u8; subc_size.div_ceil(8)];
                     for p in positions {
                         if p < subc_size {
@@ -1514,8 +1516,12 @@ async fn main() -> anyhow::Result<()> {
             let fc_adapter = Arc::clone(&fork_choice);
             let bus_adapter = Arc::clone(&event_bus);
             tokio::spawn(async move {
-                run_api_event_adapter::<MainnetEthSpec>(adapter_head_rx, fc_adapter, bus_adapter)
-                    .await;
+                run_api_event_adapter::<MainnetBeaconSpec>(
+                    adapter_head_rx,
+                    fc_adapter,
+                    bus_adapter,
+                )
+                .await;
             });
             info!("SSE event adapter task started");
         }
@@ -1538,7 +1544,7 @@ async fn main() -> anyhow::Result<()> {
         let api_state = pharos_api::ApiState::new_with_bus(Arc::new(chain_state), event_bus);
         let http_addr = SocketAddr::new(args.http_address, args.http_port);
         tokio::spawn(async move {
-            pharos_api::serve_with_auth::<MainnetEthSpec>(http_addr, api_state, validator_token)
+            pharos_api::serve_with_auth::<MainnetBeaconSpec>(http_addr, api_state, validator_token)
                 .await;
         });
         info!(%http_addr, "Beacon API HTTP server spawned");
@@ -1557,7 +1563,7 @@ async fn main() -> anyhow::Result<()> {
         let rpi = args.restore_point_interval_epochs;
         let freezer_shutdown = pharos_node_shutdown_rx.clone();
         tokio::spawn(async move {
-            run_freezer_loop::<MainnetEthSpec>(
+            run_freezer_loop::<MainnetBeaconSpec>(
                 freezer_head_rx,
                 freezer_store,
                 freezer_fc,
@@ -1591,7 +1597,7 @@ async fn main() -> anyhow::Result<()> {
         // Scan range: anchor_slot (lower bound on a checkpoint-synced node) up to
         // the current wall-clock slot. Empty slots in the index are skipped by the
         // scanner, so over-scanning to the wall slot is safe.
-        let anchor_slot = <RocksStore as pharos_storage::Store<MainnetEthSpec>>::get_metadata(
+        let anchor_slot = <RocksStore as pharos_storage::Store<MainnetBeaconSpec>>::get_metadata(
             &store_arc,
             b"anchor_slot",
         )
@@ -1606,19 +1612,19 @@ async fn main() -> anyhow::Result<()> {
 
         let slasher_op_pools = Arc::clone(&host.op_pools);
         let slasher_store = Arc::clone(&store_arc);
-        let slasher_regen = Arc::new(StateRegenService::<MainnetEthSpec>::new(
+        let slasher_regen = Arc::new(StateRegenService::<MainnetBeaconSpec>::new(
             Arc::clone(&store_arc),
             Arc::clone(&fork_choice),
             Arc::new(runtime_cfg.clone()),
         ));
-        let proposer = ProposerSlasher::<MainnetEthSpec>::new(
+        let proposer = ProposerSlasher::<MainnetBeaconSpec>::new(
             Arc::clone(&slasher_store),
             Arc::clone(&slasher_op_pools),
         );
-        let attestation = Arc::new(AttestationSlasher::<MainnetEthSpec>::new(Arc::clone(
+        let attestation = Arc::new(AttestationSlasher::<MainnetBeaconSpec>::new(Arc::clone(
             &slasher_op_pools,
         )));
-        let chain_slasher = Arc::new(ChainReplaySlasher::<MainnetEthSpec>::new(
+        let chain_slasher = Arc::new(ChainReplaySlasher::<MainnetBeaconSpec>::new(
             slasher_store,
             proposer,
             attestation,
@@ -1626,7 +1632,7 @@ async fn main() -> anyhow::Result<()> {
         ));
 
         tokio::spawn(async move {
-            run_replay::<MainnetEthSpec>(
+            run_replay::<MainnetBeaconSpec>(
                 chain_slasher,
                 pharos_types::phase0::primitives::Slot(anchor_slot),
                 head_slot,
@@ -1655,7 +1661,7 @@ async fn main() -> anyhow::Result<()> {
         let deneb_fork_epoch = runtime_cfg.deneb_fork_epoch;
         let blob_prune_shutdown = pharos_node_shutdown_rx.clone();
         tokio::spawn(async move {
-            run_blob_prune_loop::<MainnetEthSpec>(
+            run_blob_prune_loop::<MainnetBeaconSpec>(
                 blob_prune_head_rx,
                 blob_prune_store,
                 blob_prune_fc,
@@ -1687,7 +1693,7 @@ async fn main() -> anyhow::Result<()> {
             let head_tx_driver = head_tx.clone();
             let pow_driver = Arc::clone(&pow_provider);
             tokio::spawn(async move {
-                run_engine_driver_loop::<MainnetEthSpec, EnginePowBlockProvider>(
+                run_engine_driver_loop::<MainnetBeaconSpec, EnginePowBlockProvider>(
                     eng,
                     fc,
                     head_rx,
@@ -1715,7 +1721,7 @@ async fn main() -> anyhow::Result<()> {
 
         // DA checker + blob-awaiting registry.
         let kzg_verifier = Arc::new(pharos_kzg::KzgVerifier::mainnet());
-        let da_checker = Arc::new(BlobAvailabilityChecker::<MainnetEthSpec>::new(
+        let da_checker = Arc::new(BlobAvailabilityChecker::<MainnetBeaconSpec>::new(
             Arc::clone(&store_arc),
             Arc::clone(&kzg_verifier),
         ));
@@ -1746,9 +1752,9 @@ async fn main() -> anyhow::Result<()> {
             let blob_awaiting_clone = Arc::clone(&blob_awaiting);
             tokio::spawn(async move {
                 if let Err(e) = run_block_ingestion_loop::<
-                    MainnetEthSpec,
+                    MainnetBeaconSpec,
                     ExecutionEngineHandle,
-                    BlobAvailabilityChecker<MainnetEthSpec>,
+                    BlobAvailabilityChecker<MainnetBeaconSpec>,
                 >(
                     event_rx,
                     reinject_rx,
@@ -1775,7 +1781,7 @@ async fn main() -> anyhow::Result<()> {
             let blob_store = Arc::clone(&store_arc);
             let blob_awaiting_blob = Arc::clone(&blob_awaiting);
             tokio::spawn(async move {
-                run_blob_ingestion_loop::<MainnetEthSpec>(
+                run_blob_ingestion_loop::<MainnetBeaconSpec>(
                     blob_event_rx,
                     blob_store,
                     blob_awaiting_blob,
@@ -1821,7 +1827,7 @@ async fn main() -> anyhow::Result<()> {
             let lookup_tx_bf = lookup_tx.clone();
             tokio::spawn(async move {
                 if let Err(e) = run_backfill_loop::<
-                    MainnetEthSpec,
+                    MainnetBeaconSpec,
                     _,
                     ExecutionEngineHandle,
                     EnginePowBlockProvider,
@@ -1855,7 +1861,7 @@ async fn main() -> anyhow::Result<()> {
             use pharos_node::backward_backfill::run_backward_backfill_loop;
             use pharos_node::state_regen::StateRegenService;
 
-            let regen = Arc::new(StateRegenService::<MainnetEthSpec>::new(
+            let regen = Arc::new(StateRegenService::<MainnetBeaconSpec>::new(
                 Arc::clone(&store_arc),
                 Arc::clone(&fork_choice),
                 Arc::new(runtime_cfg.clone()),
@@ -1864,7 +1870,7 @@ async fn main() -> anyhow::Result<()> {
             let fc_bbf = Arc::clone(&fork_choice);
             let shutdown_rx = pharos_node_shutdown_rx.clone();
             tokio::spawn(async move {
-                if let Err(e) = run_backward_backfill_loop::<MainnetEthSpec>(
+                if let Err(e) = run_backward_backfill_loop::<MainnetBeaconSpec>(
                     regen,
                     store_bbf,
                     fc_bbf,
@@ -1890,7 +1896,7 @@ async fn main() -> anyhow::Result<()> {
             let reinject_tx = reinject_tx.clone();
             tokio::spawn(async move {
                 if let Err(e) = run_lookup_loop::<
-                    MainnetEthSpec,
+                    MainnetBeaconSpec,
                     _,
                     ExecutionEngineHandle,
                     EnginePowBlockProvider,

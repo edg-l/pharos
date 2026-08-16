@@ -3,21 +3,21 @@ mod bench_helpers;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 use pharos_ssz::{SszSequence, TreeHash};
-use pharos_types::EthSpec;
-use pharos_types::MainnetEthSpec as E;
+use pharos_types::BeaconSpec;
+use pharos_types::MainnetBeaconSpec as E;
 
 // ── Fixture loading ───────────────────────────────────────────────────────────
 
 /// Load an Altair `BeaconState` for benchmarking.
-fn load_altair_state() -> <E as EthSpec>::BeaconState {
-    let inner: <E as EthSpec>::AltairBeaconState =
+fn load_altair_state() -> <E as BeaconSpec>::BeaconState {
+    let inner: <E as BeaconSpec>::AltairBeaconState =
         bench_helpers::load_pre_state("altair", "empty_block_transition");
     E::altair_into_state(inner)
 }
 
 /// Load a Bellatrix `BeaconState` for benchmarking.
-fn load_bellatrix_state() -> <E as EthSpec>::BeaconState {
-    let inner: <E as EthSpec>::BellatrixBeaconState =
+fn load_bellatrix_state() -> <E as BeaconSpec>::BeaconState {
+    let inner: <E as BeaconSpec>::BellatrixBeaconState =
         bench_helpers::load_pre_state("bellatrix", "empty_block_transition");
     E::bellatrix_into_state(inner)
 }
@@ -56,7 +56,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // "cold cache" the bench name promises), mutate validator 0 via
     // `with_set`, then call `cached_tree_hash_root()` to walk the tree and
     // populate the freshly-empty cache.
-    let bellatrix_inner_base: <E as EthSpec>::BellatrixBeaconState =
+    let bellatrix_inner_base: <E as BeaconSpec>::BellatrixBeaconState =
         bench_helpers::load_pre_state("bellatrix", "empty_block_transition");
     let bellatrix_inner_tree = bellatrix_inner_base
         .into_tree_backend()

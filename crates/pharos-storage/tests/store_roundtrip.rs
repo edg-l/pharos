@@ -7,7 +7,7 @@
 use pharos_storage::{
     BlockTransition, ForkChoiceSnapshot, RocksStore, StorageError, Store, db::RocksStoreConfig,
 };
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::phase0::Checkpoint;
 use pharos_types::phase0::primitives::{Epoch, Root, Slot};
 use pharos_types::state::MainnetSignedBeaconBlock;
@@ -15,7 +15,7 @@ use pharos_types::state::MainnetSignedBeaconBlock;
 // ── Type alias for readability ────────────────────────────────────────────────
 
 type S = RocksStore;
-type E = MainnetEthSpec;
+type E = MainnetBeaconSpec;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -165,7 +165,7 @@ fn write_block_transition_is_atomic() {
 
     let (root, block) = make_block(100);
     let state_root = Root::from([0x55u8; 32]);
-    let state = <E as pharos_types::EthSpec>::BeaconState::default();
+    let state = <E as pharos_types::BeaconSpec>::BeaconState::default();
     let snapshot = make_snapshot(100);
 
     {

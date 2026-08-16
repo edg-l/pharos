@@ -24,7 +24,7 @@ use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::config::RuntimeConfig;
 use pharos_types::phase0::primitives::{Epoch, Root, Slot, ValidatorIndex};
 use pharos_types::phase0::{BeaconBlockHeader, Checkpoint};
-use pharos_types::{EthSpec, MainnetEthSpec};
+use pharos_types::{BeaconSpec, MainnetBeaconSpec};
 use tower::ServiceExt as _;
 
 // ── Mock ChainStateApi ────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ impl MockChain {
             metadata: meta,
         };
 
-        let runtime_cfg = Arc::new(MainnetEthSpec::default_runtime_config());
+        let runtime_cfg = Arc::new(MainnetBeaconSpec::default_runtime_config());
 
         // Build a non-zero head root and header to exercise `block_header_at`.
         let head_root = Root::from([0xab; 32]);
@@ -74,12 +74,12 @@ impl MockChain {
             head_header: Some(head_header),
             genesis_time: 1_606_824_023,
             genesis_validators_root: Root::from([0xff; 32]),
-            genesis_fork_version: <MainnetEthSpec as EthSpec>::GENESIS_FORK_VERSION,
+            genesis_fork_version: <MainnetBeaconSpec as BeaconSpec>::GENESIS_FORK_VERSION,
         }
     }
 }
 
-impl ChainStateApi<MainnetEthSpec> for MockChain {
+impl ChainStateApi<MainnetBeaconSpec> for MockChain {
     fn head_root(&self) -> Root {
         self.head_root
     }
@@ -138,11 +138,17 @@ impl ChainStateApi<MainnetEthSpec> for MockChain {
         &self.identity
     }
 
-    fn state_by_block_root(&self, _root: Root) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+    fn state_by_block_root(
+        &self,
+        _root: Root,
+    ) -> Option<<MainnetBeaconSpec as BeaconSpec>::BeaconState> {
         None
     }
 
-    fn state_by_state_root(&self, _root: Root) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+    fn state_by_state_root(
+        &self,
+        _root: Root,
+    ) -> Option<<MainnetBeaconSpec as BeaconSpec>::BeaconState> {
         None
     }
 
@@ -175,7 +181,7 @@ impl ChainStateApi<MainnetEthSpec> for MockChain {
     fn regenerate_state(
         &self,
         _target: RegenTarget,
-    ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, pharos_api::ApiError> {
+    ) -> Result<<MainnetBeaconSpec as BeaconSpec>::BeaconState, pharos_api::ApiError> {
         Err(pharos_api::ApiError::NotFound(
             "regen not available in mock".into(),
         ))
@@ -195,9 +201,9 @@ impl ChainStateApi<MainnetEthSpec> for MockChain {
 
     fn state_to_json(
         &self,
-        state: <MainnetEthSpec as pharos_types::EthSpec>::BeaconState,
+        state: <MainnetBeaconSpec as pharos_types::BeaconSpec>::BeaconState,
     ) -> Result<serde_json::Value, pharos_api::ApiError> {
-        pharos_api::beacon_state_to_json_full::<MainnetEthSpec>(state)
+        pharos_api::beacon_state_to_json_full::<MainnetBeaconSpec>(state)
     }
 }
 
@@ -219,7 +225,7 @@ impl MockChainHealth {
     }
 }
 
-impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
+impl ChainStateApi<MainnetBeaconSpec> for MockChainHealth {
     fn head_root(&self) -> Root {
         self.inner.head_root()
     }
@@ -268,11 +274,17 @@ impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
         self.inner.node_identity()
     }
 
-    fn state_by_block_root(&self, root: Root) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+    fn state_by_block_root(
+        &self,
+        root: Root,
+    ) -> Option<<MainnetBeaconSpec as BeaconSpec>::BeaconState> {
         self.inner.state_by_block_root(root)
     }
 
-    fn state_by_state_root(&self, root: Root) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+    fn state_by_state_root(
+        &self,
+        root: Root,
+    ) -> Option<<MainnetBeaconSpec as BeaconSpec>::BeaconState> {
         self.inner.state_by_state_root(root)
     }
 
@@ -305,7 +317,7 @@ impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
     fn regenerate_state(
         &self,
         target: RegenTarget,
-    ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, pharos_api::ApiError> {
+    ) -> Result<<MainnetBeaconSpec as BeaconSpec>::BeaconState, pharos_api::ApiError> {
         self.inner.regenerate_state(target)
     }
 
@@ -319,7 +331,7 @@ impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
 
     fn state_to_json(
         &self,
-        state: <MainnetEthSpec as pharos_types::EthSpec>::BeaconState,
+        state: <MainnetBeaconSpec as pharos_types::BeaconSpec>::BeaconState,
     ) -> Result<serde_json::Value, pharos_api::ApiError> {
         self.inner.state_to_json(state)
     }
@@ -328,7 +340,7 @@ impl ChainStateApi<MainnetEthSpec> for MockChainHealth {
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
 fn make_router() -> axum::Router {
-    let chain: Arc<dyn ChainStateApi<MainnetEthSpec>> = Arc::new(MockChain::new());
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> = Arc::new(MockChain::new());
     let state = ApiState::new(chain);
     build_router(state)
 }
@@ -472,7 +484,8 @@ async fn test_headers_head() {
 
 #[tokio::test]
 async fn test_health_syncing() {
-    let chain: Arc<dyn ChainStateApi<MainnetEthSpec>> = Arc::new(MockChainHealth::new(true, false));
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> =
+        Arc::new(MockChainHealth::new(true, false));
     let state = ApiState::new(chain);
     let router = build_router(state);
     let req = Request::builder()
@@ -486,7 +499,8 @@ async fn test_health_syncing() {
 
 #[tokio::test]
 async fn test_health_optimistic() {
-    let chain: Arc<dyn ChainStateApi<MainnetEthSpec>> = Arc::new(MockChainHealth::new(false, true));
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> =
+        Arc::new(MockChainHealth::new(false, true));
     let state = ApiState::new(chain);
     let router = build_router(state);
     let req = Request::builder()

@@ -29,7 +29,7 @@ use libp2p::request_response::{self, OutboundRequestId, ProtocolSupport};
 use libp2p::swarm::ConnectionError;
 use libp2p::{PeerId, Swarm, SwarmBuilder};
 use pharos_ssz::Bitvector;
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::Status as BeaconStatus;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
@@ -114,7 +114,7 @@ fn score_bucket_label(score: f64) -> &'static str {
 // ── Commands and Events ───────────────────────────────────────────────────────
 
 /// Commands sent from `NetworkHandle` to the `Network` event loop.
-pub enum NetworkCommand<E: EthSpec> {
+pub enum NetworkCommand<E: BeaconSpec> {
     /// Publish an SSZ+snappy-encoded payload to the given gossipsub topic.
     Publish {
         topic: GossipTopic,
@@ -322,8 +322,11 @@ const DIAL_PENDING_TTL: Duration = Duration::from_secs(30);
 /// Constructed via `NetworkBuilder::build`.  Call `run()` to drive the
 /// event loop.  Shut down by sending `NetworkCommand::Shutdown` via the
 /// `NetworkHandle` or by dropping the handle's `shutdown_tx`.
-pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerScorer>
-{
+pub struct Network<
+    E: BeaconSpec,
+    H: Host<E> + LightClientProvider<E> + BlobProvider<E>,
+    S: PeerScorer,
+> {
     swarm: Swarm<PharosBehaviour<E>>,
     discovery: DiscoveryService,
     peer_manager: PeerManager<S>,
@@ -428,7 +431,7 @@ pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvide
 }
 
 impl<
-    E: EthSpec,
+    E: BeaconSpec,
     H: Host<E> + LightClientProvider<E> + BlobProvider<E> + Send + Sync + 'static,
     S: PeerScorer,
 > Network<E, H, S>
@@ -2008,7 +2011,7 @@ pub struct NetworkBuilder<E, H, S> {
     _phantom: PhantomData<E>,
 }
 
-impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>>
+impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>>
     NetworkBuilder<E, H, crate::scoring::NoopScorer>
 {
     /// Create a new builder wrapping `host` with default settings.
@@ -2035,7 +2038,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>>
     }
 }
 
-impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerScorer>
+impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerScorer>
     NetworkBuilder<E, H, S>
 {
     /// Override the TCP listen port (default: 9000).
@@ -2494,7 +2497,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
 // and `#[doc(hidden)]` make the intent clear: these are NOT production API.
 
 impl<
-    E: EthSpec,
+    E: BeaconSpec,
     H: Host<E> + LightClientProvider<E> + BlobProvider<E> + Send + Sync + 'static,
     S: PeerScorer,
 > Network<E, H, S>
@@ -2622,7 +2625,7 @@ mod tests {
         BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
     };
     use crate::types::SubnetId;
-    use pharos_types::MainnetEthSpec;
+    use pharos_types::MainnetBeaconSpec;
     use pharos_types::altair::MetaData as AltairMetaData;
     use pharos_types::phase0::primitives::ForkDigest;
     use pharos_types::phase0::{
@@ -2668,80 +2671,80 @@ mod tests {
         }
     }
 
-    impl LightClientProvider<MainnetEthSpec> for MockHost {
+    impl LightClientProvider<MainnetBeaconSpec> for MockHost {
         fn light_client_bootstrap(
             &self,
             _block_root: Root,
-        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientBootstrap> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::AltairLightClientBootstrap> {
             None
         }
         fn light_client_updates_by_range(
             &self,
             _start_period: u64,
             _count: u64,
-        ) -> Vec<<MainnetEthSpec as EthSpec>::AltairLightClientUpdate> {
+        ) -> Vec<<MainnetBeaconSpec as BeaconSpec>::AltairLightClientUpdate> {
             Vec::new()
         }
         fn light_client_finality_update(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientFinalityUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::AltairLightClientFinalityUpdate> {
             None
         }
         fn light_client_optimistic_update(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::AltairLightClientOptimisticUpdate> {
             None
         }
 
         fn light_client_finality_update_capella(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::CapellaLightClientFinalityUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::CapellaLightClientFinalityUpdate> {
             None
         }
 
         fn light_client_optimistic_update_capella(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::CapellaLightClientOptimisticUpdate> {
             None
         }
 
         fn light_client_finality_update_deneb(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::DenebLightClientFinalityUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::DenebLightClientFinalityUpdate> {
             None
         }
 
         fn light_client_optimistic_update_deneb(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::DenebLightClientOptimisticUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::DenebLightClientOptimisticUpdate> {
             None
         }
 
         fn light_client_finality_update_electra(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::ElectraLightClientFinalityUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::ElectraLightClientFinalityUpdate> {
             None
         }
 
         fn light_client_optimistic_update_electra(
             &self,
-        ) -> Option<<MainnetEthSpec as EthSpec>::ElectraLightClientOptimisticUpdate> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::ElectraLightClientOptimisticUpdate> {
             None
         }
     }
 
-    impl BlockProvider<MainnetEthSpec> for MockHost {
+    impl BlockProvider<MainnetBeaconSpec> for MockHost {
         fn block_by_root(
             &self,
             _root: Root,
-        ) -> Option<<MainnetEthSpec as EthSpec>::SignedBeaconBlock> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::SignedBeaconBlock> {
             None
         }
         fn blocks_by_range(
             &self,
             _start_slot: Slot,
             _count: u64,
-        ) -> Vec<<MainnetEthSpec as EthSpec>::SignedBeaconBlock> {
+        ) -> Vec<<MainnetBeaconSpec as BeaconSpec>::SignedBeaconBlock> {
             Vec::new()
         }
         fn finalized_checkpoint(&self) -> Checkpoint {
@@ -2755,10 +2758,10 @@ mod tests {
         }
     }
 
-    impl GossipValidator<MainnetEthSpec> for MockHost {
+    impl GossipValidator<MainnetBeaconSpec> for MockHost {
         fn validate_beacon_block(
             &self,
-            _block: &<MainnetEthSpec as EthSpec>::SignedBeaconBlock,
+            _block: &<MainnetBeaconSpec as BeaconSpec>::SignedBeaconBlock,
         ) -> GossipVerdict {
             unreachable!()
         }
@@ -2793,19 +2796,19 @@ mod tests {
         }
         fn validate_sync_committee_contribution_and_proof(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::AltairSignedContributionAndProof,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::AltairSignedContributionAndProof,
         ) -> GossipVerdict {
             unreachable!()
         }
         fn validate_light_client_finality_update(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientFinalityUpdate,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::AltairLightClientFinalityUpdate,
         ) -> GossipVerdict {
             unreachable!()
         }
         fn validate_light_client_optimistic_update(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::AltairLightClientOptimisticUpdate,
         ) -> GossipVerdict {
             unreachable!()
         }
@@ -2819,14 +2822,14 @@ mod tests {
 
         fn validate_capella_light_client_finality_update(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::CapellaLightClientFinalityUpdate,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::CapellaLightClientFinalityUpdate,
         ) -> GossipVerdict {
             unreachable!()
         }
 
         fn validate_capella_light_client_optimistic_update(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::CapellaLightClientOptimisticUpdate,
         ) -> GossipVerdict {
             unreachable!()
         }
@@ -2840,7 +2843,7 @@ mod tests {
         }
     }
 
-    impl BlobProvider<MainnetEthSpec> for MockHost {
+    impl BlobProvider<MainnetBeaconSpec> for MockHost {
         fn blobs_by_range(
             &self,
             _start_slot: pharos_types::phase0::primitives::Slot,
@@ -2865,7 +2868,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn network_shutdown_smoke() {
         let (network, handle, _discovery_handle) =
-            NetworkBuilder::<MainnetEthSpec, MockHost, _>::new(MockHost)
+            NetworkBuilder::<MainnetBeaconSpec, MockHost, _>::new(MockHost)
                 .build()
                 .await
                 .expect("NetworkBuilder::build failed");

@@ -1,6 +1,6 @@
 //! `pharos-node` integration test node spawner.
 //!
-//! `spawn_node` creates a real `HostImpl<MinimalEthSpec>` backed by a
+//! `spawn_node` creates a real `HostImpl<MinimalBeaconSpec>` backed by a
 //! `RocksStore` and wires it into `NetworkBuilder`, then drives the network
 //! task in a background tokio task. Unlike the network-crate's `TestHost`,
 //! this uses the real production host so persistence round-trips can be
@@ -21,7 +21,7 @@ use pharos_network::{NetworkBuilder, NetworkEvent, NetworkHandle};
 use pharos_node::host_impl::HostImpl;
 use pharos_ssz::TreeHash;
 use pharos_storage::{RocksStore, RocksStoreConfig};
-use pharos_types::MinimalEthSpec;
+use pharos_types::MinimalBeaconSpec;
 use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::primitives::{Root, Version};
 use pharos_types::state::BeaconBlock as ForkBeaconBlock;
@@ -37,7 +37,7 @@ use super::genesis::minimal_genesis;
 /// signed discv5 `Enr`, and the real bound TCP listen address.
 #[allow(dead_code)]
 pub struct TestNode {
-    pub handle: NetworkHandle<MinimalEthSpec>,
+    pub handle: NetworkHandle<MinimalBeaconSpec>,
     pub peer_id: PeerId,
     pub enr: Enr,
     pub listen_addr: Multiaddr,
@@ -45,7 +45,7 @@ pub struct TestNode {
 
 // ── build_host ────────────────────────────────────────────────────────────────
 
-/// Build a `HostImpl<MinimalEthSpec>` backed by a `RocksStore` at `path`.
+/// Build a `HostImpl<MinimalBeaconSpec>` backed by a `RocksStore` at `path`.
 ///
 /// Derives the anchor state from `minimal_genesis()` (cached, deterministic).
 /// The genesis `SignedBeaconBlock` is constructed with `state_root` set to the
@@ -55,9 +55,9 @@ pub struct TestNode {
 /// All test nodes built this way share the same fork digest and can handshake
 /// successfully.
 #[allow(dead_code)]
-pub fn build_host(path: &Path) -> HostImpl<MinimalEthSpec> {
+pub fn build_host(path: &Path) -> HostImpl<MinimalBeaconSpec> {
     let store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: path.join("chain_db"),
             create_if_missing: true,
         })
@@ -71,7 +71,7 @@ pub fn build_host(path: &Path) -> HostImpl<MinimalEthSpec> {
         ..pharos_types::phase0::MinimalBeaconBlock::default()
     });
     let fc_store =
-        pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+        pharos_fork_choice::get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, anchor_block);
     let fork_choice = Arc::new(RwLock::new(fc_store));
 
     let gvr = Root::default();
@@ -114,7 +114,7 @@ pub fn build_host(path: &Path) -> HostImpl<MinimalEthSpec> {
 #[allow(dead_code)]
 pub async fn spawn_node(
     bootnodes: Vec<Enr>,
-    host: HostImpl<MinimalEthSpec>,
+    host: HostImpl<MinimalBeaconSpec>,
     key: Option<Keypair>,
 ) -> TestNode {
     let local_key = key.unwrap_or_else(Keypair::generate_secp256k1);
@@ -124,7 +124,7 @@ pub async fn spawn_node(
     let listen_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 
     let (mut handle, _discovery_handle) =
-        NetworkBuilder::<MinimalEthSpec, HostImpl<MinimalEthSpec>, _>::new(host)
+        NetworkBuilder::<MinimalBeaconSpec, HostImpl<MinimalBeaconSpec>, _>::new(host)
             .local_key(local_key)
             .listen_ip(listen_ip)
             .discv5_addr(discv5_addr)

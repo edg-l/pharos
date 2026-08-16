@@ -6,7 +6,7 @@
 //! spec: specs/altair/beacon-chain.md:669-691
 
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::{BeaconState, constants::TIMELY_TARGET_FLAG_INDEX},
     phase0::Checkpoint,
 };
@@ -50,7 +50,7 @@ pub fn process_justification_and_finalization<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -201,7 +201,7 @@ fn weigh_justification_and_finalization<
     current_epoch_target_balance: u64,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

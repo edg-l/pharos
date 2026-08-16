@@ -5,7 +5,7 @@
 //! `seq_number` whenever its `MetaData` changes (attnets field), and MUST NOT
 //! increment it when the value is unchanged (idempotent on same value).
 //!
-//! These tests exercise the real `HostImpl<MainnetEthSpec>` backed by a real
+//! These tests exercise the real `HostImpl<MainnetBeaconSpec>` backed by a real
 //! `RocksStore` in a `tempfile::TempDir`, providing integration-level coverage
 //! of the full metadata-mutation path as added in M3a Phase 2 Task 2.6 and
 //! wired in Phase 5 Task 5.1.
@@ -20,26 +20,26 @@ use pharos_storage::{RocksStore, RocksStoreConfig};
 use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::primitives::{ATTESTATION_SUBNET_COUNT, Root, Version};
 use pharos_types::state::BeaconBlock as ForkBeaconBlock;
-use pharos_types::{EthSpec, MainnetEthSpec};
+use pharos_types::{BeaconSpec, MainnetBeaconSpec};
 use pharos_utils::Epoch;
 
-fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
+fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetBeaconSpec> {
     let store = Arc::new(
-        RocksStore::open::<MainnetEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MainnetBeaconSpec>(RocksStoreConfig {
             path: dir.path().join("chain_db"),
             create_if_missing: true,
         })
         .expect("open RocksStore"),
     );
 
-    let genesis_state = <MainnetEthSpec as EthSpec>::BeaconState::default();
+    let genesis_state = <MainnetBeaconSpec as BeaconSpec>::BeaconState::default();
     let state_root = genesis_state.tree_hash_root();
     let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MainnetBeaconBlock {
         state_root,
         ..pharos_types::phase0::MainnetBeaconBlock::default()
     });
     let fc_store =
-        pharos_fork_choice::get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
+        pharos_fork_choice::get_forkchoice_store::<MainnetBeaconSpec>(genesis_state, anchor_block);
     let fork_choice = Arc::new(RwLock::new(fc_store));
 
     let gvr = Root::default();

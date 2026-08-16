@@ -23,7 +23,7 @@ use pharos_stf::phase0::helpers::{DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO};
 use pharos_stf::{ForkEpochs, NullExecutionEngine, process_slots_fork, state_transition};
 use pharos_storage::{ColdMigrationBatch, RocksStore, RocksStoreConfig, Store as DbStore};
 use pharos_types::{
-    EthSpec, MinimalEthSpec,
+    BeaconSpec, MinimalBeaconSpec,
     altair::{MinimalSyncAggregate, MinimalSyncCommittee},
     bellatrix::{
         MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
@@ -124,7 +124,7 @@ fn build_genesis_for_test() -> (
 
     let validator = Validator {
         pubkey: test_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -135,7 +135,7 @@ fn build_genesis_for_test() -> (
     let sync_committee = MinimalSyncCommittee {
         pubkeys: SszVector::from_vec(vec![
             test_pubkey();
-            MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+            MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
         ])
         .unwrap(),
         aggregate_pubkey: test_pubkey(),
@@ -146,7 +146,7 @@ fn build_genesis_for_test() -> (
         slot: Slot(0),
         fork: pharos_types::phase0::Fork {
             previous_version: Version::from_array([0x01, 0x00, 0x00, 0x01]),
-            current_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+            current_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
             epoch: Epoch(0),
         },
         latest_block_header: BeaconBlockHeader {
@@ -159,7 +159,7 @@ fn build_genesis_for_test() -> (
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         )
         .unwrap(),
         previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
@@ -192,8 +192,8 @@ fn build_chain(
     use pharos_types::bellatrix::execution_payload::MinimalExecutionPayload;
 
     let runtime_cfg = pharos_types::config::RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         ..Default::default()
     };
     let null_engine = NullExecutionEngine;
@@ -208,7 +208,7 @@ fn build_chain(
         let slot = Slot(i);
 
         let mut pre_state_advanced = state.clone();
-        process_slots_fork::<MinimalEthSpec>(
+        process_slots_fork::<MinimalBeaconSpec>(
             &mut pre_state_advanced,
             slot,
             ForkEpochs::never(),
@@ -221,8 +221,8 @@ fn build_chain(
                 ForkMinState::Bellatrix(s) => s,
                 _ => panic!("expected Bellatrix state"),
             };
-            let epoch = slot.0 / MinimalEthSpec::SLOTS_PER_EPOCH;
-            let idx = (epoch % MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
+            let epoch = slot.0 / MinimalBeaconSpec::SLOTS_PER_EPOCH;
+            let idx = (epoch % MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
             let randao = s.randao_mixes.get(idx).copied().unwrap_or_default();
             let ts = s.genesis_time + slot.0 * runtime_cfg.seconds_per_slot;
             (randao, ts)
@@ -249,9 +249,9 @@ fn build_chain(
             ..Default::default()
         };
 
-        let randao_epoch = get_current_epoch::<MinimalEthSpec>(&pre_state_advanced);
+        let randao_epoch = get_current_epoch::<MinimalBeaconSpec>(&pre_state_advanced);
         let randao_domain =
-            get_domain::<MinimalEthSpec>(&pre_state_advanced, DOMAIN_RANDAO, Some(randao_epoch));
+            get_domain::<MinimalBeaconSpec>(&pre_state_advanced, DOMAIN_RANDAO, Some(randao_epoch));
         let randao_signing_root = compute_signing_root(&randao_epoch, randao_domain);
         let randao_reveal = test_sign(randao_signing_root.as_slice());
 
@@ -283,7 +283,7 @@ fn build_chain(
             message: draft,
             signature: BLSSignature::from_array([0u8; 96]),
         });
-        let (post_draft, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_draft, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             state.clone(),
             &draft_signed,
             &null_engine,
@@ -303,7 +303,7 @@ fn build_chain(
         let block_root: Root = final_block.tree_hash_root();
 
         let domain =
-            get_domain::<MinimalEthSpec>(&pre_state_advanced, DOMAIN_BEACON_PROPOSER, None);
+            get_domain::<MinimalBeaconSpec>(&pre_state_advanced, DOMAIN_BEACON_PROPOSER, None);
         let signing_root = compute_signing_root(&final_block, domain);
         let real_sig = test_sign(signing_root.as_slice());
 
@@ -311,7 +311,7 @@ fn build_chain(
             message: final_block,
             signature: real_sig,
         });
-        let (post_final, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_final, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             state.clone(),
             &fork_signed,
             &null_engine,
@@ -345,7 +345,7 @@ impl FixtureBlockProvider {
     }
 }
 
-impl BackfillBlockProvider<MinimalEthSpec> for FixtureBlockProvider {
+impl BackfillBlockProvider<MinimalBeaconSpec> for FixtureBlockProvider {
     async fn blocks_by_range(
         &self,
         _start_slot: Slot,
@@ -374,7 +374,7 @@ impl BackfillBlockProvider<MinimalEthSpec> for FixtureBlockProvider {
 async fn freezer_migration_cold_presence_and_regen() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    const SPE: u64 = MinimalEthSpec::SLOTS_PER_EPOCH;
+    const SPE: u64 = MinimalBeaconSpec::SLOTS_PER_EPOCH;
     let n_blocks: u64 = 2 * SPE; // 16 blocks
 
     // ── 1. Build genesis + chain ──────────────────────────────────────────────
@@ -383,15 +383,15 @@ async fn freezer_migration_cold_presence_and_regen() {
 
     let tmpdir = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
         .expect("open RocksStore"),
     );
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
-    fc.runtime_cfg = MinimalEthSpec::default_runtime_config();
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state.clone(), anchor_block);
+    fc.runtime_cfg = MinimalBeaconSpec::default_runtime_config();
     fc.time = 10_000_000;
     fc.set_terminal_config(
         pharos_utils::Uint256::default(),
@@ -402,10 +402,10 @@ async fn freezer_migration_cold_presence_and_regen() {
 
     let gvr = Root::default();
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -416,11 +416,11 @@ async fn freezer_migration_cold_presence_and_regen() {
         genesis_validators_root: gvr,
     };
     let runtime_cfg = Arc::new(pharos_types::config::RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         ..Default::default()
     });
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         Arc::clone(&store),
         Arc::clone(&fc_store),
         gvr,
@@ -437,14 +437,14 @@ async fn freezer_migration_cold_presence_and_regen() {
 
     let provider = FixtureBlockProvider::new(signed_blocks);
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let notify = Arc::new(Notify::new());
 
     let fc_for_assert = Arc::clone(&fc_store);
     let handle = tokio::spawn(async move {
         run_backfill_loop::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             _,
             NullExecutionEngine,
             pharos_fork_choice::NoopPowBlockProvider,
@@ -470,7 +470,7 @@ async fn freezer_migration_cold_presence_and_regen() {
     loop {
         let head_slot = {
             let s = fc_for_assert.read();
-            let root = get_head::<MinimalEthSpec>(&s);
+            let root = get_head::<MinimalBeaconSpec>(&s);
             s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
         };
         if head_slot.0 >= n_blocks {
@@ -522,7 +522,7 @@ async fn freezer_migration_cold_presence_and_regen() {
 
         if let Ok(Some(root)) = store.block_root_at_slot(slot) {
             if let Ok(Some(block)) =
-                <RocksStore as DbStore<MinimalEthSpec>>::get_block(&store, &root)
+                <RocksStore as DbStore<MinimalBeaconSpec>>::get_block(&store, &root)
             {
                 cold_blocks_vec.push((root, block));
                 prune_block_roots.push(root);
@@ -531,9 +531,9 @@ async fn freezer_migration_cold_presence_and_regen() {
             // Collect state roots to prune at epoch boundaries.
             if s % SPE == 0 {
                 if let Ok(Some(summary)) =
-                    <RocksStore as DbStore<MinimalEthSpec>>::get_state_summary(&store, &root)
+                    <RocksStore as DbStore<MinimalBeaconSpec>>::get_state_summary(&store, &root)
                 {
-                    if <RocksStore as DbStore<MinimalEthSpec>>::get_state(
+                    if <RocksStore as DbStore<MinimalBeaconSpec>>::get_state(
                         &store,
                         &summary.state_root,
                     )
@@ -550,17 +550,18 @@ async fn freezer_migration_cold_presence_and_regen() {
 
     // The restore-point state: epoch-boundary at split_slot.
     let rp_root = block_roots[(SPE - 1) as usize]; // slot SPE block root
-    let rp_summary = <RocksStore as DbStore<MinimalEthSpec>>::get_state_summary(&store, &rp_root)
-        .expect("state_summary lookup")
-        .expect("state_summary must exist at split boundary");
+    let rp_summary =
+        <RocksStore as DbStore<MinimalBeaconSpec>>::get_state_summary(&store, &rp_root)
+            .expect("state_summary lookup")
+            .expect("state_summary must exist at split boundary");
     let rp_state =
-        <RocksStore as DbStore<MinimalEthSpec>>::get_state(&store, &rp_summary.state_root)
+        <RocksStore as DbStore<MinimalBeaconSpec>>::get_state(&store, &rp_summary.state_root)
             .expect("get_state")
             .expect("epoch-boundary state must exist at split_slot");
 
     let cold_states = vec![(split_slot, rp_summary.state_root, rp_state)];
 
-    let batch = ColdMigrationBatch::<MinimalEthSpec> {
+    let batch = ColdMigrationBatch::<MinimalBeaconSpec> {
         cold_blocks: cold_blocks_vec,
         cold_states,
         prune_block_roots: prune_block_roots.clone(),
@@ -569,13 +570,13 @@ async fn freezer_migration_cold_presence_and_regen() {
         split_slot,
     };
 
-    <RocksStore as DbStore<MinimalEthSpec>>::migrate_to_cold(&store, batch)
+    <RocksStore as DbStore<MinimalBeaconSpec>>::migrate_to_cold(&store, batch)
         .expect("migrate_to_cold must succeed");
 
     // ── 4a. Assert: finalized blocks in cold-blocks CF ────────────────────────
     for (slot_idx, &root) in block_roots[..(SPE as usize)].iter().enumerate() {
         let slot = slot_idx as u64 + 1;
-        let cold_block = <RocksStore as DbStore<MinimalEthSpec>>::get_cold_block(&store, &root)
+        let cold_block = <RocksStore as DbStore<MinimalBeaconSpec>>::get_cold_block(&store, &root)
             .unwrap_or_else(|e| panic!("get_cold_block at slot {slot}: {e}"));
         assert!(
             cold_block.is_some(),
@@ -585,7 +586,7 @@ async fn freezer_migration_cold_presence_and_regen() {
 
     // ── 4b. Assert: restore-points index has the boundary entry ──────────────
     let rp_entry =
-        <RocksStore as DbStore<MinimalEthSpec>>::nearest_restore_point(&store, split_slot)
+        <RocksStore as DbStore<MinimalBeaconSpec>>::nearest_restore_point(&store, split_slot)
             .expect("nearest_restore_point")
             .expect("restore-points must have an entry at or below split_slot");
     assert_eq!(
@@ -599,7 +600,7 @@ async fn freezer_migration_cold_presence_and_regen() {
 
     // ── 4c. Assert: hot states CF rows below split are deleted ────────────────
     for state_root in &prune_state_roots {
-        let hot = <RocksStore as DbStore<MinimalEthSpec>>::get_state(&store, state_root)
+        let hot = <RocksStore as DbStore<MinimalBeaconSpec>>::get_state(&store, state_root)
             .expect("get_state lookup");
         assert!(
             hot.is_none(),
@@ -656,7 +657,7 @@ async fn freezer_migration_cold_presence_and_regen() {
         }
     }
 
-    let regen = StateRegenService::<MinimalEthSpec>::new(
+    let regen = StateRegenService::<MinimalBeaconSpec>::new(
         Arc::clone(&store),
         Arc::clone(&fc_for_assert),
         Arc::clone(&runtime_cfg),
@@ -691,7 +692,7 @@ async fn freezer_migration_cold_presence_and_regen() {
 async fn cold_state_density_equals_restore_points() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    const SPE: u64 = MinimalEthSpec::SLOTS_PER_EPOCH;
+    const SPE: u64 = MinimalBeaconSpec::SLOTS_PER_EPOCH;
     const INTERVAL_EPOCHS: u64 = 1;
     const INTERVAL_SLOTS: u64 = INTERVAL_EPOCHS * SPE; // 8
     let n_blocks: u64 = 3 * SPE; // 24 blocks — 3 full epochs
@@ -702,15 +703,15 @@ async fn cold_state_density_equals_restore_points() {
 
     let tmpdir = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db_density"),
             create_if_missing: true,
         })
         .expect("open RocksStore"),
     );
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
-    fc.runtime_cfg = MinimalEthSpec::default_runtime_config();
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state.clone(), anchor_block);
+    fc.runtime_cfg = MinimalBeaconSpec::default_runtime_config();
     fc.time = 10_000_000;
     fc.set_terminal_config(
         pharos_utils::Uint256::default(),
@@ -721,10 +722,10 @@ async fn cold_state_density_equals_restore_points() {
 
     let gvr = Root::default();
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -735,11 +736,11 @@ async fn cold_state_density_equals_restore_points() {
         genesis_validators_root: gvr,
     };
     let runtime_cfg = Arc::new(pharos_types::config::RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         ..Default::default()
     });
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         Arc::clone(&store),
         Arc::clone(&fc_store),
         gvr,
@@ -756,14 +757,14 @@ async fn cold_state_density_equals_restore_points() {
 
     let provider = FixtureBlockProvider::new(signed_blocks);
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let notify = Arc::new(Notify::new());
 
     let fc_for_assert = Arc::clone(&fc_store);
     let handle = tokio::spawn(async move {
         run_backfill_loop::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             _,
             NullExecutionEngine,
             pharos_fork_choice::NoopPowBlockProvider,
@@ -789,7 +790,7 @@ async fn cold_state_density_equals_restore_points() {
     loop {
         let head_slot = {
             let s = fc_for_assert.read();
-            let root = get_head::<MinimalEthSpec>(&s);
+            let root = get_head::<MinimalBeaconSpec>(&s);
             s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
         };
         if head_slot.0 >= n_blocks {
@@ -836,13 +837,14 @@ async fn cold_state_density_equals_restore_points() {
     let mut cold_blocks_vec: Vec<(Root, MinForkSignedBlock)> = Vec::new();
     let mut prune_block_roots: Vec<Root> = Vec::new();
     let mut prune_state_roots: Vec<Root> = Vec::new();
-    let mut cold_states: Vec<(Slot, Root, <MinimalEthSpec as EthSpec>::BeaconState)> = Vec::new();
+    let mut cold_states: Vec<(Slot, Root, <MinimalBeaconSpec as BeaconSpec>::BeaconState)> =
+        Vec::new();
 
     for s in 1..=finalized_slot.0 {
         let slot = Slot(s);
         if let Ok(Some(root)) = store.block_root_at_slot(slot) {
             if let Ok(Some(block)) =
-                <RocksStore as DbStore<MinimalEthSpec>>::get_block(&store, &root)
+                <RocksStore as DbStore<MinimalBeaconSpec>>::get_block(&store, &root)
             {
                 cold_blocks_vec.push((root, block));
                 prune_block_roots.push(root);
@@ -853,9 +855,9 @@ async fn cold_state_density_equals_restore_points() {
             // multiple, so the condition simplifies to: s % INTERVAL_SLOTS == 0.
             if s % INTERVAL_SLOTS == 0 {
                 if let Ok(Some(summary)) =
-                    <RocksStore as DbStore<MinimalEthSpec>>::get_state_summary(&store, &root)
+                    <RocksStore as DbStore<MinimalBeaconSpec>>::get_state_summary(&store, &root)
                 {
-                    if let Ok(Some(state)) = <RocksStore as DbStore<MinimalEthSpec>>::get_state(
+                    if let Ok(Some(state)) = <RocksStore as DbStore<MinimalBeaconSpec>>::get_state(
                         &store,
                         &summary.state_root,
                     ) {
@@ -876,7 +878,7 @@ async fn cold_state_density_equals_restore_points() {
         "test setup must produce exactly {expected_restore_point_count} interval-multiple states",
     );
 
-    let batch = ColdMigrationBatch::<MinimalEthSpec> {
+    let batch = ColdMigrationBatch::<MinimalBeaconSpec> {
         cold_blocks: cold_blocks_vec,
         cold_states,
         prune_block_roots: prune_block_roots.clone(),
@@ -885,7 +887,7 @@ async fn cold_state_density_equals_restore_points() {
         split_slot: finalized_slot,
     };
 
-    <RocksStore as DbStore<MinimalEthSpec>>::migrate_to_cold(&store, batch)
+    <RocksStore as DbStore<MinimalBeaconSpec>>::migrate_to_cold(&store, batch)
         .expect("migrate_to_cold must succeed");
 
     // ── 4a. Assert: cold-state CF density == restore-point count ─────────────
@@ -925,14 +927,15 @@ async fn cold_state_density_equals_restore_points() {
     // `nearest_restore_point` iterates the `restore-points` CF. Check all three.
     for epoch in 1u64..=3 {
         let rp_slot = Slot(epoch * INTERVAL_SLOTS);
-        let entry = <RocksStore as DbStore<MinimalEthSpec>>::nearest_restore_point(&store, rp_slot)
-            .expect("nearest_restore_point must succeed")
-            .unwrap_or_else(|| {
-                panic!(
-                    "restore-points CF must have an entry at or below slot {}",
-                    rp_slot.0
-                )
-            });
+        let entry =
+            <RocksStore as DbStore<MinimalBeaconSpec>>::nearest_restore_point(&store, rp_slot)
+                .expect("nearest_restore_point must succeed")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "restore-points CF must have an entry at or below slot {}",
+                        rp_slot.0
+                    )
+                });
         assert_eq!(
             entry.0, rp_slot,
             "nearest_restore_point for slot {} must return the exact boundary",

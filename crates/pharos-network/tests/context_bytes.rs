@@ -23,7 +23,7 @@ use pharos_network::rpc::types::RpcResponse;
 use pharos_network::topics::GossipTopicKind;
 use pharos_network::{NetworkHandle, RpcRequest};
 use pharos_ssz::{Encode as _, TreeHash as _};
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::altair::MainnetSignedBeaconBlock as AltairMainnetBlock;
 use pharos_types::altair::SignedContributionAndProof;
 use pharos_types::phase0::BeaconBlocksByRangeRequest;
@@ -60,7 +60,10 @@ async fn connect_and_wait(node_a: &mut common::TestNode, node_b: &mut common::Te
     wait_connected(&mut node_b.handle, node_a.peer_id).await;
 }
 
-async fn wait_connected(handle: &mut NetworkHandle<MainnetEthSpec>, expected_peer: libp2p::PeerId) {
+async fn wait_connected(
+    handle: &mut NetworkHandle<MainnetBeaconSpec>,
+    expected_peer: libp2p::PeerId,
+) {
     timeout(Duration::from_secs(5), async {
         loop {
             match handle.next_event().await.expect("channel closed") {

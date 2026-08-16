@@ -14,7 +14,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
@@ -42,7 +42,7 @@ struct BlockRootResponse {
 /// `GET /eth/v1/beacon/blocks/{block_id}/root`
 ///
 /// Per `~/dev/beacon-APIs/apis/beacon/blocks/root.yaml`.
-pub async fn get_block_root<E: EthSpec>(
+pub async fn get_block_root<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(block_id): Path<String>,
     headers: HeaderMap,
@@ -135,7 +135,7 @@ struct SingleHeaderResponse {
 /// in-memory header with a zeroed signature only when the signed block is
 /// absent from storage (e.g. pre-schema-v3 anchor blocks imported before
 /// Phase 1 was deployed).
-fn build_header_item<E: EthSpec>(
+fn build_header_item<E: BeaconSpec>(
     chain: &dyn crate::state::ChainStateApi<E>,
     root: pharos_types::phase0::Root,
     _execution_optimistic: bool,
@@ -183,7 +183,7 @@ fn build_header_item<E: EthSpec>(
 /// Returns block headers matching the given query. When no query parameters are
 /// supplied, returns the current head slot headers. Per
 /// `~/dev/beacon-APIs/apis/beacon/blocks/headers.yaml`.
-pub async fn get_headers<E: EthSpec>(
+pub async fn get_headers<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Query(q): Query<HeadersQuery>,
     headers: HeaderMap,
@@ -263,7 +263,7 @@ pub async fn get_headers<E: EthSpec>(
 ///
 /// Returns the block header for the given block id. Per
 /// `~/dev/beacon-APIs/apis/beacon/blocks/header.yaml`.
-pub async fn get_header<E: EthSpec>(
+pub async fn get_header<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(block_id): Path<String>,
     headers: HeaderMap,
@@ -305,7 +305,7 @@ pub async fn get_header<E: EthSpec>(
 /// (`Accept: application/json`) and SSZ (`Accept: application/octet-stream`).
 ///
 /// Per `~/dev/beacon-APIs/apis/beacon/blocks/block.v2.yaml`.
-pub async fn get_block_v2<E: EthSpec>(
+pub async fn get_block_v2<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(block_id): Path<String>,
     headers: HeaderMap,
@@ -346,7 +346,7 @@ pub async fn get_block_v2<E: EthSpec>(
 ///
 /// Returns the attestations included in the block for the given block id, fork-tagged.
 /// Per `~/dev/beacon-APIs/apis/beacon/blocks/attestations.v2.yaml`.
-pub async fn get_block_attestations_v2<E: EthSpec>(
+pub async fn get_block_attestations_v2<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(block_id): Path<String>,
     headers: HeaderMap,

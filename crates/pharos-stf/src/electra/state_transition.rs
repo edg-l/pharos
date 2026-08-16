@@ -4,7 +4,7 @@
 
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     capella::BeaconState as CapellaBeaconState,
     config::RuntimeConfig,
@@ -62,7 +62,7 @@ pub fn process_slots_electra_with_cfg<
     runtime_cfg: &RuntimeConfig,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -185,7 +185,7 @@ fn process_slot_electra<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -329,7 +329,7 @@ pub fn state_transition<
     StateTransitionError,
 >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -528,7 +528,7 @@ where
 // ── ElectraDispatch trait ─────────────────────────────────────────────────────
 
 /// Dispatch trait for the electra state transition.
-pub trait ElectraDispatch<E: EthSpec, EE: ExecutionEngine>: Sized {
+pub trait ElectraDispatch<E: BeaconSpec, EE: ExecutionEngine>: Sized {
     fn apply_signed_block(
         self,
         signed_block: &E::ElectraSignedBeaconBlock,
@@ -588,7 +588,7 @@ impl<
         PENDING_CONSOLIDATIONS_LIMIT,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -741,7 +741,7 @@ where
 // ── ElectraProcessSlotsDispatch trait ─────────────────────────────────────────
 
 /// Dispatch trait for `process_slots` on electra states.
-pub trait ElectraProcessSlotsDispatch<E: EthSpec>: Sized {
+pub trait ElectraProcessSlotsDispatch<E: BeaconSpec>: Sized {
     fn process_slots_electra(
         &mut self,
         target_slot: Slot,
@@ -781,7 +781,7 @@ impl<
         PENDING_CONSOLIDATIONS_LIMIT,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -866,7 +866,7 @@ where
 /// `self` with `verify_signatures=false` so block production builds the
 /// post-state without BLS verification (the node re-verifies on import, per
 /// `D-process-block-verify-flag`).
-pub trait ElectraProcessBlockForProduction<E: EthSpec, EE: ExecutionEngine>: Sized {
+pub trait ElectraProcessBlockForProduction<E: BeaconSpec, EE: ExecutionEngine>: Sized {
     /// Apply `block` (unsigned) to `self` with `verify_signatures=false`.
     fn process_block_for_production_electra(
         &mut self,
@@ -926,7 +926,7 @@ impl<
         PENDING_CONSOLIDATIONS_LIMIT,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -1079,7 +1079,7 @@ where
 /// pending-partial-withdrawal queue before the regular validator sweep.
 /// Lets `pharos-node` build the V4 payload attributes through the opaque
 /// `E::ElectraBeaconState` associated type.
-pub trait ElectraGetExpectedWithdrawalsDispatch<E: EthSpec> {
+pub trait ElectraGetExpectedWithdrawalsDispatch<E: BeaconSpec> {
     /// Compute the list of expected withdrawals for the next block on this state.
     fn get_expected_withdrawals_electra_dispatch(&self) -> Vec<pharos_types::capella::Withdrawal>;
 }
@@ -1116,7 +1116,7 @@ impl<
         PENDING_CONSOLIDATIONS_LIMIT,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
         ElectraBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -1158,7 +1158,7 @@ where
 // ── ElectraJaFDispatch trait ──────────────────────────────────────────────────
 
 /// Dispatch trait for `process_justification_and_finalization` on electra states.
-pub trait ElectraJaFDispatch<E: EthSpec>: Sized {
+pub trait ElectraJaFDispatch<E: BeaconSpec>: Sized {
     fn process_jaf_electra(&mut self) -> Result<(), EpochProcessingError>;
 }
 
@@ -1194,7 +1194,7 @@ impl<
         PENDING_CONSOLIDATIONS_LIMIT,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

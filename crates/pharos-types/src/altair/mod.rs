@@ -6,7 +6,7 @@
 //! ## Stable-Rust const-generic constraint
 //!
 //! On stable Rust, the `generic_const_exprs` feature is not available, which
-//! means associated consts from a generic `E: EthSpec` type parameter cannot
+//! means associated consts from a generic `E: BeaconSpec` type parameter cannot
 //! be used directly as const-generic arguments in struct field types. The
 //! same resolution as phase0 applies: explicit `const` parameters on each
 //! generic container struct, with preset-specific type aliases.

@@ -8,7 +8,7 @@
 
 use pharos_ssz::{SszVector, TreeHash, build_single_proof_from_leaves};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::{
         BeaconBlock, BeaconState,
         light_client::{
@@ -93,14 +93,14 @@ pub(crate) fn count_participants<const SYNC_COMMITTEE_SIZE: u64>(
 /// `compute_sync_committee_period(epoch)` = `epoch / EPOCHS_PER_SYNC_COMMITTEE_PERIOD`.
 ///
 /// Per `specs/altair/beacon-chain.md`.
-pub fn compute_sync_committee_period<E: EthSpec>(epoch: pharos_utils::Epoch) -> u64 {
+pub fn compute_sync_committee_period<E: BeaconSpec>(epoch: pharos_utils::Epoch) -> u64 {
     epoch.0 / E::EPOCHS_PER_SYNC_COMMITTEE_PERIOD
 }
 
 /// `compute_sync_committee_period_at_slot(slot)`.
 ///
 /// Per `specs/altair/light-client/sync-protocol.md`.
-pub fn compute_sync_committee_period_at_slot<E: EthSpec>(slot: Slot) -> u64 {
+pub fn compute_sync_committee_period_at_slot<E: BeaconSpec>(slot: Slot) -> u64 {
     let epoch = compute_epoch_at_slot(slot, E::SLOTS_PER_EPOCH);
     compute_sync_committee_period::<E>(epoch)
 }
@@ -160,7 +160,7 @@ pub fn get_safety_threshold<const SYNC_COMMITTEE_SIZE: u64>(
 /// `is_better_update(new_update, old_update)`.
 ///
 /// Per `specs/altair/light-client/sync-protocol.md`.
-pub fn is_better_update<E: EthSpec, const SYNC_COMMITTEE_SIZE: u64>(
+pub fn is_better_update<E: BeaconSpec, const SYNC_COMMITTEE_SIZE: u64>(
     new_update: &LightClientUpdate<SYNC_COMMITTEE_SIZE>,
     old_update: &LightClientUpdate<SYNC_COMMITTEE_SIZE>,
 ) -> bool
@@ -228,7 +228,7 @@ where
 ///
 /// For altair conformance: only phase0 and altair fork versions exist.
 /// Per `specs/phase0/beacon-chain.md` fork versioning scheme.
-pub fn compute_fork_version<E: EthSpec>(epoch: pharos_utils::Epoch) -> [u8; 4] {
+pub fn compute_fork_version<E: BeaconSpec>(epoch: pharos_utils::Epoch) -> [u8; 4] {
     if epoch.0 >= E::ALTAIR_FORK_EPOCH {
         E::ALTAIR_FORK_VERSION
     } else {
@@ -241,7 +241,7 @@ pub fn compute_fork_version<E: EthSpec>(epoch: pharos_utils::Epoch) -> [u8; 4] {
 /// `initialize_light_client_store(trusted_block_root, bootstrap)`.
 ///
 /// Per `specs/altair/light-client/sync-protocol.md:332-353`.
-pub fn initialize_light_client_store<E: EthSpec, const SYNC_COMMITTEE_SIZE: u64>(
+pub fn initialize_light_client_store<E: BeaconSpec, const SYNC_COMMITTEE_SIZE: u64>(
     trusted_block_root: &Root,
     bootstrap: &LightClientBootstrap<SYNC_COMMITTEE_SIZE>,
 ) -> Result<LightClientStore<SYNC_COMMITTEE_SIZE>, LightClientError>
@@ -283,7 +283,7 @@ where
 /// `validate_light_client_update(store, update, current_slot, genesis_validators_root)`.
 ///
 /// Per `specs/altair/light-client/sync-protocol.md:375-455`.
-pub fn validate_light_client_update<E: EthSpec, const SYNC_COMMITTEE_SIZE: u64>(
+pub fn validate_light_client_update<E: BeaconSpec, const SYNC_COMMITTEE_SIZE: u64>(
     store: &LightClientStore<SYNC_COMMITTEE_SIZE>,
     update: &LightClientUpdate<SYNC_COMMITTEE_SIZE>,
     current_slot: Slot,
@@ -427,7 +427,7 @@ where
 /// `apply_light_client_update(store, update)`.
 ///
 /// Per `specs/altair/light-client/sync-protocol.md:461-477`.
-pub fn apply_light_client_update<E: EthSpec, const SYNC_COMMITTEE_SIZE: u64>(
+pub fn apply_light_client_update<E: BeaconSpec, const SYNC_COMMITTEE_SIZE: u64>(
     store: &mut LightClientStore<SYNC_COMMITTEE_SIZE>,
     update: &LightClientUpdate<SYNC_COMMITTEE_SIZE>,
 ) where
@@ -461,7 +461,7 @@ pub fn apply_light_client_update<E: EthSpec, const SYNC_COMMITTEE_SIZE: u64>(
 /// `process_light_client_store_force_update(store, current_slot)`.
 ///
 /// Per `specs/altair/light-client/sync-protocol.md:483-498`.
-pub fn process_light_client_store_force_update<E: EthSpec, const SYNC_COMMITTEE_SIZE: u64>(
+pub fn process_light_client_store_force_update<E: BeaconSpec, const SYNC_COMMITTEE_SIZE: u64>(
     store: &mut LightClientStore<SYNC_COMMITTEE_SIZE>,
     current_slot: Slot,
 ) where
@@ -485,7 +485,7 @@ pub fn process_light_client_store_force_update<E: EthSpec, const SYNC_COMMITTEE_
 /// `process_light_client_update(store, update, current_slot, genesis_validators_root)`.
 ///
 /// Per `specs/altair/light-client/sync-protocol.md:504-547`.
-pub fn process_light_client_update<E: EthSpec, const SYNC_COMMITTEE_SIZE: u64>(
+pub fn process_light_client_update<E: BeaconSpec, const SYNC_COMMITTEE_SIZE: u64>(
     store: &mut LightClientStore<SYNC_COMMITTEE_SIZE>,
     update: &LightClientUpdate<SYNC_COMMITTEE_SIZE>,
     current_slot: Slot,
@@ -821,7 +821,7 @@ pub fn update_light_client_snapshots<
     >,
     store: &S,
 ) where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairLightClientBootstrap = LightClientBootstrap<SYNC_COMMITTEE_SIZE>,
             AltairLightClientUpdate = LightClientUpdate<SYNC_COMMITTEE_SIZE>,
             AltairLightClientFinalityUpdate = LightClientFinalityUpdate<SYNC_COMMITTEE_SIZE>,
@@ -1017,7 +1017,7 @@ pub fn create_light_client_update<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     _state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

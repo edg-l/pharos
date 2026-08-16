@@ -47,7 +47,7 @@ use pharos_stf::{
     process_block_for_production,
 };
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     altair::SyncAggregate,
     config::RuntimeConfig,
     phase0::misc::{AttestationData, Checkpoint, Eth1Data},
@@ -124,7 +124,7 @@ impl From<PreparePayloadError> for ProduceError {
 
 // ── Per-fork block-assembly dispatch traits ───────────────────────────────────
 //
-// These traits allow `produce_block` — which is generic over `E: EthSpec` —
+// These traits allow `produce_block` — which is generic over `E: BeaconSpec` —
 // to set fields on inner concrete signed-block types through the opaque
 // associated types `E::CapellaSignedBeaconBlock` / `E::BellatrixSignedBeaconBlock`
 // / `E::AltairSignedBeaconBlock`.
@@ -146,7 +146,7 @@ impl From<PreparePayloadError> for ProduceError {
 //   - `message_clone(&self) -> E::*BeaconBlock`: get the inner block for STF
 
 /// Assembly dispatch for Capella inner signed blocks.
-pub trait CapellaBlockAssembler<E: EthSpec>: Sized + Default + Clone {
+pub trait CapellaBlockAssembler<E: BeaconSpec>: Sized + Default + Clone {
     #[allow(clippy::too_many_arguments)]
     fn assemble(
         slot: Slot,
@@ -176,7 +176,7 @@ pub trait CapellaBlockAssembler<E: EthSpec>: Sized + Default + Clone {
 ///
 /// Extends `CapellaBlockAssembler` with `blob_kzg_commitments`: the
 /// commitments decoded from the `BlobsBundleV1` returned by `getPayloadV3`.
-pub trait DenebBlockAssembler<E: EthSpec>: Sized + Default + Clone {
+pub trait DenebBlockAssembler<E: BeaconSpec>: Sized + Default + Clone {
     #[allow(clippy::too_many_arguments)]
     fn assemble(
         slot: Slot,
@@ -228,7 +228,7 @@ pub trait DenebBlockAssembler<E: EthSpec>: Sized + Default + Clone {
 ///   `validator.md:124-147`) — each pooled aggregate becomes one electra
 ///   `Attestation` with `data.index = 0`, a single `committee_bits` bit set, and
 ///   the committee's `aggregation_bits` copied verbatim.
-pub trait ElectraBlockAssembler<E: EthSpec>: Sized + Default + Clone {
+pub trait ElectraBlockAssembler<E: BeaconSpec>: Sized + Default + Clone {
     #[allow(clippy::too_many_arguments)]
     fn assemble(
         slot: Slot,
@@ -269,7 +269,7 @@ pub trait ElectraBlockAssembler<E: EthSpec>: Sized + Default + Clone {
 }
 
 /// Assembly dispatch for Bellatrix inner signed blocks.
-pub trait BellatrixBlockAssembler<E: EthSpec>: Sized + Default + Clone {
+pub trait BellatrixBlockAssembler<E: BeaconSpec>: Sized + Default + Clone {
     #[allow(clippy::too_many_arguments)]
     fn assemble(
         slot: Slot,
@@ -293,7 +293,7 @@ pub trait BellatrixBlockAssembler<E: EthSpec>: Sized + Default + Clone {
 }
 
 /// Assembly dispatch for Altair inner signed blocks.
-pub trait AltairBlockAssembler<E: EthSpec>: Sized + Default + Clone {
+pub trait AltairBlockAssembler<E: BeaconSpec>: Sized + Default + Clone {
     #[allow(clippy::too_many_arguments)]
     fn assemble(
         slot: Slot,
@@ -521,7 +521,7 @@ impl<
         MAX_BLS_TO_EXECUTION_CHANGES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             CapellaSignedBeaconBlock = pharos_types::capella::SignedBeaconBlock<
                 MAX_PROPOSER_SLASHINGS,
                 MAX_ATTESTER_SLASHINGS,
@@ -660,7 +660,7 @@ impl<
         MAX_BLOB_COMMITMENTS_PER_BLOCK,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             DenebSignedBeaconBlock = pharos_types::deneb::SignedBeaconBlock<
                 MAX_PROPOSER_SLASHINGS,
                 MAX_ATTESTER_SLASHINGS,
@@ -850,7 +850,7 @@ impl<
         MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             ElectraSignedBeaconBlock = pharos_types::electra::SignedBeaconBlock<
                 MAX_PROPOSER_SLASHINGS,
                 MAX_ATTESTER_SLASHINGS_ELECTRA,
@@ -1053,7 +1053,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             BellatrixSignedBeaconBlock = pharos_types::bellatrix::SignedBeaconBlock<
                 MAX_PROPOSER_SLASHINGS,
                 MAX_ATTESTER_SLASHINGS,
@@ -1168,7 +1168,7 @@ impl<
         SYNC_COMMITTEE_SIZE,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairSignedBeaconBlock = pharos_types::altair::SignedBeaconBlock<
                 MAX_PROPOSER_SLASHINGS,
                 MAX_ATTESTER_SLASHINGS,
@@ -1247,7 +1247,7 @@ where
 
 // ── Helper: build FCU state ───────────────────────────────────────────────────
 
-fn build_fcu_state<E: EthSpec>(
+fn build_fcu_state<E: BeaconSpec>(
     fc_store: &Arc<RwLock<FcStore<E>>>,
     head_root: Root,
 ) -> pharos_engine::types::ForkchoiceStateV1
@@ -1275,7 +1275,7 @@ where
 /// when no pooled message matches. Non-draining (the GET must not consume
 /// messages a later block drain needs). Backs
 /// `GET /eth/v1/validator/sync_committee_contribution`.
-pub fn build_sync_contribution<E: EthSpec>(
+pub fn build_sync_contribution<E: BeaconSpec>(
     fc_store: &Arc<RwLock<FcStore<E>>>,
     pools: &OperationPools<E>,
     slot: Slot,
@@ -1329,7 +1329,7 @@ where
 /// Sidecars with decode errors are silently skipped (defensive; the engine
 /// is trusted to produce well-formed hex and the commitments already passed
 /// the block assembly validation).
-pub fn build_blob_sidecars<E: EthSpec>(
+pub fn build_blob_sidecars<E: BeaconSpec>(
     block: &E::DenebSignedBeaconBlock,
     blobs_bundle: BlobsBundleV1,
 ) -> Vec<pharos_types::deneb::BlobSidecar>
@@ -1405,7 +1405,7 @@ where
 /// sibling; the gindex and depth are unchanged). The resulting sidecars carry
 /// the standard `deneb::BlobSidecar` shape and verify under the shared
 /// `verify_blob_sidecar_inclusion_proof`.
-pub fn build_blob_sidecars_electra<E: EthSpec>(
+pub fn build_blob_sidecars_electra<E: BeaconSpec>(
     block: &E::ElectraSignedBeaconBlock,
     blobs_bundle: BlobsBundleV1,
 ) -> Vec<pharos_types::deneb::BlobSidecar>
@@ -1494,7 +1494,7 @@ where
 // Block production legitimately needs all of these inputs; a param struct would
 // add indirection without clarifying the call site.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn produce_block<E: EthSpec>(
+pub fn produce_block<E: BeaconSpec>(
     fc_store: &Arc<RwLock<FcStore<E>>>,
     pools: &OperationPools<E>,
     engine: &EngineHandle,
@@ -2049,7 +2049,7 @@ where
 ///
 /// Returns `ProduceError::BadCommitteeIndex` if `committee_index >=
 /// get_committee_count_per_slot(state, slot_epoch)`.
-pub fn produce_attestation_data<E: EthSpec>(
+pub fn produce_attestation_data<E: BeaconSpec>(
     fc_store: &Arc<RwLock<FcStore<E>>>,
     slot: Slot,
     committee_index: CommitteeIndex,
@@ -2118,7 +2118,7 @@ where
 // ── get_committee_for_slot ────────────────────────────────────────────────────
 
 /// Return the list of validator indices in `committee_index` for `slot`.
-pub fn get_committee_for_slot<E: EthSpec>(
+pub fn get_committee_for_slot<E: BeaconSpec>(
     fc_store: &Arc<RwLock<FcStore<E>>>,
     slot: Slot,
     committee_index: CommitteeIndex,

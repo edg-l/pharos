@@ -10,7 +10,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     bellatrix::BeaconState as BellatrixBeaconState,
     capella::BeaconState,
@@ -69,7 +69,7 @@ pub fn is_fully_withdrawable_validator(
 /// Returns `true` when the validator has ETH1 credentials, its effective
 /// balance equals `MAX_EFFECTIVE_BALANCE`, and its balance exceeds
 /// `MAX_EFFECTIVE_BALANCE`.
-pub fn is_partially_withdrawable_validator<E: EthSpec>(
+pub fn is_partially_withdrawable_validator<E: BeaconSpec>(
     validator: &pharos_types::phase0::Validator,
     balance: Gwei,
 ) -> bool {
@@ -92,7 +92,7 @@ pub(crate) fn get_current_epoch_capella<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -122,7 +122,7 @@ pub(crate) fn get_total_active_balance_capella<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -612,7 +612,7 @@ pub(crate) fn initiate_validator_exit_capella<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -735,7 +735,7 @@ pub(crate) fn slash_validator_capella<
     whistleblower_index: Option<ValidatorIndex>,
 ) -> Result<(), crate::error::StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         CapellaBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -910,7 +910,7 @@ pub fn get_inactivity_penalty_deltas_capella<
     >,
 ) -> (Vec<Gwei>, Vec<Gwei>)
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

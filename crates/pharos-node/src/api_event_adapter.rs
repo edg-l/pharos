@@ -24,7 +24,7 @@ use pharos_api::events::{
 };
 use pharos_fork_choice::Store as FcStore;
 use pharos_types::{
-    BeaconStateView as _, EthSpec, PayloadStatus,
+    BeaconSpec, BeaconStateView as _, PayloadStatus,
     phase0::{Root, Slot},
     views::BeaconBlockView as _,
 };
@@ -61,7 +61,7 @@ pub async fn run_api_event_adapter<E>(
     fork_choice: Arc<RwLock<FcStore<E>>>,
     bus: Arc<EventBus>,
 ) where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconBlock: pharos_types::views::BeaconBlockView,
     E::BeaconState: pharos_types::BeaconStateView,
 {
@@ -269,7 +269,7 @@ pub async fn run_api_event_adapter<E>(
 /// Both use the genesis root (all-zeros) on slot underflow (epoch 0).
 ///
 /// `get_block_root_at_slot(state, slot) = state.block_roots[slot % SLOTS_PER_HISTORICAL_ROOT]`.
-fn compute_duty_dependent_roots<E: EthSpec>(
+fn compute_duty_dependent_roots<E: BeaconSpec>(
     fc: &FcStore<E>,
     head_root: Root,
     head_epoch: u64,
@@ -321,7 +321,7 @@ mod tests {
     use pharos_fork_choice::Store as FcStore;
     use pharos_ssz::TreeHash;
     use pharos_types::{
-        MinimalEthSpec,
+        MinimalBeaconSpec,
         phase0::{Checkpoint, Root, Slot},
         state::{MinimalBeaconBlock, MinimalBeaconState},
     };
@@ -329,7 +329,7 @@ mod tests {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    fn empty_store() -> FcStore<MinimalEthSpec> {
+    fn empty_store() -> FcStore<MinimalBeaconSpec> {
         let cp = Checkpoint::default();
         FcStore {
             time: 0,
@@ -359,7 +359,7 @@ mod tests {
 
     /// Insert a bare phase0 block at `slot` with `parent_root` into `store`.
     /// Returns its tree-hash root.
-    fn insert_block(store: &mut FcStore<MinimalEthSpec>, slot: u64, parent_root: Root) -> Root {
+    fn insert_block(store: &mut FcStore<MinimalBeaconSpec>, slot: u64, parent_root: Root) -> Root {
         use pharos_types::phase0::MinimalBeaconBlock as Phase0Block;
         let block = Phase0Block {
             slot: Slot(slot),
@@ -376,7 +376,7 @@ mod tests {
 
     /// Run the same depth-walk logic used in `run_api_event_adapter`:
     /// walk from `old_root` back to `lca_root`, counting hops.
-    fn depth_walk(store: &FcStore<MinimalEthSpec>, old_root: Root, lca_root: Root) -> u64 {
+    fn depth_walk(store: &FcStore<MinimalBeaconSpec>, old_root: Root, lca_root: Root) -> u64 {
         let mut depth: u64 = 0;
         let mut cursor = old_root;
         loop {

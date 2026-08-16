@@ -20,7 +20,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use pharos_fork_choice::Store as FcStore;
 use pharos_storage::{RocksStore, Store as DbStore};
-use pharos_types::{EthSpec, phase0::primitives::Slot};
+use pharos_types::{BeaconSpec, phase0::primitives::Slot};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
@@ -39,7 +39,7 @@ use crate::engine_driver::HeadChange;
 ///   clamped so blobs in the Deneb activation epoch or later are always retained
 ///   until they are old enough.
 /// - `shutdown_rx`: set to `true` on Ctrl-C to break the loop.
-pub async fn run_blob_prune_loop<E: EthSpec>(
+pub async fn run_blob_prune_loop<E: BeaconSpec>(
     mut head_rx: watch::Receiver<Option<HeadChange>>,
     store: Arc<RocksStore>,
     fork_choice: Arc<RwLock<FcStore<E>>>,

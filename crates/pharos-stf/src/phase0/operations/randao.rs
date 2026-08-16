@@ -1,6 +1,6 @@
 //! `process_randao` per `specs/phase0/beacon-chain.md:1912-1924`.
 
-use pharos_types::{BeaconStateView, EthSpec, views::BeaconBlockBodyView};
+use pharos_types::{BeaconSpec, BeaconStateView, views::BeaconBlockBodyView};
 
 use crate::error::StateTransitionError;
 use crate::phase0::{
@@ -13,7 +13,7 @@ use crate::phase0::{
 };
 
 /// `process_randao` per `specs/phase0/beacon-chain.md:1912-1924`.
-pub fn process_randao<E: EthSpec>(
+pub fn process_randao<E: BeaconSpec>(
     state: &mut E::BeaconState,
     body: &E::Phase0BeaconBlockBody,
     verify_signatures: bool,

@@ -12,7 +12,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::SyncAggregate,
     electra::BeaconState,
     phase0::{Slot, ValidatorIndex},
@@ -67,7 +67,7 @@ pub fn process_sync_aggregate_electra<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

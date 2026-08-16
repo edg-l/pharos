@@ -7,7 +7,7 @@
 //! Per `specs/altair/beacon-chain.md:459-487` (modified `slash_validator`).
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, altair::BeaconState, phase0::ProposerSlashing};
+use pharos_types::{BeaconSpec, altair::BeaconState, phase0::ProposerSlashing};
 
 use crate::altair::helpers::slash_validator;
 use crate::error::{ProposerSlashingInvalidReason, StateTransitionError};
@@ -44,7 +44,7 @@ pub fn process_proposer_slashing<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

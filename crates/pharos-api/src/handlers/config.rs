@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use serde::Serialize;
 
 use crate::error::ApiError;
@@ -40,7 +40,7 @@ fn hex32(v: [u8; 32]) -> String {
 }
 
 /// `GET /eth/v1/config/spec`
-pub async fn get_spec<E: EthSpec>(
+pub async fn get_spec<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
 ) -> Result<Json<SpecResponse>, ApiError> {
     let chain = Arc::clone(&state.chain);

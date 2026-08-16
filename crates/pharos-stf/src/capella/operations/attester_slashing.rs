@@ -4,7 +4,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     capella::BeaconState,
     phase0::{AttesterSlashing, IndexedAttestation, ValidatorIndex},
 };
@@ -47,7 +47,7 @@ pub fn process_attester_slashing_capella<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         CapellaBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

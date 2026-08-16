@@ -28,7 +28,7 @@ use pharos_fork_choice::get_forkchoice_store;
 use pharos_ssz::{Bitlist, SszList, SszSequence as _, TreeHash};
 use pharos_storage::{BlockTransition, RocksStore, RocksStoreConfig, Store as DbStore};
 use pharos_types::{
-    EthSpec, MinimalEthSpec,
+    BeaconSpec, MinimalBeaconSpec,
     phase0::{
         Attestation, Epoch, Gwei, MinimalBeaconBlock, MinimalBeaconBlockBody,
         MinimalSignedBeaconBlock, Root, Slot, Validator, ValidatorIndex,
@@ -49,7 +49,7 @@ use pharos_node::state_regen::StateRegenService;
 
 mod common;
 
-type E = MinimalEthSpec;
+type E = MinimalBeaconSpec;
 
 // ── genesis with one active validator ─────────────────────────────────────────
 

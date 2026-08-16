@@ -3,7 +3,7 @@
 
 use pharos_ssz::TreeHash;
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     phase0::{Attestation, AttesterSlashing, Deposit},
     views::{BeaconBlockBodyView, BeaconBlockView},
 };
@@ -21,7 +21,7 @@ use crate::phase0::{
 ///
 /// Accepts the concrete phase0 block (not the fork-enum). The caller
 /// (`state_transition`) unwraps the fork-enum before calling this.
-pub fn process_block<E: EthSpec>(
+pub fn process_block<E: BeaconSpec>(
     state: &mut E::BeaconState,
     block: &E::Phase0BeaconBlock,
     verify_signatures: bool,
@@ -49,7 +49,7 @@ where
 /// Validates the deposit count pre-condition then applies all five operation
 /// types in the spec-mandated order, threading `verify_signatures` into each
 /// processor that performs BLS verification.
-fn process_operations<E: EthSpec>(
+fn process_operations<E: BeaconSpec>(
     state: &mut E::BeaconState,
     body: &E::Phase0BeaconBlockBody,
     verify_signatures: bool,

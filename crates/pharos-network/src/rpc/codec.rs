@@ -19,7 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use pharos_ssz::{Decode, Encode};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::deneb::{BlobSidecar, BlobSidecarsByRangeRequest, BlobSidecarsByRootRequest};
 use pharos_types::phase0::{
@@ -45,7 +45,7 @@ use crate::types::Fork;
 
 /// The Ethereum CL req-resp codec.
 ///
-/// Generic over `E: EthSpec` because `RpcResponse<E>` carries
+/// Generic over `E: BeaconSpec` because `RpcResponse<E>` carries
 /// `E::SignedBeaconBlock` values in `BlocksByRange` / `BlocksByRoot` variants.
 ///
 /// `fork_context` is used to encode/decode the 4-byte context prefix on
@@ -54,12 +54,12 @@ use crate::types::Fork;
 /// methods fall back to treating every chunk as Phase-0 SSZ (safe for
 /// unit tests that don't exercise context-bytes paths).
 #[derive(Clone)]
-pub struct RpcCodec<E: EthSpec> {
+pub struct RpcCodec<E: BeaconSpec> {
     fork_context: Option<Arc<dyn ForkContext>>,
     _phantom: PhantomData<E>,
 }
 
-impl<E: EthSpec> Default for RpcCodec<E> {
+impl<E: BeaconSpec> Default for RpcCodec<E> {
     fn default() -> Self {
         Self {
             fork_context: None,
@@ -68,7 +68,7 @@ impl<E: EthSpec> Default for RpcCodec<E> {
     }
 }
 
-impl<E: EthSpec> RpcCodec<E> {
+impl<E: BeaconSpec> RpcCodec<E> {
     /// Construct a codec with a `ForkContext` for context-bytes decoding.
     pub fn with_fork_context(ctx: Arc<dyn ForkContext>) -> Self {
         Self {
@@ -81,7 +81,7 @@ impl<E: EthSpec> RpcCodec<E> {
 // ── Codec impl ────────────────────────────────────────────────────────────────
 
 #[async_trait]
-impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for RpcCodec<E> {
+impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for RpcCodec<E> {
     type Protocol = RpcProtocol;
     type Request = RpcRequest;
     type Response = RpcResponse<E>;
@@ -794,7 +794,7 @@ mod tests {
     use super::*;
     use libp2p::request_response::Codec as _;
     use pharos_ssz::{SszList, SszSequence as _};
-    use pharos_types::MainnetEthSpec;
+    use pharos_types::MainnetBeaconSpec;
     use pharos_types::deneb::{
         BlobIdentifier, BlobSidecarsByRangeRequest, BlobSidecarsByRootRequest,
     };
@@ -816,7 +816,7 @@ mod tests {
         };
 
         let protocol = RpcProtocol(RpcMethod::Status);
-        let mut codec = RpcCodec::<MainnetEthSpec>::default();
+        let mut codec = RpcCodec::<MainnetBeaconSpec>::default();
 
         // Write the request into a Vec<u8>.
         let mut buf: Vec<u8> = Vec::new();
@@ -849,7 +849,7 @@ mod tests {
     #[tokio::test]
     async fn metadata_request_roundtrip() {
         let protocol = RpcProtocol(RpcMethod::MetaData);
-        let mut codec = RpcCodec::<MainnetEthSpec>::default();
+        let mut codec = RpcCodec::<MainnetBeaconSpec>::default();
 
         let mut buf: Vec<u8> = Vec::new();
         codec
@@ -875,7 +875,7 @@ mod tests {
     #[tokio::test]
     async fn multi_chunk_no_overread() {
         let protocol = RpcProtocol(RpcMethod::Ping);
-        let mut codec = RpcCodec::<MainnetEthSpec>::default();
+        let mut codec = RpcCodec::<MainnetBeaconSpec>::default();
 
         let mut buf: Vec<u8> = Vec::new();
         codec
@@ -912,7 +912,7 @@ mod tests {
         };
 
         let protocol = RpcProtocol(RpcMethod::Status);
-        let mut codec = RpcCodec::<MainnetEthSpec>::default();
+        let mut codec = RpcCodec::<MainnetBeaconSpec>::default();
 
         let mut buf: Vec<u8> = Vec::new();
         codec
@@ -949,7 +949,7 @@ mod tests {
         };
 
         let protocol = RpcProtocol(RpcMethod::BlobSidecarsByRange);
-        let mut codec = RpcCodec::<MainnetEthSpec>::default();
+        let mut codec = RpcCodec::<MainnetBeaconSpec>::default();
 
         let mut buf: Vec<u8> = Vec::new();
         codec
@@ -1006,7 +1006,7 @@ mod tests {
         let original = BlobSidecarsByRootRequest::<{ MAX_REQUEST_BLOB_SIDECARS }> { blob_ids };
 
         let protocol = RpcProtocol(RpcMethod::BlobSidecarsByRoot);
-        let mut codec = RpcCodec::<MainnetEthSpec>::default();
+        let mut codec = RpcCodec::<MainnetBeaconSpec>::default();
 
         let mut buf: Vec<u8> = Vec::new();
         codec

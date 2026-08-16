@@ -8,7 +8,7 @@
 //! Per `specs/bellatrix/beacon-chain.md:253-276` (modified `slash_validator`).
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, bellatrix::BeaconState, phase0::ProposerSlashing};
+use pharos_types::{BeaconSpec, bellatrix::BeaconState, phase0::ProposerSlashing};
 
 use crate::bellatrix::helpers::slash_validator_bellatrix;
 use crate::error::{ProposerSlashingInvalidReason, StateTransitionError};
@@ -51,7 +51,7 @@ pub fn process_proposer_slashing_bellatrix<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         BellatrixBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

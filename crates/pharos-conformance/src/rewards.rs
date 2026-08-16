@@ -25,7 +25,7 @@ use pharos_stf::phase0::{
     },
 };
 use pharos_types::{
-    EthSpec, MainnetEthSpec, MinimalEthSpec,
+    BeaconSpec, MainnetBeaconSpec, MinimalBeaconSpec,
     phase0::{Attestation, Deltas},
     views::BeaconBlockBodyView,
 };
@@ -77,13 +77,13 @@ pub fn enumerate_rewards(
 
             let run: CaseFn = match (fork, preset) {
                 ("phase0", "mainnet") => Box::new(move || {
-                    match run_rewards_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                    match run_rewards_case::<MainnetBeaconSpec>(&case_dir, &case_name) {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
                 }),
                 ("phase0", _) => Box::new(move || {
-                    match run_rewards_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                    match run_rewards_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
@@ -92,7 +92,7 @@ pub fn enumerate_rewards(
                     use pharos_stf::altair::helpers::{
                         get_flag_index_deltas, get_inactivity_penalty_deltas,
                     };
-                    use pharos_types::{MainnetEthSpec as E, altair::MainnetBeaconState};
+                    use pharos_types::{MainnetBeaconSpec as E, altair::MainnetBeaconState};
                     Box::new(move || {
                         match run_altair_rewards_case_mainnet::<E, MainnetBeaconState>(
                             &case_dir,
@@ -133,7 +133,7 @@ pub fn enumerate_rewards(
                     use pharos_stf::altair::helpers::{
                         get_flag_index_deltas, get_inactivity_penalty_deltas,
                     };
-                    use pharos_types::{MinimalEthSpec as E, altair::MinimalBeaconState};
+                    use pharos_types::{MinimalBeaconSpec as E, altair::MinimalBeaconState};
                     Box::new(move || {
                         match run_altair_rewards_case_mainnet::<E, MinimalBeaconState>(
                             &case_dir,
@@ -175,7 +175,7 @@ pub fn enumerate_rewards(
                     use pharos_stf::bellatrix::helpers::{
                         bellatrix_state_to_altair, get_inactivity_penalty_deltas_bellatrix,
                     };
-                    use pharos_types::{MainnetEthSpec as E, bellatrix::MainnetBeaconState};
+                    use pharos_types::{MainnetBeaconSpec as E, bellatrix::MainnetBeaconState};
                     Box::new(move || {
                         match run_bellatrix_rewards_case::<E, MainnetBeaconState>(
                             &case_dir,
@@ -220,7 +220,7 @@ pub fn enumerate_rewards(
                     use pharos_stf::bellatrix::helpers::{
                         bellatrix_state_to_altair, get_inactivity_penalty_deltas_bellatrix,
                     };
-                    use pharos_types::{MinimalEthSpec as E, bellatrix::MinimalBeaconState};
+                    use pharos_types::{MinimalBeaconSpec as E, bellatrix::MinimalBeaconState};
                     Box::new(move || {
                         match run_bellatrix_rewards_case::<E, MinimalBeaconState>(
                             &case_dir,
@@ -265,7 +265,7 @@ pub fn enumerate_rewards(
                     use pharos_stf::capella::helpers::{
                         capella_state_to_altair, get_inactivity_penalty_deltas_capella,
                     };
-                    use pharos_types::{MainnetEthSpec as E, capella::MainnetBeaconState};
+                    use pharos_types::{MainnetBeaconSpec as E, capella::MainnetBeaconState};
                     Box::new(move || {
                         match run_capella_rewards_case::<E, MainnetBeaconState>(
                             &case_dir,
@@ -310,7 +310,7 @@ pub fn enumerate_rewards(
                     use pharos_stf::capella::helpers::{
                         capella_state_to_altair, get_inactivity_penalty_deltas_capella,
                     };
-                    use pharos_types::{MinimalEthSpec as E, capella::MinimalBeaconState};
+                    use pharos_types::{MinimalBeaconSpec as E, capella::MinimalBeaconState};
                     Box::new(move || {
                         match run_capella_rewards_case::<E, MinimalBeaconState>(
                             &case_dir,
@@ -355,7 +355,7 @@ pub fn enumerate_rewards(
                     use pharos_stf::deneb::helpers::{
                         deneb_state_to_altair, get_inactivity_penalty_deltas_deneb,
                     };
-                    use pharos_types::{MainnetEthSpec as E, deneb::MainnetBeaconState};
+                    use pharos_types::{MainnetBeaconSpec as E, deneb::MainnetBeaconState};
                     Box::new(move || {
                         match run_deneb_rewards_case::<E, MainnetBeaconState>(
                             &case_dir,
@@ -401,7 +401,7 @@ pub fn enumerate_rewards(
                         deneb_state_to_altair, get_inactivity_penalty_deltas_deneb,
                     };
                     use pharos_stf::electra::helpers::electra_state_to_deneb;
-                    use pharos_types::{MainnetEthSpec as E, electra::MainnetBeaconState};
+                    use pharos_types::{MainnetBeaconSpec as E, electra::MainnetBeaconState};
                     Box::new(move || {
                         match run_electra_rewards_case::<E, MainnetBeaconState>(
                             &case_dir,
@@ -449,7 +449,7 @@ pub fn enumerate_rewards(
                         deneb_state_to_altair, get_inactivity_penalty_deltas_deneb,
                     };
                     use pharos_stf::electra::helpers::electra_state_to_deneb;
-                    use pharos_types::{MinimalEthSpec as E, electra::MinimalBeaconState};
+                    use pharos_types::{MinimalBeaconSpec as E, electra::MinimalBeaconState};
                     Box::new(move || {
                         match run_electra_rewards_case::<E, MinimalBeaconState>(
                             &case_dir,
@@ -497,7 +497,7 @@ pub fn enumerate_rewards(
                     use pharos_stf::deneb::helpers::{
                         deneb_state_to_altair, get_inactivity_penalty_deltas_deneb,
                     };
-                    use pharos_types::{MinimalEthSpec as E, deneb::MinimalBeaconState};
+                    use pharos_types::{MinimalBeaconSpec as E, deneb::MinimalBeaconState};
                     Box::new(move || {
                         match run_deneb_rewards_case::<E, MinimalBeaconState>(
                             &case_dir,
@@ -554,7 +554,7 @@ pub fn enumerate_rewards(
 
 fn run_rewards_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconState: Decode,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
@@ -605,7 +605,7 @@ fn run_altair_rewards_case_mainnet<E, S>(
     get_inactivity_deltas: impl Fn(&S) -> (Vec<Gwei>, Vec<Gwei>),
 ) -> CaseResult
 where
-    E: EthSpec<AltairBeaconState = S>,
+    E: BeaconSpec<AltairBeaconState = S>,
     S: pharos_ssz::Decode,
 {
     let pre = match load_altair_state::<E>(case_dir, "pre.ssz_snappy") {
@@ -671,7 +671,7 @@ fn run_bellatrix_rewards_case<E, S>(
     get_inactivity_deltas: impl Fn(&S) -> (Vec<Gwei>, Vec<Gwei>),
 ) -> CaseResult
 where
-    E: EthSpec<BellatrixBeaconState = S>,
+    E: BeaconSpec<BellatrixBeaconState = S>,
     S: pharos_ssz::Decode,
 {
     let pre = match load_bellatrix_state::<E>(case_dir, "pre.ssz_snappy") {
@@ -732,7 +732,7 @@ fn run_capella_rewards_case<E, S>(
     get_inactivity_deltas: impl Fn(&S) -> (Vec<Gwei>, Vec<Gwei>),
 ) -> CaseResult
 where
-    E: EthSpec<CapellaBeaconState = S>,
+    E: BeaconSpec<CapellaBeaconState = S>,
     S: pharos_ssz::Decode,
 {
     let pre = match load_capella_state::<E>(case_dir, "pre.ssz_snappy") {
@@ -786,7 +786,7 @@ fn run_deneb_rewards_case<E, S>(
     get_inactivity_deltas: impl Fn(&S) -> (Vec<Gwei>, Vec<Gwei>),
 ) -> CaseResult
 where
-    E: EthSpec<DenebBeaconState = S>,
+    E: BeaconSpec<DenebBeaconState = S>,
     S: pharos_ssz::Decode,
 {
     let pre = match load_deneb_state::<E>(case_dir, "pre.ssz_snappy") {
@@ -843,7 +843,7 @@ fn run_electra_rewards_case<E, S>(
     get_inactivity_deltas: impl Fn(&S) -> (Vec<Gwei>, Vec<Gwei>),
 ) -> CaseResult
 where
-    E: EthSpec<ElectraBeaconState = S>,
+    E: BeaconSpec<ElectraBeaconState = S>,
     S: pharos_ssz::Decode,
 {
     let pre = match load_electra_state::<E>(case_dir, "pre.ssz_snappy") {

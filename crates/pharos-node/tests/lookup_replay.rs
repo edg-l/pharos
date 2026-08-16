@@ -24,7 +24,7 @@ use pharos_storage::{RocksStore, RocksStoreConfig};
 use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::primitives::{Root, Version};
 use pharos_types::state::BeaconBlock as ForkBeaconBlock;
-use pharos_types::{EthSpec, MinimalEthSpec};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 use pharos_utils::{Epoch, Hash256};
 use tokio::sync::{Notify, mpsc, watch};
 
@@ -54,7 +54,7 @@ impl MapLookupProvider {
     }
 }
 
-impl LookupBlockProvider<MinimalEthSpec> for MapLookupProvider {
+impl LookupBlockProvider<MinimalBeaconSpec> for MapLookupProvider {
     async fn blocks_by_root(
         &self,
         roots: Vec<Root>,
@@ -99,7 +99,7 @@ async fn lookup_replay_fetches_and_replays_chain() {
         pharos_types::state::MinimalBeaconState::Bellatrix(anchor_state_inner.clone());
     let anchor_block = ForkBeaconBlock::Bellatrix(anchor_signed.message.clone());
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, anchor_block);
     // Install the minimal-preset runtime config + fork-epoch schedule, exactly as
     // `main.rs` does after rehydration. `get_forkchoice_store` defaults `runtime_cfg`
     // to the mainnet `RuntimeConfig::default()` (12s slots); the import path threads
@@ -107,7 +107,7 @@ async fn lookup_replay_fetches_and_replays_chain() {
     // bellatrix `execution_payload.timestamp` (built with minimal 6s slots) against
     // `genesis_time + slot * 12` and rejects every block — the head never advances
     // (same root cause as the checkpoint_backfill_pipeline fix).
-    let minimal_cfg = MinimalEthSpec::default_runtime_config();
+    let minimal_cfg = MinimalBeaconSpec::default_runtime_config();
     fc.set_fork_epochs(
         minimal_cfg.altair_fork_epoch,
         minimal_cfg.bellatrix_fork_epoch,
@@ -154,7 +154,7 @@ async fn lookup_replay_fetches_and_replays_chain() {
     // Build host + RocksDB.
     let tmpdir = tempfile::tempdir().unwrap();
     let db = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -162,10 +162,10 @@ async fn lookup_replay_fetches_and_replays_chain() {
     );
     let genesis_validators_root = Root::default();
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -175,22 +175,22 @@ async fn lookup_replay_fetches_and_replays_chain() {
         electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         db,
         Arc::clone(&fc_store),
         genesis_validators_root,
         fork_schedule,
         BACKFILL_GENESIS_TIME_SECS,
         Arc::new(pharos_types::config::RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
             ..Default::default()
         }),
     ));
 
     // Channels.
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
     let (lookup_tx, lookup_rx) = mpsc::channel::<LookupRequest>(64);
     let (reinject_tx, _reinject_rx) = mpsc::channel::<ReinjectBlock>(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -205,7 +205,7 @@ async fn lookup_replay_fetches_and_replays_chain() {
 
     // Spawn run_lookup_loop.
     let loop_handle = tokio::spawn(run_lookup_loop::<
-        MinimalEthSpec,
+        MinimalBeaconSpec,
         MapLookupProvider,
         NullExecutionEngine,
         pharos_fork_choice::NoopPowBlockProvider,
@@ -253,7 +253,7 @@ async fn lookup_replay_fetches_and_replays_chain() {
     loop {
         let head = {
             let s = fc_for_assert.read();
-            get_head::<MinimalEthSpec>(&s)
+            get_head::<MinimalBeaconSpec>(&s)
         };
         if head == block3_root {
             break;
@@ -261,7 +261,7 @@ async fn lookup_replay_fetches_and_replays_chain() {
         if tokio::time::Instant::now() >= deadline {
             let head = {
                 let s = fc_for_assert.read();
-                get_head::<MinimalEthSpec>(&s)
+                get_head::<MinimalBeaconSpec>(&s)
             };
             panic!("timeout: head={head:?} expected block3_root={block3_root:?}");
         }
@@ -316,12 +316,12 @@ async fn lookup_direct_import_holds_future_block() {
         pharos_types::state::MinimalBeaconState::Bellatrix(anchor_state_inner.clone());
     let anchor_block = ForkBeaconBlock::Bellatrix(anchor_signed.message.clone());
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, anchor_block);
     // Install the minimal-preset runtime config + fork-epoch schedule (see the
     // first test for the full rationale): `get_forkchoice_store` defaults
     // `runtime_cfg` to mainnet (12s slots), which makes the STF reject the
     // minimal-preset (6s) bellatrix payload timestamps and stalls the head.
-    let minimal_cfg = MinimalEthSpec::default_runtime_config();
+    let minimal_cfg = MinimalBeaconSpec::default_runtime_config();
     fc.set_fork_epochs(
         minimal_cfg.altair_fork_epoch,
         minimal_cfg.bellatrix_fork_epoch,
@@ -355,7 +355,7 @@ async fn lookup_direct_import_holds_future_block() {
 
     // Channels.
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
     let (lookup_tx, lookup_rx) = mpsc::channel::<LookupRequest>(64);
     let (reinject_tx, mut reinject_rx) = mpsc::channel::<ReinjectBlock>(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -370,7 +370,7 @@ async fn lookup_direct_import_holds_future_block() {
 
     let tmpdir = tempfile::tempdir().unwrap();
     let db = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -378,10 +378,10 @@ async fn lookup_direct_import_holds_future_block() {
     );
     let genesis_validators_root = Root::default();
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -391,21 +391,21 @@ async fn lookup_direct_import_holds_future_block() {
         electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         db,
         Arc::clone(&fc_store),
         genesis_validators_root,
         fork_schedule,
         genesis_time,
         Arc::new(pharos_types::config::RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
             ..Default::default()
         }),
     ));
 
     let loop_handle = tokio::spawn(run_lookup_loop::<
-        MinimalEthSpec,
+        MinimalBeaconSpec,
         MapLookupProvider,
         NullExecutionEngine,
         pharos_fork_choice::NoopPowBlockProvider,
@@ -455,7 +455,7 @@ async fn lookup_direct_import_holds_future_block() {
     // The future block must NOT have been imported: head stays at the anchor.
     let head = {
         let s = fc_for_assert.read();
-        get_head::<MinimalEthSpec>(&s)
+        get_head::<MinimalBeaconSpec>(&s)
     };
     assert_eq!(
         head, anchor_root,

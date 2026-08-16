@@ -6,7 +6,7 @@
 //! bound allows `Arc<dyn Store<E>>` to be shared across the network task and
 //! the (future) STF executor thread pool.
 
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::PayloadStatus;
 use pharos_types::deneb::BlobSidecar;
 use pharos_types::phase0::operations::SignedBeaconBlockHeader;
@@ -24,7 +24,7 @@ use crate::transition::BlockTransition;
 /// Passed to `Store::migrate_to_cold`; all writes and deletes execute in a
 /// single `WriteBatch` so neither the copy nor the delete is visible
 /// independently. Per `D-freezer-in-rocksdb`.
-pub struct ColdMigrationBatch<E: EthSpec> {
+pub struct ColdMigrationBatch<E: BeaconSpec> {
     /// Finalized blocks to copy into `cold-blocks` CF.
     pub cold_blocks: Vec<(Root, E::SignedBeaconBlock)>,
 
@@ -67,7 +67,7 @@ pub struct ColdMigrationBatch<E: EthSpec> {
 /// handle). Implementors must be `Send + Sync + 'static` for use behind `Arc`.
 ///
 /// Per `D-store-trait`.
-pub trait Store<E: EthSpec>: Send + Sync + 'static {
+pub trait Store<E: BeaconSpec>: Send + Sync + 'static {
     /// Stores an SSZ-encoded signed beacon block, keyed by `root`.
     ///
     /// The block and its slot-index entry should be written atomically via

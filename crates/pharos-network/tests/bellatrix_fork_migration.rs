@@ -24,7 +24,7 @@ use pharos_network::host::GossipVerdict;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
 use pharos_network::types::ForkDigest;
 use pharos_ssz::Encode as _;
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::bellatrix::MainnetSignedBeaconBlock as BellatrixSignedBeaconBlock;
 use pharos_types::fork::compute_fork_digest;
 use pharos_types::phase0::primitives::{Root, Version};
@@ -82,7 +82,7 @@ fn bellatrix_topics() -> Vec<GossipTopic> {
             kind: GossipTopicKind::SyncCommitteeContributionAndProof,
         },
     ];
-    for i in 0..<MainnetEthSpec as pharos_types::EthSpec>::SYNC_COMMITTEE_SUBNET_COUNT {
+    for i in 0..<MainnetBeaconSpec as pharos_types::BeaconSpec>::SYNC_COMMITTEE_SUBNET_COUNT {
         topics.push(GossipTopic {
             fork_digest: fd,
             kind: GossipTopicKind::SyncCommittee(i),
@@ -174,7 +174,7 @@ fn bellatrix_block_gossip_decodes_without_reject() {
         kind: GossipTopicKind::BeaconBlock,
     };
 
-    let verdict = dispatch_gossip_message::<MainnetEthSpec, _>(&host, &topic, &ssz_bytes);
+    let verdict = dispatch_gossip_message::<MainnetBeaconSpec, _>(&host, &topic, &ssz_bytes);
 
     // Accept or Ignore are both valid (the mock host's validate_beacon_block
     // returns Accept for every well-formed block). Reject("ssz decode") means
@@ -217,7 +217,7 @@ fn full_topics(fd: ForkDigest) -> Vec<GossipTopic> {
         fork_digest: fd,
         kind: GossipTopicKind::SyncCommitteeContributionAndProof,
     });
-    for i in 0..<MainnetEthSpec as pharos_types::EthSpec>::SYNC_COMMITTEE_SUBNET_COUNT {
+    for i in 0..<MainnetBeaconSpec as pharos_types::BeaconSpec>::SYNC_COMMITTEE_SUBNET_COUNT {
         t.push(GossipTopic {
             fork_digest: fd,
             kind: GossipTopicKind::SyncCommittee(i),

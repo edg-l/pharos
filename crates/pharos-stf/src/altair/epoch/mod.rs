@@ -33,7 +33,7 @@ pub use slashings::process_slashings;
 pub use slashings_reset::process_slashings_reset;
 pub use sync_committee_updates::process_sync_committee_updates;
 
-use pharos_types::{EthSpec, altair::BeaconState};
+use pharos_types::{BeaconSpec, altair::BeaconState};
 use pharos_utils::BLSPubkey;
 
 use crate::error::EpochProcessingError;
@@ -67,7 +67,7 @@ pub fn process_epoch<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

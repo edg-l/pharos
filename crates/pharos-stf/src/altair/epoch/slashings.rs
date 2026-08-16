@@ -6,7 +6,7 @@
 //! spec: specs/altair/beacon-chain.md:741-763
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, altair::BeaconState, phase0::ValidatorIndex};
+use pharos_types::{BeaconSpec, altair::BeaconState, phase0::ValidatorIndex};
 use pharos_utils::Gwei;
 
 use crate::altair::helpers::{decrease_balance_altair, get_total_active_balance_altair};
@@ -41,7 +41,7 @@ pub fn process_slashings<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

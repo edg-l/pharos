@@ -2,7 +2,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::{BeaconState, SyncAggregate},
     phase0::{Slot, ValidatorIndex},
 };
@@ -46,7 +46,7 @@ pub fn process_sync_aggregate<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -278,7 +278,7 @@ fn get_domain_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

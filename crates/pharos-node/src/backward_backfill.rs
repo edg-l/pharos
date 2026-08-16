@@ -41,7 +41,7 @@ use pharos_ssz::TreeHash;
 use pharos_storage::{RocksStore, Store as DbStore};
 use pharos_types::views::BeaconStateView as _;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     phase0::primitives::{Root, Slot},
 };
 
@@ -266,7 +266,7 @@ where
 /// `block_root → state_summary.state_root`. Returns `None` when no block exists
 /// at `slot` (a skipped slot) — the caller persists the empty-slot state without
 /// a block cross-check in that case.
-fn expected_state_root_at<E: EthSpec>(
+fn expected_state_root_at<E: BeaconSpec>(
     store: &RocksStore,
     slot: Slot,
 ) -> Result<Option<Root>, BackwardBackfillError> {

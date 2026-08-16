@@ -29,7 +29,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::bellatrix::execution_payload::ExecutionAddress;
 use pharos_types::phase0::primitives::{CommitteeIndex, Slot, ValidatorIndex};
 use serde::{Deserialize, Serialize};
@@ -144,7 +144,7 @@ fn parse_execution_address(s: &str) -> Result<ExecutionAddress, ApiError> {
 /// - `Eth-Execution-Payload-Blinded: false`
 /// - `Eth-Execution-Payload-Value`
 /// - `Eth-Consensus-Block-Value`
-pub async fn get_produce_block_v3<E: EthSpec>(
+pub async fn get_produce_block_v3<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(slot): Path<u64>,
     Query(params): Query<ProduceBlockQuery>,
@@ -224,7 +224,7 @@ pub async fn get_produce_block_v3<E: EthSpec>(
 ///
 /// Query params: `slot` (quoted u64), `committee_index` (quoted u64).
 /// Per `~/dev/beacon-APIs/apis/validator/attestation_data.yaml`.
-pub async fn get_attestation_data<E: EthSpec>(
+pub async fn get_attestation_data<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Query(params): Query<AttestationDataQuery>,
 ) -> Response {
@@ -270,7 +270,7 @@ pub async fn get_attestation_data<E: EthSpec>(
 ///
 /// Returns the best aggregate attestation from the pool matching the given
 /// attestation_data_root. When no matching attestation is found, returns 404.
-pub async fn get_aggregate_attestation<E: EthSpec>(
+pub async fn get_aggregate_attestation<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Query(params): Query<AggregateAttestationQuery>,
 ) -> Response {
@@ -298,7 +298,7 @@ pub async fn get_aggregate_attestation<E: EthSpec>(
 ///
 /// Accepts signed aggregate-and-proof objects.
 /// Per `~/dev/beacon-APIs/apis/validator/aggregate_and_proofs.v2.yaml`.
-pub async fn post_aggregate_and_proofs<E: EthSpec>(
+pub async fn post_aggregate_and_proofs<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Json(body): Json<Vec<JsonValue>>,
 ) -> Response {
@@ -325,7 +325,7 @@ pub async fn post_aggregate_and_proofs<E: EthSpec>(
 /// fee-recipient store.  Always 200 (best-effort; no EL forwarding).
 /// `D-register-validator-accept-and-store`.
 /// 503 when syncing or optimistic (plan: gate every validator-namespace endpoint).
-pub async fn post_prepare_beacon_proposer<E: EthSpec>(
+pub async fn post_prepare_beacon_proposer<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Json(body): Json<Vec<JsonValue>>,
 ) -> Response {
@@ -364,7 +364,7 @@ pub async fn post_prepare_beacon_proposer<E: EthSpec>(
 /// No MEV-Boost relay forwarding.  Always 200.
 /// `D-register-validator-accept-and-store`.
 /// 503 when syncing or optimistic.
-pub async fn post_register_validator<E: EthSpec>(
+pub async fn post_register_validator<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Json(body): Json<Vec<JsonValue>>,
 ) -> Response {
@@ -390,7 +390,7 @@ pub async fn post_register_validator<E: EthSpec>(
 /// Accepts subscription requests. Always 200 (ENR attnets rotation is handled
 /// by the subnet-rotation loop, not per-subscription).
 /// 503 when syncing or optimistic.
-pub async fn post_beacon_committee_subscriptions<E: EthSpec>(
+pub async fn post_beacon_committee_subscriptions<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Json(body): Json<Vec<JsonValue>>,
 ) -> Response {
@@ -426,7 +426,7 @@ pub async fn post_beacon_committee_subscriptions<E: EthSpec>(
 /// > subscribed to the `sync_committee_{i}` topic.
 ///
 /// 503 when syncing or optimistic.
-pub async fn post_sync_committee_subscriptions<E: EthSpec>(
+pub async fn post_sync_committee_subscriptions<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Json(body): Json<Vec<JsonValue>>,
 ) -> Response {

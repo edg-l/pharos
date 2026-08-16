@@ -25,12 +25,12 @@ use pharos_types::config::RuntimeConfig;
 use pharos_types::phase0::misc::AttestationData;
 use pharos_types::phase0::primitives::{CommitteeIndex, Epoch, Root, Slot, ValidatorIndex};
 use pharos_types::phase0::{BeaconBlockHeader, Checkpoint};
-use pharos_types::{EthSpec, MainnetEthSpec, SyncCommitteePubkeys};
+use pharos_types::{BeaconSpec, MainnetBeaconSpec, SyncCommitteePubkeys};
 use pharos_utils::{BLSSignature, Bytes32, Uint256};
 use serde_json::Value as JsonValue;
 use tower::ServiceExt as _;
 
-type State = <MainnetEthSpec as EthSpec>::BeaconState;
+type State = <MainnetBeaconSpec as BeaconSpec>::BeaconState;
 
 // ── Mock implementations ──────────────────────────────────────────────────────
 
@@ -54,12 +54,12 @@ impl HealthyMock {
         };
         Self {
             identity,
-            runtime_cfg: Arc::new(MainnetEthSpec::default_runtime_config()),
+            runtime_cfg: Arc::new(MainnetBeaconSpec::default_runtime_config()),
         }
     }
 }
 
-impl ChainStateApi<MainnetEthSpec> for HealthyMock {
+impl ChainStateApi<MainnetBeaconSpec> for HealthyMock {
     fn head_root(&self) -> Root {
         Root::from([0xab; 32])
     }
@@ -130,7 +130,7 @@ impl ChainStateApi<MainnetEthSpec> for HealthyMock {
         Err(pharos_api::ApiError::NotFound("regen not available".into()))
     }
     fn state_to_json(&self, state: State) -> Result<JsonValue, pharos_api::ApiError> {
-        pharos_api::beacon_state_to_json_full::<MainnetEthSpec>(state)
+        pharos_api::beacon_state_to_json_full::<MainnetBeaconSpec>(state)
     }
     fn fork_choice_dump(&self) -> Result<JsonValue, pharos_api::ApiError> {
         Ok(serde_json::json!({
@@ -212,7 +212,7 @@ impl ChainStateApi<MainnetEthSpec> for HealthyMock {
 /// Optimistic mock — all `is_optimistic_node()` → true.
 struct OptimisticMock(HealthyMock);
 
-impl ChainStateApi<MainnetEthSpec> for OptimisticMock {
+impl ChainStateApi<MainnetBeaconSpec> for OptimisticMock {
     fn head_root(&self) -> Root {
         self.0.head_root()
     }
@@ -290,13 +290,13 @@ impl ChainStateApi<MainnetEthSpec> for OptimisticMock {
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
 fn make_router() -> axum::Router {
-    let chain: Arc<dyn ChainStateApi<MainnetEthSpec>> = Arc::new(HealthyMock::new());
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> = Arc::new(HealthyMock::new());
     let state = ApiState::new(chain);
     build_router_with_auth(state, None)
 }
 
 fn make_optimistic_router() -> axum::Router {
-    let chain: Arc<dyn ChainStateApi<MainnetEthSpec>> =
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> =
         Arc::new(OptimisticMock(HealthyMock::new()));
     let state = ApiState::new(chain);
     build_router_with_auth(state, None)

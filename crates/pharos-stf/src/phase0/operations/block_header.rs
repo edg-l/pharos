@@ -1,7 +1,9 @@
 //! `process_block_header` per `specs/phase0/beacon-chain.md:1886-1910`.
 
 use pharos_ssz::TreeHash;
-use pharos_types::{BeaconStateView, EthSpec, phase0::BeaconBlockHeader, views::BeaconBlockView};
+use pharos_types::{
+    BeaconSpec, BeaconStateView, phase0::BeaconBlockHeader, views::BeaconBlockView,
+};
 
 use crate::error::{BlockHeaderInvalidReason, StateTransitionError};
 use crate::phase0::{accessors::get_beacon_proposer_index, state_write::BeaconStateWrite};
@@ -14,7 +16,7 @@ use crate::phase0::{accessors::get_beacon_proposer_index, state_write::BeaconSta
 ///
 /// Block signature is NOT verified here — the outer `state_transition` flow
 /// is responsible per the spec NOTE at line 1886.
-pub fn process_block_header<E: EthSpec>(
+pub fn process_block_header<E: BeaconSpec>(
     state: &mut E::BeaconState,
     block: &E::Phase0BeaconBlock,
 ) -> Result<(), StateTransitionError>

@@ -8,7 +8,7 @@
 use rayon::prelude::*;
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, altair::BeaconState};
+use pharos_types::{BeaconSpec, altair::BeaconState};
 use pharos_utils::Gwei;
 
 use crate::error::EpochProcessingError;
@@ -40,7 +40,7 @@ pub fn process_effective_balance_updates<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

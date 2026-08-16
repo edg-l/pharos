@@ -27,7 +27,7 @@ static GENESIS: OnceLock<MinimalBeaconState> = OnceLock::new();
 /// Spec cite: `specs/phase0/beacon-chain.md:1300-1337`.
 pub fn minimal_genesis() -> &'static MinimalBeaconState {
     GENESIS.get_or_init(|| {
-        pharos_stf::initialize_beacon_state_from_eth1::<pharos_types::MinimalEthSpec>(
+        pharos_stf::initialize_beacon_state_from_eth1::<pharos_types::MinimalBeaconSpec>(
             Hash256::default(),
             0,
             &[],

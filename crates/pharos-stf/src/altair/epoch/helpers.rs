@@ -5,7 +5,7 @@
 //! `BeaconState` fields without the `BeaconStateView` abstraction.
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, altair::BeaconState, phase0::Epoch};
+use pharos_types::{BeaconSpec, altair::BeaconState, phase0::Epoch};
 
 use crate::error::StateTransitionError;
 use crate::phase0::accessors::compute_epoch_at_slot;
@@ -20,7 +20,7 @@ pub(super) fn get_current_epoch_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -46,7 +46,7 @@ pub(super) fn get_previous_epoch_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -89,7 +89,7 @@ pub(super) fn get_block_root_for_epoch<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -127,7 +127,7 @@ pub(super) fn get_randao_mix_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

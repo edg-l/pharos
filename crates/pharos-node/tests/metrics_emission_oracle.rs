@@ -22,7 +22,7 @@ use pharos_stf::NullExecutionEngine;
 use pharos_storage::{RocksStore, RocksStoreConfig};
 use pharos_types::config::RuntimeConfig;
 use pharos_types::state::{BeaconBlock as ForkBeaconBlock, MinimalBeaconState as ForkMinState};
-use pharos_types::{EthSpec, MinimalEthSpec};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 use pharos_utils::metrics::{PrometheusHandle, init_metrics_with_handle};
 use tokio::sync::mpsc;
 
@@ -69,7 +69,8 @@ async fn import_block_records_process_block_histogram() {
     let fork_anchor_state = ForkMinState::Bellatrix(anchor_state.clone());
     let fork_anchor_block = ForkBeaconBlock::Bellatrix(anchor_signed.message.clone());
 
-    let mut fc_store = get_forkchoice_store::<MinimalEthSpec>(fork_anchor_state, fork_anchor_block);
+    let mut fc_store =
+        get_forkchoice_store::<MinimalBeaconSpec>(fork_anchor_state, fork_anchor_block);
 
     // Advance the fork-choice store time so blocks are not rejected as future-slot.
     fc_store.time = BACKFILL_GENESIS_TIME_SECS + 1_000_000;
@@ -87,7 +88,7 @@ async fn import_block_records_process_block_histogram() {
 
     let tmpdir = tempfile::tempdir().unwrap();
     let rocks_store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -103,12 +104,12 @@ async fn import_block_records_process_block_histogram() {
     );
     let block = &chain[0];
 
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(16);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(16);
     let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
 
     let runtime_cfg = RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         bellatrix_fork_epoch: 0,
         altair_fork_epoch: 0,
         ..Default::default()
@@ -116,7 +117,7 @@ async fn import_block_records_process_block_histogram() {
 
     // (b) Call import_block — state_transition fires inside and records the histogram.
     let result = import_block::<
-        MinimalEthSpec,
+        MinimalBeaconSpec,
         NullExecutionEngine,
         pharos_fork_choice::NoopPowBlockProvider,
         NoopDataAvailabilityChecker,

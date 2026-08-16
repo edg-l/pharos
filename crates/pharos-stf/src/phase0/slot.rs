@@ -2,7 +2,7 @@
 //! `specs/phase0/beacon-chain.md:1396-1425`.
 
 use pharos_ssz::TreeHash;
-use pharos_types::{BeaconStateView, EthSpec, phase0::Slot, views::BeaconBlockBodyView};
+use pharos_types::{BeaconSpec, BeaconStateView, phase0::Slot, views::BeaconBlockBodyView};
 use pharos_utils::metrics::METRIC_STF_PROCESS_EPOCH_SECONDS;
 
 use crate::error::{EpochProcessingError, StateTransitionError};
@@ -14,7 +14,7 @@ use crate::phase0::{epoch::process_epoch, state_write::BeaconStateWrite};
 /// `state_roots` and `block_roots` vectors, and patches the latest block
 /// header's `state_root` field when it is still zeroed (it is zeroed by
 /// `process_block_header` and filled in here on the next call).
-pub fn process_slot<E: EthSpec>(state: &mut E::BeaconState) -> Result<(), StateTransitionError>
+pub fn process_slot<E: BeaconSpec>(state: &mut E::BeaconState) -> Result<(), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite + TreeHash,
 {
@@ -45,7 +45,7 @@ where
 /// Advances state from its current slot up to and including `target_slot`,
 /// calling `process_slot` at every step and `process_epoch` at each epoch
 /// boundary. After return, `state.slot() == target_slot`.
-pub fn process_slots<E: EthSpec>(
+pub fn process_slots<E: BeaconSpec>(
     state: &mut E::BeaconState,
     target_slot: Slot,
 ) -> Result<(), StateTransitionError>

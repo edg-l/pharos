@@ -11,7 +11,7 @@
 
 use pharos_ssz::{SszSequence, SszVector};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     electra::{
         BeaconState,
         requests::{DepositRequest, PendingDeposit},
@@ -61,7 +61,7 @@ pub fn process_deposit_request<
     _verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         ElectraBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

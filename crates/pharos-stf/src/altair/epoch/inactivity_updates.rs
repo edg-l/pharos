@@ -7,7 +7,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::{BeaconState, constants::TIMELY_TARGET_FLAG_INDEX},
 };
 
@@ -50,7 +50,7 @@ pub fn process_inactivity_updates<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

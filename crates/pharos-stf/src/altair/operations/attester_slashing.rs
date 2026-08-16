@@ -8,7 +8,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState,
     phase0::{AttesterSlashing, IndexedAttestation, ValidatorIndex},
 };
@@ -49,7 +49,7 @@ pub fn process_attester_slashing<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

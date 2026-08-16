@@ -22,11 +22,11 @@ use pharos_types::altair::{MainnetBeaconState as AltairMainnetState, MetaData as
 use pharos_types::config::RuntimeConfig;
 use pharos_types::phase0::primitives::{Epoch, Root, Slot, ValidatorIndex};
 use pharos_types::phase0::{BeaconBlockHeader, Checkpoint, Validator};
-use pharos_types::{EthSpec, MainnetEthSpec, SyncCommitteePubkeys};
+use pharos_types::{BeaconSpec, MainnetBeaconSpec, SyncCommitteePubkeys};
 use pharos_utils::{BLSPubkey, Bytes32, Gwei};
 use tower::ServiceExt as _;
 
-type State = <MainnetEthSpec as EthSpec>::BeaconState;
+type State = <MainnetBeaconSpec as BeaconSpec>::BeaconState;
 
 const FAR_FUTURE: u64 = u64::MAX;
 const STATE_SLOT: u64 = 32; // epoch 1 at mainnet SLOTS_PER_EPOCH=32
@@ -86,7 +86,7 @@ impl DutiesMock {
         let state_root: Root = state.tree_hash_root();
         Self {
             identity,
-            runtime_cfg: Arc::new(MainnetEthSpec::default_runtime_config()),
+            runtime_cfg: Arc::new(MainnetBeaconSpec::default_runtime_config()),
             state,
             head_root: Root::from([0xab; 32]),
             genesis_root: Root::from([0x00; 32]),
@@ -96,7 +96,7 @@ impl DutiesMock {
     }
 }
 
-impl ChainStateApi<MainnetEthSpec> for DutiesMock {
+impl ChainStateApi<MainnetBeaconSpec> for DutiesMock {
     fn head_root(&self) -> Root {
         self.head_root
     }
@@ -107,7 +107,7 @@ impl ChainStateApi<MainnetEthSpec> for DutiesMock {
         (
             0,
             Root::default(),
-            <MainnetEthSpec as EthSpec>::GENESIS_FORK_VERSION,
+            <MainnetBeaconSpec as BeaconSpec>::GENESIS_FORK_VERSION,
         )
     }
     fn finalized_checkpoint(&self) -> Checkpoint {
@@ -195,7 +195,7 @@ impl ChainStateApi<MainnetEthSpec> for DutiesMock {
     fn regenerate_state(
         &self,
         _target: RegenTarget,
-    ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, pharos_api::ApiError> {
+    ) -> Result<<MainnetBeaconSpec as BeaconSpec>::BeaconState, pharos_api::ApiError> {
         Err(pharos_api::ApiError::NotFound(
             "regen not available in mock".into(),
         ))
@@ -203,9 +203,9 @@ impl ChainStateApi<MainnetEthSpec> for DutiesMock {
 
     fn state_to_json(
         &self,
-        state: <MainnetEthSpec as pharos_types::EthSpec>::BeaconState,
+        state: <MainnetBeaconSpec as pharos_types::BeaconSpec>::BeaconState,
     ) -> Result<serde_json::Value, pharos_api::ApiError> {
-        pharos_api::beacon_state_to_json_full::<MainnetEthSpec>(state)
+        pharos_api::beacon_state_to_json_full::<MainnetBeaconSpec>(state)
     }
 
     fn fork_choice_dump(&self) -> Result<serde_json::Value, pharos_api::ApiError> {
@@ -239,7 +239,7 @@ impl ChainStateApi<MainnetEthSpec> for DutiesMock {
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
 fn make_router(token: Option<String>) -> axum::Router {
-    let chain: Arc<dyn ChainStateApi<MainnetEthSpec>> = Arc::new(DutiesMock::new());
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> = Arc::new(DutiesMock::new());
     let state = ApiState::new(chain);
     build_router_with_auth(state, token)
 }
@@ -319,7 +319,7 @@ async fn proposer_duties_returns_correct_assignments() {
     // Mainnet: 32 slots per epoch → 32 proposer duties.
     assert_eq!(
         data.len(),
-        MainnetEthSpec::SLOTS_PER_EPOCH as usize,
+        MainnetBeaconSpec::SLOTS_PER_EPOCH as usize,
         "must have one proposer per slot"
     );
 
@@ -453,7 +453,7 @@ async fn debug_fork_choice_returns_expected_node_count() {
 /// Syncing variant of `DutiesMock`: reports `is_syncing() = true`.
 struct SyncingMock(DutiesMock);
 
-impl ChainStateApi<MainnetEthSpec> for SyncingMock {
+impl ChainStateApi<MainnetBeaconSpec> for SyncingMock {
     fn head_root(&self) -> Root {
         self.0.head_root()
     }
@@ -532,7 +532,7 @@ impl ChainStateApi<MainnetEthSpec> for SyncingMock {
 }
 
 fn make_syncing_router() -> axum::Router {
-    let chain: std::sync::Arc<dyn ChainStateApi<MainnetEthSpec>> =
+    let chain: std::sync::Arc<dyn ChainStateApi<MainnetBeaconSpec>> =
         std::sync::Arc::new(SyncingMock(DutiesMock::new()));
     let state = ApiState::new(chain);
     build_router_with_auth(state, None)
@@ -727,17 +727,17 @@ async fn debug_state_returns_fork_tagged_json() {
 /// Altair-specific fields: participation, inactivity_scores, sync committees.
 #[tokio::test]
 async fn debug_state_altair_has_fork_specific_fields() {
-    use pharos_types::EthSpec as _;
+    use pharos_types::BeaconSpec as _;
     // Build an altair state wrapped in the fork enum.
     let altair_inner = AltairMainnetState::default();
-    let altair_state = MainnetEthSpec::altair_into_state(altair_inner);
+    let altair_state = MainnetBeaconSpec::altair_into_state(altair_inner);
 
     // Use a mock whose state_by_block_root returns the altair state.
     struct AltairMock {
         inner: DutiesMock,
         altair_state: State,
     }
-    impl ChainStateApi<MainnetEthSpec> for AltairMock {
+    impl ChainStateApi<MainnetBeaconSpec> for AltairMock {
         fn head_root(&self) -> Root {
             self.inner.head_root()
         }
@@ -812,11 +812,11 @@ async fn debug_state_altair_has_fork_specific_fields() {
             self.inner.fork_choice_heads()
         }
         fn state_to_json(&self, state: State) -> Result<serde_json::Value, pharos_api::ApiError> {
-            pharos_api::beacon_state_to_json_full::<MainnetEthSpec>(state)
+            pharos_api::beacon_state_to_json_full::<MainnetBeaconSpec>(state)
         }
     }
 
-    let chain: std::sync::Arc<dyn ChainStateApi<MainnetEthSpec>> =
+    let chain: std::sync::Arc<dyn ChainStateApi<MainnetBeaconSpec>> =
         std::sync::Arc::new(AltairMock {
             inner: DutiesMock::new(),
             altair_state,

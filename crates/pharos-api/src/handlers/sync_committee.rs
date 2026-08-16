@@ -26,7 +26,7 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
@@ -66,7 +66,7 @@ fn parse_root32(s: &str) -> Result<pharos_types::phase0::primitives::Root, ApiEr
 /// Returns the best `SyncCommitteeContribution` from the pool matching the
 /// given `(slot, beacon_block_root, subcommittee_index)`. Returns 404 when
 /// no matching contribution is available.
-pub async fn get_sync_committee_contribution<E: EthSpec>(
+pub async fn get_sync_committee_contribution<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Query(params): Query<SyncContributionQuery>,
 ) -> Response {
@@ -98,7 +98,7 @@ pub async fn get_sync_committee_contribution<E: EthSpec>(
 ///
 /// Accepts signed `ContributionAndProof` objects and routes them to the pool
 /// and gossip. Always 200.
-pub async fn post_contribution_and_proofs<E: EthSpec>(
+pub async fn post_contribution_and_proofs<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Json(body): Json<Vec<JsonValue>>,
 ) -> Response {
@@ -124,7 +124,7 @@ pub async fn post_contribution_and_proofs<E: EthSpec>(
 ///
 /// Non-DVT identity pass-through (OQ2 resolved).
 /// Echoes the input array unchanged with a 200.
-pub async fn post_beacon_committee_selections<E: EthSpec>(
+pub async fn post_beacon_committee_selections<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Json(body): Json<Vec<JsonValue>>,
 ) -> Response {
@@ -149,7 +149,7 @@ pub async fn post_beacon_committee_selections<E: EthSpec>(
 ///
 /// Non-DVT identity pass-through (OQ2 resolved).
 /// Echoes the input array unchanged with a 200.
-pub async fn post_sync_committee_selections<E: EthSpec>(
+pub async fn post_sync_committee_selections<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Json(body): Json<Vec<JsonValue>>,
 ) -> Response {

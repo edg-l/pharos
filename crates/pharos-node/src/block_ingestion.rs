@@ -31,7 +31,7 @@ use pharos_types::views::{
     BeaconBlockView as _, ForkVariant, LightClientFinalityUpdateView as _,
     LightClientOptimisticUpdateView as _, SignedBeaconBlockView as _,
 };
-use pharos_types::{EthSpec, phase0::primitives::Root};
+use pharos_types::{BeaconSpec, phase0::primitives::Root};
 
 use crate::data_availability::{BlobAwaitingBlocks, DataAvailabilityChecker};
 use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2};
@@ -87,7 +87,7 @@ pub enum IngestionError {
 /// `notify_backfill` is fired via `notify_one()` whenever ingestion defers an
 /// orphan block (missing parent state), waking the backfill loop so it can
 /// heal the tip gap via range re-convergence.
-pub struct IngestionEgress<E: EthSpec> {
+pub struct IngestionEgress<E: BeaconSpec> {
     pub head_tx: watch::Sender<Option<HeadChange>>,
     pub payload_tx: mpsc::Sender<NewPayloadRequest<E>>,
     /// Clonable command sender for publishing gossip messages.
@@ -155,7 +155,7 @@ pub async fn run_block_ingestion_loop<E, EE, DA>(
 ) -> Result<(), IngestionError>
 where
     DA: DataAvailabilityChecker<E> + 'static,
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + Clone,
     E::BeaconBlock: pharos_types::views::BeaconBlockView + pharos_ssz::TreeHash + Clone,
     E::SignedBeaconBlock: pharos_ssz::Decode
@@ -587,7 +587,7 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
     fc_store: &FcStore<E>,
     store: &S,
 ) where
-    E: EthSpec,
+    E: BeaconSpec,
     E::AltairBeaconState: AltairDispatchBounds<E>,
     E::BellatrixBeaconState: BellatrixDispatchBounds<E>,
     E::CapellaBeaconState: CapellaDispatchBounds<E>,
@@ -791,7 +791,7 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
 ///
 /// The fork-enum `SignedBeaconBlock` cannot return a trait-object reference
 /// from `message()`, so we unwrap to each concrete inner type.
-pub(crate) fn extract_parent_root<E: EthSpec>(signed_block: &E::SignedBeaconBlock) -> Root
+pub(crate) fn extract_parent_root<E: BeaconSpec>(signed_block: &E::SignedBeaconBlock) -> Root
 where
     E::Phase0SignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::AltairSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
@@ -843,7 +843,7 @@ pub(crate) fn decode_block_by_topic<E, H>(
     data: &[u8],
 ) -> Option<E::SignedBeaconBlock>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     H: pharos_network::host::ForkContext,
     E::Phase0SignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
@@ -917,7 +917,7 @@ where
 }
 
 /// Extract the block_root (hash_tree_root) from a fork-enum `SignedBeaconBlock<E>`.
-pub(crate) fn extract_block_root<E: EthSpec>(signed_block: &E::SignedBeaconBlock) -> Root
+pub(crate) fn extract_block_root<E: BeaconSpec>(signed_block: &E::SignedBeaconBlock) -> Root
 where
     E::BeaconBlock: pharos_ssz::TreeHash,
     E::Phase0SignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
@@ -964,7 +964,7 @@ where
 /// The fork-enum `Encode` impl prepends a 1-byte discriminant; this helper
 /// encodes the inner variant directly so the bytes are compatible with
 /// `decode_block_by_topic`.
-pub(crate) fn encode_signed_block_as_gossip_bytes<E: EthSpec>(
+pub(crate) fn encode_signed_block_as_gossip_bytes<E: BeaconSpec>(
     signed_block: &E::SignedBeaconBlock,
 ) -> Vec<u8>
 where

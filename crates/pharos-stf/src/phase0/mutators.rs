@@ -17,7 +17,7 @@
 //! no direct field access on the opaque `E::BeaconState` associated type.
 
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     phase0::{Epoch, ValidatorIndex},
 };
 use pharos_utils::Gwei;
@@ -33,7 +33,7 @@ use crate::phase0::{
 };
 
 /// `increase_balance` per `specs/phase0/beacon-chain.md:1205-1210`.
-pub fn increase_balance<E: EthSpec>(
+pub fn increase_balance<E: BeaconSpec>(
     state: &mut E::BeaconState,
     index: ValidatorIndex,
     delta: Gwei,
@@ -52,7 +52,7 @@ where
 /// `decrease_balance` per `specs/phase0/beacon-chain.md:1215-1221`.
 ///
 /// Underflow-protected: clamps to 0.
-pub fn decrease_balance<E: EthSpec>(
+pub fn decrease_balance<E: BeaconSpec>(
     state: &mut E::BeaconState,
     index: ValidatorIndex,
     delta: Gwei,
@@ -74,7 +74,7 @@ where
 }
 
 /// `initiate_validator_exit` per `specs/phase0/beacon-chain.md:1225-1245`.
-pub fn initiate_validator_exit<E: EthSpec>(
+pub fn initiate_validator_exit<E: BeaconSpec>(
     state: &mut E::BeaconState,
     index: ValidatorIndex,
 ) -> Result<(), StateTransitionError>
@@ -138,7 +138,7 @@ where
 }
 
 /// `slash_validator` per `specs/phase0/beacon-chain.md:1249-1286`.
-pub fn slash_validator<E: EthSpec>(
+pub fn slash_validator<E: BeaconSpec>(
     state: &mut E::BeaconState,
     slashed_index: ValidatorIndex,
     whistleblower_index: Option<ValidatorIndex>,

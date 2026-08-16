@@ -3,7 +3,7 @@
 //! Phase 6 (M6 task 6.11): happy path (Accept) + a reject path for the
 //! BLS-to-execution-change gossip validator.
 //!
-//! Uses `MinimalEthSpec` with capella_fork_epoch=0 so the validator runs.
+//! Uses `MinimalBeaconSpec` with capella_fork_epoch=0 so the validator runs.
 
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ use pharos_types::phase0::operations::BeaconBlockHeader;
 use pharos_types::phase0::primitives::{Epoch, Root, Slot, ValidatorIndex, Version};
 use pharos_types::phase0::{MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState};
 use pharos_types::state::MinimalBeaconState as ForkMinimalBeaconState;
-use pharos_types::{EthSpec, MinimalEthSpec, RuntimeConfig};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec, RuntimeConfig};
 use pharos_utils::bls::BLS_DST;
 use pharos_utils::{BLSPubkey, BLSSignature, Gwei};
 
@@ -47,13 +47,13 @@ fn bls_withdrawal_pubkey() -> BLSPubkey {
 
 // ── Host construction ─────────────────────────────────────────────────────────
 
-/// Build a `HostImpl<MinimalEthSpec>` with one validator whose withdrawal
+/// Build a `HostImpl<MinimalBeaconSpec>` with one validator whose withdrawal
 /// credentials are `0x00 || hash(bls_withdrawal_pubkey)[1..]`.
 ///
 /// `capella_fork_epoch` = 0 so the current-epoch-is-capella IGNORE check passes.
-fn make_bls_host(dir: &tempfile::TempDir) -> HostImpl<MinimalEthSpec> {
+fn make_bls_host(dir: &tempfile::TempDir) -> HostImpl<MinimalBeaconSpec> {
     let store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: dir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -69,7 +69,7 @@ fn make_bls_host(dir: &tempfile::TempDir) -> HostImpl<MinimalEthSpec> {
     let genesis_slot = Slot(0);
     let validator = Validator {
         pubkey: val_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -97,7 +97,7 @@ fn make_bls_host(dir: &tempfile::TempDir) -> HostImpl<MinimalEthSpec> {
         validators: SszList::with_push(&SszList::default(), validator).unwrap(),
         balances: SszList::with_push(
             &SszList::default(),
-            Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         )
         .unwrap(),
         ..Default::default()
@@ -114,8 +114,10 @@ fn make_bls_host(dir: &tempfile::TempDir) -> HostImpl<MinimalEthSpec> {
     let genesis_root: Root = genesis_inner_block.tree_hash_root();
     let genesis_block = pharos_types::state::BeaconBlock::Phase0(genesis_inner_block);
 
-    let fc_store =
-        get_forkchoice_store::<MinimalEthSpec>(fork_genesis_state.clone(), genesis_block.clone());
+    let fc_store = get_forkchoice_store::<MinimalBeaconSpec>(
+        fork_genesis_state.clone(),
+        genesis_block.clone(),
+    );
     let fork_choice = Arc::new(RwLock::new(fc_store));
     {
         let mut fc = fork_choice.write();
@@ -140,10 +142,10 @@ fn make_bls_host(dir: &tempfile::TempDir) -> HostImpl<MinimalEthSpec> {
         genesis_validators_root: gvr,
     };
     let runtime_cfg = Arc::new(RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
         ..Default::default()
     });
-    HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
+    HostImpl::<MinimalBeaconSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
 }
 
 fn make_valid_msg() -> SignedBLSToExecutionChange {
@@ -155,7 +157,7 @@ fn make_valid_msg() -> SignedBLSToExecutionChange {
     };
     let domain = compute_domain(
         DOMAIN_BLS_TO_EXECUTION_CHANGE,
-        MinimalEthSpec::GENESIS_FORK_VERSION,
+        MinimalBeaconSpec::GENESIS_FORK_VERSION,
         &gvr,
     );
     let sr = compute_signing_root(&msg, domain);

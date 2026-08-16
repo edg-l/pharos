@@ -4,7 +4,7 @@
 
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     bellatrix::{BeaconBlockBody, BeaconState, ExecutionPayloadHeader},
 };
 
@@ -81,7 +81,7 @@ pub fn process_execution_payload<
     runtime_cfg: &pharos_types::config::RuntimeConfig,
 ) -> Result<PayloadVerificationStatus, StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         BellatrixBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

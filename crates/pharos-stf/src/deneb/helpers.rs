@@ -9,7 +9,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     capella::BeaconState as CapellaBeaconState,
     deneb::BeaconState,
@@ -396,7 +396,7 @@ pub(crate) fn get_current_epoch_deneb<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -426,7 +426,7 @@ pub(crate) fn get_total_active_balance_deneb<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -554,7 +554,7 @@ pub(crate) fn initiate_validator_exit_deneb<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -674,7 +674,7 @@ pub fn get_inactivity_penalty_deltas_deneb<
     >,
 ) -> (Vec<Gwei>, Vec<Gwei>)
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

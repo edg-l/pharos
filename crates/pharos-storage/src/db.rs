@@ -10,7 +10,7 @@ use pharos_ssz::{Decode, Encode};
 use pharos_types::deneb::BlobSidecar;
 use pharos_types::phase0::operations::SignedBeaconBlockHeader;
 use pharos_types::phase0::primitives::{Root, Slot};
-use pharos_types::{BeaconStateView, EthSpec, PayloadStatus};
+use pharos_types::{BeaconSpec, BeaconStateView, PayloadStatus};
 use rocksdb::{
     ColumnFamily, ColumnFamilyDescriptor, DB, DBCompressionType, Direction, IteratorMode, Options,
     WriteBatch,
@@ -116,7 +116,7 @@ impl RocksStore {
     /// 2. Per-CF options: Lz4 compression on `blocks` and `states`; defaults elsewhere.
     /// 3. Open via `DB::open_cf_descriptors`.
     /// 4. Read / initialise the `schema_version` sentinel.
-    pub fn open<E: EthSpec>(cfg: RocksStoreConfig) -> Result<Self, StorageError> {
+    pub fn open<E: BeaconSpec>(cfg: RocksStoreConfig) -> Result<Self, StorageError> {
         let mut opts = Options::default();
         opts.create_if_missing(cfg.create_if_missing);
         opts.create_missing_column_families(true);
@@ -337,7 +337,7 @@ fn decode_payload_status(byte: u8) -> Result<PayloadStatus, StorageError> {
 
 // ── Store<E> impl ─────────────────────────────────────────────────────────────
 
-impl<E: EthSpec> Store<E> for RocksStore {
+impl<E: BeaconSpec> Store<E> for RocksStore {
     fn put_block(&self, root: Root, block: &E::SignedBeaconBlock) -> Result<(), StorageError> {
         let cf = self.cf_handle(CF_BLOCKS)?;
         let encoded = block.as_ssz_bytes();
@@ -1279,7 +1279,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let nonexistent = dir.path().join("does_not_exist");
 
-        let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+        let result = RocksStore::open::<pharos_types::MainnetBeaconSpec>(RocksStoreConfig {
             path: nonexistent,
             create_if_missing: false,
         });
@@ -1329,7 +1329,7 @@ mod tests {
         }
 
         // Now open with the current `RocksStore::open` which expects v7.
-        let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+        let result = RocksStore::open::<pharos_types::MainnetBeaconSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
         });
@@ -1390,7 +1390,7 @@ mod tests {
         }
 
         // Now open with the current `RocksStore::open` which expects v7.
-        let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+        let result = RocksStore::open::<pharos_types::MainnetBeaconSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
         });
@@ -1414,7 +1414,7 @@ mod tests {
         use pharos_types::phase0::primitives::Root;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+        let store = RocksStore::open::<pharos_types::MainnetBeaconSpec>(RocksStoreConfig {
             path: dir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -1424,19 +1424,19 @@ mod tests {
 
         // Initially absent.
         let status =
-            <RocksStore as Store<pharos_types::MainnetEthSpec>>::payload_status(&store, root)
+            <RocksStore as Store<pharos_types::MainnetBeaconSpec>>::payload_status(&store, root)
                 .expect("payload_status lookup");
         assert!(status.is_none(), "fresh db: expected no entry for root");
 
         // Write via a `BlockTransition`.
-        let mut bt = crate::transition::BlockTransition::<pharos_types::MainnetEthSpec>::new();
+        let mut bt = crate::transition::BlockTransition::<pharos_types::MainnetBeaconSpec>::new();
         bt.payload_status = Some((root, PayloadStatus::Invalid));
-        <RocksStore as Store<pharos_types::MainnetEthSpec>>::write_block_transition(&store, bt)
+        <RocksStore as Store<pharos_types::MainnetBeaconSpec>>::write_block_transition(&store, bt)
             .expect("write_block_transition");
 
         // Now it must be readable.
         let status =
-            <RocksStore as Store<pharos_types::MainnetEthSpec>>::payload_status(&store, root)
+            <RocksStore as Store<pharos_types::MainnetBeaconSpec>>::payload_status(&store, root)
                 .expect("payload_status lookup after write");
         assert_eq!(
             status,
@@ -1446,7 +1446,7 @@ mod tests {
 
         // And show up in the iterator.
         let all =
-            <RocksStore as Store<pharos_types::MainnetEthSpec>>::payload_statuses_iter(&store)
+            <RocksStore as Store<pharos_types::MainnetBeaconSpec>>::payload_statuses_iter(&store)
                 .expect("payload_statuses_iter");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0], (root, PayloadStatus::Invalid));
@@ -1491,7 +1491,7 @@ mod tests {
 
         stamp_db_version(&db_path, 6);
 
-        let store = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+        let store = RocksStore::open::<pharos_types::MainnetBeaconSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
         })
@@ -1514,7 +1514,7 @@ mod tests {
 
         stamp_db_version(&db_path, 7);
 
-        let store = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+        let store = RocksStore::open::<pharos_types::MainnetBeaconSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
         })
@@ -1565,7 +1565,7 @@ mod tests {
 
         stamp_db_version(&db_path, 5);
 
-        let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+        let result = RocksStore::open::<pharos_types::MainnetBeaconSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
         });
@@ -1591,7 +1591,7 @@ mod tests {
 
         stamp_db_version(&db_path, 999);
 
-        let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+        let result = RocksStore::open::<pharos_types::MainnetBeaconSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
         });

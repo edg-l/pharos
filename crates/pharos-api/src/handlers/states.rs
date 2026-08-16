@@ -49,7 +49,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use pharos_ssz::TreeHash;
 use pharos_types::views::ForkVariant;
-use pharos_types::{BeaconStateView, EthSpec, phase0::Validator};
+use pharos_types::{BeaconSpec, BeaconStateView, phase0::Validator};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -435,7 +435,7 @@ fn resolve_validator_ids<S: BeaconStateView>(
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 /// `GET /eth/v1/beacon/states/{state_id}/root`
-pub async fn get_state_root<E: EthSpec>(
+pub async fn get_state_root<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     headers: HeaderMap,
@@ -475,7 +475,7 @@ pub async fn get_state_root<E: EthSpec>(
 }
 
 /// `GET /eth/v1/beacon/states/{state_id}/fork`
-pub async fn get_state_fork<E: EthSpec>(
+pub async fn get_state_fork<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     headers: HeaderMap,
@@ -512,7 +512,7 @@ pub async fn get_state_fork<E: EthSpec>(
 }
 
 /// `GET /eth/v1/beacon/states/{state_id}/finality_checkpoints`
-pub async fn get_finality_checkpoints<E: EthSpec>(
+pub async fn get_finality_checkpoints<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     headers: HeaderMap,
@@ -560,7 +560,7 @@ pub async fn get_finality_checkpoints<E: EthSpec>(
 }
 
 /// `GET /eth/v1/beacon/states/{state_id}/validators`
-pub async fn get_validators<E: EthSpec>(
+pub async fn get_validators<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     Query(query): Query<Vec<(String, String)>>,
@@ -634,7 +634,7 @@ pub async fn get_validators<E: EthSpec>(
 }
 
 /// `GET /eth/v1/beacon/states/{state_id}/validators/{validator_id}`
-pub async fn get_validator<E: EthSpec>(
+pub async fn get_validator<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path((state_id, validator_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -707,7 +707,7 @@ pub async fn get_validator<E: EthSpec>(
 }
 
 /// `GET /eth/v1/beacon/states/{state_id}/validator_balances`
-pub async fn get_validator_balances<E: EthSpec>(
+pub async fn get_validator_balances<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     Query(query): Query<Vec<(String, String)>>,
@@ -775,7 +775,7 @@ pub async fn get_validator_balances<E: EthSpec>(
 /// Uses `pharos_stf::phase0::accessors::get_beacon_committee` and
 /// `get_committee_count_per_slot` sourced from
 /// `crates/pharos-stf/src/phase0/accessors.rs`.
-pub async fn get_committees<E: EthSpec>(
+pub async fn get_committees<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     Query(query): Query<CommitteesQuery>,
@@ -859,7 +859,7 @@ pub async fn get_committees<E: EthSpec>(
 }
 
 /// `GET /eth/v1/beacon/states/{state_id}/randao`
-pub async fn get_randao<E: EthSpec>(
+pub async fn get_randao<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     Query(query): Query<RandaoQuery>,
@@ -906,7 +906,7 @@ pub async fn get_randao<E: EthSpec>(
 /// Sources `current_sync_committee` / `next_sync_committee` from the
 /// `BeaconState` enum variant (Altair/Bellatrix/Capella only).
 /// Returns 400 for Phase0 states (the state is found, but has no sync committee).
-pub async fn get_sync_committees<E: EthSpec>(
+pub async fn get_sync_committees<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     Query(query): Query<SyncCommitteesQuery>,
@@ -1022,7 +1022,7 @@ pub async fn get_sync_committees<E: EthSpec>(
 ///
 /// Returns 400 for pre-Electra states.
 /// Per `beacon-APIs/apis/beacon/states/pending_deposits.yaml`.
-pub async fn get_pending_deposits<E: EthSpec>(
+pub async fn get_pending_deposits<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     headers: HeaderMap,
@@ -1105,7 +1105,7 @@ pub async fn get_pending_deposits<E: EthSpec>(
 ///
 /// Returns 400 for pre-Electra states.
 /// Per `beacon-APIs/apis/beacon/states/pending_partial_withdrawals.yaml`.
-pub async fn get_pending_partial_withdrawals<E: EthSpec>(
+pub async fn get_pending_partial_withdrawals<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     headers: HeaderMap,
@@ -1188,7 +1188,7 @@ pub async fn get_pending_partial_withdrawals<E: EthSpec>(
 ///
 /// Returns 400 for pre-Electra states.
 /// Per `beacon-APIs/apis/beacon/states/pending_consolidations.yaml`.
-pub async fn get_pending_consolidations<E: EthSpec>(
+pub async fn get_pending_consolidations<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     headers: HeaderMap,
@@ -1272,7 +1272,7 @@ pub async fn get_pending_consolidations<E: EthSpec>(
 /// Returns filtered list of validator identities (index, pubkey, activation_epoch).
 /// Body: JSON array of validator indices or 0x-prefixed pubkeys (empty = all validators).
 /// Per `beacon-APIs/apis/beacon/states/validator_identities.yaml`.
-pub async fn post_validator_identities<E: EthSpec>(
+pub async fn post_validator_identities<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     headers: HeaderMap,
@@ -1352,7 +1352,7 @@ pub async fn post_validator_identities<E: EthSpec>(
 /// slots starting from the state's current slot.
 /// Returns 400 for pre-Electra states (this endpoint is Electra+).
 /// Per `beacon-APIs/apis/beacon/states/proposer_lookahead.yaml`.
-pub async fn get_proposer_lookahead<E: EthSpec>(
+pub async fn get_proposer_lookahead<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(state_id): Path<String>,
     headers: HeaderMap,

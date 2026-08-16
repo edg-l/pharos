@@ -25,7 +25,7 @@ pub use rewards_and_penalties::{
 };
 pub use slashings::process_slashings;
 
-use pharos_types::{EthSpec, phase0::Attestation, views::BeaconBlockBodyView};
+use pharos_types::{BeaconSpec, phase0::Attestation, views::BeaconBlockBodyView};
 
 use crate::error::EpochProcessingError;
 use crate::phase0::state_write::BeaconStateWrite;
@@ -33,7 +33,7 @@ use crate::phase0::state_write::BeaconStateWrite;
 /// `process_epoch` per `specs/phase0/beacon-chain.md:1422-1432`.
 ///
 /// Calls the 10 sub-routines in spec order.
-pub fn process_epoch<E: EthSpec>(state: &mut E::BeaconState) -> Result<(), EpochProcessingError>
+pub fn process_epoch<E: BeaconSpec>(state: &mut E::BeaconState) -> Result<(), EpochProcessingError>
 where
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,

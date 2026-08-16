@@ -11,7 +11,7 @@ pub use execution_payload::{is_execution_enabled, process_execution_payload};
 pub use proposer_slashing::process_proposer_slashing_bellatrix;
 
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     bellatrix::BeaconState,
     phase0::{Attestation, AttesterSlashing, Deposit},
@@ -88,7 +88,7 @@ pub fn process_operations_bellatrix<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

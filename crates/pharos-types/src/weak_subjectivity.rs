@@ -5,7 +5,7 @@
 //! `is_within_weak_subjectivity_period` (lines 181–191).
 //!
 //! A checkpoint older than the weak-subjectivity (WS) period before the current
-//! slot is unsafe to sync from. Lives next to `EthSpec` (in `pharos-types`, no
+//! slot is unsafe to sync from. Lives next to `BeaconSpec` (in `pharos-types`, no
 //! internal deps beyond `pharos-utils`) so both the node and other callers can
 //! reach it without depending on `pharos-stf`. The state-deriving inputs
 //! (active validator count, total active balance) are computed by the caller
@@ -13,7 +13,7 @@
 //! `BeaconState`; `get_validator_churn_limit` and `get_total_active_balance`
 //! are pure functions of it, so passing the precomputed scalars is equivalent).
 
-use crate::EthSpec;
+use crate::BeaconSpec;
 use crate::phase0::misc::Validator;
 use crate::phase0::primitives::Epoch;
 
@@ -38,7 +38,7 @@ const SAFETY_DECAY: u64 = 10;
 ///
 /// Panics if `active_validator_count == 0` (a state with no active validators
 /// is not a valid sync anchor; the spec divides by `N`).
-pub fn compute_weak_subjectivity_period<E: EthSpec>(
+pub fn compute_weak_subjectivity_period<E: BeaconSpec>(
     active_validator_count: u64,
     total_active_balance_gwei: u64,
 ) -> u64 {
@@ -88,7 +88,7 @@ pub fn compute_weak_subjectivity_period<E: EthSpec>(
 /// ws_checkpoint.epoch`) are enforced upstream: the checkpoint-sync fetch
 /// already binds the anchor block to the anchor state, and the anchor epoch is
 /// derived from `ws_state.slot`, so they hold by construction here.
-pub fn is_within_weak_subjectivity_period<E: EthSpec>(
+pub fn is_within_weak_subjectivity_period<E: BeaconSpec>(
     ws_state_slot: u64,
     current_slot: u64,
     active_validator_count: u64,
@@ -128,7 +128,7 @@ pub fn active_validator_stats<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MainnetEthSpec, MinimalEthSpec};
+    use crate::{MainnetBeaconSpec, MinimalBeaconSpec};
 
     /// `t` Ether per validator → total active balance in Gwei for `n` validators.
     fn total_balance_gwei(n: u64, t_eth: u64) -> u64 {
@@ -165,7 +165,7 @@ mod tests {
         ];
         for (n, t_eth, expected) in cases {
             let total = total_balance_gwei(n, t_eth);
-            let got = compute_weak_subjectivity_period::<MainnetEthSpec>(n, total);
+            let got = compute_weak_subjectivity_period::<MainnetBeaconSpec>(n, total);
             assert_eq!(
                 got, expected,
                 "mainnet WS period mismatch for N={n}, t={t_eth} ETH: got {got}, want {expected}"
@@ -184,10 +184,10 @@ mod tests {
         // hand: N*(t*320 - T*230)//(600*delta*(2t+T)) = 64*2880//(600*4*96) = 0).
         let n = 64u64;
         let total = total_balance_gwei(n, 32);
-        let got = compute_weak_subjectivity_period::<MainnetEthSpec>(n, total);
+        let got = compute_weak_subjectivity_period::<MainnetBeaconSpec>(n, total);
         assert_eq!(
             got,
-            MainnetEthSpec::MIN_VALIDATOR_WITHDRAWABILITY_DELAY,
+            MainnetBeaconSpec::MIN_VALIDATOR_WITHDRAWABILITY_DELAY,
             "tiny set should floor to MIN_VALIDATOR_WITHDRAWABILITY_DELAY"
         );
     }
@@ -197,11 +197,11 @@ mod tests {
         // Period must grow monotonically with validator count at fixed avg
         // balance (more validators → longer safe window).
         let t_eth = 32u64;
-        let p1 = compute_weak_subjectivity_period::<MainnetEthSpec>(
+        let p1 = compute_weak_subjectivity_period::<MainnetBeaconSpec>(
             65536,
             total_balance_gwei(65536, t_eth),
         );
-        let p2 = compute_weak_subjectivity_period::<MainnetEthSpec>(
+        let p2 = compute_weak_subjectivity_period::<MainnetBeaconSpec>(
             131072,
             total_balance_gwei(131072, t_eth),
         );
@@ -220,9 +220,9 @@ mod tests {
         // and must still be >= the withdrawability floor.
         let n = 64u64;
         let total = total_balance_gwei(n, 20);
-        let got = compute_weak_subjectivity_period::<MinimalEthSpec>(n, total);
+        let got = compute_weak_subjectivity_period::<MinimalBeaconSpec>(n, total);
         assert!(
-            got >= MinimalEthSpec::MIN_VALIDATOR_WITHDRAWABILITY_DELAY,
+            got >= MinimalBeaconSpec::MIN_VALIDATOR_WITHDRAWABILITY_DELAY,
             "minimal WS period must be >= MIN_VALIDATOR_WITHDRAWABILITY_DELAY, got {got}"
         );
     }
@@ -233,9 +233,9 @@ mod tests {
         // epoch later → well within any positive WS period.
         let n = 262144u64;
         let total = total_balance_gwei(n, 32);
-        let ws_state_slot = 100 * MainnetEthSpec::SLOTS_PER_EPOCH;
-        let current_slot = 101 * MainnetEthSpec::SLOTS_PER_EPOCH;
-        assert!(is_within_weak_subjectivity_period::<MainnetEthSpec>(
+        let ws_state_slot = 100 * MainnetBeaconSpec::SLOTS_PER_EPOCH;
+        let current_slot = 101 * MainnetBeaconSpec::SLOTS_PER_EPOCH;
+        assert!(is_within_weak_subjectivity_period::<MainnetBeaconSpec>(
             ws_state_slot,
             current_slot,
             n,
@@ -249,20 +249,20 @@ mod tests {
         // epoch 100 + 3532 + 1 = 3633 → past the period → not within.
         let n = 262144u64;
         let total = total_balance_gwei(n, 32);
-        let period = compute_weak_subjectivity_period::<MainnetEthSpec>(n, total);
+        let period = compute_weak_subjectivity_period::<MainnetBeaconSpec>(n, total);
         assert_eq!(period, 3532);
         let ws_epoch = 100u64;
-        let ws_state_slot = ws_epoch * MainnetEthSpec::SLOTS_PER_EPOCH;
-        let current_slot = (ws_epoch + period + 1) * MainnetEthSpec::SLOTS_PER_EPOCH;
-        assert!(!is_within_weak_subjectivity_period::<MainnetEthSpec>(
+        let ws_state_slot = ws_epoch * MainnetBeaconSpec::SLOTS_PER_EPOCH;
+        let current_slot = (ws_epoch + period + 1) * MainnetBeaconSpec::SLOTS_PER_EPOCH;
+        assert!(!is_within_weak_subjectivity_period::<MainnetBeaconSpec>(
             ws_state_slot,
             current_slot,
             n,
             total
         ));
         // Exactly at the boundary (current_epoch == ws_epoch + period) is within.
-        let boundary_slot = (ws_epoch + period) * MainnetEthSpec::SLOTS_PER_EPOCH;
-        assert!(is_within_weak_subjectivity_period::<MainnetEthSpec>(
+        let boundary_slot = (ws_epoch + period) * MainnetBeaconSpec::SLOTS_PER_EPOCH;
+        assert!(is_within_weak_subjectivity_period::<MainnetBeaconSpec>(
             ws_state_slot,
             boundary_slot,
             n,

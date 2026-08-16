@@ -4,7 +4,7 @@
 //! `MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX`.
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, capella::BeaconState, phase0::ProposerSlashing};
+use pharos_types::{BeaconSpec, capella::BeaconState, phase0::ProposerSlashing};
 
 use crate::capella::helpers::slash_validator_capella;
 use crate::error::{ProposerSlashingInvalidReason, StateTransitionError};
@@ -43,7 +43,7 @@ pub fn process_proposer_slashing_capella<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         CapellaBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

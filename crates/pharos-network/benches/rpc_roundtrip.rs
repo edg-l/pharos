@@ -20,7 +20,7 @@ use pharos_network::host::{
 use pharos_network::scoring::NoopScorer;
 use pharos_network::types::{Fork, SubnetId};
 use pharos_network::{NetworkBuilder, NetworkEvent, NetworkHandle, RpcRequest};
-use pharos_types::MainnetEthSpec as E;
+use pharos_types::MainnetBeaconSpec as E;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
@@ -73,8 +73,8 @@ impl ForkContext for BenchHost {
     }
 }
 
-type LcBootstrap = <E as pharos_types::EthSpec>::AltairLightClientBootstrap;
-type LcUpdate = <E as pharos_types::EthSpec>::AltairLightClientUpdate;
+type LcBootstrap = <E as pharos_types::BeaconSpec>::AltairLightClientBootstrap;
+type LcUpdate = <E as pharos_types::BeaconSpec>::AltairLightClientUpdate;
 
 impl LightClientProvider<E> for BenchHost {
     fn light_client_bootstrap(&self, _root: Root) -> Option<LcBootstrap> {
@@ -85,48 +85,48 @@ impl LightClientProvider<E> for BenchHost {
     }
     fn light_client_finality_update(
         &self,
-    ) -> Option<<E as pharos_types::EthSpec>::AltairLightClientFinalityUpdate> {
+    ) -> Option<<E as pharos_types::BeaconSpec>::AltairLightClientFinalityUpdate> {
         None
     }
     fn light_client_optimistic_update(
         &self,
-    ) -> Option<<E as pharos_types::EthSpec>::AltairLightClientOptimisticUpdate> {
+    ) -> Option<<E as pharos_types::BeaconSpec>::AltairLightClientOptimisticUpdate> {
         None
     }
 
     fn light_client_finality_update_capella(
         &self,
-    ) -> Option<<E as pharos_types::EthSpec>::CapellaLightClientFinalityUpdate> {
+    ) -> Option<<E as pharos_types::BeaconSpec>::CapellaLightClientFinalityUpdate> {
         None
     }
 
     fn light_client_optimistic_update_capella(
         &self,
-    ) -> Option<<E as pharos_types::EthSpec>::CapellaLightClientOptimisticUpdate> {
+    ) -> Option<<E as pharos_types::BeaconSpec>::CapellaLightClientOptimisticUpdate> {
         None
     }
 
     fn light_client_finality_update_deneb(
         &self,
-    ) -> Option<<E as pharos_types::EthSpec>::DenebLightClientFinalityUpdate> {
+    ) -> Option<<E as pharos_types::BeaconSpec>::DenebLightClientFinalityUpdate> {
         None
     }
 
     fn light_client_optimistic_update_deneb(
         &self,
-    ) -> Option<<E as pharos_types::EthSpec>::DenebLightClientOptimisticUpdate> {
+    ) -> Option<<E as pharos_types::BeaconSpec>::DenebLightClientOptimisticUpdate> {
         None
     }
 
     fn light_client_finality_update_electra(
         &self,
-    ) -> Option<<E as pharos_types::EthSpec>::ElectraLightClientFinalityUpdate> {
+    ) -> Option<<E as pharos_types::BeaconSpec>::ElectraLightClientFinalityUpdate> {
         None
     }
 
     fn light_client_optimistic_update_electra(
         &self,
-    ) -> Option<<E as pharos_types::EthSpec>::ElectraLightClientOptimisticUpdate> {
+    ) -> Option<<E as pharos_types::BeaconSpec>::ElectraLightClientOptimisticUpdate> {
         None
     }
 }
@@ -135,7 +135,7 @@ impl BlockProvider<E> for BenchHost {
     fn block_by_root(
         &self,
         _root: Root,
-    ) -> Option<<E as pharos_types::EthSpec>::SignedBeaconBlock> {
+    ) -> Option<<E as pharos_types::BeaconSpec>::SignedBeaconBlock> {
         None
     }
     /// Returns empty Vec — bench measures wire round-trip cost, not body fetching.
@@ -143,7 +143,7 @@ impl BlockProvider<E> for BenchHost {
         &self,
         _start_slot: Slot,
         _count: u64,
-    ) -> Vec<<E as pharos_types::EthSpec>::SignedBeaconBlock> {
+    ) -> Vec<<E as pharos_types::BeaconSpec>::SignedBeaconBlock> {
         vec![]
     }
     fn finalized_checkpoint(&self) -> Checkpoint {
@@ -162,7 +162,7 @@ impl BlockProvider<E> for BenchHost {
 impl GossipValidator<E> for BenchHost {
     fn validate_beacon_block(
         &self,
-        _block: &<E as pharos_types::EthSpec>::SignedBeaconBlock,
+        _block: &<E as pharos_types::BeaconSpec>::SignedBeaconBlock,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
@@ -190,19 +190,19 @@ impl GossipValidator<E> for BenchHost {
     }
     fn validate_sync_committee_contribution_and_proof(
         &self,
-        _msg: &<E as pharos_types::EthSpec>::AltairSignedContributionAndProof,
+        _msg: &<E as pharos_types::BeaconSpec>::AltairSignedContributionAndProof,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
     fn validate_light_client_finality_update(
         &self,
-        _msg: &<E as pharos_types::EthSpec>::AltairLightClientFinalityUpdate,
+        _msg: &<E as pharos_types::BeaconSpec>::AltairLightClientFinalityUpdate,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
     fn validate_light_client_optimistic_update(
         &self,
-        _msg: &<E as pharos_types::EthSpec>::AltairLightClientOptimisticUpdate,
+        _msg: &<E as pharos_types::BeaconSpec>::AltairLightClientOptimisticUpdate,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
@@ -216,14 +216,14 @@ impl GossipValidator<E> for BenchHost {
 
     fn validate_capella_light_client_finality_update(
         &self,
-        _msg: &<E as pharos_types::EthSpec>::CapellaLightClientFinalityUpdate,
+        _msg: &<E as pharos_types::BeaconSpec>::CapellaLightClientFinalityUpdate,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
 
     fn validate_capella_light_client_optimistic_update(
         &self,
-        _msg: &<E as pharos_types::EthSpec>::CapellaLightClientOptimisticUpdate,
+        _msg: &<E as pharos_types::BeaconSpec>::CapellaLightClientOptimisticUpdate,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }

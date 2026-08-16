@@ -28,7 +28,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use pharos_ssz::{Bitlist, Decode as _};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::phase0::misc::{AttestationData, Checkpoint};
 use pharos_types::phase0::operations::Attestation;
 use pharos_types::phase0::primitives::{CommitteeIndex, Epoch, Root, Slot};
@@ -144,7 +144,9 @@ fn parse_attestation(v: &JsonValue) -> Result<Attestation<2048>, ApiError> {
 ///
 /// Returns a JSON array of pooled attestations with `version` field and
 /// `Eth-Consensus-Version` response header (v2 spec shape).
-pub async fn get_pool_attestations<E: EthSpec>(State(state): State<Arc<ApiState<E>>>) -> Response {
+pub async fn get_pool_attestations<E: BeaconSpec>(
+    State(state): State<Arc<ApiState<E>>>,
+) -> Response {
     let chain = Arc::clone(&state.chain);
     let result = tokio::task::spawn_blocking(move || {
         let atts = chain.pool_attestations();
@@ -177,7 +179,7 @@ pub async fn get_pool_attestations<E: EthSpec>(State(state): State<Arc<ApiState<
 /// Accepts a JSON array of `Attestation` objects. Parses each attestation,
 /// returns 400 if any fail to parse, otherwise inserts into pool.
 /// Per spec: "If one or more attestations fail validation, return 400".
-pub async fn post_pool_attestations<E: EthSpec>(
+pub async fn post_pool_attestations<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     request: Request,
 ) -> Response {
@@ -234,7 +236,7 @@ pub async fn post_pool_attestations<E: EthSpec>(
 // ── Attester slashings ────────────────────────────────────────────────────────
 
 /// `GET /eth/v1/beacon/pool/attester_slashings`
-pub async fn get_pool_attester_slashings<E: EthSpec>(
+pub async fn get_pool_attester_slashings<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
 ) -> Response {
     let chain = Arc::clone(&state.chain);
@@ -245,7 +247,7 @@ pub async fn get_pool_attester_slashings<E: EthSpec>(
 }
 
 /// `POST /eth/v1/beacon/pool/attester_slashings`
-pub async fn post_pool_attester_slashings<E: EthSpec>(
+pub async fn post_pool_attester_slashings<E: BeaconSpec>(
     State(_state): State<Arc<ApiState<E>>>,
     Json(_body): Json<JsonValue>,
 ) -> Response {
@@ -255,7 +257,7 @@ pub async fn post_pool_attester_slashings<E: EthSpec>(
 // ── Proposer slashings ────────────────────────────────────────────────────────
 
 /// `GET /eth/v1/beacon/pool/proposer_slashings`
-pub async fn get_pool_proposer_slashings<E: EthSpec>(
+pub async fn get_pool_proposer_slashings<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
 ) -> Response {
     let chain = Arc::clone(&state.chain);
@@ -266,7 +268,7 @@ pub async fn get_pool_proposer_slashings<E: EthSpec>(
 }
 
 /// `POST /eth/v1/beacon/pool/proposer_slashings`
-pub async fn post_pool_proposer_slashings<E: EthSpec>(
+pub async fn post_pool_proposer_slashings<E: BeaconSpec>(
     State(_state): State<Arc<ApiState<E>>>,
     Json(_body): Json<JsonValue>,
 ) -> Response {
@@ -276,7 +278,7 @@ pub async fn post_pool_proposer_slashings<E: EthSpec>(
 // ── Voluntary exits ───────────────────────────────────────────────────────────
 
 /// `GET /eth/v1/beacon/pool/voluntary_exits`
-pub async fn get_pool_voluntary_exits<E: EthSpec>(
+pub async fn get_pool_voluntary_exits<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
 ) -> Response {
     let chain = Arc::clone(&state.chain);
@@ -287,7 +289,7 @@ pub async fn get_pool_voluntary_exits<E: EthSpec>(
 }
 
 /// `POST /eth/v1/beacon/pool/voluntary_exits`
-pub async fn post_pool_voluntary_exits<E: EthSpec>(
+pub async fn post_pool_voluntary_exits<E: BeaconSpec>(
     State(_state): State<Arc<ApiState<E>>>,
     Json(_body): Json<JsonValue>,
 ) -> Response {
@@ -297,7 +299,7 @@ pub async fn post_pool_voluntary_exits<E: EthSpec>(
 // ── BLS-to-execution changes ─────────────────────────────────────────────────
 
 /// `GET /eth/v1/beacon/pool/bls_to_execution_changes`
-pub async fn get_pool_bls_to_execution_changes<E: EthSpec>(
+pub async fn get_pool_bls_to_execution_changes<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
 ) -> Response {
     let chain = Arc::clone(&state.chain);
@@ -308,7 +310,7 @@ pub async fn get_pool_bls_to_execution_changes<E: EthSpec>(
 }
 
 /// `POST /eth/v1/beacon/pool/bls_to_execution_changes`
-pub async fn post_pool_bls_to_execution_changes<E: EthSpec>(
+pub async fn post_pool_bls_to_execution_changes<E: BeaconSpec>(
     State(_state): State<Arc<ApiState<E>>>,
     Json(_body): Json<Vec<JsonValue>>,
 ) -> Response {
@@ -318,7 +320,7 @@ pub async fn post_pool_bls_to_execution_changes<E: EthSpec>(
 // ── Sync committee messages ───────────────────────────────────────────────────
 
 /// `GET /eth/v1/beacon/pool/sync_committees`
-pub async fn get_pool_sync_committees<E: EthSpec>(
+pub async fn get_pool_sync_committees<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
 ) -> Response {
     let chain = Arc::clone(&state.chain);
@@ -332,7 +334,7 @@ pub async fn get_pool_sync_committees<E: EthSpec>(
 ///
 /// Accepts `SyncCommitteeMessage` objects for the pool.
 /// Routes to `submit_sync_committee_messages` (NOT aggregate_and_proofs).
-pub async fn post_pool_sync_committees<E: EthSpec>(
+pub async fn post_pool_sync_committees<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Json(body): Json<Vec<JsonValue>>,
 ) -> Response {

@@ -6,7 +6,7 @@
 
 use pharos_ssz::{SszSequence, SszVector, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState,
     phase0::{HistoricalBatch, Root},
 };
@@ -42,7 +42,7 @@ pub fn process_historical_roots_update<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -102,7 +102,7 @@ fn compute_historical_batch_root_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

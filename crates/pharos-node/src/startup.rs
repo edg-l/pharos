@@ -57,7 +57,7 @@ use pharos_types::config::RuntimeConfig;
 use pharos_types::phase0::Checkpoint;
 use pharos_types::phase0::primitives::{Root, Slot};
 use pharos_types::views::BeaconBlockBodyView;
-use pharos_types::{BeaconBlockView, EthSpec, SignedBeaconBlockView};
+use pharos_types::{BeaconBlockView, BeaconSpec, SignedBeaconBlockView};
 use pharos_utils::{Hash256, Uint256};
 use tracing::warn;
 
@@ -65,10 +65,10 @@ use tracing::warn;
 
 /// Extract the inner `E::BeaconBlock` from a fork-enum `E::SignedBeaconBlock`.
 ///
-/// Infallible: `EthSpec::signed_block_message` dispatches over an exhaustive
+/// Infallible: `BeaconSpec::signed_block_message` dispatches over an exhaustive
 /// match, so every fork variant is handled (a new fork is a compile error
 /// there). The `Option` return is retained for caller ergonomics.
-fn extract_block<E: EthSpec>(signed: &E::SignedBeaconBlock) -> Option<E::BeaconBlock> {
+fn extract_block<E: BeaconSpec>(signed: &E::SignedBeaconBlock) -> Option<E::BeaconBlock> {
     Some(E::signed_block_message(signed))
 }
 
@@ -77,7 +77,7 @@ fn extract_block<E: EthSpec>(signed: &E::SignedBeaconBlock) -> Option<E::BeaconB
 ///
 /// Used for the anchor state during rehydration where the finalized state may
 /// have been pruned from hot storage by Phase-3 migration.
-fn load_state_hot_or_cold<E: EthSpec>(
+fn load_state_hot_or_cold<E: BeaconSpec>(
     store: &RocksStore,
     state_root: Root,
     search_up_to: Slot,
@@ -167,7 +167,7 @@ where
 ///
 /// Uses `RuntimeConfig::default()` for the replay (same as checkpoint-sync
 /// anchor replay).  `validate_result = false` — stored blocks are trusted.
-fn inline_replay_to<E: EthSpec>(
+fn inline_replay_to<E: BeaconSpec>(
     store: &RocksStore,
     mut state: E::BeaconState,
     start_slot: Slot,
@@ -289,7 +289,7 @@ where
 ///
 /// Returns `Err(StorageError::KeyNotFound)` when the anchor block cannot be
 /// found in either hot or cold storage.
-pub fn rehydrate_fork_choice_store<E: EthSpec>(
+pub fn rehydrate_fork_choice_store<E: BeaconSpec>(
     store: &RocksStore,
     snapshot: &ForkChoiceSnapshot,
     runtime_cfg: &RuntimeConfig,
@@ -524,25 +524,25 @@ mod tests {
     use super::*;
     use pharos_fork_choice::get_forkchoice_store;
     use pharos_storage::{BlockTransition, RocksStoreConfig};
-    use pharos_types::MainnetEthSpec;
+    use pharos_types::MainnetBeaconSpec;
     use pharos_types::phase0::primitives::Root;
     use pharos_types::state::BeaconBlock as ForkBeaconBlock;
 
     fn make_store_with_snapshot(dir: &tempfile::TempDir) -> (RocksStore, ForkChoiceSnapshot) {
-        let rocks = RocksStore::open::<MainnetEthSpec>(RocksStoreConfig {
+        let rocks = RocksStore::open::<MainnetBeaconSpec>(RocksStoreConfig {
             path: dir.path().join("chain_db"),
             create_if_missing: true,
         })
         .expect("open store");
 
-        let genesis_state = <MainnetEthSpec as EthSpec>::BeaconState::default();
+        let genesis_state = <MainnetBeaconSpec as BeaconSpec>::BeaconState::default();
         let state_root = genesis_state.tree_hash_root();
         let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MainnetBeaconBlock {
             state_root,
             ..pharos_types::phase0::MainnetBeaconBlock::default()
         });
         let fc =
-            get_forkchoice_store::<MainnetEthSpec>(genesis_state.clone(), anchor_block.clone());
+            get_forkchoice_store::<MainnetBeaconSpec>(genesis_state.clone(), anchor_block.clone());
 
         let block_root: Root = anchor_block.tree_hash_root();
 
@@ -561,7 +561,7 @@ mod tests {
         {
             use pharos_types::phase0::MainnetSignedBeaconBlock;
             use pharos_types::state::SignedBeaconBlock;
-            <RocksStore as Store<MainnetEthSpec>>::put_block(
+            <RocksStore as Store<MainnetBeaconSpec>>::put_block(
                 &rocks,
                 block_root,
                 &SignedBeaconBlock::Phase0(MainnetSignedBeaconBlock {
@@ -574,7 +574,7 @@ mod tests {
             )
             .expect("put block");
         }
-        <RocksStore as Store<MainnetEthSpec>>::put_state(&rocks, state_root, &genesis_state)
+        <RocksStore as Store<MainnetBeaconSpec>>::put_state(&rocks, state_root, &genesis_state)
             .expect("put state");
 
         (rocks, snap)
@@ -594,15 +594,18 @@ mod tests {
             (root_b, PayloadStatus::Invalid),
             (root_c, PayloadStatus::NotValidated),
         ] {
-            let mut bt = BlockTransition::<MainnetEthSpec>::new();
+            let mut bt = BlockTransition::<MainnetBeaconSpec>::new();
             bt.payload_status = Some((root, status));
-            <RocksStore as Store<MainnetEthSpec>>::write_block_transition(&rocks, bt)
+            <RocksStore as Store<MainnetBeaconSpec>>::write_block_transition(&rocks, bt)
                 .expect("write");
         }
 
-        let fc_store =
-            rehydrate_fork_choice_store::<MainnetEthSpec>(&rocks, &snap, &RuntimeConfig::default())
-                .expect("rehydrate");
+        let fc_store = rehydrate_fork_choice_store::<MainnetBeaconSpec>(
+            &rocks,
+            &snap,
+            &RuntimeConfig::default(),
+        )
+        .expect("rehydrate");
 
         assert_eq!(
             fc_store.payload_statuses.get(&root_a),

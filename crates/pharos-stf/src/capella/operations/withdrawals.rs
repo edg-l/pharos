@@ -4,7 +4,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     capella::{
         BeaconState,
         execution_payload::{Withdrawal, WithdrawalIndex},
@@ -98,7 +98,7 @@ pub fn get_validators_sweep_withdrawals<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -215,7 +215,7 @@ pub fn get_expected_withdrawals<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -352,7 +352,7 @@ pub fn update_next_withdrawal_validator_index<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -408,7 +408,7 @@ pub fn process_withdrawals<
     const MAX_BYTES_PER_TRANSACTION: u64,
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -516,7 +516,7 @@ pub fn get_expected_withdrawals_for_deneb_state<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &pharos_types::deneb::BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

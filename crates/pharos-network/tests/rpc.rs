@@ -10,7 +10,7 @@ use pharos_network::rpc::types::{
 use pharos_network::scoring::{RpcMethod, ScoreEvent};
 use pharos_network::{NetworkHandle, RpcRequest};
 use pharos_ssz::TreeHash;
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::altair::light_client::{
     LightClientBootstrap, LightClientHeader, LightClientUpdate,
 };
@@ -33,7 +33,7 @@ fn altair_fd() -> ForkDigest {
 }
 
 /// Wait for `PeerConnected(expected_peer)` on `handle`.
-async fn wait_connected(handle: &mut NetworkHandle<MainnetEthSpec>, expected_peer: PeerId) {
+async fn wait_connected(handle: &mut NetworkHandle<MainnetBeaconSpec>, expected_peer: PeerId) {
     timeout(Duration::from_secs(5), async {
         loop {
             match handle.next_event().await.expect("channel closed") {

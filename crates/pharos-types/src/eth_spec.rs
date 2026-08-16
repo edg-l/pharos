@@ -1,4 +1,4 @@
-//! `EthSpec` trait and preset implementations.
+//! `BeaconSpec` trait and preset implementations.
 //!
 //! Constants are sourced from:
 //! - `presets/mainnet/phase0.yaml` and `presets/minimal/phase0.yaml` (preset constants).
@@ -19,7 +19,7 @@ use std::str::FromStr;
 /// The three derived constants (`ETH1_DATA_VOTES_LIMIT`, `MAX_PENDING_ATTESTATIONS`,
 /// `DEPOSIT_PROOF_LENGTH`) exist so container field types never contain compound
 /// expressions `A * B` or `A + 1` in const-generic positions (B2/B3).
-pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Default {
+pub trait BeaconSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Default {
     // -- Misc --
     // Source: presets/mainnet/phase0.yaml:6, presets/minimal/phase0.yaml:6
     /// `MAX_COMMITTEES_PER_SLOT` from `presets/mainnet/phase0.yaml:6` /
@@ -803,7 +803,7 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     fn signed_block_slot(signed: &Self::SignedBeaconBlock) -> crate::phase0::Slot;
 
     // -- Container associated types (D7) --
-    // These allow STF code to be generic over `<E: EthSpec>` and reference
+    // These allow STF code to be generic over `<E: BeaconSpec>` and reference
     // `E::BeaconState`, `E::BeaconBlock`, etc. without naming the concrete
     // preset-stamped struct directly.
     //
@@ -1611,16 +1611,16 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     fn electra_into_signed_block(s: Self::ElectraSignedBeaconBlock) -> Self::SignedBeaconBlock;
 }
 
-// ── MainnetEthSpec ─────────────────────────────────────────────────────────────
+// ── MainnetBeaconSpec ─────────────────────────────────────────────────────────────
 
 /// Mainnet Phase 0 preset.
 ///
 /// All constants sourced from `presets/mainnet/phase0.yaml`.
 /// Non-configurable constants from `specs/phase0/beacon-chain.md:186-196`.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
-pub struct MainnetEthSpec;
+pub struct MainnetBeaconSpec;
 
-/// Emit the fork-enum dispatch methods of the `EthSpec` impl. These method
+/// Emit the fork-enum dispatch methods of the `BeaconSpec` impl. These method
 /// bodies are identical for every preset (they only plumb the preset's
 /// concrete `BeaconState`/`BeaconBlock`/`SignedBeaconBlock`/`ExecutionPayload`
 /// enum types), so each preset impl invokes this rather than re-typing them.
@@ -2122,7 +2122,7 @@ macro_rules! impl_fork_dispatch {
     };
 }
 
-impl EthSpec for MainnetEthSpec {
+impl BeaconSpec for MainnetBeaconSpec {
     // -- Misc --
     /// `MAX_COMMITTEES_PER_SLOT` from `presets/mainnet/phase0.yaml:6`.
     const MAX_COMMITTEES_PER_SLOT: u64 = 64;
@@ -2535,16 +2535,16 @@ impl EthSpec for MainnetEthSpec {
         crate::electra::light_client::MainnetLightClientOptimisticUpdate;
 }
 
-// ── MinimalEthSpec ─────────────────────────────────────────────────────────────
+// ── MinimalBeaconSpec ─────────────────────────────────────────────────────────────
 
 /// Minimal Phase 0 preset (for testing; smaller list bounds).
 ///
 /// All constants sourced from `presets/minimal/phase0.yaml`.
 /// Non-configurable constants from `specs/phase0/beacon-chain.md:186-196`.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
-pub struct MinimalEthSpec;
+pub struct MinimalBeaconSpec;
 
-impl EthSpec for MinimalEthSpec {
+impl BeaconSpec for MinimalBeaconSpec {
     // -- Misc --
     /// `MAX_COMMITTEES_PER_SLOT` from `presets/minimal/phase0.yaml:6`.
     const MAX_COMMITTEES_PER_SLOT: u64 = 4;

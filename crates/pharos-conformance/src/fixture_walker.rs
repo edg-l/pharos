@@ -13,7 +13,7 @@ use pharos_stf::{
     BellatrixUpgradeDispatch, CapellaProcessSlotsDispatch, CapellaUpgradeDispatch,
     DenebProcessSlotsDispatch, Phase0UpgradeDispatch, state_transition,
 };
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::config::RuntimeConfig;
 use pharos_types::phase0::{Attestation, AttesterSlashing, Deposit};
 use pharos_types::views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView};
@@ -193,7 +193,7 @@ pub fn load_pre_post_state<E, S, F>(
     into_state: F,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     S: Decode,
     F: Fn(S) -> E::BeaconState,
 {
@@ -212,7 +212,7 @@ where
 /// to the fork-enum via `into_state`.
 pub fn load_state<E, S, F>(dir: &Path, name: &str, into_state: F) -> Result<E::BeaconState, String>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     S: Decode,
     F: Fn(S) -> E::BeaconState,
 {
@@ -228,7 +228,7 @@ pub fn load_signed_block<E, S, F>(
     into_block: F,
 ) -> Result<E::SignedBeaconBlock, String>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     S: Decode,
     F: Fn(S) -> E::SignedBeaconBlock,
 {
@@ -242,7 +242,7 @@ where
 // they are called from every conformance category dispatcher (and the
 // `pharos-ssz` bench). Each fixes the inner per-fork type and the promotion fn.
 
-pub fn load_pre_post_phase0_state<E: EthSpec>(
+pub fn load_pre_post_phase0_state<E: BeaconSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
@@ -251,7 +251,7 @@ where
     load_pre_post_state::<E, E::Phase0BeaconState, _>(dir, E::phase0_into_state)
 }
 
-pub fn load_phase0_signed_block<E: EthSpec>(
+pub fn load_phase0_signed_block<E: BeaconSpec>(
     dir: &Path,
     name: &str,
 ) -> Result<E::SignedBeaconBlock, String>
@@ -261,14 +261,14 @@ where
     load_signed_block::<E, E::Phase0SignedBeaconBlock, _>(dir, name, E::phase0_into_signed_block)
 }
 
-pub fn load_phase0_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+pub fn load_phase0_state<E: BeaconSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::Phase0BeaconState: Decode,
 {
     load_state::<E, E::Phase0BeaconState, _>(dir, name, E::phase0_into_state)
 }
 
-pub fn load_pre_post_altair_state<E: EthSpec>(
+pub fn load_pre_post_altair_state<E: BeaconSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
@@ -277,14 +277,14 @@ where
     load_pre_post_state::<E, E::AltairBeaconState, _>(dir, E::altair_into_state)
 }
 
-pub fn load_altair_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+pub fn load_altair_state<E: BeaconSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::AltairBeaconState: Decode,
 {
     load_state::<E, E::AltairBeaconState, _>(dir, name, E::altair_into_state)
 }
 
-pub fn load_altair_signed_block<E: EthSpec>(
+pub fn load_altair_signed_block<E: BeaconSpec>(
     dir: &Path,
     name: &str,
 ) -> Result<E::SignedBeaconBlock, String>
@@ -294,7 +294,7 @@ where
     load_signed_block::<E, E::AltairSignedBeaconBlock, _>(dir, name, E::altair_into_signed_block)
 }
 
-pub fn load_pre_post_bellatrix_state<E: EthSpec>(
+pub fn load_pre_post_bellatrix_state<E: BeaconSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
@@ -303,14 +303,14 @@ where
     load_pre_post_state::<E, E::BellatrixBeaconState, _>(dir, E::bellatrix_into_state)
 }
 
-pub fn load_bellatrix_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+pub fn load_bellatrix_state<E: BeaconSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::BellatrixBeaconState: Decode,
 {
     load_state::<E, E::BellatrixBeaconState, _>(dir, name, E::bellatrix_into_state)
 }
 
-pub fn load_bellatrix_signed_block<E: EthSpec>(
+pub fn load_bellatrix_signed_block<E: BeaconSpec>(
     dir: &Path,
     name: &str,
 ) -> Result<E::SignedBeaconBlock, String>
@@ -324,7 +324,7 @@ where
     )
 }
 
-pub fn load_pre_post_capella_state<E: EthSpec>(
+pub fn load_pre_post_capella_state<E: BeaconSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
@@ -333,14 +333,14 @@ where
     load_pre_post_state::<E, E::CapellaBeaconState, _>(dir, E::capella_into_state)
 }
 
-pub fn load_capella_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+pub fn load_capella_state<E: BeaconSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::CapellaBeaconState: Decode,
 {
     load_state::<E, E::CapellaBeaconState, _>(dir, name, E::capella_into_state)
 }
 
-pub fn load_capella_signed_block<E: EthSpec>(
+pub fn load_capella_signed_block<E: BeaconSpec>(
     dir: &Path,
     name: &str,
 ) -> Result<E::SignedBeaconBlock, String>
@@ -350,7 +350,7 @@ where
     load_signed_block::<E, E::CapellaSignedBeaconBlock, _>(dir, name, E::capella_into_signed_block)
 }
 
-pub fn load_pre_post_deneb_state<E: EthSpec>(
+pub fn load_pre_post_deneb_state<E: BeaconSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
@@ -359,14 +359,14 @@ where
     load_pre_post_state::<E, E::DenebBeaconState, _>(dir, E::deneb_into_state)
 }
 
-pub fn load_deneb_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+pub fn load_deneb_state<E: BeaconSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::DenebBeaconState: Decode,
 {
     load_state::<E, E::DenebBeaconState, _>(dir, name, E::deneb_into_state)
 }
 
-pub fn load_deneb_signed_block<E: EthSpec>(
+pub fn load_deneb_signed_block<E: BeaconSpec>(
     dir: &Path,
     name: &str,
 ) -> Result<E::SignedBeaconBlock, String>
@@ -376,7 +376,7 @@ where
     load_signed_block::<E, E::DenebSignedBeaconBlock, _>(dir, name, E::deneb_into_signed_block)
 }
 
-pub fn load_pre_post_electra_state<E: EthSpec>(
+pub fn load_pre_post_electra_state<E: BeaconSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
@@ -385,14 +385,14 @@ where
     load_pre_post_state::<E, E::ElectraBeaconState, _>(dir, E::electra_into_state)
 }
 
-pub fn load_electra_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+pub fn load_electra_state<E: BeaconSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::ElectraBeaconState: Decode,
 {
     load_state::<E, E::ElectraBeaconState, _>(dir, name, E::electra_into_state)
 }
 
-pub fn load_electra_signed_block<E: EthSpec>(
+pub fn load_electra_signed_block<E: BeaconSpec>(
     dir: &Path,
     name: &str,
 ) -> Result<E::SignedBeaconBlock, String>
@@ -433,7 +433,7 @@ pub fn run_blocks_case<E, FState, FBlock>(
     load_block: FBlock,
 ) -> CaseOutcome
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateWrite + TreeHash,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + AltairProcessSlotsDispatch<E>

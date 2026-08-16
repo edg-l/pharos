@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::{Router, routing::get};
 use pharos_ssz::{Encode, TreeHash};
 use pharos_storage::{RocksStore, RocksStoreConfig, Store as StoreTrait};
-use pharos_types::MinimalEthSpec;
+use pharos_types::MinimalBeaconSpec;
 use pharos_types::bellatrix::{
     MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
 };
@@ -153,7 +153,7 @@ async fn cold_start_checkpoint_sync_writes_anchor() {
     let url = reqwest::Url::parse(&format!("http://{addr}/")).unwrap();
     let http = reqwest::Client::new();
 
-    let anchor = fetch_checkpoint::<MinimalEthSpec>(&url, &http, None)
+    let anchor = fetch_checkpoint::<MinimalBeaconSpec>(&url, &http, None)
         .await
         .expect("fetch_checkpoint should succeed");
 
@@ -175,7 +175,7 @@ async fn cold_start_checkpoint_sync_writes_anchor() {
     };
 
     let datadir = tempfile::TempDir::new().unwrap();
-    let store = RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+    let store = RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
         path: datadir.path().join("chain_db"),
         create_if_missing: true,
     })
@@ -184,7 +184,7 @@ async fn cold_start_checkpoint_sync_writes_anchor() {
     // This integration test exercises the fetch+persist path; its synthetic
     // anchor state carries no active validators, so bypass the weak-subjectivity
     // freshness gate (covered by dedicated unit tests in `checkpoint_sync.rs`).
-    let snapshot = apply_anchor::<MinimalEthSpec>(anchor, &store, current_slot, true)
+    let snapshot = apply_anchor::<MinimalBeaconSpec>(anchor, &store, current_slot, true)
         .expect("apply_anchor should succeed");
 
     server_handle.abort();
@@ -202,21 +202,22 @@ async fn cold_start_checkpoint_sync_writes_anchor() {
     );
 
     assert!(
-        <RocksStore as StoreTrait<MinimalEthSpec>>::get_block(&store, &anchor_block_root)
+        <RocksStore as StoreTrait<MinimalBeaconSpec>>::get_block(&store, &anchor_block_root)
             .expect("get_block")
             .is_some(),
         "block should be persisted"
     );
     assert!(
-        <RocksStore as StoreTrait<MinimalEthSpec>>::get_state(&store, &anchor_state_root)
+        <RocksStore as StoreTrait<MinimalBeaconSpec>>::get_state(&store, &anchor_state_root)
             .expect("get_state")
             .is_some(),
         "state should be persisted"
     );
 
-    let stored_snap = <RocksStore as StoreTrait<MinimalEthSpec>>::get_forkchoice_snapshot(&store)
-        .expect("get_forkchoice_snapshot")
-        .expect("snapshot should be present");
+    let stored_snap =
+        <RocksStore as StoreTrait<MinimalBeaconSpec>>::get_forkchoice_snapshot(&store)
+            .expect("get_forkchoice_snapshot")
+            .expect("snapshot should be present");
 
     assert_eq!(
         stored_snap.head_slot,

@@ -6,7 +6,7 @@
 //! spec: specs/phase0/beacon-chain.md:1751-1780 (identical in Altair)
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, altair::BeaconState, phase0::ValidatorIndex};
+use pharos_types::{BeaconSpec, altair::BeaconState, phase0::ValidatorIndex};
 
 use crate::altair::helpers::initiate_validator_exit_altair_pub;
 use crate::error::EpochProcessingError;
@@ -48,7 +48,7 @@ pub fn process_registry_updates<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

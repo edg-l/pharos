@@ -19,7 +19,7 @@ use pharos_network::host::{
 use pharos_network::scoring::{PeerScorer, ScoreEvent};
 use pharos_network::types::{Fork, SubnetId};
 use pharos_network::{NetworkBuilder, NetworkHandle};
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
@@ -28,8 +28,8 @@ use pharos_types::phase0::{
 };
 use pharos_utils::{Bytes4, Epoch};
 
-type LcBootstrap = <MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientBootstrap;
-type LcUpdate = <MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientUpdate;
+type LcBootstrap = <MainnetBeaconSpec as pharos_types::BeaconSpec>::AltairLightClientBootstrap;
+type LcUpdate = <MainnetBeaconSpec as pharos_types::BeaconSpec>::AltairLightClientUpdate;
 
 // ── TestHost ──────────────────────────────────────────────────────────────────
 
@@ -46,7 +46,9 @@ pub struct TestHost {
     /// phase-0 digest is used for `Fork::Bellatrix` (safe for tests that don't
     /// exercise bellatrix).
     bellatrix_fork_digest: Option<ForkDigest>,
-    blocks: Arc<Mutex<HashMap<Root, <MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock>>>,
+    blocks: Arc<
+        Mutex<HashMap<Root, <MainnetBeaconSpec as pharos_types::BeaconSpec>::SignedBeaconBlock>>,
+    >,
     /// When `Some(idx)`, `validate_beacon_block` rejects any block with
     /// `proposer_index == idx`.
     reject_proposer_index: Option<u64>,
@@ -120,7 +122,7 @@ impl TestHost {
         self,
         blocks: Vec<(
             Root,
-            <MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock,
+            <MainnetBeaconSpec as pharos_types::BeaconSpec>::SignedBeaconBlock,
         )>,
     ) -> Self {
         {
@@ -146,7 +148,7 @@ impl TestHost {
     pub fn insert_block(
         &self,
         root: Root,
-        block: <MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock,
+        block: <MainnetBeaconSpec as pharos_types::BeaconSpec>::SignedBeaconBlock,
     ) {
         self.blocks
             .lock()
@@ -224,11 +226,11 @@ impl ForkContext for TestHost {
     }
 }
 
-impl LightClientProvider<MainnetEthSpec> for TestHost {
+impl LightClientProvider<MainnetBeaconSpec> for TestHost {
     fn light_client_bootstrap(
         &self,
         block_root: Root,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientBootstrap> {
+    ) -> Option<<MainnetBeaconSpec as pharos_types::BeaconSpec>::AltairLightClientBootstrap> {
         self.lc_bootstraps
             .lock()
             .expect("TestHost lc_bootstraps lock poisoned")
@@ -240,7 +242,7 @@ impl LightClientProvider<MainnetEthSpec> for TestHost {
         &self,
         _start_period: u64,
         count: u64,
-    ) -> Vec<<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientUpdate> {
+    ) -> Vec<<MainnetBeaconSpec as pharos_types::BeaconSpec>::AltairLightClientUpdate> {
         let updates = self
             .lc_updates
             .lock()
@@ -250,58 +252,66 @@ impl LightClientProvider<MainnetEthSpec> for TestHost {
 
     fn light_client_finality_update(
         &self,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientFinalityUpdate> {
+    ) -> Option<<MainnetBeaconSpec as pharos_types::BeaconSpec>::AltairLightClientFinalityUpdate>
+    {
         None
     }
 
     fn light_client_optimistic_update(
         &self,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientOptimisticUpdate> {
+    ) -> Option<<MainnetBeaconSpec as pharos_types::BeaconSpec>::AltairLightClientOptimisticUpdate>
+    {
         None
     }
 
     fn light_client_finality_update_capella(
         &self,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientFinalityUpdate> {
+    ) -> Option<<MainnetBeaconSpec as pharos_types::BeaconSpec>::CapellaLightClientFinalityUpdate>
+    {
         None
     }
 
     fn light_client_optimistic_update_capella(
         &self,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientOptimisticUpdate> {
+    ) -> Option<<MainnetBeaconSpec as pharos_types::BeaconSpec>::CapellaLightClientOptimisticUpdate>
+    {
         None
     }
 
     fn light_client_finality_update_deneb(
         &self,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::DenebLightClientFinalityUpdate> {
+    ) -> Option<<MainnetBeaconSpec as pharos_types::BeaconSpec>::DenebLightClientFinalityUpdate>
+    {
         None
     }
 
     fn light_client_optimistic_update_deneb(
         &self,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::DenebLightClientOptimisticUpdate> {
+    ) -> Option<<MainnetBeaconSpec as pharos_types::BeaconSpec>::DenebLightClientOptimisticUpdate>
+    {
         None
     }
 
     fn light_client_finality_update_electra(
         &self,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::ElectraLightClientFinalityUpdate> {
+    ) -> Option<<MainnetBeaconSpec as pharos_types::BeaconSpec>::ElectraLightClientFinalityUpdate>
+    {
         None
     }
 
     fn light_client_optimistic_update_electra(
         &self,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::ElectraLightClientOptimisticUpdate> {
+    ) -> Option<<MainnetBeaconSpec as pharos_types::BeaconSpec>::ElectraLightClientOptimisticUpdate>
+    {
         None
     }
 }
 
-impl BlockProvider<MainnetEthSpec> for TestHost {
+impl BlockProvider<MainnetBeaconSpec> for TestHost {
     fn block_by_root(
         &self,
         root: Root,
-    ) -> Option<<MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock> {
+    ) -> Option<<MainnetBeaconSpec as pharos_types::BeaconSpec>::SignedBeaconBlock> {
         self.blocks
             .lock()
             .expect("TestHost blocks lock poisoned")
@@ -313,7 +323,7 @@ impl BlockProvider<MainnetEthSpec> for TestHost {
         &self,
         start_slot: Slot,
         count: u64,
-    ) -> Vec<<MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock> {
+    ) -> Vec<<MainnetBeaconSpec as pharos_types::BeaconSpec>::SignedBeaconBlock> {
         use pharos_types::SignedBeaconBlock;
         let map = self.blocks.lock().expect("TestHost blocks lock poisoned");
         let mut results: Vec<_> = map
@@ -354,10 +364,10 @@ impl BlockProvider<MainnetEthSpec> for TestHost {
     }
 }
 
-impl GossipValidator<MainnetEthSpec> for TestHost {
+impl GossipValidator<MainnetBeaconSpec> for TestHost {
     fn validate_beacon_block(
         &self,
-        block: &<MainnetEthSpec as pharos_types::EthSpec>::SignedBeaconBlock,
+        block: &<MainnetBeaconSpec as pharos_types::BeaconSpec>::SignedBeaconBlock,
     ) -> GossipVerdict {
         use pharos_types::SignedBeaconBlock;
         let slot = match block {
@@ -421,21 +431,21 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
 
     fn validate_sync_committee_contribution_and_proof(
         &self,
-        _msg: &<MainnetEthSpec as pharos_types::EthSpec>::AltairSignedContributionAndProof,
+        _msg: &<MainnetBeaconSpec as pharos_types::BeaconSpec>::AltairSignedContributionAndProof,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
 
     fn validate_light_client_finality_update(
         &self,
-        _msg: &<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientFinalityUpdate,
+        _msg: &<MainnetBeaconSpec as pharos_types::BeaconSpec>::AltairLightClientFinalityUpdate,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
 
     fn validate_light_client_optimistic_update(
         &self,
-        _msg: &<MainnetEthSpec as pharos_types::EthSpec>::AltairLightClientOptimisticUpdate,
+        _msg: &<MainnetBeaconSpec as pharos_types::BeaconSpec>::AltairLightClientOptimisticUpdate,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
@@ -449,14 +459,14 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
 
     fn validate_capella_light_client_finality_update(
         &self,
-        _msg: &<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientFinalityUpdate,
+        _msg: &<MainnetBeaconSpec as pharos_types::BeaconSpec>::CapellaLightClientFinalityUpdate,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
 
     fn validate_capella_light_client_optimistic_update(
         &self,
-        _msg: &<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientOptimisticUpdate,
+        _msg: &<MainnetBeaconSpec as pharos_types::BeaconSpec>::CapellaLightClientOptimisticUpdate,
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
@@ -470,7 +480,7 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
     }
 }
 
-impl BlobProvider<MainnetEthSpec> for TestHost {
+impl BlobProvider<MainnetBeaconSpec> for TestHost {
     fn blobs_by_range(
         &self,
         _start_slot: Slot,
@@ -509,7 +519,7 @@ impl PeerScorer for CapturingScorer {
 /// A running test network node.
 #[allow(dead_code)]
 pub struct TestNode {
-    pub handle: NetworkHandle<MainnetEthSpec>,
+    pub handle: NetworkHandle<MainnetBeaconSpec>,
     pub peer_id: PeerId,
     /// The node's discv5 ENR (with real bound UDP port).
     pub enr: Enr,
@@ -550,7 +560,7 @@ pub async fn spawn_node_with_scorer(
     let discv5_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let listen_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 
-    let base_builder = NetworkBuilder::<MainnetEthSpec, TestHost, _>::new(host)
+    let base_builder = NetworkBuilder::<MainnetBeaconSpec, TestHost, _>::new(host)
         .local_key(local_key)
         .listen_ip(listen_ip)
         .discv5_addr(discv5_addr)

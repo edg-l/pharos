@@ -17,7 +17,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -49,7 +49,7 @@ pub struct LivenessResponse {
 /// Body: JSON array of validator index strings, e.g. `["0","1","42"]`.
 ///
 /// Per `D-doppelganger-bn-liveness-endpoint` (M9 Phase 5.4).
-pub async fn post_validator_liveness<E: EthSpec>(
+pub async fn post_validator_liveness<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(epoch): Path<u64>,
     Json(body): Json<Vec<JsonValue>>,

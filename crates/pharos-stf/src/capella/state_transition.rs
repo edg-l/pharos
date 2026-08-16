@@ -5,7 +5,7 @@
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::deneb::BeaconState as DenebBeaconState;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     capella::{BeaconBlock, BeaconState, SignedBeaconBlock},
     config::RuntimeConfig,
@@ -59,7 +59,7 @@ pub fn process_slots_capella<
     target_slot: Slot,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -159,7 +159,7 @@ fn process_slot_capella<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -282,7 +282,7 @@ pub fn state_transition<
     StateTransitionError,
 >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -512,7 +512,7 @@ where
 ///
 /// Implemented via blanket impl on `capella::BeaconState<...>`. Used by the
 /// fork-dispatch in `lib.rs::state_transition`.
-pub trait CapellaDispatch<E: EthSpec, EE: ExecutionEngine>: Sized {
+pub trait CapellaDispatch<E: BeaconSpec, EE: ExecutionEngine>: Sized {
     fn apply_signed_block(
         self,
         signed_block: &E::CapellaSignedBeaconBlock,
@@ -560,7 +560,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -720,7 +720,7 @@ where
 }
 
 /// Dispatch trait for `process_slots` on capella states.
-pub trait CapellaProcessSlotsDispatch<E: EthSpec>: Sized {
+pub trait CapellaProcessSlotsDispatch<E: BeaconSpec>: Sized {
     fn process_slots_capella(
         &mut self,
         target_slot: pharos_types::phase0::Slot,
@@ -753,7 +753,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -814,7 +814,7 @@ where
 // ── CapellaJaFDispatch trait ──────────────────────────────────────────────────
 
 /// Dispatch trait for `process_justification_and_finalization` on capella states.
-pub trait CapellaJaFDispatch<E: EthSpec>: Sized {
+pub trait CapellaJaFDispatch<E: BeaconSpec>: Sized {
     fn process_jaf_capella(&mut self) -> Result<(), crate::error::EpochProcessingError>;
 }
 
@@ -844,7 +844,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -895,7 +895,7 @@ where
 /// Allows `build_payload_attributes_v2` in `pharos-node` to call
 /// `get_expected_withdrawals` through the opaque `E::CapellaBeaconState` associated
 /// type. Implemented via blanket impl on `capella::BeaconState<...>`.
-pub trait GetExpectedWithdrawalsDispatch<E: EthSpec> {
+pub trait GetExpectedWithdrawalsDispatch<E: BeaconSpec> {
     /// Compute the list of expected withdrawals for the next block on this state.
     ///
     /// Per `specs/capella/beacon-chain.md` `get_expected_withdrawals`.
@@ -928,7 +928,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
         CapellaBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -986,7 +986,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
         DenebBeaconState = DenebBeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

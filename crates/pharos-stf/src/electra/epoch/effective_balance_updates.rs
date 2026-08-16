@@ -10,7 +10,7 @@
 use rayon::prelude::*;
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, electra::BeaconState};
+use pharos_types::{BeaconSpec, electra::BeaconState};
 use pharos_utils::Gwei;
 
 use crate::electra::helpers::get_max_effective_balance;
@@ -32,7 +32,7 @@ pub fn process_effective_balance_updates<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

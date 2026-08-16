@@ -21,7 +21,7 @@ use pharos_storage::{RocksStore, RocksStoreConfig};
 use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::primitives::Version;
 use pharos_types::state::BeaconBlock as ForkBeaconBlock;
-use pharos_types::{EthSpec, MinimalEthSpec};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 use pharos_utils::{Epoch, Hash256};
 use tokio::sync::{Notify, mpsc, watch};
 
@@ -65,7 +65,7 @@ impl ChainLookupProvider {
     }
 }
 
-impl LookupBlockProvider<MinimalEthSpec> for ChainLookupProvider {
+impl LookupBlockProvider<MinimalBeaconSpec> for ChainLookupProvider {
     async fn blocks_by_root(
         &self,
         roots: Vec<pharos_types::phase0::primitives::Root>,
@@ -112,7 +112,7 @@ async fn lookup_depth_exhaustion_fires_notify_backfill() {
         pharos_types::state::MinimalBeaconState::Bellatrix(anchor_state_inner.clone());
     let anchor_block = ForkBeaconBlock::Bellatrix(anchor_signed.message.clone());
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, anchor_block);
     fc.time = 10_000_000;
     fc.set_terminal_config(
         pharos_utils::Uint256::default(),
@@ -143,7 +143,7 @@ async fn lookup_depth_exhaustion_fires_notify_backfill() {
     // Host + storage.
     let tmpdir = tempfile::tempdir().unwrap();
     let db = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -151,10 +151,10 @@ async fn lookup_depth_exhaustion_fires_notify_backfill() {
     );
     let genesis_validators_root = pharos_types::phase0::primitives::Root::default();
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -164,21 +164,21 @@ async fn lookup_depth_exhaustion_fires_notify_backfill() {
         electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         db,
         Arc::clone(&fc_store),
         genesis_validators_root,
         fork_schedule,
         BACKFILL_GENESIS_TIME_SECS,
         Arc::new(pharos_types::config::RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
             ..Default::default()
         }),
     ));
 
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
     let (lookup_tx, lookup_rx) = mpsc::channel::<LookupRequest>(64);
     let (reinject_tx, _reinject_rx) = mpsc::channel::<ReinjectBlock>(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -191,7 +191,7 @@ async fn lookup_depth_exhaustion_fires_notify_backfill() {
     let exec_engine = Arc::new(NullExecutionEngine);
 
     tokio::spawn(run_lookup_loop::<
-        MinimalEthSpec,
+        MinimalBeaconSpec,
         ChainLookupProvider,
         NullExecutionEngine,
         pharos_fork_choice::NoopPowBlockProvider,

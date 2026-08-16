@@ -26,7 +26,7 @@ use std::time::Duration;
 use pharos_network::discovery::enr::read_eth2_field;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
 use pharos_network::types::ForkDigest;
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::fork::{ForkSchedule, compute_fork_digest};
 use pharos_types::phase0::ENRForkID;
@@ -87,7 +87,7 @@ fn altair_topics() -> Vec<GossipTopic> {
         fork_digest: fd,
         kind: GossipTopicKind::SyncCommitteeContributionAndProof,
     });
-    for i in 0..<MainnetEthSpec as pharos_types::EthSpec>::SYNC_COMMITTEE_SUBNET_COUNT {
+    for i in 0..<MainnetBeaconSpec as pharos_types::BeaconSpec>::SYNC_COMMITTEE_SUBNET_COUNT {
         topics.push(GossipTopic {
             fork_digest: fd,
             kind: GossipTopicKind::SyncCommittee(i),
@@ -237,7 +237,7 @@ async fn verify_enr_update_once() {
     let host = TestHost::new(phase0_fd).with_altair_fork_digest(altair_fd);
 
     let (mut handle, discovery_handle) =
-        NetworkBuilder::<MainnetEthSpec, TestHost, NoopScorer>::new(host)
+        NetworkBuilder::<MainnetBeaconSpec, TestHost, NoopScorer>::new(host)
             .local_key(local_key)
             .tcp_listen_port(0)
             .discv5_addr("127.0.0.1:0".parse().unwrap())

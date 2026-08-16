@@ -8,13 +8,13 @@
 //! in `host_impl.rs` but is duplicated here per the M4c integration-test
 //! precedent (unit-test helpers are `#[cfg(test)]` private).
 //!
-//! Preset: `MinimalEthSpec`.  The plan specifies `MainnetEthSpec` with the
+//! Preset: `MinimalBeaconSpec`.  The plan specifies `MainnetBeaconSpec` with the
 //! intent of loading consensus-spec-tests fixtures.  However, those fixtures
 //! are STF conformance tests (pre-state + signed-block + post-state), not
 //! gossip-validation fixtures; threading a real mainnet fixture through all
 //! the gossip checks (BLS key derivation matching the pre-state validators,
 //! genesis_time alignment, parent-root wiring, etc.) requires exactly the same
-//! construction machinery as the Minimal unit tests.  `MinimalEthSpec` is used
+//! construction machinery as the Minimal unit tests.  `MinimalBeaconSpec` is used
 //! instead to produce correct BLS signatures with a known test key, identical
 //! to the unit-test happy-path coverage.  The smoke-test goal — "all three
 //! real bodies type-check and run end-to-end" — is fully met.
@@ -50,7 +50,7 @@ use pharos_types::state::{
     MinimalBeaconBlock as ForkMinimalBeaconBlock, MinimalBeaconState as ForkMinimalBeaconState,
     MinimalSignedBeaconBlock as ForkMinimalSignedBeaconBlock,
 };
-use pharos_types::{EthSpec, MinimalEthSpec, RuntimeConfig};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec, RuntimeConfig};
 use pharos_utils::bls::BLS_DST;
 use pharos_utils::{BLSPubkey, BLSSignature, Gwei};
 
@@ -77,7 +77,7 @@ fn test_sign(msg: &[u8]) -> BLSSignature {
 
 // ── Host construction ─────────────────────────────────────────────────────────
 
-/// Build a `HostImpl<MinimalEthSpec>` with 8 test validators at genesis.
+/// Build a `HostImpl<MinimalBeaconSpec>` with 8 test validators at genesis.
 ///
 /// `att_slot` governs `genesis_time`: the store's genesis_time is set so that
 /// `att_slot` falls within the propagation window (now_sec - seconds_per_slot
@@ -87,9 +87,9 @@ fn test_sign(msg: &[u8]) -> BLSSignature {
 fn make_e2e_host(
     dir: &tempfile::TempDir,
     att_slot: u64,
-) -> (HostImpl<MinimalEthSpec>, Root, ForkMinimalBeaconState) {
+) -> (HostImpl<MinimalBeaconSpec>, Root, ForkMinimalBeaconState) {
     let store = Arc::new(
-        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+        RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
             path: dir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -97,11 +97,11 @@ fn make_e2e_host(
     );
 
     let genesis_slot = Slot(0);
-    let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000; // 6
+    let seconds_per_slot = MinimalBeaconSpec::SLOT_DURATION_MS / 1000; // 6
 
     let validator = Validator {
         pubkey: test_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -109,7 +109,7 @@ fn make_e2e_host(
         ..Default::default()
     };
     let validators_list = SszList::from_vec(vec![validator; 8]).expect("8 validators within limit");
-    let balances_list = SszList::from_vec(vec![Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE); 8])
+    let balances_list = SszList::from_vec(vec![Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE); 8])
         .expect("8 balances within limit");
 
     let genesis_body_root = MinimalBeaconBlockBody::default().tree_hash_root();
@@ -148,7 +148,7 @@ fn make_e2e_host(
     let fork_genesis_block = ForkMinimalBeaconBlock::Phase0(genesis_block.clone());
 
     let fc_store =
-        get_forkchoice_store::<MinimalEthSpec>(fork_genesis_state.clone(), fork_genesis_block);
+        get_forkchoice_store::<MinimalBeaconSpec>(fork_genesis_state.clone(), fork_genesis_block);
     let fork_choice = Arc::new(RwLock::new(fc_store));
 
     {
@@ -200,7 +200,7 @@ fn make_e2e_host(
         ..Default::default()
     });
     let host =
-        HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg);
+        HostImpl::<MinimalBeaconSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg);
     (host, genesis_root, fork_genesis_state)
 }
 
@@ -224,9 +224,9 @@ fn make_block_fixture(
         body: MinimalBeaconBlockBody::default(),
     };
 
-    let block_epoch = compute_epoch_at_slot(slot, MinimalEthSpec::SLOTS_PER_EPOCH);
+    let block_epoch = compute_epoch_at_slot(slot, MinimalBeaconSpec::SLOTS_PER_EPOCH);
     let domain =
-        get_domain::<MinimalEthSpec>(parent_state, DOMAIN_BEACON_PROPOSER, Some(block_epoch));
+        get_domain::<MinimalBeaconSpec>(parent_state, DOMAIN_BEACON_PROPOSER, Some(block_epoch));
     let signing_root = compute_signing_root(&block, domain);
     let sig = test_sign(signing_root.as_ref());
 
@@ -258,15 +258,17 @@ fn make_att_fixture(
         },
     };
 
-    let domain = get_domain::<MinimalEthSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
+    let domain =
+        get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
     let signing_root = compute_signing_root(&data, domain);
     let sig = test_sign(signing_root.as_ref());
 
     let mut bits = Bitlist::<2048>::new();
     bits.push(true).unwrap(); // single validator attests
 
-    let committees_per_slot = get_committee_count_per_slot::<MinimalEthSpec>(head_state, Epoch(0));
-    let subnet = compute_subnet_for_attestation::<MinimalEthSpec>(
+    let committees_per_slot =
+        get_committee_count_per_slot::<MinimalBeaconSpec>(head_state, Epoch(0));
+    let subnet = compute_subnet_for_attestation::<MinimalBeaconSpec>(
         committees_per_slot,
         slot,
         committee_index.0,
@@ -291,7 +293,7 @@ fn make_aap_fixture(
     let slot = Slot(0);
 
     // Determine aggregator: first member of committee at slot=0, index=0.
-    let committee = get_beacon_committee::<MinimalEthSpec>(head_state, slot, 0);
+    let committee = get_beacon_committee::<MinimalBeaconSpec>(head_state, slot, 0);
     let aggregator_index = committee[0].0;
 
     // Build attestation data (same as make_att_fixture but with all committee
@@ -316,13 +318,13 @@ fn make_aap_fixture(
     }
 
     let att_domain =
-        get_domain::<MinimalEthSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
+        get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
     let att_sr = compute_signing_root(&data, att_domain);
     let att_sig = test_sign(att_sr.as_ref());
 
     // Selection proof: sign(slot) with DOMAIN_SELECTION_PROOF.
     let sel_domain =
-        get_domain::<MinimalEthSpec>(head_state, DOMAIN_SELECTION_PROOF, Some(Epoch(0)));
+        get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_SELECTION_PROOF, Some(Epoch(0)));
     let sel_sr = compute_signing_root(&slot, sel_domain);
     let sel_sig = test_sign(sel_sr.as_ref());
 
@@ -338,7 +340,7 @@ fn make_aap_fixture(
 
     // Outer aggregator signature: sign(AggregateAndProof) with DOMAIN_AGGREGATE_AND_PROOF.
     let aap_domain =
-        get_domain::<MinimalEthSpec>(head_state, DOMAIN_AGGREGATE_AND_PROOF, Some(Epoch(0)));
+        get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_AGGREGATE_AND_PROOF, Some(Epoch(0)));
     let aap_sr = compute_signing_root(&agg_and_proof, aap_domain);
     let aap_sig = test_sign(aap_sr.as_ref());
 
@@ -366,14 +368,14 @@ fn gossip_e2e_dispatch_all_three_topics() {
     // Advance genesis state to slot 1 to determine the expected proposer.
     let expected_proposer = {
         let mut state = genesis_state.clone();
-        process_slots_fork::<MinimalEthSpec>(
+        process_slots_fork::<MinimalBeaconSpec>(
             &mut state,
             Slot(1),
             pharos_stf::ForkEpochs::never(),
             &pharos_types::config::RuntimeConfig::default(),
         )
         .expect("process_slots to slot 1");
-        get_beacon_proposer_index::<MinimalEthSpec>(&state).0
+        get_beacon_proposer_index::<MinimalBeaconSpec>(&state).0
     };
 
     let signed_block = make_block_fixture(genesis_root, &genesis_state, expected_proposer);

@@ -10,7 +10,7 @@
 //! implementation matches that by applying mutations index-by-index and
 //! reading the updated list for the activation queue sort.
 
-use pharos_types::{BeaconStateView, EthSpec, phase0::ValidatorIndex};
+use pharos_types::{BeaconSpec, BeaconStateView, phase0::ValidatorIndex};
 
 use crate::error::EpochProcessingError;
 use crate::phase0::{
@@ -29,7 +29,7 @@ use crate::phase0::{
 const EJECTION_BALANCE: u64 = 16_000_000_000;
 
 /// `process_registry_updates` per `specs/phase0/beacon-chain.md:1751-1780`.
-pub fn process_registry_updates<E: EthSpec>(
+pub fn process_registry_updates<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where

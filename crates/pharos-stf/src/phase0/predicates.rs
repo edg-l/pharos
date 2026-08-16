@@ -6,7 +6,7 @@ use crate::phase0::{
     helpers::{DOMAIN_BEACON_ATTESTER, FAR_FUTURE_EPOCH},
 };
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     phase0::primitives::TARGET_AGGREGATORS_PER_COMMITTEE,
     phase0::{AttestationData, Epoch, IndexedAttestation, Validator},
 };
@@ -22,7 +22,7 @@ pub fn is_active_validator(v: &Validator, epoch: u64) -> bool {
 /// Check if a validator is eligible to be placed into the activation queue.
 ///
 /// Per `specs/phase0/beacon-chain.md:709-716`.
-pub fn is_eligible_for_activation_queue<E: pharos_types::EthSpec>(v: &Validator) -> bool {
+pub fn is_eligible_for_activation_queue<E: pharos_types::BeaconSpec>(v: &Validator) -> bool {
     v.activation_eligibility_epoch.0 == FAR_FUTURE_EPOCH
         && v.effective_balance.0 == E::MAX_EFFECTIVE_BALANCE
 }
@@ -55,7 +55,7 @@ pub fn is_slashable_attestation_data(d1: &AttestationData, d2: &AttestationData)
 ///
 /// Checks that attesting indices are sorted, unique, non-empty, and that the
 /// aggregate signature is valid (when `verify_signatures` is true).
-pub fn is_valid_indexed_attestation<E: EthSpec>(
+pub fn is_valid_indexed_attestation<E: BeaconSpec>(
     state: &E::BeaconState,
     indexed_att: &IndexedAttestation<2048>,
     verify_signatures: bool,
@@ -123,7 +123,7 @@ mod tests {
 
     use super::*;
     use crate::phase0::helpers::FAR_FUTURE_EPOCH;
-    use pharos_types::EthSpec;
+    use pharos_types::BeaconSpec;
     use pharos_types::phase0::{Checkpoint, Root};
 
     fn default_validator() -> Validator {
@@ -175,22 +175,22 @@ mod tests {
 
     #[test]
     fn is_eligible_for_activation_queue_both_conditions() {
-        use pharos_types::MinimalEthSpec;
+        use pharos_types::MinimalBeaconSpec;
         let mut v = default_validator();
         // Not eligible: activation_eligibility_epoch already set.
         v.activation_eligibility_epoch = Epoch(0);
-        v.effective_balance = Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE);
-        assert!(!is_eligible_for_activation_queue::<MinimalEthSpec>(&v));
+        v.effective_balance = Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE);
+        assert!(!is_eligible_for_activation_queue::<MinimalBeaconSpec>(&v));
 
         // Not eligible: wrong effective balance.
         v.activation_eligibility_epoch = Epoch(FAR_FUTURE_EPOCH);
         v.effective_balance = Gwei(1_000_000_000);
-        assert!(!is_eligible_for_activation_queue::<MinimalEthSpec>(&v));
+        assert!(!is_eligible_for_activation_queue::<MinimalBeaconSpec>(&v));
 
         // Eligible: both conditions met.
         v.activation_eligibility_epoch = Epoch(FAR_FUTURE_EPOCH);
-        v.effective_balance = Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE);
-        assert!(is_eligible_for_activation_queue::<MinimalEthSpec>(&v));
+        v.effective_balance = Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE);
+        assert!(is_eligible_for_activation_queue::<MinimalBeaconSpec>(&v));
     }
 
     #[test]

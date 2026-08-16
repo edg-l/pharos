@@ -4,7 +4,7 @@
 
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     phase0::{
         BeaconBlockHeader, Deposit, DepositData, Epoch, Eth1Data, Fork, Gwei, Slot, ValidatorIndex,
     },
@@ -24,7 +24,7 @@ const GENESIS_SLOT: Slot = Slot(0);
 /// deposit list.
 ///
 /// Per `specs/phase0/beacon-chain.md:1300-1337`.
-pub fn initialize_beacon_state_from_eth1<E: EthSpec>(
+pub fn initialize_beacon_state_from_eth1<E: BeaconSpec>(
     eth1_block_hash: Hash256,
     eth1_timestamp: u64,
     deposits: &[Deposit<33>],
@@ -96,7 +96,7 @@ where
 /// Return `true` iff `state` meets the genesis trigger conditions.
 ///
 /// Per `specs/phase0/beacon-chain.md:1349-1354`.
-pub fn is_valid_genesis_state<E: EthSpec>(state: &E::BeaconState) -> bool
+pub fn is_valid_genesis_state<E: BeaconSpec>(state: &E::BeaconState) -> bool
 where
     E::BeaconState: BeaconStateMut,
 {
@@ -110,7 +110,7 @@ where
 /// Return the genesis `BeaconBlock` (state_root = hash_tree_root(genesis_state)).
 ///
 /// Per `specs/phase0/beacon-chain.md:1359`.
-pub fn get_genesis_block<E: EthSpec>(genesis_state_root: Hash256) -> E::BeaconBlock
+pub fn get_genesis_block<E: BeaconSpec>(genesis_state_root: Hash256) -> E::BeaconBlock
 where
     E::BeaconBlock: Default + BeaconBlockMut,
 {

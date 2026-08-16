@@ -516,12 +516,12 @@ mod tests {
             eprintln!("consensus-specs not found — skipping mainnet YAML loader test");
             return;
         }
-        use crate::eth_spec::MainnetEthSpec;
+        use crate::eth_spec::MainnetBeaconSpec;
         let cfg =
             load_config_dir(&mainnet_config_prefix()).expect("load_config_dir should succeed");
-        // Mainnet YAML should match MainnetEthSpec compile-time consts.
-        cfg.assert_matches_preset::<MainnetEthSpec>()
-            .expect("mainnet YAML should match MainnetEthSpec");
+        // Mainnet YAML should match MainnetBeaconSpec compile-time consts.
+        cfg.assert_matches_preset::<MainnetBeaconSpec>()
+            .expect("mainnet YAML should match MainnetBeaconSpec");
     }
 
     #[test]

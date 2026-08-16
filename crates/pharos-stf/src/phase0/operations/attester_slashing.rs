@@ -1,6 +1,6 @@
 //! `process_attester_slashing` per `specs/phase0/beacon-chain.md:1985-2002`.
 
-use pharos_types::{BeaconStateView, EthSpec, phase0::AttesterSlashing};
+use pharos_types::{BeaconSpec, BeaconStateView, phase0::AttesterSlashing};
 
 use crate::error::{AttesterSlashingInvalidReason, StateTransitionError};
 use crate::phase0::{
@@ -13,7 +13,7 @@ use crate::phase0::{
 };
 
 /// `process_attester_slashing` per `specs/phase0/beacon-chain.md:1985-2002`.
-pub fn process_attester_slashing<E: EthSpec>(
+pub fn process_attester_slashing<E: BeaconSpec>(
     state: &mut E::BeaconState,
     slashing: &AttesterSlashing<2048>,
     verify_signatures: bool,

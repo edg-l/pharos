@@ -16,7 +16,7 @@
 
 use pharos_ssz::{SszVector, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::{
         BeaconBlock as AltairBeaconBlock, BeaconState as AltairBeaconState,
         light_client::{
@@ -66,7 +66,7 @@ use crate::deneb::light_client::deneb_block_to_light_client_header;
 /// opaque `E::AltairBeaconState` associated type.
 ///
 /// Keeps the fifteen const-generic monomorphisation inside `pharos-stf` (R3).
-pub trait AltairDispatchBounds<E: EthSpec>: Sized {
+pub trait AltairDispatchBounds<E: BeaconSpec>: Sized {
     /// Run `update_light_client_snapshots` using `self` as `post_state`.
     fn call_update_lc_snapshots<S: pharos_storage::Store<E>>(
         &self,
@@ -107,7 +107,7 @@ impl<
         SYNC_COMMITTEE_SIZE,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -220,7 +220,7 @@ where
 /// Projects the bellatrix state to altair (via `bellatrix_state_to_altair`)
 /// for the state fields, and uses a Bellatrix-specific body hash for the
 /// `body_root` field in `LightClientHeader` (includes execution payload).
-pub trait BellatrixDispatchBounds<E: EthSpec>: Sized {
+pub trait BellatrixDispatchBounds<E: BeaconSpec>: Sized {
     /// Run the LC snapshot writes using `self` (bellatrix post-state).
     fn call_update_lc_snapshots_bellatrix<S: pharos_storage::Store<E>>(
         &self,
@@ -267,7 +267,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -681,7 +681,7 @@ fn create_light_client_update_bellatrix<
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     _post_state: &AltairBeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -856,7 +856,7 @@ where
 /// and bls_to_execution_changes).
 ///
 /// Stores results using the capella LC column families.
-pub trait CapellaDispatchBounds<E: EthSpec>: Sized {
+pub trait CapellaDispatchBounds<E: BeaconSpec>: Sized {
     /// Run the LC snapshot writes using `self` (capella post-state).
     fn call_update_lc_snapshots_capella<S: pharos_storage::Store<E>>(
         &self,
@@ -905,7 +905,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -1320,7 +1320,7 @@ fn create_lc_update_capella<
     const MAX_EXTRA_DATA_BYTES: u64,
     const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
     const MAX_BLS_TO_EXECUTION_CHANGES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     _post_state: &AltairBeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1583,7 +1583,7 @@ where
 /// `body_root` field in `LightClientHeader` (includes `blob_kzg_commitments`).
 ///
 /// Stores results using the deneb LC column families.
-pub trait DenebDispatchBounds<E: EthSpec>: Sized {
+pub trait DenebDispatchBounds<E: BeaconSpec>: Sized {
     /// Run the LC snapshot writes using `self` (deneb post-state).
     fn call_update_lc_snapshots_deneb<S: pharos_storage::Store<E>>(
         &self,
@@ -1633,7 +1633,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -2059,7 +2059,7 @@ fn create_lc_update_deneb<
     const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
     const MAX_BLS_TO_EXECUTION_CHANGES: u64,
     const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     _post_state: &AltairBeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -2326,7 +2326,7 @@ where
 /// `body_root` field in `LightClientHeader` (includes `execution_requests`).
 ///
 /// Stores results using the electra LC column families (schema v6).
-pub trait ElectraDispatchBounds<E: EthSpec>: Sized {
+pub trait ElectraDispatchBounds<E: BeaconSpec>: Sized {
     /// Run the LC snapshot writes using `self` (electra post-state).
     fn call_update_lc_snapshots_electra<S: pharos_storage::Store<E>>(
         &self,
@@ -2387,7 +2387,7 @@ impl<
         PENDING_CONSOLIDATIONS_LIMIT,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -2910,7 +2910,7 @@ fn create_lc_update_electra<
     const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
     const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,
     const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     _post_state: &AltairBeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

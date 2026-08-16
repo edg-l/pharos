@@ -18,7 +18,7 @@
 //! 10. Consolidation requests — [New in Electra:EIP7251].
 
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     config::RuntimeConfig,
     deneb::BeaconState as DenebBeaconState,
@@ -111,7 +111,7 @@ pub fn process_operations_electra<
     runtime_cfg: &RuntimeConfig,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

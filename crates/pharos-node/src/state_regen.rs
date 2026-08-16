@@ -30,7 +30,7 @@ use pharos_storage::{RocksStore, Store as DbStore};
 use pharos_types::phase0::{Attestation, AttesterSlashing, Deposit};
 use pharos_types::views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     config::RuntimeConfig,
     phase0::primitives::{Root, Slot},
 };
@@ -47,23 +47,23 @@ use pharos_types::{
 /// generically across phase0..electra. The slasher path additionally needs the
 /// attestation-extraction bounds carried by [`SlasherReplayBounds`].
 ///
-/// Implemented as a supertrait alias over `EthSpec` whose associated-type bounds
-/// are written in supertrait position (`EthSpec<Assoc: Bound, ...>`) so they
+/// Implemented as a supertrait alias over `BeaconSpec` whose associated-type bounds
+/// are written in supertrait position (`BeaconSpec<Assoc: Bound, ...>`) so they
 /// propagate as IMPLIED bounds at every `where E: ReplayBounds` use site — a
 /// trait `where`-clause would NOT propagate. A single blanket `impl` over every
-/// `EthSpec` whose associated types satisfy the set makes this a zero-cost alias.
+/// `BeaconSpec` whose associated types satisfy the set makes this a zero-cost alias.
 #[rustfmt::skip]
 pub trait ReplayBounds:
-    EthSpec<
+    BeaconSpec<
         BeaconState: BeaconStateWrite + TreeHash + Clone,
         BeaconBlock: BeaconBlockView + TreeHash + Clone,
         SignedBeaconBlock: Decode
-            + SignedBeaconBlockView<Message = <Self as EthSpec>::BeaconBlock>
+            + SignedBeaconBlockView<Message = <Self as BeaconSpec>::BeaconBlock>
             + Clone,
-        Phase0BeaconBlock: BeaconBlockView<Body = <Self as EthSpec>::Phase0BeaconBlockBody>
+        Phase0BeaconBlock: BeaconBlockView<Body = <Self as BeaconSpec>::Phase0BeaconBlockBody>
             + Clone,
         Phase0SignedBeaconBlock: Decode
-            + SignedBeaconBlockView<Message = <Self as EthSpec>::Phase0BeaconBlock>,
+            + SignedBeaconBlockView<Message = <Self as BeaconSpec>::Phase0BeaconBlock>,
         Phase0BeaconBlockBody: TreeHash
             + BeaconBlockBodyView<
                 Attestation = Attestation<2048>,
@@ -76,7 +76,7 @@ pub trait ReplayBounds:
             + AltairUpgradeDispatch<Self>,
         AltairBeaconBlock: BeaconBlockView + Clone,
         AltairSignedBeaconBlock: Decode
-            + SignedBeaconBlockView<Message = <Self as EthSpec>::AltairBeaconBlock>,
+            + SignedBeaconBlockView<Message = <Self as BeaconSpec>::AltairBeaconBlock>,
         BellatrixBeaconState: BellatrixDispatch<Self, NullExecutionEngine>
             + BellatrixJaFDispatch<Self>
             + BellatrixProcessSlotsDispatch<Self>
@@ -95,23 +95,23 @@ pub trait ReplayBounds:
             + TreeHash,
         Phase0BeaconState: Phase0UpgradeDispatch<Self>,
         BellatrixSignedBeaconBlock: Decode
-            + SignedBeaconBlockView<Message = <Self as EthSpec>::BellatrixBeaconBlock>,
+            + SignedBeaconBlockView<Message = <Self as BeaconSpec>::BellatrixBeaconBlock>,
     >
 {
 }
 
 #[rustfmt::skip]
 impl<E> ReplayBounds for E where
-    E: EthSpec<
+    E: BeaconSpec<
         BeaconState: BeaconStateWrite + TreeHash + Clone,
         BeaconBlock: BeaconBlockView + TreeHash + Clone,
         SignedBeaconBlock: Decode
-            + SignedBeaconBlockView<Message = <E as EthSpec>::BeaconBlock>
+            + SignedBeaconBlockView<Message = <E as BeaconSpec>::BeaconBlock>
             + Clone,
-        Phase0BeaconBlock: BeaconBlockView<Body = <E as EthSpec>::Phase0BeaconBlockBody>
+        Phase0BeaconBlock: BeaconBlockView<Body = <E as BeaconSpec>::Phase0BeaconBlockBody>
             + Clone,
         Phase0SignedBeaconBlock: Decode
-            + SignedBeaconBlockView<Message = <E as EthSpec>::Phase0BeaconBlock>,
+            + SignedBeaconBlockView<Message = <E as BeaconSpec>::Phase0BeaconBlock>,
         Phase0BeaconBlockBody: TreeHash
             + BeaconBlockBodyView<
                 Attestation = Attestation<2048>,
@@ -124,7 +124,7 @@ impl<E> ReplayBounds for E where
             + AltairUpgradeDispatch<E>,
         AltairBeaconBlock: BeaconBlockView + Clone,
         AltairSignedBeaconBlock: Decode
-            + SignedBeaconBlockView<Message = <E as EthSpec>::AltairBeaconBlock>,
+            + SignedBeaconBlockView<Message = <E as BeaconSpec>::AltairBeaconBlock>,
         BellatrixBeaconState: BellatrixDispatch<E, NullExecutionEngine>
             + BellatrixJaFDispatch<E>
             + BellatrixProcessSlotsDispatch<E>
@@ -143,7 +143,7 @@ impl<E> ReplayBounds for E where
             + TreeHash,
         Phase0BeaconState: Phase0UpgradeDispatch<E>,
         BellatrixSignedBeaconBlock: Decode
-            + SignedBeaconBlockView<Message = <E as EthSpec>::BellatrixBeaconBlock>,
+            + SignedBeaconBlockView<Message = <E as BeaconSpec>::BellatrixBeaconBlock>,
     >
 {
 }
@@ -159,13 +159,13 @@ impl<E> ReplayBounds for E where
 #[rustfmt::skip]
 pub trait SlasherReplayBounds:
     ReplayBounds
-    + EthSpec<
+    + BeaconSpec<
         AltairBeaconBlock: BeaconBlockView<Body: BeaconBlockBodyView<Attestation = Attestation<2048>>>,
         BellatrixBeaconBlock: BeaconBlockView<Body: BeaconBlockBodyView<Attestation = Attestation<2048>>>,
         CapellaBeaconBlock: BeaconBlockView<Body: BeaconBlockBodyView<Attestation = Attestation<2048>>>,
         DenebBeaconBlock: BeaconBlockView<Body: BeaconBlockBodyView<Attestation = Attestation<2048>>>,
-        CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = <Self as EthSpec>::CapellaBeaconBlock>,
-        DenebSignedBeaconBlock: SignedBeaconBlockView<Message = <Self as EthSpec>::DenebBeaconBlock>,
+        CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = <Self as BeaconSpec>::CapellaBeaconBlock>,
+        DenebSignedBeaconBlock: SignedBeaconBlockView<Message = <Self as BeaconSpec>::DenebBeaconBlock>,
     >
 {
 }
@@ -173,13 +173,13 @@ pub trait SlasherReplayBounds:
 #[rustfmt::skip]
 impl<E> SlasherReplayBounds for E where
     E: ReplayBounds
-        + EthSpec<
+        + BeaconSpec<
             AltairBeaconBlock: BeaconBlockView<Body: BeaconBlockBodyView<Attestation = Attestation<2048>>>,
             BellatrixBeaconBlock: BeaconBlockView<Body: BeaconBlockBodyView<Attestation = Attestation<2048>>>,
             CapellaBeaconBlock: BeaconBlockView<Body: BeaconBlockBodyView<Attestation = Attestation<2048>>>,
             DenebBeaconBlock: BeaconBlockView<Body: BeaconBlockBodyView<Attestation = Attestation<2048>>>,
-            CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = <E as EthSpec>::CapellaBeaconBlock>,
-            DenebSignedBeaconBlock: SignedBeaconBlockView<Message = <E as EthSpec>::DenebBeaconBlock>,
+            CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = <E as BeaconSpec>::CapellaBeaconBlock>,
+            DenebSignedBeaconBlock: SignedBeaconBlockView<Message = <E as BeaconSpec>::DenebBeaconBlock>,
         >
 {
 }
@@ -220,7 +220,7 @@ pub enum RegenError {
 ///
 /// Held by `NodeChainState` (behind `Option<Arc<...>>`) when the HTTP server is
 /// active. Constructed once in `main.rs` and injected at startup.
-pub struct StateRegenService<E: EthSpec> {
+pub struct StateRegenService<E: BeaconSpec> {
     /// Persistent block + state + state-summary store.
     store: Arc<RocksStore>,
     /// In-memory fork-choice store (hot `block_states` map).
@@ -231,7 +231,7 @@ pub struct StateRegenService<E: EthSpec> {
     fork_epochs: ForkEpochs,
 }
 
-impl<E: EthSpec> StateRegenService<E> {
+impl<E: BeaconSpec> StateRegenService<E> {
     /// Construct a new `StateRegenService`.
     pub fn new(
         store: Arc<RocksStore>,

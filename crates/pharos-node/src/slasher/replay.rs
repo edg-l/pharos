@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use pharos_stf::phase0::accessors::{compute_epoch_at_slot, get_indexed_attestation};
 use pharos_storage::{RocksStore, Store as DbStore};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::phase0::Attestation;
 use pharos_types::phase0::primitives::{Root, Slot};
 use pharos_types::views::{BeaconBlockView, SignedBeaconBlockView};
@@ -53,7 +53,7 @@ use crate::state_regen::{RegenError, SlasherReplayBounds, StateRegenService};
 /// Holds the persistent proposer detector, the (shared) Phase A attestation
 /// detector, the block store, and a [`StateRegenService`] for per-slot state
 /// resolution. Constructed once at `--slasher` startup.
-pub struct ChainReplaySlasher<E: EthSpec> {
+pub struct ChainReplaySlasher<E: BeaconSpec> {
     /// Block + index store (`slot_to_block_root`, `blocks`, cold CFs).
     store: Arc<RocksStore>,
     /// Persistent proposer double-block detector.
@@ -64,7 +64,7 @@ pub struct ChainReplaySlasher<E: EthSpec> {
     regen: Arc<StateRegenService<E>>,
 }
 
-impl<E: EthSpec> ChainReplaySlasher<E> {
+impl<E: BeaconSpec> ChainReplaySlasher<E> {
     /// Construct a new `ChainReplaySlasher`.
     pub fn new(
         store: Arc<RocksStore>,
@@ -167,7 +167,7 @@ pub use crate::import::signed_block_header;
 /// const generics that cannot be instantiated in generic `E` code; an electra
 /// block returns an empty vec here (its attestations are observed by the live
 /// Phase A gossip path). Per `D-slasher-replay-att-scope`.
-pub fn block_phase0_attestations<E: EthSpec>(b: &E::SignedBeaconBlock) -> Vec<Attestation<2048>>
+pub fn block_phase0_attestations<E: BeaconSpec>(b: &E::SignedBeaconBlock) -> Vec<Attestation<2048>>
 where
     E::Phase0SignedBeaconBlock: SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
     E::AltairSignedBeaconBlock: SignedBeaconBlockView<Message = E::AltairBeaconBlock>,

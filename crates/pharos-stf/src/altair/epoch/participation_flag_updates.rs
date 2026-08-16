@@ -6,7 +6,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::{BeaconState, constants::ParticipationFlags},
 };
 
@@ -41,7 +41,7 @@ pub fn process_participation_flag_updates<
     >,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -70,7 +70,7 @@ where
 mod tests {
     use pharos_ssz::SszSequence;
     use pharos_types::{
-        MainnetEthSpec,
+        MainnetBeaconSpec,
         altair::{MainnetBeaconState, constants::ParticipationFlags},
         phase0::Validator,
     };
@@ -116,7 +116,7 @@ mod tests {
             8192,
             4,
             512,
-            MainnetEthSpec,
+            MainnetBeaconSpec,
         >(&mut state)
         .expect("process_participation_flag_updates");
 
@@ -145,7 +145,7 @@ mod tests {
             8192,
             4,
             512,
-            MainnetEthSpec,
+            MainnetBeaconSpec,
         >(&mut state)
         .expect("process_participation_flag_updates");
 

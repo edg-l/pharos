@@ -8,7 +8,7 @@
 //! This prevents a sudden massive validator activation burst.
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, config::RuntimeConfig, deneb::BeaconState, phase0::ValidatorIndex};
+use pharos_types::{BeaconSpec, config::RuntimeConfig, deneb::BeaconState, phase0::ValidatorIndex};
 
 use crate::deneb::helpers::{get_current_epoch_deneb, initiate_validator_exit_deneb};
 use crate::error::EpochProcessingError;
@@ -54,7 +54,7 @@ pub fn process_registry_updates<
     runtime_cfg: &RuntimeConfig,
 ) -> Result<(), EpochProcessingError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         DenebBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

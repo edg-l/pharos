@@ -18,7 +18,7 @@
 //! - `ApiError::NotFound` — id is valid but not in any store (pruned or never seen).
 
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     phase0::{Root, Slot},
 };
 
@@ -50,7 +50,7 @@ pub struct ResolvedId {
 /// # Errors
 /// - `ApiError::BadRequest` for malformed ids.
 /// - `ApiError::NotFound` for valid but unknown ids.
-pub fn resolve_state_id<E: EthSpec>(
+pub fn resolve_state_id<E: BeaconSpec>(
     chain: &dyn ChainStateApi<E>,
     state_id: &str,
 ) -> Result<ResolvedId, ApiError> {
@@ -161,7 +161,7 @@ pub fn resolve_state_id<E: EthSpec>(
 ///
 /// Same forms as `resolve_state_id`; both IDs use identical resolution logic
 /// (a block root identifies both the block and its post-state).
-pub fn resolve_block_id<E: EthSpec>(
+pub fn resolve_block_id<E: BeaconSpec>(
     chain: &dyn ChainStateApi<E>,
     block_id: &str,
 ) -> Result<ResolvedId, ApiError> {
@@ -190,7 +190,7 @@ mod tests {
     use pharos_types::config::RuntimeConfig;
     use pharos_types::phase0::primitives::{Epoch, Root, Slot, ValidatorIndex};
     use pharos_types::phase0::{BeaconBlockHeader, Checkpoint};
-    use pharos_types::{EthSpec, MainnetEthSpec};
+    use pharos_types::{BeaconSpec, MainnetBeaconSpec};
 
     use super::*;
     use crate::state::{ChainStateApi, NodeIdentityCache, RegenTarget};
@@ -221,7 +221,7 @@ mod tests {
         }
     }
 
-    impl ChainStateApi<MainnetEthSpec> for Mock {
+    impl ChainStateApi<MainnetBeaconSpec> for Mock {
         fn head_root(&self) -> Root {
             self.head_root
         }
@@ -277,13 +277,13 @@ mod tests {
         fn state_by_block_root(
             &self,
             _root: Root,
-        ) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::BeaconState> {
             None
         }
         fn state_by_state_root(
             &self,
             _root: Root,
-        ) -> Option<<MainnetEthSpec as EthSpec>::BeaconState> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::BeaconState> {
             None
         }
         fn block_root_for_slot(&self, slot: Slot) -> Option<Root> {
@@ -318,7 +318,7 @@ mod tests {
         fn regenerate_state(
             &self,
             _target: RegenTarget,
-        ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, ApiError> {
+        ) -> Result<<MainnetBeaconSpec as BeaconSpec>::BeaconState, ApiError> {
             Err(ApiError::NotFound("regen not available in mock".into()))
         }
 
@@ -336,9 +336,9 @@ mod tests {
 
         fn state_to_json(
             &self,
-            state: <MainnetEthSpec as EthSpec>::BeaconState,
+            state: <MainnetBeaconSpec as BeaconSpec>::BeaconState,
         ) -> Result<serde_json::Value, ApiError> {
-            crate::state::beacon_state_to_json_full::<MainnetEthSpec>(state)
+            crate::state::beacon_state_to_json_full::<MainnetBeaconSpec>(state)
         }
     }
 

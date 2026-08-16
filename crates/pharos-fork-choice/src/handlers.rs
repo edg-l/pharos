@@ -7,7 +7,7 @@
 
 use pharos_ssz::TreeHash;
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     phase0::{
         Attestation, AttestationData, AttesterSlashing, Checkpoint, IndexedAttestation, Root, Slot,
     },
@@ -29,7 +29,7 @@ use crate::store::{LatestMessage, Store};
 ///
 /// Promotes `justified_checkpoint` and/or `finalized_checkpoint` only when
 /// the new epoch strictly exceeds the current one.
-pub fn update_checkpoints<E: EthSpec>(
+pub fn update_checkpoints<E: BeaconSpec>(
     store: &mut Store<E>,
     justified_checkpoint: Checkpoint,
     finalized_checkpoint: Checkpoint,
@@ -45,7 +45,7 @@ pub fn update_checkpoints<E: EthSpec>(
 /// `update_unrealized_checkpoints` per `specs/phase0/fork-choice.md:458-474`.
 ///
 /// Same promotion rule for the unrealized variants.
-pub fn update_unrealized_checkpoints<E: EthSpec>(
+pub fn update_unrealized_checkpoints<E: BeaconSpec>(
     store: &mut Store<E>,
     unrealized_justified: Checkpoint,
     unrealized_finalized: Checkpoint,
@@ -67,7 +67,7 @@ pub fn update_unrealized_checkpoints<E: EthSpec>(
 /// into `store.unrealized_justifications`, then promotes the unrealized
 /// checkpoints and, when the block is from a prior epoch, the realized
 /// checkpoints too.
-pub fn compute_pulled_up_tip<E: EthSpec>(
+pub fn compute_pulled_up_tip<E: BeaconSpec>(
     store: &mut Store<E>,
     block_root: Root,
 ) -> Result<(), ForkChoiceError>
@@ -132,7 +132,7 @@ where
 ///
 /// Updates `store.time`, resets `proposer_boost_root` on slot boundaries,
 /// and applies unrealized checkpoints at epoch boundaries.
-pub fn on_tick_per_slot<E: EthSpec>(store: &mut Store<E>, time: u64) {
+pub fn on_tick_per_slot<E: BeaconSpec>(store: &mut Store<E>, time: u64) {
     let previous_slot = get_current_slot(store);
     store.time = time;
     let current_slot = get_current_slot(store);
@@ -152,7 +152,7 @@ pub fn on_tick_per_slot<E: EthSpec>(store: &mut Store<E>, time: u64) {
 ///
 /// Catches up slot-by-slot to `time`, calling `on_tick_per_slot` for each
 /// intermediate slot, then once more for the final `time`.
-pub fn on_tick<E: EthSpec>(store: &mut Store<E>, time: u64) {
+pub fn on_tick<E: BeaconSpec>(store: &mut Store<E>, time: u64) {
     let tick_slot = slot_from_time::<E>(time, store.genesis_time);
 
     while get_current_slot(store).0 < tick_slot {
@@ -165,7 +165,7 @@ pub fn on_tick<E: EthSpec>(store: &mut Store<E>, time: u64) {
 // ── on_block helpers ──────────────────────────────────────────────────────────
 
 /// `record_block_timeliness` per `specs/phase0/fork-choice.md:799-807`.
-fn record_block_timeliness<E: EthSpec>(store: &mut Store<E>, root: Root)
+fn record_block_timeliness<E: BeaconSpec>(store: &mut Store<E>, root: Root)
 where
     E::BeaconBlock: BeaconBlockView,
 {
@@ -178,7 +178,7 @@ where
 }
 
 /// `update_proposer_boost_root` per `specs/phase0/fork-choice.md:810-827`.
-fn update_proposer_boost_root<E: EthSpec>(store: &mut Store<E>, root: Root)
+fn update_proposer_boost_root<E: BeaconSpec>(store: &mut Store<E>, root: Root)
 where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateWrite + Clone,
@@ -263,7 +263,7 @@ where
 ///
 /// Per `specs/bellatrix/fork-choice.md:303-304` (merge-transition guard) and
 /// `specs/bellatrix/fork-choice.md:200-260` (validate_merge_block body).
-pub fn on_block<E: EthSpec, P: PowBlockProvider>(
+pub fn on_block<E: BeaconSpec, P: PowBlockProvider>(
     store: &mut Store<E>,
     signed_block: &E::SignedBeaconBlock,
     post_state: E::BeaconState,
@@ -307,7 +307,7 @@ where
     use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
 
     // Extract the inner `E::BeaconBlock` (fork-enum) via the exhaustive-match
-    // dispatch on `EthSpec`; `signed_block.message()` panics on the fork-enum and
+    // dispatch on `BeaconSpec`; `signed_block.message()` panics on the fork-enum and
     // a per-fork `if let` chain has no exhaustiveness check (a missing fork arm
     // would wrongly reject the block as invalid).
     let block: E::BeaconBlock = E::signed_block_message(signed_block);
@@ -450,7 +450,7 @@ where
 
 /// `validate_target_epoch_against_current_time`
 /// per `specs/phase0/fork-choice.md:722-733`.
-fn validate_target_epoch_against_current_time<E: EthSpec>(
+fn validate_target_epoch_against_current_time<E: BeaconSpec>(
     store: &Store<E>,
     data: &AttestationData,
 ) -> Result<(), ForkChoiceError> {
@@ -477,7 +477,7 @@ fn validate_target_epoch_against_current_time<E: EthSpec>(
 }
 
 /// `validate_on_attestation` per `specs/phase0/fork-choice.md:736-764`.
-pub fn validate_on_attestation<E: EthSpec>(
+pub fn validate_on_attestation<E: BeaconSpec>(
     store: &Store<E>,
     attestation: &Attestation<2048>,
     is_from_block: bool,
@@ -494,7 +494,7 @@ where
 /// (EIP-7549 `committee_bits` + wider `aggregation_bits`); every rule in
 /// `validate_on_attestation` reads `AttestationData` alone, so phase0 and
 /// electra share this body.
-fn validate_on_attestation_data<E: EthSpec>(
+fn validate_on_attestation_data<E: BeaconSpec>(
     store: &Store<E>,
     data: &AttestationData,
     is_from_block: bool,
@@ -571,7 +571,7 @@ where
 }
 
 /// `store_target_checkpoint_state` per `specs/phase0/fork-choice.md:767-775`.
-pub fn store_target_checkpoint_state<E: EthSpec>(
+pub fn store_target_checkpoint_state<E: BeaconSpec>(
     store: &mut Store<E>,
     target: &Checkpoint,
 ) -> Result<(), ForkChoiceError>
@@ -612,7 +612,7 @@ where
 }
 
 /// `update_latest_messages` per `specs/phase0/fork-choice.md:778-791`.
-pub fn update_latest_messages<E: EthSpec>(
+pub fn update_latest_messages<E: BeaconSpec>(
     store: &mut Store<E>,
     attesting_indices: &[pharos_types::phase0::ValidatorIndex],
     attestation: &Attestation<2048>,
@@ -624,7 +624,7 @@ pub fn update_latest_messages<E: EthSpec>(
 ///
 /// Shared by phase0 and electra: the LMD-vote write only depends on the
 /// attestation's `target.epoch` and `beacon_block_root`.
-fn update_latest_messages_data<E: EthSpec>(
+fn update_latest_messages_data<E: BeaconSpec>(
     store: &mut Store<E>,
     attesting_indices: &[pharos_types::phase0::ValidatorIndex],
     data: &AttestationData,
@@ -658,7 +658,7 @@ fn update_latest_messages_data<E: EthSpec>(
 ///
 /// Validates and processes a received attestation.  `is_from_block` is `true`
 /// when the attestation was included in a beacon block (skips epoch-time check).
-pub fn on_attestation<E: EthSpec>(
+pub fn on_attestation<E: BeaconSpec>(
     store: &mut Store<E>,
     attestation: &Attestation<2048>,
     is_from_block: bool,
@@ -736,7 +736,7 @@ where
 pub fn on_attestation_electra<
     const MAX_AGGREGATION_BITS: u64,
     const MAX_COMMITTEES_PER_SLOT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     store: &mut Store<E>,
     attestation: &pharos_types::electra::Attestation<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT>,
@@ -834,7 +834,7 @@ where
 ///
 /// Validates both indexed attestations and adds the intersection of their
 /// attesting indices to `store.equivocating_indices`.
-pub fn on_attester_slashing<E: EthSpec>(
+pub fn on_attester_slashing<E: BeaconSpec>(
     store: &mut Store<E>,
     attester_slashing: &AttesterSlashing<2048>,
 ) -> Result<(), ForkChoiceError>
@@ -895,7 +895,7 @@ where
 /// re-orgs). For M4a this always returns `false`.
 ///
 /// The conformance runner gates assertions on the YAML expecting `false`.
-pub fn should_override_forkchoice_update<E: EthSpec>(_store: &Store<E>) -> bool {
+pub fn should_override_forkchoice_update<E: BeaconSpec>(_store: &Store<E>) -> bool {
     false
 }
 
@@ -916,7 +916,7 @@ mod tests {
         state_transition,
     };
     use pharos_types::{
-        EthSpec, MinimalEthSpec,
+        BeaconSpec, MinimalBeaconSpec,
         phase0::{Epoch, Gwei, Root, Slot, ValidatorIndex},
         state::{
             MinimalBeaconBlock as ForkMinBlock, MinimalBeaconState as ForkMinState,
@@ -957,7 +957,7 @@ mod tests {
         let v = Validator {
             pubkey: BLSPubkey::from_array([0u8; 48]),
             withdrawal_credentials: Bytes32::default(),
-            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             slashed: false,
             activation_eligibility_epoch: Epoch(0),
             activation_epoch: Epoch(0),
@@ -967,7 +967,7 @@ mod tests {
         };
         state.push_validator(v).unwrap();
         state
-            .push_balance(Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE))
+            .push_balance(Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE))
             .unwrap();
 
         let state_root = state.tree_hash_root();
@@ -1021,18 +1021,19 @@ mod tests {
         let anchor_root: Root = anchor_block.tree_hash_root();
         let genesis_state_clone = genesis_state.clone();
 
-        let mut store = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
+        let mut store =
+            get_forkchoice_store::<MinimalBeaconSpec>(genesis_state.clone(), anchor_block);
         // Advance store.time well past genesis so on_block's "future slot" guard
         // doesn't reject block at slot 1.
         store.time = 10_000_000;
 
         // Build and apply block A (slot 1) via STF to get the post-state.
         let cfg = RuntimeConfig {
-            seconds_per_slot: 6, // MinimalEthSpec slot duration
+            seconds_per_slot: 6, // MinimalBeaconSpec slot duration
             ..RuntimeConfig::default()
         };
         let signed_a = make_signed_block(1, anchor_root);
-        let (post_a, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_a, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             genesis_state_clone,
             &signed_a,
             &NullExecutionEngine,
@@ -1042,7 +1043,7 @@ mod tests {
         .expect("STF for block A must succeed");
 
         // First application: must succeed.
-        super::on_block::<MinimalEthSpec, NoopPowBlockProvider>(
+        super::on_block::<MinimalBeaconSpec, NoopPowBlockProvider>(
             &mut store,
             &signed_a,
             post_a.clone(),
@@ -1061,7 +1062,7 @@ mod tests {
         );
 
         // Second application with identical arguments: must also return Ok(()).
-        let result = super::on_block::<MinimalEthSpec, NoopPowBlockProvider>(
+        let result = super::on_block::<MinimalBeaconSpec, NoopPowBlockProvider>(
             &mut store,
             &signed_a,
             post_a,

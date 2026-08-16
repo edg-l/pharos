@@ -25,7 +25,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::fork::{ForkSchedule, compute_fork_digest};
 use pharos_types::phase0::ENRForkID;
 use pharos_types::phase0::primitives::Version;
@@ -57,7 +57,7 @@ use pharos_network::types::ForkDigest;
 ///
 /// The `genesis_time_secs` parameter is the Unix timestamp of the genesis slot.
 /// When `0`, the current epoch is treated as 0.
-pub async fn run_fork_migration_loop<E: EthSpec>(
+pub async fn run_fork_migration_loop<E: BeaconSpec>(
     cmd: NetworkCommandSender<E>,
     discovery: DiscoveryHandle,
     fork_schedule: Arc<ForkSchedule>,
@@ -141,7 +141,7 @@ pub async fn run_fork_migration_loop<E: EthSpec>(
 ///
 /// `old_version` and `new_version` are the fork versions before and after the
 /// boundary. `epoch` is the current epoch (used for ENRForkID next-fork fields).
-async fn do_migration<E: EthSpec>(
+async fn do_migration<E: BeaconSpec>(
     cmd: &NetworkCommandSender<E>,
     discovery: &DiscoveryHandle,
     fork_schedule: &ForkSchedule,
@@ -213,7 +213,7 @@ async fn do_migration<E: EthSpec>(
 ///
 /// No `_ =>` fallback: a future fork must add an explicit arm here so that
 /// a missing case is a compile error, not a silent regression to a stale digest.
-fn topics_for_version<E: EthSpec>(
+fn topics_for_version<E: BeaconSpec>(
     version: Version,
     fork_schedule: &ForkSchedule,
     digest: ForkDigest,
@@ -279,7 +279,7 @@ pub(crate) fn phase0_gossip_topics(phase0_digest: ForkDigest) -> Vec<GossipTopic
 /// `specs/altair/light-client/p2p-interface.md:47-48`.
 ///
 /// Attestation subnet topics are handled by the subnet rotation driver.
-pub(crate) fn altair_gossip_topics<E: EthSpec>(altair_digest: ForkDigest) -> Vec<GossipTopic> {
+pub(crate) fn altair_gossip_topics<E: BeaconSpec>(altair_digest: ForkDigest) -> Vec<GossipTopic> {
     let mut topics = base_beacon_topics(altair_digest);
 
     // `sync_committee_contribution_and_proof` topic.
@@ -317,7 +317,7 @@ pub(crate) fn altair_gossip_topics<E: EthSpec>(altair_digest: ForkDigest) -> Vec
 /// Every topic's fork-digest segment bumps at the Bellatrix boundary.
 ///
 /// Attestation subnet topics are handled by the subnet rotation driver.
-pub(crate) fn bellatrix_gossip_topics<E: EthSpec>(
+pub(crate) fn bellatrix_gossip_topics<E: BeaconSpec>(
     bellatrix_digest: ForkDigest,
 ) -> Vec<GossipTopic> {
     let mut topics = base_beacon_topics(bellatrix_digest);
@@ -358,7 +358,7 @@ pub(crate) fn bellatrix_gossip_topics<E: EthSpec>(
 /// bumps at the Capella boundary.
 ///
 /// Attestation subnet topics are handled by the subnet rotation driver.
-pub(crate) fn capella_gossip_topics<E: EthSpec>(capella_digest: ForkDigest) -> Vec<GossipTopic> {
+pub(crate) fn capella_gossip_topics<E: BeaconSpec>(capella_digest: ForkDigest) -> Vec<GossipTopic> {
     let mut topics = bellatrix_gossip_topics::<E>(capella_digest);
 
     // New in Capella: `bls_to_execution_change` topic.
@@ -379,7 +379,7 @@ pub(crate) fn capella_gossip_topics<E: EthSpec>(capella_digest: ForkDigest) -> V
 /// blob-carrying block's data-availability gate can never be satisfied at the tip.
 ///
 /// Attestation subnet topics are handled by the subnet rotation driver.
-pub(crate) fn deneb_gossip_topics<E: EthSpec>(deneb_digest: ForkDigest) -> Vec<GossipTopic> {
+pub(crate) fn deneb_gossip_topics<E: BeaconSpec>(deneb_digest: ForkDigest) -> Vec<GossipTopic> {
     let mut topics = capella_gossip_topics::<E>(deneb_digest);
 
     // New in Deneb: `blob_sidecar_<i>` for each blob subnet.
@@ -401,7 +401,7 @@ pub(crate) fn deneb_gossip_topics<E: EthSpec>(deneb_digest: ForkDigest) -> Vec<G
 /// (electra is a superset of Deneb for DA purposes).
 ///
 /// Attestation subnet topics are handled by the subnet rotation driver.
-pub(crate) fn electra_gossip_topics<E: EthSpec>(electra_digest: ForkDigest) -> Vec<GossipTopic> {
+pub(crate) fn electra_gossip_topics<E: BeaconSpec>(electra_digest: ForkDigest) -> Vec<GossipTopic> {
     // Electra inherits the full Deneb topic set; the fork-digest segment is
     // the only thing that changes at the Electra boundary.
     deneb_gossip_topics::<E>(electra_digest)
@@ -411,7 +411,7 @@ pub(crate) fn electra_gossip_topics<E: EthSpec>(electra_digest: ForkDigest) -> V
 ///
 /// Public helper used by integration tests to verify that both nodes subscribed
 /// to the expected set of altair topics.
-pub fn altair_topic_list<E: EthSpec>(altair_digest: ForkDigest) -> Vec<GossipTopic> {
+pub fn altair_topic_list<E: BeaconSpec>(altair_digest: ForkDigest) -> Vec<GossipTopic> {
     altair_gossip_topics::<E>(altair_digest)
 }
 
@@ -421,7 +421,7 @@ pub fn altair_topic_list<E: EthSpec>(altair_digest: ForkDigest) -> Vec<GossipTop
 /// correctly subscribes to the bellatrix topic set. The set is identical in
 /// shape to the altair set (5 base + sync_committee_* + light_client_*) but
 /// all topics carry the bellatrix fork digest.
-pub fn bellatrix_topic_list<E: EthSpec>(bellatrix_digest: ForkDigest) -> Vec<GossipTopic> {
+pub fn bellatrix_topic_list<E: BeaconSpec>(bellatrix_digest: ForkDigest) -> Vec<GossipTopic> {
     bellatrix_gossip_topics::<E>(bellatrix_digest)
 }
 
@@ -430,7 +430,7 @@ pub fn bellatrix_topic_list<E: EthSpec>(bellatrix_digest: ForkDigest) -> Vec<Gos
 /// Public helper used by integration tests to verify that the migration
 /// correctly subscribes to the capella topic set. The set is the bellatrix
 /// set (5 base + sync_committee_* + light_client_*) plus `bls_to_execution_change`.
-pub fn capella_topic_list<E: EthSpec>(capella_digest: ForkDigest) -> Vec<GossipTopic> {
+pub fn capella_topic_list<E: BeaconSpec>(capella_digest: ForkDigest) -> Vec<GossipTopic> {
     capella_gossip_topics::<E>(capella_digest)
 }
 
@@ -439,7 +439,7 @@ pub fn capella_topic_list<E: EthSpec>(capella_digest: ForkDigest) -> Vec<GossipT
 /// Public helper used by integration tests to verify that the migration
 /// correctly subscribes to the deneb topic set: the capella set plus the
 /// `blob_sidecar_<i>` subnet topics (EIP-4844).
-pub fn deneb_topic_list<E: EthSpec>(deneb_digest: ForkDigest) -> Vec<GossipTopic> {
+pub fn deneb_topic_list<E: BeaconSpec>(deneb_digest: ForkDigest) -> Vec<GossipTopic> {
     deneb_gossip_topics::<E>(deneb_digest)
 }
 
@@ -448,14 +448,14 @@ pub fn deneb_topic_list<E: EthSpec>(deneb_digest: ForkDigest) -> Vec<GossipTopic
 /// Public helper used by integration tests to verify that the migration
 /// correctly subscribes to the electra topic set. The electra set is identical
 /// in shape to the deneb set (same topic kinds, electra fork digest).
-pub fn electra_topic_list<E: EthSpec>(electra_digest: ForkDigest) -> Vec<GossipTopic> {
+pub fn electra_topic_list<E: BeaconSpec>(electra_digest: ForkDigest) -> Vec<GossipTopic> {
     electra_gossip_topics::<E>(electra_digest)
 }
 
 // ── Command helpers ───────────────────────────────────────────────────────────
 
 /// Send a `Subscribe` command and await the reply.
-async fn send_subscribe<E: EthSpec>(
+async fn send_subscribe<E: BeaconSpec>(
     cmd: &NetworkCommandSender<E>,
     topic: GossipTopic,
 ) -> Result<(), pharos_network::NetworkError> {
@@ -471,7 +471,7 @@ async fn send_subscribe<E: EthSpec>(
 }
 
 /// Send an `Unsubscribe` command and await the reply.
-async fn send_unsubscribe<E: EthSpec>(
+async fn send_unsubscribe<E: BeaconSpec>(
     cmd: &NetworkCommandSender<E>,
     topic: GossipTopic,
 ) -> Result<(), pharos_network::NetworkError> {
@@ -491,7 +491,7 @@ async fn send_unsubscribe<E: EthSpec>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pharos_types::MainnetEthSpec;
+    use pharos_types::MainnetBeaconSpec;
     use pharos_types::fork::compute_fork_digest;
     use pharos_types::phase0::primitives::{Root, Version};
     use pharos_utils::Epoch;
@@ -522,7 +522,7 @@ mod tests {
     /// - 1 `light_client_optimistic_update`
     ///
     /// Total = 5 + 1 + SYNC_COMMITTEE_SUBNET_COUNT + 2
-    /// For MainnetEthSpec: SYNC_COMMITTEE_SUBNET_COUNT = 4 → total = 12.
+    /// For MainnetBeaconSpec: SYNC_COMMITTEE_SUBNET_COUNT = 4 → total = 12.
     ///
     /// All topics must carry the bellatrix digest, NOT the altair digest.
     #[test]
@@ -533,11 +533,11 @@ mod tests {
         let bellatrix_digest = compute_fork_digest(sched.bellatrix_fork_version, &gvr);
         let altair_digest = compute_fork_digest(sched.altair_fork_version, &gvr);
 
-        let topics = bellatrix_topic_list::<MainnetEthSpec>(bellatrix_digest);
+        let topics = bellatrix_topic_list::<MainnetBeaconSpec>(bellatrix_digest);
 
         // Count expected: 5 base + 1 contrib + SYNC_COMMITTEE_SUBNET_COUNT subnets + 2 lc.
         let sync_subnet_count =
-            <MainnetEthSpec as pharos_types::EthSpec>::SYNC_COMMITTEE_SUBNET_COUNT as usize;
+            <MainnetBeaconSpec as pharos_types::BeaconSpec>::SYNC_COMMITTEE_SUBNET_COUNT as usize;
         let expected_count = 5 + 1 + sync_subnet_count + 2;
         assert_eq!(
             topics.len(),
@@ -598,7 +598,7 @@ mod tests {
         );
 
         // Verify all SYNC_COMMITTEE_SUBNET_COUNT sync_committee_<i> subnets are present.
-        for i in 0..<MainnetEthSpec as pharos_types::EthSpec>::SYNC_COMMITTEE_SUBNET_COUNT {
+        for i in 0..<MainnetBeaconSpec as pharos_types::BeaconSpec>::SYNC_COMMITTEE_SUBNET_COUNT {
             assert!(
                 topics
                     .iter()
@@ -617,8 +617,8 @@ mod tests {
         let altair_digest = compute_fork_digest(sched.altair_fork_version, &gvr);
         let bellatrix_digest = compute_fork_digest(sched.bellatrix_fork_version, &gvr);
 
-        let altair_topics = altair_topic_list::<MainnetEthSpec>(altair_digest);
-        let bellatrix_topics = bellatrix_topic_list::<MainnetEthSpec>(bellatrix_digest);
+        let altair_topics = altair_topic_list::<MainnetBeaconSpec>(altair_digest);
+        let bellatrix_topics = bellatrix_topic_list::<MainnetBeaconSpec>(bellatrix_digest);
 
         assert_eq!(
             altair_topics.len(),
@@ -647,10 +647,10 @@ mod tests {
         let capella_digest = compute_fork_digest(sched.capella_fork_version, &gvr);
         let deneb_digest = compute_fork_digest(sched.deneb_fork_version, &gvr);
 
-        let capella_topics = capella_topic_list::<MainnetEthSpec>(capella_digest);
-        let deneb_topics = deneb_topic_list::<MainnetEthSpec>(deneb_digest);
+        let capella_topics = capella_topic_list::<MainnetBeaconSpec>(capella_digest);
+        let deneb_topics = deneb_topic_list::<MainnetBeaconSpec>(deneb_digest);
 
-        let n_blob = MainnetEthSpec::BLOB_SIDECAR_SUBNET_COUNT as usize;
+        let n_blob = MainnetBeaconSpec::BLOB_SIDECAR_SUBNET_COUNT as usize;
         assert_eq!(
             deneb_topics.len(),
             capella_topics.len() + n_blob,
@@ -671,7 +671,7 @@ mod tests {
         );
 
         // All blob subnets 0..N present exactly once.
-        for subnet in 0..MainnetEthSpec::BLOB_SIDECAR_SUBNET_COUNT {
+        for subnet in 0..MainnetBeaconSpec::BLOB_SIDECAR_SUBNET_COUNT {
             assert_eq!(
                 deneb_topics
                     .iter()

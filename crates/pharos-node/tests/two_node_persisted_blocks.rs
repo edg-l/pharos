@@ -20,7 +20,7 @@ use std::time::Duration;
 use pharos_network::NetworkEvent;
 use pharos_network::rpc::types::RpcRequest;
 use pharos_storage::{BlockTransition, RocksStore, RocksStoreConfig, Store as StoreTrait};
-use pharos_types::MinimalEthSpec;
+use pharos_types::MinimalBeaconSpec;
 use pharos_types::phase0::MinimalSignedBeaconBlock as Phase0MinimalBlock;
 use pharos_types::phase0::{BeaconBlocksByRangeRequest, MinimalBeaconBlock, Slot};
 use pharos_types::state::MinimalSignedBeaconBlock;
@@ -65,7 +65,7 @@ fn populate_store(
         MinimalSignedBeaconBlock,
     )],
 ) {
-    let store = RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+    let store = RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
         path: path.join("chain_db"),
         create_if_missing: true,
     })
@@ -80,10 +80,10 @@ fn populate_store(
             MinimalSignedBeaconBlock::Deneb(inner) => inner.message.slot,
             MinimalSignedBeaconBlock::Electra(inner) => inner.message.slot,
         };
-        let mut transition = BlockTransition::<MinimalEthSpec>::new();
+        let mut transition = BlockTransition::<MinimalBeaconSpec>::new();
         transition.block = Some((*root, block.clone()));
         transition.slot_index = Some((slot, *root));
-        <RocksStore as StoreTrait<MinimalEthSpec>>::write_block_transition(&store, transition)
+        <RocksStore as StoreTrait<MinimalBeaconSpec>>::write_block_transition(&store, transition)
             .expect("write_block_transition must succeed");
     }
     // Store closes here (dropped).
@@ -93,7 +93,7 @@ fn populate_store(
 ///
 /// Panics if the channel closes before a `PeerConnected` event is received.
 /// Uses a 10-second timeout to prevent test hangs.
-async fn wait_connected(handle: &mut pharos_network::NetworkHandle<MinimalEthSpec>) {
+async fn wait_connected(handle: &mut pharos_network::NetworkHandle<MinimalBeaconSpec>) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let event = handle

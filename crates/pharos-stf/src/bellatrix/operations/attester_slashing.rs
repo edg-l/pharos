@@ -9,7 +9,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     bellatrix::BeaconState,
     phase0::{AttesterSlashing, IndexedAttestation, ValidatorIndex},
 };
@@ -56,7 +56,7 @@ pub fn process_attester_slashing_bellatrix<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         BellatrixBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

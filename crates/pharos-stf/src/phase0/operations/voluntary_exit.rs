@@ -1,6 +1,6 @@
 //! `process_voluntary_exit` per `specs/phase0/beacon-chain.md:2114-2130`.
 
-use pharos_types::{BeaconStateView, EthSpec, phase0::SignedVoluntaryExit};
+use pharos_types::{BeaconSpec, BeaconStateView, phase0::SignedVoluntaryExit};
 
 use crate::error::{StateTransitionError, VoluntaryExitInvalidReason};
 use crate::phase0::{
@@ -12,7 +12,7 @@ use crate::phase0::{
 };
 
 /// `process_voluntary_exit` per `specs/phase0/beacon-chain.md:2114-2130`.
-pub fn process_voluntary_exit<E: EthSpec>(
+pub fn process_voluntary_exit<E: BeaconSpec>(
     state: &mut E::BeaconState,
     signed_exit: &SignedVoluntaryExit,
     verify_signatures: bool,

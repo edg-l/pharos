@@ -34,7 +34,7 @@ use parking_lot::Mutex;
 use pharos_kzg::{KzgError, KzgVerifier};
 use pharos_network::topics::GossipTopic;
 use pharos_storage::{RocksStore, Store as DbStore};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::deneb::KZGCommitment;
 use pharos_types::phase0::primitives::Root;
 use tokio::sync::mpsc;
@@ -63,7 +63,7 @@ pub enum DataAvailabilityVerdict {
 /// real Fulu PeerDAS seam: Fulu can swap the impl without touching the trait.
 ///
 /// Per `D-da-checker-trait`.
-pub trait DataAvailabilityChecker<E: EthSpec>: Send + Sync + 'static {
+pub trait DataAvailabilityChecker<E: BeaconSpec>: Send + Sync + 'static {
     /// Check data availability for `block_root` given its KZG commitments.
     ///
     /// - `block_root`: the `hash_tree_root` of the block (used to look up blob
@@ -86,13 +86,13 @@ pub trait DataAvailabilityChecker<E: EthSpec>: Send + Sync + 'static {
 /// their KZG proofs against the block's commitments.
 ///
 /// Per `D-da-checker-trait`.
-pub struct BlobAvailabilityChecker<E: EthSpec> {
+pub struct BlobAvailabilityChecker<E: BeaconSpec> {
     store: Arc<RocksStore>,
     verifier: Arc<KzgVerifier>,
     _marker: std::marker::PhantomData<E>,
 }
 
-impl<E: EthSpec> BlobAvailabilityChecker<E> {
+impl<E: BeaconSpec> BlobAvailabilityChecker<E> {
     /// Construct a new checker from a shared store handle and KZG verifier.
     pub fn new(store: Arc<RocksStore>, verifier: Arc<KzgVerifier>) -> Self {
         Self {
@@ -103,7 +103,7 @@ impl<E: EthSpec> BlobAvailabilityChecker<E> {
     }
 }
 
-impl<E: EthSpec> DataAvailabilityChecker<E> for BlobAvailabilityChecker<E> {
+impl<E: BeaconSpec> DataAvailabilityChecker<E> for BlobAvailabilityChecker<E> {
     /// Check data availability for `block_root`.
     ///
     /// Logic:
@@ -222,7 +222,7 @@ impl<E: EthSpec> DataAvailabilityChecker<E> for BlobAvailabilityChecker<E> {
 /// do not carry sidecars over the wire.
 pub struct NoopDataAvailabilityChecker;
 
-impl<E: EthSpec> DataAvailabilityChecker<E> for NoopDataAvailabilityChecker {
+impl<E: BeaconSpec> DataAvailabilityChecker<E> for NoopDataAvailabilityChecker {
     fn is_data_available(
         &self,
         _block_root: Root,

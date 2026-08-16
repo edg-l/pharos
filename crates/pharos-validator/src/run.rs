@@ -139,11 +139,11 @@ pub fn is_aggregator(selection_proof_sig: &[u8], committee_length: u64) -> bool 
 
 /// Determine whether this validator is a sync-committee aggregator for a subcommittee.
 ///
-/// Delegates to `pharos_stf::is_sync_committee_aggregator::<MainnetEthSpec>` —
+/// Delegates to `pharos_stf::is_sync_committee_aggregator::<MainnetBeaconSpec>` —
 /// the authoritative definition lives there so both the VC and the node's gossip
 /// validator share one implementation. The VC operates exclusively on mainnet.
 pub fn is_sync_committee_aggregator(selection_proof_sig: &[u8]) -> bool {
-    pharos_stf::is_sync_committee_aggregator::<pharos_types::MainnetEthSpec>(selection_proof_sig)
+    pharos_stf::is_sync_committee_aggregator::<pharos_types::MainnetBeaconSpec>(selection_proof_sig)
 }
 
 // ── ValidatorEntry ────────────────────────────────────────────────────────────

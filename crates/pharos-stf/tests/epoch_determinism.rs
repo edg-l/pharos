@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use pharos_ssz::{Decode, Encode};
 use pharos_stf::phase0::epoch::process_rewards_and_penalties;
-use pharos_types::{EthSpec, MainnetEthSpec};
+use pharos_types::{BeaconSpec, MainnetBeaconSpec};
 
 // ── Fixture resolution ────────────────────────────────────────────────────────
 
@@ -74,17 +74,17 @@ fn rewards_and_penalties_deterministic() {
     // Load 8 independent copies of the pre-state.
     // Fixture files are raw phase0 SSZ (no discriminant prefix); decode as
     // the concrete phase0 type then wrap into the fork-enum BeaconState.
-    let mut states: Vec<<MainnetEthSpec as pharos_types::EthSpec>::BeaconState> = (0..8)
+    let mut states: Vec<<MainnetBeaconSpec as pharos_types::BeaconSpec>::BeaconState> = (0..8)
         .map(|_| {
             let inner =
-                load_ssz_snappy::<<MainnetEthSpec as EthSpec>::Phase0BeaconState>(&pre_path);
-            MainnetEthSpec::phase0_into_state(inner)
+                load_ssz_snappy::<<MainnetBeaconSpec as BeaconSpec>::Phase0BeaconState>(&pre_path);
+            MainnetBeaconSpec::phase0_into_state(inner)
         })
         .collect();
 
     // Run process_rewards_and_penalties on each copy.
     for state in states.iter_mut() {
-        process_rewards_and_penalties::<MainnetEthSpec>(state)
+        process_rewards_and_penalties::<MainnetBeaconSpec>(state)
             .expect("process_rewards_and_penalties failed");
     }
 

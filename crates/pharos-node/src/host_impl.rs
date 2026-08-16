@@ -2,7 +2,7 @@
 //!
 //! This module replaces the M2 stubs (`BlockStoreStub`, `ForkContextStub`,
 //! `GossipValidatorStub`, non-generic `HostImpl`) with a single generic
-//! `HostImpl<E: EthSpec>` backed by a real `RocksStore` and the in-memory
+//! `HostImpl<E: BeaconSpec>` backed by a real `RocksStore` and the in-memory
 //! `pharos_fork_choice::Store<E>`.
 //!
 //! # GossipValidator note
@@ -46,7 +46,7 @@ use pharos_network::host::{
 use pharos_network::types::{Fork, SubnetId};
 use pharos_ssz::{Bitvector, TreeHash};
 use pharos_storage::{RocksStore, Store as StoreTrait};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::RuntimeConfig;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::fork::{ForkSchedule, compute_fork_digest};
@@ -97,7 +97,7 @@ struct ForkContextInner {
 ///   construction).
 /// - `metadata`: Local `MetaData` cell; read-mostly (Ping/MetaData responses),
 ///   written on subnet changes.
-pub struct HostImpl<E: EthSpec> {
+pub struct HostImpl<E: BeaconSpec> {
     store: Arc<RocksStore>,
     fork_choice: Arc<RwLock<pharos_fork_choice::Store<E>>>,
     fork_context: ForkContextInner,
@@ -217,7 +217,7 @@ pub struct HostImpl<E: EthSpec> {
     _phantom: PhantomData<E>,
 }
 
-impl<E: EthSpec> HostImpl<E> {
+impl<E: BeaconSpec> HostImpl<E> {
     /// Construct a new `HostImpl<E>`.
     ///
     /// `fork_choice` should already be hydrated (either from
@@ -637,7 +637,7 @@ impl<E: EthSpec> HostImpl<E> {
 
 // ── ForkContext ───────────────────────────────────────────────────────────────
 
-impl<E: EthSpec> ForkContext for HostImpl<E> {
+impl<E: BeaconSpec> ForkContext for HostImpl<E> {
     /// Compute the current fork digest from the wall-clock epoch.
     ///
     /// Computed on every call from `fork_schedule.current_fork_version(current_epoch())`
@@ -725,7 +725,7 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
 
 // ── BlockProvider ─────────────────────────────────────────────────────────────
 
-impl<E: EthSpec> BlockProvider<E> for HostImpl<E> {
+impl<E: BeaconSpec> BlockProvider<E> for HostImpl<E> {
     /// Look up a block by root.
     ///
     /// Returns `None` on storage error (logged at `warn`) or missing block.
@@ -783,7 +783,7 @@ impl<E: EthSpec> BlockProvider<E> for HostImpl<E> {
 
 // ── GossipValidator ───────────────────────────────────────────────────────────
 
-impl<E: EthSpec> GossipValidator<E> for HostImpl<E>
+impl<E: BeaconSpec> GossipValidator<E> for HostImpl<E>
 where
     E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
     E::AltairBeaconState:
@@ -834,7 +834,7 @@ where
         use pharos_types::views::{BeaconBlockView, SignedBeaconBlockView};
 
         // Extract the fork-enum `E::BeaconBlock` from the signed block via the
-        // exhaustive-match dispatch on `EthSpec`. This cannot miss a fork variant
+        // exhaustive-match dispatch on `BeaconSpec`. This cannot miss a fork variant
         // (a new fork is a compile error in `signed_block_message`), unlike the
         // old per-fork `if let` chain that silently rejected capella blocks.
         let block_msg: E::BeaconBlock = E::signed_block_message(block);
@@ -1926,7 +1926,7 @@ where
     ///  12.  Mark both seen-caches; Accept.
     fn validate_sync_committee_contribution_and_proof(
         &self,
-        msg: &<E as EthSpec>::AltairSignedContributionAndProof,
+        msg: &<E as BeaconSpec>::AltairSignedContributionAndProof,
     ) -> GossipVerdict {
         use pharos_stf::altair::helpers::{
             DOMAIN_CONTRIBUTION_AND_PROOF, DOMAIN_SYNC_COMMITTEE,
@@ -2168,7 +2168,7 @@ where
     /// (docs/decisions.md). See `p2p-interface.md:60-65`.
     fn validate_light_client_finality_update(
         &self,
-        msg: &<E as EthSpec>::AltairLightClientFinalityUpdate,
+        msg: &<E as BeaconSpec>::AltairLightClientFinalityUpdate,
     ) -> GossipVerdict {
         // Note (Phase 5 / D-capella-lc-header): The M4c IGNORE rules are
         // unchanged for Capella. The header equality check at step 4 uses
@@ -2248,7 +2248,7 @@ where
     /// See also `D-lc-gossip-validation-full-node-arm` (docs/decisions.md).
     fn validate_light_client_optimistic_update(
         &self,
-        msg: &<E as EthSpec>::AltairLightClientOptimisticUpdate,
+        msg: &<E as BeaconSpec>::AltairLightClientOptimisticUpdate,
     ) -> GossipVerdict {
         // Note (Phase 5 / D-capella-lc-header): Same as finality update — the
         // IGNORE rules are unchanged for Capella; Phase 6 will change the type
@@ -2315,7 +2315,7 @@ where
     /// snapshot equality short-circuit via `tree_hash_root`.
     fn validate_capella_light_client_finality_update(
         &self,
-        msg: &<E as EthSpec>::CapellaLightClientFinalityUpdate,
+        msg: &<E as BeaconSpec>::CapellaLightClientFinalityUpdate,
     ) -> GossipVerdict {
         use pharos_ssz::TreeHash;
         use pharos_types::views::LightClientFinalityUpdateView as _;
@@ -2386,7 +2386,7 @@ where
     /// Same IGNORE rules as the altair path; only the storage CF differs.
     fn validate_capella_light_client_optimistic_update(
         &self,
-        msg: &<E as EthSpec>::CapellaLightClientOptimisticUpdate,
+        msg: &<E as BeaconSpec>::CapellaLightClientOptimisticUpdate,
     ) -> GossipVerdict {
         use pharos_ssz::TreeHash;
         use pharos_types::views::LightClientOptimisticUpdateView as _;
@@ -3236,7 +3236,7 @@ where
 /// Reads LC snapshots from the dedicated storage column families defined in
 /// Task 6.9. Snapshots are written by the STF hook in `pharos-stf`
 /// (`create_light_client_*`) on each finality advance or optimistic head update.
-impl<E: EthSpec> LightClientProvider<E> for HostImpl<E> {
+impl<E: BeaconSpec> LightClientProvider<E> for HostImpl<E> {
     /// Look up a pre-computed `LightClientBootstrap` for the given block root.
     ///
     /// Reads from the `light-client-bootstrap` column family (Task 6.9(b)).
@@ -3388,7 +3388,7 @@ impl<E: EthSpec> LightClientProvider<E> for HostImpl<E> {
 /// whatever is in the store (point lookups are always in-range if present).
 ///
 /// This implementation does NOT backfill blobs (OQ1 default).
-impl<E: EthSpec> BlobProvider<E> for HostImpl<E> {
+impl<E: BeaconSpec> BlobProvider<E> for HostImpl<E> {
     /// Retrieve blob sidecars for canonical slots `[start_slot, start_slot + count)`.
     ///
     /// Walks `slot_to_block_root` to get the canonical block root for each slot,
@@ -3484,7 +3484,7 @@ mod tests {
     use super::*;
     use pharos_ssz::Bitvector;
     use pharos_storage::{RocksStore, RocksStoreConfig, Store as StoreTrait};
-    use pharos_types::MainnetEthSpec;
+    use pharos_types::MainnetBeaconSpec;
     use pharos_types::altair::light_client::{
         LightClientFinalityUpdate, LightClientHeader, LightClientOptimisticUpdate,
     };
@@ -3493,25 +3493,27 @@ mod tests {
     };
     use pharos_types::phase0::operations::BeaconBlockHeader;
 
-    fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
+    fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetBeaconSpec> {
         use pharos_ssz::TreeHash;
         use pharos_types::state::BeaconBlock as ForkBeaconBlock;
         let store = Arc::new(
-            RocksStore::open::<MainnetEthSpec>(RocksStoreConfig {
+            RocksStore::open::<MainnetBeaconSpec>(RocksStoreConfig {
                 path: dir.path().join("chain_db"),
                 create_if_missing: true,
             })
             .expect("open store"),
         );
-        let genesis_state = <MainnetEthSpec as EthSpec>::BeaconState::default();
+        let genesis_state = <MainnetBeaconSpec as BeaconSpec>::BeaconState::default();
         let state_root = genesis_state.tree_hash_root();
         // Satisfy get_forkchoice_store's assertion: anchor_block.state_root == hash_tree_root(anchor_state).
         let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MainnetBeaconBlock {
             state_root,
             ..pharos_types::phase0::MainnetBeaconBlock::default()
         });
-        let fc_store =
-            pharos_fork_choice::get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MainnetBeaconSpec>(
+            genesis_state,
+            anchor_block,
+        );
         let fork_choice = Arc::new(RwLock::new(fc_store));
         let gvr = Root::default();
         // Phase0-only schedule: altair/bellatrix epochs = FAR_FUTURE, versions = mainnet defaults.
@@ -3537,24 +3539,26 @@ mod tests {
     /// `altair_fork_epoch == bellatrix_fork_epoch == 0`.
     /// `genesis_time_secs = 0` causes `current_epoch()` to always return 0,
     /// which resolves to the bellatrix fork version.
-    fn make_bellatrix_genesis_host(dir: &tempfile::TempDir) -> HostImpl<MainnetEthSpec> {
+    fn make_bellatrix_genesis_host(dir: &tempfile::TempDir) -> HostImpl<MainnetBeaconSpec> {
         use pharos_ssz::TreeHash;
         use pharos_types::state::BeaconBlock as ForkBeaconBlock;
         let store = Arc::new(
-            RocksStore::open::<MainnetEthSpec>(RocksStoreConfig {
+            RocksStore::open::<MainnetBeaconSpec>(RocksStoreConfig {
                 path: dir.path().join("chain_db"),
                 create_if_missing: true,
             })
             .expect("open store"),
         );
-        let genesis_state = <MainnetEthSpec as EthSpec>::BeaconState::default();
+        let genesis_state = <MainnetBeaconSpec as BeaconSpec>::BeaconState::default();
         let state_root = genesis_state.tree_hash_root();
         let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MainnetBeaconBlock {
             state_root,
             ..pharos_types::phase0::MainnetBeaconBlock::default()
         });
-        let fc_store =
-            pharos_fork_choice::get_forkchoice_store::<MainnetEthSpec>(genesis_state, anchor_block);
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MainnetBeaconSpec>(
+            genesis_state,
+            anchor_block,
+        );
         let fork_choice = Arc::new(RwLock::new(fc_store));
         let gvr = Root::default();
         // Bellatrix-at-genesis: both altair and bellatrix activate at epoch 0.
@@ -3835,7 +3839,7 @@ mod tests {
         let host = make_host(&dir);
         // signature_slot = 0 → due_ms = 4000 ms, always in the past.
         let upd = make_finality_update(1, 0);
-        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_finality_update(
+        <RocksStore as StoreTrait<MainnetBeaconSpec>>::put_light_client_finality_update(
             &host.store,
             &upd,
         )
@@ -3869,7 +3873,7 @@ mod tests {
 
         // Accept case: signature_slot = 0 → due_ms = 4000 ms (far in the past).
         let upd_accept = make_finality_update(1, 0);
-        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_finality_update(
+        <RocksStore as StoreTrait<MainnetBeaconSpec>>::put_light_client_finality_update(
             &host.store,
             &upd_accept,
         )
@@ -3890,7 +3894,7 @@ mod tests {
         let future_sig_slot = (now_ms / 12000) as u64 + 1000;
         // Use a finalized_slot strictly greater than the previous Accept so monotonic check passes.
         let upd_ignore = make_finality_update(future_sig_slot + 1, future_sig_slot);
-        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_finality_update(
+        <RocksStore as StoreTrait<MainnetBeaconSpec>>::put_light_client_finality_update(
             &host.store,
             &upd_ignore,
         )
@@ -3911,7 +3915,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let host = make_host(&dir);
         let upd = make_optimistic_update(1, 0);
-        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_optimistic_update(
+        <RocksStore as StoreTrait<MainnetBeaconSpec>>::put_light_client_optimistic_update(
             &host.store,
             &upd,
         )
@@ -3931,7 +3935,7 @@ mod tests {
 
         // Accept case.
         let upd_accept = make_optimistic_update(1, 0);
-        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_optimistic_update(
+        <RocksStore as StoreTrait<MainnetBeaconSpec>>::put_light_client_optimistic_update(
             &host.store,
             &upd_accept,
         )
@@ -3949,7 +3953,7 @@ mod tests {
             .as_millis();
         let future_sig_slot = (now_ms / 12000) as u64 + 1000;
         let upd_ignore = make_optimistic_update(future_sig_slot + 1, future_sig_slot);
-        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_optimistic_update(
+        <RocksStore as StoreTrait<MainnetBeaconSpec>>::put_light_client_optimistic_update(
             &host.store,
             &upd_ignore,
         )
@@ -3971,7 +3975,7 @@ mod tests {
         let host = make_host(&dir);
 
         let upd = make_finality_update(5, 0);
-        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_finality_update(
+        <RocksStore as StoreTrait<MainnetBeaconSpec>>::put_light_client_finality_update(
             &host.store,
             &upd,
         )
@@ -3995,7 +3999,7 @@ mod tests {
 
         // Third call with strictly greater slot → Accept.
         let upd2 = make_finality_update(6, 0);
-        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_finality_update(
+        <RocksStore as StoreTrait<MainnetBeaconSpec>>::put_light_client_finality_update(
             &host.store,
             &upd2,
         )
@@ -4015,7 +4019,7 @@ mod tests {
         let host = make_host(&dir);
 
         let upd = make_optimistic_update(5, 0);
-        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_optimistic_update(
+        <RocksStore as StoreTrait<MainnetBeaconSpec>>::put_light_client_optimistic_update(
             &host.store,
             &upd,
         )
@@ -4039,7 +4043,7 @@ mod tests {
 
         // Third call with strictly greater attested_slot → Accept.
         let upd2 = make_optimistic_update(6, 0);
-        <RocksStore as StoreTrait<MainnetEthSpec>>::put_light_client_optimistic_update(
+        <RocksStore as StoreTrait<MainnetBeaconSpec>>::put_light_client_optimistic_update(
             &host.store,
             &upd2,
         )
@@ -4057,7 +4061,7 @@ mod tests {
     use pharos_ssz::{SszList, SszSequence as _, TreeHash};
     use pharos_stf::phase0::accessors::{compute_signing_root, get_domain};
     use pharos_stf::phase0::helpers::DOMAIN_BEACON_PROPOSER;
-    use pharos_types::MinimalEthSpec;
+    use pharos_types::MinimalBeaconSpec;
     use pharos_types::phase0::{
         MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
     };
@@ -4103,19 +4107,19 @@ mod tests {
         BLSSignature::from_array(block_test_sk().sign(msg, BLS_DST, &[]).compress())
     }
 
-    /// Build a `HostImpl<MinimalEthSpec>` with a genesis Phase0 state+block
+    /// Build a `HostImpl<MinimalBeaconSpec>` with a genesis Phase0 state+block
     /// pre-inserted into the fork-choice store.
     ///
     /// Returns `(host, genesis_root, genesis_slot)` where `genesis_root` is
     /// the hash_tree_root of the genesis block (usable as `parent_root` for
     /// the next block).
-    fn make_block_test_host(dir: &tempfile::TempDir) -> (HostImpl<MinimalEthSpec>, Root, Slot) {
+    fn make_block_test_host(dir: &tempfile::TempDir) -> (HostImpl<MinimalBeaconSpec>, Root, Slot) {
         use pharos_types::phase0::misc::Fork;
         use pharos_types::phase0::operations::BeaconBlockHeader;
         use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
 
         let store = Arc::new(
-            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
                 path: dir.path().join("chain_db"),
                 create_if_missing: true,
             })
@@ -4126,7 +4130,7 @@ mod tests {
 
         let validator = pharos_types::phase0::misc::Validator {
             pubkey: block_test_pubkey(),
-            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             activation_epoch: Epoch(0),
             exit_epoch: Epoch(u64::MAX),
             withdrawable_epoch: Epoch(u64::MAX),
@@ -4153,7 +4157,7 @@ mod tests {
             validators: SszList::with_push(&SszList::default(), validator).unwrap(),
             balances: SszList::with_push(
                 &SszList::default(),
-                Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             )
             .unwrap(),
             ..Default::default()
@@ -4180,7 +4184,7 @@ mod tests {
         };
         let _fork_anchor = MinForkSigned::Phase0(anchor_signed);
 
-        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalBeaconSpec>(
             fork_genesis_state.clone(),
             fork_genesis_block,
         );
@@ -4224,11 +4228,17 @@ mod tests {
             genesis_validators_root: gvr,
         };
         let runtime_cfg = Arc::new(RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
             ..Default::default()
         });
-        let host =
-            HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg);
+        let host = HostImpl::<MinimalBeaconSpec>::new(
+            store,
+            fork_choice,
+            gvr,
+            fork_schedule,
+            0,
+            runtime_cfg,
+        );
         (host, genesis_root, genesis_slot)
     }
 
@@ -4253,12 +4263,12 @@ mod tests {
             body: MinimalBeaconBlockBody::default(),
         };
 
-        let domain = get_domain::<MinimalEthSpec>(
+        let domain = get_domain::<MinimalBeaconSpec>(
             parent_state,
             DOMAIN_BEACON_PROPOSER,
             Some(pharos_stf::phase0::accessors::compute_epoch_at_slot(
                 slot,
-                MinimalEthSpec::SLOTS_PER_EPOCH,
+                MinimalBeaconSpec::SLOTS_PER_EPOCH,
             )),
         );
         let signing_root = compute_signing_root(&block, domain);
@@ -4578,7 +4588,7 @@ mod tests {
             use pharos_types::phase0::primitives::Epoch;
             let extra_validator = Validator {
                 pubkey: BLSPubkey::from_array([0x99u8; 48]),
-                effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
                 activation_epoch: Epoch(0),
                 exit_epoch: Epoch(u64::MAX),
                 withdrawable_epoch: Epoch(u64::MAX),
@@ -4591,7 +4601,7 @@ mod tests {
                 inner.validators = SszList::with_push(&inner.validators, extra_validator).unwrap();
                 inner.balances = SszList::with_push(
                     &inner.balances,
-                    Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                    Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
                 )
                 .unwrap();
             }
@@ -4659,7 +4669,7 @@ mod tests {
     // Regression guard for the M7 capella gossip-follow bug: `validate_beacon_block`
     // had no capella arm in its fork-unwrap chain, so every capella `beacon_block`
     // was Reject("unrecognised fork variant"). The unwrap is now the exhaustive
-    // `EthSpec::signed_block_message`; this asserts EVERY active fork variant is
+    // `BeaconSpec::signed_block_message`; this asserts EVERY active fork variant is
     // dispatched (reaches the validation pipeline) rather than rejected as an
     // unknown fork. Each default block is at slot 0 so it is IGNOREd at the
     // finalized-slot step — the point is that the fork-unwrap itself succeeds.
@@ -4668,32 +4678,32 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let (host, _parent_root, _) = make_block_test_host(&dir);
 
-        // Build a default signed block of each fork variant via the EthSpec
+        // Build a default signed block of each fork variant via the BeaconSpec
         // associated inner types so the params match the fork enum exactly.
         let cases: [(&str, MinForkSigned); 4] = [
             (
                 "phase0",
                 MinForkSigned::Phase0(
-                    <MinimalEthSpec as pharos_types::EthSpec>::Phase0SignedBeaconBlock::default(),
+                    <MinimalBeaconSpec as pharos_types::BeaconSpec>::Phase0SignedBeaconBlock::default(),
                 ),
             ),
             (
                 "altair",
                 MinForkSigned::Altair(
-                    <MinimalEthSpec as pharos_types::EthSpec>::AltairSignedBeaconBlock::default(),
+                    <MinimalBeaconSpec as pharos_types::BeaconSpec>::AltairSignedBeaconBlock::default(),
                 ),
             ),
             (
                 "bellatrix",
                 MinForkSigned::Bellatrix(
-                    <MinimalEthSpec as pharos_types::EthSpec>::BellatrixSignedBeaconBlock::default(
+                    <MinimalBeaconSpec as pharos_types::BeaconSpec>::BellatrixSignedBeaconBlock::default(
                     ),
                 ),
             ),
             (
                 "capella",
                 MinForkSigned::Capella(
-                    <MinimalEthSpec as pharos_types::EthSpec>::CapellaSignedBeaconBlock::default(),
+                    <MinimalBeaconSpec as pharos_types::BeaconSpec>::CapellaSignedBeaconBlock::default(),
                 ),
             ),
         ];
@@ -4806,16 +4816,16 @@ mod tests {
     use pharos_types::phase0::misc::{AttestationData, Checkpoint};
     use pharos_types::phase0::primitives::CommitteeIndex;
 
-    /// Attestation-test runtime config with `seconds_per_slot` for MinimalEthSpec.
+    /// Attestation-test runtime config with `seconds_per_slot` for MinimalBeaconSpec.
     fn att_runtime_cfg(_att_slot: u64) -> Arc<RuntimeConfig> {
-        let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000; // 6 s
+        let seconds_per_slot = MinimalBeaconSpec::SLOT_DURATION_MS / 1000; // 6 s
         Arc::new(RuntimeConfig {
             seconds_per_slot,
             ..Default::default()
         })
     }
 
-    /// Build a `HostImpl<MinimalEthSpec>` wired for attestation testing.
+    /// Build a `HostImpl<MinimalBeaconSpec>` wired for attestation testing.
     ///
     /// - One validator at index 0 (pubkey = `att_test_pubkey()`).
     /// - Fork-choice has genesis block+state at root `genesis_root`.
@@ -4825,13 +4835,13 @@ mod tests {
     fn make_att_test_host(
         dir: &tempfile::TempDir,
         att_slot: u64,
-    ) -> (HostImpl<MinimalEthSpec>, Root, ForkMinimalState) {
+    ) -> (HostImpl<MinimalBeaconSpec>, Root, ForkMinimalState) {
         use pharos_types::phase0::misc::Fork;
         use pharos_types::phase0::operations::BeaconBlockHeader;
         use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
 
         let store = Arc::new(
-            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
                 path: dir.path().join("chain_db"),
                 create_if_missing: true,
             })
@@ -4844,7 +4854,7 @@ mod tests {
         // committee is non-empty (size=1 with 8 validators and SLOTS_PER_EPOCH=8).
         let validator = pharos_types::phase0::misc::Validator {
             pubkey: att_test_pubkey(),
-            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             activation_epoch: Epoch(0),
             exit_epoch: Epoch(u64::MAX),
             withdrawable_epoch: Epoch(u64::MAX),
@@ -4852,7 +4862,7 @@ mod tests {
             ..Default::default()
         };
         let validators_vec = vec![validator.clone(); 8];
-        let balances_vec = vec![Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE); 8];
+        let balances_vec = vec![Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE); 8];
         let validators_list =
             pharos_ssz::SszList::from_vec(validators_vec).expect("8 validators within limit");
         let balances_list =
@@ -4893,7 +4903,7 @@ mod tests {
 
         let fork_genesis_block = pharos_types::state::BeaconBlock::Phase0(genesis_block);
 
-        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalBeaconSpec>(
             fork_genesis_state.clone(),
             fork_genesis_block,
         );
@@ -4914,7 +4924,7 @@ mod tests {
                 pharos_types::state::BeaconBlock::Phase0(b)
             });
             // Set genesis_time in the fork_choice store to match att_runtime_cfg.
-            let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000;
+            let seconds_per_slot = MinimalBeaconSpec::SLOT_DURATION_MS / 1000;
             let now_sec = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -4939,8 +4949,14 @@ mod tests {
             genesis_validators_root: gvr,
         };
         let runtime_cfg = att_runtime_cfg(att_slot);
-        let host =
-            HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg);
+        let host = HostImpl::<MinimalBeaconSpec>::new(
+            store,
+            fork_choice,
+            gvr,
+            fork_schedule,
+            0,
+            runtime_cfg,
+        );
         (host, genesis_root, fork_genesis_state)
     }
 
@@ -4984,7 +5000,7 @@ mod tests {
         use pharos_ssz::Bitlist;
         let data = make_att_data(beacon_block_root);
         let domain =
-            att_get_domain::<MinimalEthSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
+            att_get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
         let signing_root = att_signing_root(&data, domain);
         let mut sig_bytes: [u8; 96] = att_test_sign(signing_root.as_ref()).into();
         if flip_sig {
@@ -5001,7 +5017,7 @@ mod tests {
     }
 
     /// Compute the expected subnet for slot=0, index=0, committees_per_slot=1,
-    /// MinimalEthSpec: 0 % 64 = 0.
+    /// MinimalBeaconSpec: 0 % 64 = 0.
     fn att_expected_subnet() -> u64 {
         0
     }
@@ -5203,7 +5219,7 @@ mod tests {
         // Determine the actual participant by computing the committee directly.
         let participant = {
             use pharos_stf::phase0::accessors::get_beacon_committee;
-            let committee = get_beacon_committee::<MinimalEthSpec>(&genesis_state, Slot(0), 0);
+            let committee = get_beacon_committee::<MinimalBeaconSpec>(&genesis_state, Slot(0), 0);
             let bit_idx = att.aggregation_bits.iter().position(|b| b).unwrap();
             committee[bit_idx].0
         };
@@ -5258,7 +5274,7 @@ mod tests {
                 root: unknown_root,
             },
         };
-        let domain = att_get_domain::<MinimalEthSpec>(
+        let domain = att_get_domain::<MinimalBeaconSpec>(
             &genesis_state,
             DOMAIN_BEACON_ATTESTER,
             Some(Epoch(0)),
@@ -5314,7 +5330,7 @@ mod tests {
                 root: orphan_root,
             },
         };
-        let domain = att_get_domain::<MinimalEthSpec>(
+        let domain = att_get_domain::<MinimalBeaconSpec>(
             &genesis_state,
             DOMAIN_BEACON_ATTESTER,
             Some(Epoch(0)),
@@ -5358,7 +5374,7 @@ mod tests {
                 root: wrong_target,
             },
         };
-        let domain = att_get_domain::<MinimalEthSpec>(
+        let domain = att_get_domain::<MinimalBeaconSpec>(
             &genesis_state,
             DOMAIN_BEACON_ATTESTER,
             Some(Epoch(0)),
@@ -5438,14 +5454,14 @@ mod tests {
     /// Build the slot-based signing root for the selection proof.
     fn sel_signing_root(state: &ForkMinimalState, slot: Slot) -> Root {
         let domain =
-            att_get_domain::<MinimalEthSpec>(state, DOMAIN_SELECTION_PROOF, Some(Epoch(0)));
+            att_get_domain::<MinimalBeaconSpec>(state, DOMAIN_SELECTION_PROOF, Some(Epoch(0)));
         att_signing_root(&slot, domain)
     }
 
     /// Build the signing root for the aggregator signature over AggregateAndProof.
     fn aap_signing_root(state: &ForkMinimalState, aap: &AggregateAndProof<2048>) -> Root {
         let domain =
-            att_get_domain::<MinimalEthSpec>(state, DOMAIN_AGGREGATE_AND_PROOF, Some(Epoch(0)));
+            att_get_domain::<MinimalBeaconSpec>(state, DOMAIN_AGGREGATE_AND_PROOF, Some(Epoch(0)));
         att_signing_root(aap, domain)
     }
 
@@ -5484,7 +5500,7 @@ mod tests {
         // Build aggregation bits with all committee members attesting.
         // Committee at slot=0,index=0 has 1 member for our 8-validator state.
         let committee_len = {
-            let c = get_beacon_committee::<MinimalEthSpec>(head_state, Slot(0), 0);
+            let c = get_beacon_committee::<MinimalBeaconSpec>(head_state, Slot(0), 0);
             c.len()
         };
         let mut bits = Bitlist::<2048>::new();
@@ -5494,7 +5510,7 @@ mod tests {
 
         // Sign the aggregate over attestation data (DOMAIN_BEACON_ATTESTER).
         let att_domain =
-            att_get_domain::<MinimalEthSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
+            att_get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
         let att_signing = att_signing_root(&data, att_domain);
         let mut att_sig_bytes: [u8; 96] = att_test_sign(att_signing.as_ref()).into();
         if flip_agg_att_sig {
@@ -5535,7 +5551,7 @@ mod tests {
     /// Compute the actual aggregator index for slot=0, committee=0 in a
     /// 8-validator state (first member of the committee).
     fn agg_test_aggregator_index(head_state: &ForkMinimalState) -> u64 {
-        let c = get_beacon_committee::<MinimalEthSpec>(head_state, Slot(0), 0);
+        let c = get_beacon_committee::<MinimalBeaconSpec>(head_state, Slot(0), 0);
         c[0].0
     }
 
@@ -6044,14 +6060,14 @@ mod tests {
         let mut bits = Bitlist::<2048>::new();
         bits.push(true).unwrap();
         // Build a valid selection proof and aggregator sig for this data.
-        let domain_sel = att_get_domain::<MinimalEthSpec>(
+        let domain_sel = att_get_domain::<MinimalBeaconSpec>(
             &genesis_state,
             DOMAIN_SELECTION_PROOF,
             Some(Epoch(0)),
         );
         let sr_sel = att_signing_root(&Slot(0u64), domain_sel);
         let sel_proof = att_test_sign(sr_sel.as_ref());
-        let att_domain = att_get_domain::<MinimalEthSpec>(
+        let att_domain = att_get_domain::<MinimalBeaconSpec>(
             &genesis_state,
             DOMAIN_BEACON_ATTESTER,
             Some(Epoch(0)),
@@ -6067,7 +6083,7 @@ mod tests {
             },
             selection_proof: sel_proof,
         };
-        let domain_aap = att_get_domain::<MinimalEthSpec>(
+        let domain_aap = att_get_domain::<MinimalBeaconSpec>(
             &genesis_state,
             DOMAIN_AGGREGATE_AND_PROOF,
             Some(Epoch(0)),
@@ -6172,13 +6188,13 @@ mod tests {
     /// - pubkey from exit_test_sk
     /// - activation_epoch = 0
     /// - exit_epoch = FAR_FUTURE (not yet exiting)
-    fn make_exit_test_host(dir: &tempfile::TempDir) -> HostImpl<MinimalEthSpec> {
+    fn make_exit_test_host(dir: &tempfile::TempDir) -> HostImpl<MinimalBeaconSpec> {
         use pharos_types::phase0::misc::Fork;
         use pharos_types::phase0::operations::BeaconBlockHeader;
         use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
 
         let store = Arc::new(
-            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
                 path: dir.path().join("chain_db"),
                 create_if_missing: true,
             })
@@ -6188,7 +6204,7 @@ mod tests {
         let genesis_slot = Slot(0);
         let validator = pharos_types::phase0::misc::Validator {
             pubkey: exit_test_pubkey(),
-            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             activation_epoch: Epoch(0),
             exit_epoch: Epoch(u64::MAX),
             withdrawable_epoch: Epoch(u64::MAX),
@@ -6215,7 +6231,7 @@ mod tests {
             validators: SszList::with_push(&SszList::default(), validator).unwrap(),
             balances: SszList::with_push(
                 &SszList::default(),
-                Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             )
             .unwrap(),
             ..Default::default()
@@ -6233,7 +6249,7 @@ mod tests {
         let genesis_root: Root = genesis_inner_block.tree_hash_root();
         let genesis_block = pharos_types::state::BeaconBlock::Phase0(genesis_inner_block);
 
-        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalBeaconSpec>(
             fork_genesis_state.clone(),
             genesis_block.clone(),
         );
@@ -6261,13 +6277,13 @@ mod tests {
             genesis_validators_root: gvr,
         };
         let runtime_cfg = Arc::new(RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
             ..Default::default()
         });
-        HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
+        HostImpl::<MinimalBeaconSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
     }
 
-    fn make_valid_exit(host: &HostImpl<MinimalEthSpec>) -> SignedVoluntaryExit {
+    fn make_valid_exit(host: &HostImpl<MinimalBeaconSpec>) -> SignedVoluntaryExit {
         use pharos_stf::phase0::helpers::DOMAIN_VOLUNTARY_EXIT;
         use pharos_types::BeaconStateView as _;
         use pharos_types::phase0::operations::VoluntaryExit;
@@ -6283,14 +6299,14 @@ mod tests {
             .unwrap();
         let current_epoch = pharos_stf::phase0::accessors::compute_epoch_at_slot(
             state.slot(),
-            MinimalEthSpec::SLOTS_PER_EPOCH,
+            MinimalBeaconSpec::SLOTS_PER_EPOCH,
         );
 
         let exit = VoluntaryExit {
             epoch: current_epoch,
             validator_index: ValidatorIndex(0),
         };
-        let domain = pharos_stf::phase0::accessors::get_domain::<MinimalEthSpec>(
+        let domain = pharos_stf::phase0::accessors::get_domain::<MinimalBeaconSpec>(
             &state,
             DOMAIN_VOLUNTARY_EXIT,
             Some(current_epoch),
@@ -6438,7 +6454,7 @@ mod tests {
                     v.activation_epoch = Epoch(0);
                     s.validators = SszList::with_push(&SszList::default(), v).unwrap();
                     // Advance slot to epoch 1 so exit_epoch=0 isn't "future"
-                    s.slot = Slot(MinimalEthSpec::SLOTS_PER_EPOCH); // epoch 1
+                    s.slot = Slot(MinimalBeaconSpec::SLOTS_PER_EPOCH); // epoch 1
                 }
             }
         }
@@ -6463,20 +6479,21 @@ mod tests {
         use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
 
         // Advance the state slot to epoch 64 so the SHARD_COMMITTEE_PERIOD check passes.
-        // SHARD_COMMITTEE_PERIOD=64 for MinimalEthSpec; activation_epoch=0.
+        // SHARD_COMMITTEE_PERIOD=64 for MinimalBeaconSpec; activation_epoch=0.
         // Need: current_epoch(64) >= 0 + 64 → true.
         {
             let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
             let mut fc = host.fork_choice.write();
             if let Some(ForkMinimalState::Phase0(s)) = fc.block_states.get_mut(&head_root) {
-                s.slot =
-                    Slot(MinimalEthSpec::SHARD_COMMITTEE_PERIOD * MinimalEthSpec::SLOTS_PER_EPOCH);
+                s.slot = Slot(
+                    MinimalBeaconSpec::SHARD_COMMITTEE_PERIOD * MinimalBeaconSpec::SLOTS_PER_EPOCH,
+                );
             }
         }
 
         let exit = SignedVoluntaryExit {
             message: VoluntaryExit {
-                epoch: Epoch(MinimalEthSpec::SHARD_COMMITTEE_PERIOD), // current_epoch >= this
+                epoch: Epoch(MinimalBeaconSpec::SHARD_COMMITTEE_PERIOD), // current_epoch >= this
                 validator_index: ValidatorIndex(0),
             },
             signature: BLSSignature::from_array([0u8; 96]), // zero sig = invalid
@@ -6490,7 +6507,7 @@ mod tests {
     // ── proposer_slashing validation tests ────────────────────────────────────
 
     fn make_ps_headers(
-        host: &HostImpl<MinimalEthSpec>,
+        host: &HostImpl<MinimalBeaconSpec>,
         slot: Slot,
         proposer: u64,
         different: bool,
@@ -6510,9 +6527,9 @@ mod tests {
             .unwrap();
         let epoch = pharos_stf::phase0::accessors::compute_epoch_at_slot(
             slot,
-            MinimalEthSpec::SLOTS_PER_EPOCH,
+            MinimalBeaconSpec::SLOTS_PER_EPOCH,
         );
-        let domain = pharos_stf::phase0::accessors::get_domain::<MinimalEthSpec>(
+        let domain = pharos_stf::phase0::accessors::get_domain::<MinimalBeaconSpec>(
             &state,
             pharos_stf::phase0::helpers::DOMAIN_BEACON_PROPOSER,
             Some(epoch),
@@ -6733,7 +6750,7 @@ mod tests {
     // ── attester_slashing validation tests ────────────────────────────────────
 
     fn make_indexed_att(
-        host: &HostImpl<MinimalEthSpec>,
+        host: &HostImpl<MinimalBeaconSpec>,
         indices: &[u64],
         slot: Slot,
         target_epoch: pharos_utils::Epoch,
@@ -6766,7 +6783,7 @@ mod tests {
                 root: Root::default(),
             },
         };
-        let domain = pharos_stf::phase0::accessors::get_domain::<MinimalEthSpec>(
+        let domain = pharos_stf::phase0::accessors::get_domain::<MinimalBeaconSpec>(
             &state,
             pharos_stf::phase0::helpers::DOMAIN_BEACON_ATTESTER,
             Some(target_epoch),
@@ -7078,7 +7095,7 @@ mod tests {
 
     /// Build a host where the single validator has BLS withdrawal credentials
     /// matching `bls_test_pubkey()`, and capella_fork_epoch = 0 (active now).
-    fn make_bls_to_exec_host(dir: &tempfile::TempDir) -> HostImpl<MinimalEthSpec> {
+    fn make_bls_to_exec_host(dir: &tempfile::TempDir) -> HostImpl<MinimalBeaconSpec> {
         use pharos_types::phase0::misc::Fork;
         use pharos_types::phase0::operations::BeaconBlockHeader;
         use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
@@ -7090,7 +7107,7 @@ mod tests {
         creds[1..].copy_from_slice(&pubkey_hash.as_slice()[1..]);
 
         let store = Arc::new(
-            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
                 path: dir.path().join("chain_db"),
                 create_if_missing: true,
             })
@@ -7100,7 +7117,7 @@ mod tests {
         let genesis_slot = Slot(0);
         let validator = pharos_types::phase0::misc::Validator {
             pubkey: exit_test_pubkey(), // validator signing key (different from BLS withdrawal key)
-            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             activation_epoch: Epoch(0),
             exit_epoch: Epoch(u64::MAX),
             withdrawable_epoch: Epoch(u64::MAX),
@@ -7128,7 +7145,7 @@ mod tests {
             validators: SszList::with_push(&SszList::default(), validator).unwrap(),
             balances: SszList::with_push(
                 &SszList::default(),
-                Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             )
             .unwrap(),
             ..Default::default()
@@ -7145,7 +7162,7 @@ mod tests {
         let genesis_root: Root = genesis_inner_block.tree_hash_root();
         let genesis_block = pharos_types::state::BeaconBlock::Phase0(genesis_inner_block);
 
-        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalBeaconSpec>(
             fork_genesis_state.clone(),
             genesis_block.clone(),
         );
@@ -7174,13 +7191,13 @@ mod tests {
             genesis_validators_root: gvr,
         };
         let runtime_cfg = Arc::new(RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
             ..Default::default()
         });
-        HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
+        HostImpl::<MinimalBeaconSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
     }
 
-    fn make_valid_bls_to_exec(_host: &HostImpl<MinimalEthSpec>) -> SignedBLSToExecutionChange {
+    fn make_valid_bls_to_exec(_host: &HostImpl<MinimalBeaconSpec>) -> SignedBLSToExecutionChange {
         use pharos_types::fork::DOMAIN_BLS_TO_EXECUTION_CHANGE;
         use pharos_types::phase0::primitives::ValidatorIndex;
 
@@ -7192,7 +7209,7 @@ mod tests {
         let gvr = Root::default();
         let domain = pharos_stf::phase0::accessors::compute_domain(
             DOMAIN_BLS_TO_EXECUTION_CHANGE,
-            MinimalEthSpec::GENESIS_FORK_VERSION,
+            MinimalBeaconSpec::GENESIS_FORK_VERSION,
             &gvr,
         );
         let sr = pharos_stf::phase0::accessors::compute_signing_root(&msg, domain);
@@ -7345,7 +7362,7 @@ mod tests {
         BLSSignature::from_array(sc_msg_test_sk().sign(msg, BLS_DST, &[]).compress())
     }
 
-    /// Build a `HostImpl<MinimalEthSpec>` with an altair state at slot 0.
+    /// Build a `HostImpl<MinimalBeaconSpec>` with an altair state at slot 0.
     ///
     /// The state has:
     /// - One validator (index 0) with `sc_msg_test_pubkey()`.
@@ -7353,14 +7370,14 @@ mod tests {
     /// - `genesis_time` set so slot 0 is the current slot.
     ///
     /// Returns `(host, genesis_root)`.
-    fn make_sync_msg_host(dir: &tempfile::TempDir) -> (HostImpl<MinimalEthSpec>, Root) {
+    fn make_sync_msg_host(dir: &tempfile::TempDir) -> (HostImpl<MinimalBeaconSpec>, Root) {
         use pharos_types::altair::MinimalBeaconState as AltairMinimalState;
         use pharos_types::phase0::misc::Fork;
         use pharos_types::phase0::operations::BeaconBlockHeader;
         use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
 
         let store = Arc::new(
-            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
                 path: dir.path().join("chain_db"),
                 create_if_missing: true,
             })
@@ -7370,7 +7387,7 @@ mod tests {
         let genesis_slot = Slot(0);
         let validator = pharos_types::phase0::misc::Validator {
             pubkey: sc_msg_test_pubkey(),
-            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             activation_epoch: Epoch(0),
             exit_epoch: Epoch(u64::MAX),
             withdrawable_epoch: Epoch(u64::MAX),
@@ -7380,11 +7397,11 @@ mod tests {
         let validators_list =
             pharos_ssz::SszList::from_vec(vec![validator]).expect("validators within limit");
         let balances_list =
-            pharos_ssz::SszList::from_vec(vec![Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE)])
+            pharos_ssz::SszList::from_vec(vec![Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE)])
                 .expect("balances within limit");
 
         // Build sync committee with the test pubkey at index 0.
-        // MinimalEthSpec: SYNC_COMMITTEE_SIZE = 32.
+        // MinimalBeaconSpec: SYNC_COMMITTEE_SIZE = 32.
         let mut sc_pubkeys_vec = vec![BLSPubkey::default(); 32];
         sc_pubkeys_vec[0] = sc_msg_test_pubkey();
         let sc_pubkeys_ssz = pharos_ssz::SszVector::from_vec(sc_pubkeys_vec)
@@ -7448,14 +7465,14 @@ mod tests {
             ..MinimalBeaconBlock::default()
         };
         let phase0_block = pharos_types::state::BeaconBlock::Phase0(phase0_anchor_block);
-        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalBeaconSpec>(
             phase0_genesis,
             phase0_block,
         );
         let fork_choice = Arc::new(RwLock::new(fc_store));
 
         {
-            let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000;
+            let seconds_per_slot = MinimalBeaconSpec::SLOT_DURATION_MS / 1000;
             let now_sec = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -7499,13 +7516,19 @@ mod tests {
             electra_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: gvr,
         };
-        let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000;
+        let seconds_per_slot = MinimalBeaconSpec::SLOT_DURATION_MS / 1000;
         let runtime_cfg = Arc::new(RuntimeConfig {
             seconds_per_slot,
             ..Default::default()
         });
-        let host =
-            HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg);
+        let host = HostImpl::<MinimalBeaconSpec>::new(
+            store,
+            fork_choice,
+            gvr,
+            fork_schedule,
+            0,
+            runtime_cfg,
+        );
         (host, genesis_root)
     }
 
@@ -7520,8 +7543,9 @@ mod tests {
         use pharos_stf::phase0::accessors::{
             compute_epoch_at_slot, compute_signing_root, get_domain,
         };
-        let epoch = compute_epoch_at_slot(Slot(0), MinimalEthSpec::SLOTS_PER_EPOCH);
-        let domain = get_domain::<MinimalEthSpec>(head_state, DOMAIN_SYNC_COMMITTEE, Some(epoch));
+        let epoch = compute_epoch_at_slot(Slot(0), MinimalBeaconSpec::SLOTS_PER_EPOCH);
+        let domain =
+            get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_SYNC_COMMITTEE, Some(epoch));
         let signing_root = compute_signing_root(&beacon_block_root, domain);
         let mut sig_bytes: [u8; 96] = sc_msg_test_sign(signing_root.as_ref()).into();
         if flip_sig {
@@ -7645,7 +7669,7 @@ mod tests {
             validators: pharos_ssz::SszList::from_vec(vec![
                 pharos_types::phase0::misc::Validator {
                     pubkey: sc_msg_test_pubkey(),
-                    effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                    effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
                     activation_epoch: pharos_types::phase0::primitives::Epoch(0),
                     exit_epoch: pharos_types::phase0::primitives::Epoch(u64::MAX),
                     withdrawable_epoch: pharos_types::phase0::primitives::Epoch(u64::MAX),
@@ -7655,7 +7679,7 @@ mod tests {
             ])
             .expect("1 validator within limit"),
             balances: pharos_ssz::SszList::from_vec(vec![Gwei(
-                MinimalEthSpec::MAX_EFFECTIVE_BALANCE,
+                MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE,
             )])
             .expect("1 balance within limit"),
             ..Default::default()
@@ -7718,7 +7742,7 @@ mod tests {
         sc_msg_test_sign(msg)
     }
 
-    /// Build a `SignedContributionAndProof<8>` (MinimalEthSpec subcommittee = 8).
+    /// Build a `SignedContributionAndProof<8>` (MinimalBeaconSpec subcommittee = 8).
     ///
     /// Parameters:
     /// - `head_state`: used to compute domains.
@@ -7749,7 +7773,7 @@ mod tests {
         };
 
         let slot = Slot(0);
-        let epoch = compute_epoch_at_slot(slot, MinimalEthSpec::SLOTS_PER_EPOCH);
+        let epoch = compute_epoch_at_slot(slot, MinimalBeaconSpec::SLOTS_PER_EPOCH);
 
         // Build aggregation_bits bitvector.
         let mut agg_bits = Bitvector::<8>::default();
@@ -7761,7 +7785,7 @@ mod tests {
 
         // Contribution signature: sign beacon_block_root under DOMAIN_SYNC_COMMITTEE.
         let domain_sc =
-            get_domain::<MinimalEthSpec>(head_state, DOMAIN_SYNC_COMMITTEE, Some(epoch));
+            get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_SYNC_COMMITTEE, Some(epoch));
         let sc_signing_root = compute_signing_root(&beacon_block_root, domain_sc);
         let mut contrib_sig_bytes: [u8; 96] = sc_contrib_test_sign(sc_signing_root.as_ref()).into();
         if flip_contrib_sig {
@@ -7777,7 +7801,7 @@ mod tests {
         };
 
         // Selection proof: sign SyncAggregatorSelectionData under DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF.
-        let domain_sel = get_domain::<MinimalEthSpec>(
+        let domain_sel = get_domain::<MinimalBeaconSpec>(
             head_state,
             DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF,
             Some(epoch),
@@ -7800,7 +7824,7 @@ mod tests {
 
         // Aggregator signature: sign ContributionAndProof under DOMAIN_CONTRIBUTION_AND_PROOF.
         let domain_cap =
-            get_domain::<MinimalEthSpec>(head_state, DOMAIN_CONTRIBUTION_AND_PROOF, Some(epoch));
+            get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_CONTRIBUTION_AND_PROOF, Some(epoch));
         let cap_root = cap.tree_hash_root();
         let cap_signing_root = compute_signing_root(&cap_root, domain_cap);
         let mut agg_sig_bytes: [u8; 96] = sc_contrib_test_sign(cap_signing_root.as_ref()).into();
@@ -7847,7 +7871,7 @@ mod tests {
     fn sync_contrib_rejects_subcommittee_out_of_range() {
         let dir = tempfile::TempDir::new().unwrap();
         let (host, _genesis_root) = make_sync_msg_host(&dir);
-        // MinimalEthSpec::SYNC_COMMITTEE_SUBNET_COUNT = 4, so index 99 is out of range.
+        // MinimalBeaconSpec::SYNC_COMMITTEE_SUBNET_COUNT = 4, so index 99 is out of range.
         let msg = SignedContributionAndProof::<8> {
             message: ContributionAndProof::<8> {
                 aggregator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
@@ -7896,7 +7920,7 @@ mod tests {
     }
 
     // ── RAC5: sync_contrib_ignores_state_unavailable ─────────────────────────
-    // (RAC4 is not reachable for MinimalEthSpec because modulo=1 always → true)
+    // (RAC4 is not reachable for MinimalBeaconSpec because modulo=1 always → true)
 
     #[test]
     fn sync_contrib_ignores_state_unavailable() {
@@ -7965,7 +7989,7 @@ mod tests {
             validators: pharos_ssz::SszList::from_vec(vec![
                 pharos_types::phase0::misc::Validator {
                     pubkey: sc_msg_test_pubkey(),
-                    effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                    effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
                     activation_epoch: pharos_types::phase0::primitives::Epoch(0),
                     exit_epoch: pharos_types::phase0::primitives::Epoch(u64::MAX),
                     withdrawable_epoch: pharos_types::phase0::primitives::Epoch(u64::MAX),
@@ -7975,7 +7999,7 @@ mod tests {
             ])
             .expect("1 validator within limit"),
             balances: pharos_ssz::SszList::from_vec(vec![Gwei(
-                MinimalEthSpec::MAX_EFFECTIVE_BALANCE,
+                MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE,
             )])
             .expect("1 balance within limit"),
             ..Default::default()
@@ -8264,12 +8288,12 @@ mod tests {
             state_root: Root::default(),
             body_root: Root::default(),
         };
-        let domain = get_domain::<MinimalEthSpec>(
+        let domain = get_domain::<MinimalBeaconSpec>(
             parent_state_for_signing,
             DOMAIN_BEACON_PROPOSER,
             Some(pharos_stf::phase0::accessors::compute_epoch_at_slot(
                 slot,
-                MinimalEthSpec::SLOTS_PER_EPOCH,
+                MinimalBeaconSpec::SLOTS_PER_EPOCH,
             )),
         );
         let signing_root = compute_signing_root(&header, domain);
@@ -8596,7 +8620,7 @@ mod tests {
         // Add a second validator to the genesis state so index 1 is in range.
         let validator2 = pharos_types::phase0::misc::Validator {
             pubkey: BLSPubkey::from_array([0xab; 48]),
-            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             activation_epoch: Epoch(0),
             exit_epoch: Epoch(u64::MAX),
             withdrawable_epoch: Epoch(u64::MAX),
@@ -8610,7 +8634,7 @@ mod tests {
                 s.validators =
                     SszList::with_push(&s.validators, validator2).expect("push validator 2");
                 s.balances =
-                    SszList::with_push(&s.balances, Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE))
+                    SszList::with_push(&s.balances, Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE))
                         .expect("push balance 2");
             }
         }
@@ -8725,7 +8749,7 @@ mod tests {
         let mut data = make_att_data(beacon_block_root);
         data.index = CommitteeIndex(data_index);
         let domain =
-            att_get_domain::<MinimalEthSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
+            att_get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
         let signing_root = att_signing_root(&data, domain);
         let mut sig_bytes: [u8; 96] = att_test_sign(signing_root.as_ref()).into();
         if flip_sig {
@@ -8748,7 +8772,7 @@ mod tests {
 
         let attester = {
             use pharos_stf::phase0::accessors::get_beacon_committee;
-            get_beacon_committee::<MinimalEthSpec>(&genesis_state, Slot(0), 0)[0].0
+            get_beacon_committee::<MinimalBeaconSpec>(&genesis_state, Slot(0), 0)[0].0
         };
         let att = make_single_attestation(genesis_root, &genesis_state, 0, attester, 0, false);
 
@@ -8772,7 +8796,7 @@ mod tests {
 
         let attester = {
             use pharos_stf::phase0::accessors::get_beacon_committee;
-            get_beacon_committee::<MinimalEthSpec>(&genesis_state, Slot(0), 0)[0].0
+            get_beacon_committee::<MinimalBeaconSpec>(&genesis_state, Slot(0), 0)[0].0
         };
         // data_index = 1 (non-zero) -> reject.
         let att = make_single_attestation(genesis_root, &genesis_state, 0, attester, 1, false);
@@ -8791,7 +8815,7 @@ mod tests {
 
         let attester = {
             use pharos_stf::phase0::accessors::get_beacon_committee;
-            get_beacon_committee::<MinimalEthSpec>(&genesis_state, Slot(0), 0)[0].0
+            get_beacon_committee::<MinimalBeaconSpec>(&genesis_state, Slot(0), 0)[0].0
         };
         let att = make_single_attestation(genesis_root, &genesis_state, 0, attester, 0, false);
 
@@ -8818,7 +8842,7 @@ mod tests {
         let mut data = make_att_data(beacon_block_root);
         data.index = CommitteeIndex(0);
 
-        let committee_len = get_beacon_committee::<MinimalEthSpec>(head_state, Slot(0), 0).len();
+        let committee_len = get_beacon_committee::<MinimalBeaconSpec>(head_state, Slot(0), 0).len();
         // aggregation_bits: all committee members attesting (electra Bitlist type).
         let mut agg_bits = Bitlist::<8192>::new();
         for _ in 0..committee_len {
@@ -8832,7 +8856,7 @@ mod tests {
 
         // Aggregate attestation signature over data (DOMAIN_BEACON_ATTESTER).
         let att_domain =
-            att_get_domain::<MinimalEthSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
+            att_get_domain::<MinimalBeaconSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
         let att_signing = att_signing_root(&data, att_domain);
         let att_sig_bytes: [u8; 96] = att_test_sign(att_signing.as_ref()).into();
 
@@ -8854,7 +8878,7 @@ mod tests {
         };
 
         // Aggregator signature over the electra AggregateAndProof.
-        let aap_domain = att_get_domain::<MinimalEthSpec>(
+        let aap_domain = att_get_domain::<MinimalBeaconSpec>(
             head_state,
             DOMAIN_AGGREGATE_AND_PROOF,
             Some(Epoch(0)),
@@ -8911,7 +8935,7 @@ mod tests {
         parent_root: Root,
         parent_state_root: Root,
         num_commitments: usize,
-    ) -> <MinimalEthSpec as EthSpec>::SignedBeaconBlock {
+    ) -> <MinimalBeaconSpec as BeaconSpec>::SignedBeaconBlock {
         use pharos_ssz::SszList;
         use pharos_types::deneb::KZGCommitment;
         use pharos_types::electra::{MinimalBeaconBlock, MinimalBeaconBlockBody};
@@ -8936,7 +8960,7 @@ mod tests {
             message: block,
             signature: BLSSignature::from_array([0u8; 96]),
         };
-        MinimalEthSpec::electra_into_signed_block(signed)
+        MinimalBeaconSpec::electra_into_signed_block(signed)
     }
 
     /// EIP-7691 (`specs/electra/p2p-interface.md:208-211`): the blob-commitment

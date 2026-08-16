@@ -50,7 +50,7 @@ use pharos_types::state::{
     SignedBeaconBlock as ForkSignedBeaconBlock,
 };
 use pharos_types::views::BeaconBlockView as _;
-use pharos_types::{EthSpec, MinimalEthSpec};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 use pharos_utils::{BLSPubkey, BLSSignature, Epoch as UtilsEpoch};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -239,7 +239,7 @@ fn build_capella_anchor(slot: Slot) -> (MinimalBeaconState, MinimalSignedBeaconB
 
     let validator = Validator {
         pubkey: test_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -250,7 +250,7 @@ fn build_capella_anchor(slot: Slot) -> (MinimalBeaconState, MinimalSignedBeaconB
     let sync_committee = MinimalSyncCommittee {
         pubkeys: SszVector::from_vec(vec![
             test_pubkey();
-            MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+            MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
         ])
         .unwrap(),
         aggregate_pubkey: test_pubkey(),
@@ -259,8 +259,8 @@ fn build_capella_anchor(slot: Slot) -> (MinimalBeaconState, MinimalSignedBeaconB
     let state_inner = MinimalBeaconState {
         slot,
         fork: Fork {
-            previous_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
-            current_version: Version::from_array(MinimalEthSpec::CAPELLA_FORK_VERSION),
+            previous_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
+            current_version: Version::from_array(MinimalBeaconSpec::CAPELLA_FORK_VERSION),
             epoch: UtilsEpoch(0),
         },
         latest_block_header: BeaconBlockHeader {
@@ -272,7 +272,7 @@ fn build_capella_anchor(slot: Slot) -> (MinimalBeaconState, MinimalSignedBeaconB
         },
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::default()
-            .with_push(Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE))
+            .with_push(Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE))
             .unwrap(),
         previous_epoch_participation: SszList::default().with_push(0u8).unwrap(),
         current_epoch_participation: SszList::default().with_push(0u8).unwrap(),
@@ -304,11 +304,11 @@ fn build_capella_anchor(slot: Slot) -> (MinimalBeaconState, MinimalSignedBeaconB
 /// Returns `(host, _tmpdir)`.  The caller MUST keep `_tmpdir` alive for the
 /// duration of the test; dropping it deletes the RocksDB data directory.
 fn build_host(
-    fc_store: Arc<RwLock<pharos_fork_choice::Store<MinimalEthSpec>>>,
-) -> (Arc<HostImpl<MinimalEthSpec>>, tempfile::TempDir) {
+    fc_store: Arc<RwLock<pharos_fork_choice::Store<MinimalBeaconSpec>>>,
+) -> (Arc<HostImpl<MinimalBeaconSpec>>, tempfile::TempDir) {
     let tmpdir = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        pharos_storage::RocksStore::open::<MinimalEthSpec>(pharos_storage::RocksStoreConfig {
+        pharos_storage::RocksStore::open::<MinimalBeaconSpec>(pharos_storage::RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -316,12 +316,12 @@ fn build_host(
     );
     // Capella-at-genesis schedule
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: UtilsEpoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: UtilsEpoch(0),
-        capella_fork_version: Version::from_array(MinimalEthSpec::CAPELLA_FORK_VERSION),
+        capella_fork_version: Version::from_array(MinimalBeaconSpec::CAPELLA_FORK_VERSION),
         capella_fork_epoch: UtilsEpoch(0),
         deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
         deneb_fork_epoch: UtilsEpoch(u64::MAX),
@@ -329,7 +329,7 @@ fn build_host(
         electra_fork_epoch: UtilsEpoch(u64::MAX),
         genesis_validators_root: Root::default(),
     };
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         store,
         fc_store,
         Root::default(),
@@ -426,8 +426,8 @@ async fn produce_block_state_root_consistent_capella() {
     // ── Build anchor state ────────────────────────────────────────────────────
 
     let runtime_cfg = RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
         capella_fork_epoch: 0,
         ..Default::default()
     };
@@ -460,10 +460,10 @@ async fn produce_block_state_root_consistent_capella() {
     let anchor_root: Root = fork_anchor_block.tree_hash_root();
 
     let mut fc =
-        get_forkchoice_store::<MinimalEthSpec>(fork_anchor_state.clone(), fork_anchor_block);
+        get_forkchoice_store::<MinimalBeaconSpec>(fork_anchor_state.clone(), fork_anchor_block);
 
     // Advance store time past PRODUCE_SLOT so the future-slot guard passes.
-    fc.time = MinimalEthSpec::SLOT_DURATION_MS * (PRODUCE_SLOT + 2);
+    fc.time = MinimalBeaconSpec::SLOT_DURATION_MS * (PRODUCE_SLOT + 2);
     fc.runtime_cfg = runtime_cfg.clone();
 
     // Pre-seed anchor state so produce_block can clone it via block_states.
@@ -479,7 +479,7 @@ async fn produce_block_state_root_consistent_capella() {
 
     // ── Build OperationPools ──────────────────────────────────────────────────
 
-    let pools: Arc<OperationPools<MinimalEthSpec>> = Arc::new(OperationPools::default());
+    let pools: Arc<OperationPools<MinimalBeaconSpec>> = Arc::new(OperationPools::default());
 
     // ── Call produce_block in spawn_blocking ──────────────────────────────────
 
@@ -489,7 +489,7 @@ async fn produce_block_state_root_consistent_capella() {
     let runtime_cfg_clone = runtime_cfg.clone();
 
     let produce_result = tokio::task::spawn_blocking(move || {
-        produce_block::<MinimalEthSpec>(
+        produce_block::<MinimalBeaconSpec>(
             &fc_store_clone,
             &pools_clone,
             &engine_clone,
@@ -536,7 +536,7 @@ async fn produce_block_state_root_consistent_capella() {
     // Exercise the concurrent produce+import path to surface lock-ordering bugs.
 
     let (head_tx, head_rx) = watch::channel(None::<HeadChange>);
-    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(8);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(8);
 
     let (host, _tmpdir) = build_host(Arc::clone(&fc_store));
 
@@ -544,7 +544,7 @@ async fn produce_block_state_root_consistent_capella() {
     let fc_store_drv = Arc::clone(&fc_store);
     let head_tx_clone = head_tx.clone();
     tokio::spawn(async move {
-        run_engine_driver_loop::<MinimalEthSpec, pharos_fork_choice::NoopPowBlockProvider>(
+        run_engine_driver_loop::<MinimalBeaconSpec, pharos_fork_choice::NoopPowBlockProvider>(
             engine_handle,
             fc_store_drv,
             head_rx,
@@ -586,7 +586,7 @@ async fn produce_block_state_root_consistent_capella() {
     let join = tokio::spawn(async move {
         use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
         let _ = run_block_ingestion_loop::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             NullExecutionEngine,
             NoopDataAvailabilityChecker,
         >(
@@ -644,7 +644,7 @@ async fn produce_block_state_root_consistent_capella() {
     // Wait for the head to advance.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let head = get_head::<MinimalEthSpec>(&fc_store.read());
+        let head = get_head::<MinimalBeaconSpec>(&fc_store.read());
         if head != anchor_root {
             break;
         }
@@ -655,7 +655,7 @@ async fn produce_block_state_root_consistent_capella() {
     }
 
     // Assert head is now at slot 1.
-    let head = get_head::<MinimalEthSpec>(&fc_store.read());
+    let head = get_head::<MinimalBeaconSpec>(&fc_store.read());
     let head_slot = fc_store
         .read()
         .blocks
@@ -729,8 +729,8 @@ async fn produce_block_concurrent_no_deadlock() {
     );
 
     let runtime_cfg = RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
         capella_fork_epoch: 0,
         ..Default::default()
     };
@@ -762,15 +762,15 @@ async fn produce_block_concurrent_no_deadlock() {
     let anchor_root: Root = fork_anchor_block.tree_hash_root();
 
     let mut fc =
-        get_forkchoice_store::<MinimalEthSpec>(fork_anchor_state.clone(), fork_anchor_block);
-    fc.time = MinimalEthSpec::SLOT_DURATION_MS * 2;
+        get_forkchoice_store::<MinimalBeaconSpec>(fork_anchor_state.clone(), fork_anchor_block);
+    fc.time = MinimalBeaconSpec::SLOT_DURATION_MS * 2;
     fc.runtime_cfg = runtime_cfg.clone();
     fc.block_states
         .insert(anchor_root, fork_anchor_state.clone());
 
     let fc_store = Arc::new(RwLock::new(fc));
 
-    let pools: Arc<OperationPools<MinimalEthSpec>> = Arc::new(OperationPools::default());
+    let pools: Arc<OperationPools<MinimalBeaconSpec>> = Arc::new(OperationPools::default());
     let engine_client = EngineClient::new(mock.url.clone(), mock.secret.clone()).unwrap();
     let engine_handle = spawn_engine_actor(engine_client, None);
 
@@ -781,7 +781,7 @@ async fn produce_block_concurrent_no_deadlock() {
         let e = engine_handle.clone();
         let r = runtime_cfg.clone();
         tokio::task::spawn_blocking(move || {
-            produce_block::<MinimalEthSpec>(
+            produce_block::<MinimalBeaconSpec>(
                 &fc,
                 &p,
                 &e,
@@ -799,7 +799,7 @@ async fn produce_block_concurrent_no_deadlock() {
         let e = engine_handle.clone();
         let r = runtime_cfg.clone();
         tokio::task::spawn_blocking(move || {
-            produce_block::<MinimalEthSpec>(
+            produce_block::<MinimalBeaconSpec>(
                 &fc,
                 &p,
                 &e,
@@ -891,8 +891,8 @@ async fn produce_block_signed_reimports_validated_capella() {
 
     // ── Anchor state ──────────────────────────────────────────────────────────
     let runtime_cfg = RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
         capella_fork_epoch: 0,
         ..Default::default()
     };
@@ -924,8 +924,8 @@ async fn produce_block_signed_reimports_validated_capella() {
     let anchor_root: Root = fork_anchor_block.tree_hash_root();
 
     let mut fc =
-        get_forkchoice_store::<MinimalEthSpec>(fork_anchor_state.clone(), fork_anchor_block);
-    fc.time = MinimalEthSpec::SLOT_DURATION_MS * (PRODUCE_SLOT + 2);
+        get_forkchoice_store::<MinimalBeaconSpec>(fork_anchor_state.clone(), fork_anchor_block);
+    fc.time = MinimalBeaconSpec::SLOT_DURATION_MS * (PRODUCE_SLOT + 2);
     fc.runtime_cfg = runtime_cfg.clone();
     fc.block_states
         .insert(anchor_root, fork_anchor_state.clone());
@@ -933,14 +933,14 @@ async fn produce_block_signed_reimports_validated_capella() {
 
     let engine_client = EngineClient::new(mock.url.clone(), mock.secret.clone()).unwrap();
     let engine_handle = spawn_engine_actor(engine_client, None);
-    let pools: Arc<OperationPools<MinimalEthSpec>> = Arc::new(OperationPools::default());
+    let pools: Arc<OperationPools<MinimalBeaconSpec>> = Arc::new(OperationPools::default());
 
     // ── Sign the RANDAO reveal with the proposer's real key ───────────────────
     // The single validator (index 0) has pubkey == test_pubkey() == sk.to_pubkey().
     let sk = test_secret_key();
-    let epoch = UtilsEpoch(PRODUCE_SLOT / MinimalEthSpec::SLOTS_PER_EPOCH);
+    let epoch = UtilsEpoch(PRODUCE_SLOT / MinimalBeaconSpec::SLOTS_PER_EPOCH);
     let randao_domain =
-        get_domain::<MinimalEthSpec>(&fork_anchor_state, DOMAIN_RANDAO, Some(epoch));
+        get_domain::<MinimalBeaconSpec>(&fork_anchor_state, DOMAIN_RANDAO, Some(epoch));
     let randao_signing_root = compute_signing_root(&epoch, randao_domain);
     let randao_reveal = sk.sign(randao_signing_root.as_slice());
 
@@ -951,7 +951,7 @@ async fn produce_block_signed_reimports_validated_capella() {
         let e = engine_handle.clone();
         let r = runtime_cfg.clone();
         move || {
-            produce_block::<MinimalEthSpec>(
+            produce_block::<MinimalBeaconSpec>(
                 &fc,
                 &p,
                 &e,
@@ -975,7 +975,7 @@ async fn produce_block_signed_reimports_validated_capella() {
 
     // ── Sign the produced block as proposer ───────────────────────────────────
     let proposer_domain =
-        get_domain::<MinimalEthSpec>(&fork_anchor_state, DOMAIN_BEACON_PROPOSER, Some(epoch));
+        get_domain::<MinimalBeaconSpec>(&fork_anchor_state, DOMAIN_BEACON_PROPOSER, Some(epoch));
     let block_signing_root = compute_signing_root(&inner.message, proposer_domain);
     let block_sig = sk.sign(block_signing_root.as_slice());
 
@@ -994,13 +994,13 @@ async fn produce_block_signed_reimports_validated_capella() {
 
     // ── Ingestion loop with validate_result = TRUE ────────────────────────────
     let (head_tx, head_rx) = watch::channel(None::<HeadChange>);
-    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(8);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(8);
     let (host, _tmpdir) = build_host(Arc::clone(&fc_store));
 
     let fc_store_drv = Arc::clone(&fc_store);
     let head_tx_clone = head_tx.clone();
     tokio::spawn(async move {
-        run_engine_driver_loop::<MinimalEthSpec, pharos_fork_choice::NoopPowBlockProvider>(
+        run_engine_driver_loop::<MinimalBeaconSpec, pharos_fork_choice::NoopPowBlockProvider>(
             engine_handle,
             fc_store_drv,
             head_rx,
@@ -1037,7 +1037,7 @@ async fn produce_block_signed_reimports_validated_capella() {
     let join = tokio::spawn(async move {
         use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
         let _ = run_block_ingestion_loop::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             NullExecutionEngine,
             NoopDataAvailabilityChecker,
         >(
@@ -1072,7 +1072,7 @@ async fn produce_block_signed_reimports_validated_capella() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if get_head::<MinimalEthSpec>(&fc_store.read()) != anchor_root {
+        if get_head::<MinimalBeaconSpec>(&fc_store.read()) != anchor_root {
             break;
         }
         if tokio::time::Instant::now() > deadline {
@@ -1081,7 +1081,7 @@ async fn produce_block_signed_reimports_validated_capella() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    let head = get_head::<MinimalEthSpec>(&fc_store.read());
+    let head = get_head::<MinimalBeaconSpec>(&fc_store.read());
     let head_slot = fc_store
         .read()
         .blocks
@@ -1108,7 +1108,7 @@ fn build_electra_anchor(slot: Slot) -> ElectraMinimalBeaconState {
 
     let validator = Validator {
         pubkey: test_pubkey(),
-        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
         activation_epoch: Epoch(0),
         exit_epoch: Epoch(u64::MAX),
         withdrawable_epoch: Epoch(u64::MAX),
@@ -1119,7 +1119,7 @@ fn build_electra_anchor(slot: Slot) -> ElectraMinimalBeaconState {
     let sync_committee = MinimalSyncCommittee {
         pubkeys: SszVector::from_vec(vec![
             test_pubkey();
-            MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+            MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
         ])
         .unwrap(),
         aggregate_pubkey: test_pubkey(),
@@ -1141,7 +1141,7 @@ fn build_electra_anchor(slot: Slot) -> ElectraMinimalBeaconState {
         },
         validators: SszList::empty_tree().with_push(validator).unwrap(),
         balances: SszList::default()
-            .with_push(Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE))
+            .with_push(Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE))
             .unwrap(),
         previous_epoch_participation: SszList::default().with_push(0u8).unwrap(),
         current_epoch_participation: SszList::default().with_push(0u8).unwrap(),
@@ -1221,8 +1221,8 @@ async fn produce_block_signed_reimports_validated_electra() {
 
     // ── Anchor state (Electra-at-genesis) ─────────────────────────────────────
     let runtime_cfg = RuntimeConfig {
-        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-        capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+        capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
         capella_fork_epoch: 0,
         deneb_fork_version: [0x04, 0x00, 0x00, 0x00],
         deneb_fork_epoch: 0,
@@ -1265,8 +1265,8 @@ async fn produce_block_signed_reimports_validated_electra() {
     let anchor_root: Root = fork_anchor_block.tree_hash_root();
 
     let mut fc =
-        get_forkchoice_store::<MinimalEthSpec>(fork_anchor_state.clone(), fork_anchor_block);
-    fc.time = MinimalEthSpec::SLOT_DURATION_MS * (PRODUCE_SLOT + 2);
+        get_forkchoice_store::<MinimalBeaconSpec>(fork_anchor_state.clone(), fork_anchor_block);
+    fc.time = MinimalBeaconSpec::SLOT_DURATION_MS * (PRODUCE_SLOT + 2);
     fc.runtime_cfg = runtime_cfg.clone();
     fc.block_states
         .insert(anchor_root, fork_anchor_state.clone());
@@ -1274,13 +1274,13 @@ async fn produce_block_signed_reimports_validated_electra() {
 
     let engine_client = EngineClient::new(mock.url.clone(), mock.secret.clone()).unwrap();
     let engine_handle = spawn_engine_actor(engine_client, None);
-    let pools: Arc<OperationPools<MinimalEthSpec>> = Arc::new(OperationPools::default());
+    let pools: Arc<OperationPools<MinimalBeaconSpec>> = Arc::new(OperationPools::default());
 
     // ── Sign the RANDAO reveal with the proposer's real key ───────────────────
     let sk = test_secret_key();
-    let epoch = UtilsEpoch(PRODUCE_SLOT / MinimalEthSpec::SLOTS_PER_EPOCH);
+    let epoch = UtilsEpoch(PRODUCE_SLOT / MinimalBeaconSpec::SLOTS_PER_EPOCH);
     let randao_domain =
-        get_domain::<MinimalEthSpec>(&fork_anchor_state, DOMAIN_RANDAO, Some(epoch));
+        get_domain::<MinimalBeaconSpec>(&fork_anchor_state, DOMAIN_RANDAO, Some(epoch));
     let randao_signing_root = compute_signing_root(&epoch, randao_domain);
     let randao_reveal = sk.sign(randao_signing_root.as_slice());
 
@@ -1291,7 +1291,7 @@ async fn produce_block_signed_reimports_validated_electra() {
         let e = engine_handle.clone();
         let r = runtime_cfg.clone();
         move || {
-            produce_block::<MinimalEthSpec>(
+            produce_block::<MinimalBeaconSpec>(
                 &fc,
                 &p,
                 &e,
@@ -1321,13 +1321,13 @@ async fn produce_block_signed_reimports_validated_electra() {
     // catches a regression to the 8-bit accessor.
     assert_eq!(
         inner.message.proposer_index,
-        get_beacon_proposer_index_electra::<MinimalEthSpec>(&fork_anchor_state),
+        get_beacon_proposer_index_electra::<MinimalBeaconSpec>(&fork_anchor_state),
         "produced electra proposer_index must equal get_beacon_proposer_index_electra"
     );
 
     // ── Sign the produced block as proposer ───────────────────────────────────
     let proposer_domain =
-        get_domain::<MinimalEthSpec>(&fork_anchor_state, DOMAIN_BEACON_PROPOSER, Some(epoch));
+        get_domain::<MinimalBeaconSpec>(&fork_anchor_state, DOMAIN_BEACON_PROPOSER, Some(epoch));
     let block_signing_root = compute_signing_root(&inner.message, proposer_domain);
     let block_sig = sk.sign(block_signing_root.as_slice());
 
@@ -1345,13 +1345,13 @@ async fn produce_block_signed_reimports_validated_electra() {
 
     // ── Ingestion loop with validate_result = TRUE ────────────────────────────
     let (head_tx, head_rx) = watch::channel(None::<HeadChange>);
-    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(8);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(8);
     let (host, _tmpdir) = build_host(Arc::clone(&fc_store));
 
     let fc_store_drv = Arc::clone(&fc_store);
     let head_tx_clone = head_tx.clone();
     tokio::spawn(async move {
-        run_engine_driver_loop::<MinimalEthSpec, pharos_fork_choice::NoopPowBlockProvider>(
+        run_engine_driver_loop::<MinimalBeaconSpec, pharos_fork_choice::NoopPowBlockProvider>(
             engine_handle,
             fc_store_drv,
             head_rx,
@@ -1388,7 +1388,7 @@ async fn produce_block_signed_reimports_validated_electra() {
     let join = tokio::spawn(async move {
         use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
         let _ = run_block_ingestion_loop::<
-            MinimalEthSpec,
+            MinimalBeaconSpec,
             NullExecutionEngine,
             NoopDataAvailabilityChecker,
         >(
@@ -1423,7 +1423,7 @@ async fn produce_block_signed_reimports_validated_electra() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if get_head::<MinimalEthSpec>(&fc_store.read()) != anchor_root {
+        if get_head::<MinimalBeaconSpec>(&fc_store.read()) != anchor_root {
             break;
         }
         if tokio::time::Instant::now() > deadline {
@@ -1432,7 +1432,7 @@ async fn produce_block_signed_reimports_validated_electra() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    let head = get_head::<MinimalEthSpec>(&fc_store.read());
+    let head = get_head::<MinimalBeaconSpec>(&fc_store.read());
     let head_slot = fc_store
         .read()
         .blocks

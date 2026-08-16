@@ -1,7 +1,7 @@
 //! `Bitvector<N>` and `Bitlist<N>` — SSZ bit-collection types.
 //!
 //! Both use `u64` const-generic parameters (B4 resolution) so they align with
-//! `EthSpec` associated constants.
+//! `BeaconSpec` associated constants.
 //!
 //! # Bitvector\[N\]
 //!

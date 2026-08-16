@@ -13,7 +13,7 @@ use std::sync::Arc;
 use pharos_network::host::{BlockProvider, ForkContext};
 use pharos_ssz::TreeHash;
 use pharos_storage::{RocksStore, RocksStoreConfig, Store as StoreTrait};
-use pharos_types::MinimalEthSpec;
+use pharos_types::MinimalBeaconSpec;
 use pharos_types::phase0::{
     MinimalBeaconBlock, MinimalSignedBeaconBlock as Phase0MinimalBlock, Slot,
 };
@@ -47,13 +47,13 @@ fn block_survives_host_restart() {
 
     {
         let store = Arc::new(
-            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
                 path: db_path.clone(),
                 create_if_missing: true,
             })
             .expect("open RocksStore"),
         );
-        <RocksStore as StoreTrait<MinimalEthSpec>>::put_block(&store, known_root, &known_block)
+        <RocksStore as StoreTrait<MinimalBeaconSpec>>::put_block(&store, known_root, &known_block)
             .expect("put_block must succeed");
         // `store` is dropped here, closing the DB.
     }

@@ -33,7 +33,7 @@ use pharos_stf::altair::light_client::{
     process_light_client_update,
 };
 use pharos_types::{
-    EthSpec, MainnetEthSpec, MinimalEthSpec,
+    BeaconSpec, MainnetBeaconSpec, MinimalBeaconSpec,
     altair::light_client::LightClientStore,
     capella::light_client::{
         LightClientBootstrap as CapellaLCBootstrap, LightClientHeader as CapellaLCHeader,
@@ -118,7 +118,7 @@ pub fn enumerate_light_client(
 
             let run: CaseFn = match (fork, sub_dir_name, preset) {
                 ("altair", "BeaconState", "mainnet") => Box::new(move || {
-                    match run_single_merkle_proof_case::<pharos_types::MainnetEthSpec>(
+                    match run_single_merkle_proof_case::<pharos_types::MainnetBeaconSpec>(
                         &case_dir, &case_name,
                     ) {
                         CaseResult::Pass => CaseOutcome::Pass,
@@ -128,7 +128,7 @@ pub fn enumerate_light_client(
                 }),
                 ("altair", "BeaconState", _) => {
                     Box::new(move || {
-                        match run_single_merkle_proof_case::<pharos_types::MinimalEthSpec>(
+                        match run_single_merkle_proof_case::<pharos_types::MinimalBeaconSpec>(
                             &case_dir, &case_name,
                         ) {
                             CaseResult::Pass => CaseOutcome::Pass,
@@ -138,25 +138,27 @@ pub fn enumerate_light_client(
                     })
                 }
                 ("capella", "BeaconState", "mainnet") => Box::new(move || {
-                    match run_single_merkle_proof_capella_state_case::<pharos_types::MainnetEthSpec>(
-                        &case_dir, &case_name,
-                    ) {
+                    match run_single_merkle_proof_capella_state_case::<
+                        pharos_types::MainnetBeaconSpec,
+                    >(&case_dir, &case_name)
+                    {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Skip => CaseOutcome::Skip,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
                 }),
                 ("capella", "BeaconState", _) => Box::new(move || {
-                    match run_single_merkle_proof_capella_state_case::<pharos_types::MinimalEthSpec>(
-                        &case_dir, &case_name,
-                    ) {
+                    match run_single_merkle_proof_capella_state_case::<
+                        pharos_types::MinimalBeaconSpec,
+                    >(&case_dir, &case_name)
+                    {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Skip => CaseOutcome::Skip,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
                 }),
                 ("capella", "BeaconBlockBody", "mainnet") => Box::new(move || {
-                    match run_single_merkle_proof_body_case::<pharos_types::MainnetEthSpec>(
+                    match run_single_merkle_proof_body_case::<pharos_types::MainnetBeaconSpec>(
                         &case_dir, &case_name,
                     ) {
                         CaseResult::Pass => CaseOutcome::Pass,
@@ -165,7 +167,7 @@ pub fn enumerate_light_client(
                     }
                 }),
                 ("capella", "BeaconBlockBody", _) => Box::new(move || {
-                    match run_single_merkle_proof_body_case::<pharos_types::MinimalEthSpec>(
+                    match run_single_merkle_proof_body_case::<pharos_types::MinimalBeaconSpec>(
                         &case_dir, &case_name,
                     ) {
                         CaseResult::Pass => CaseOutcome::Pass,
@@ -174,7 +176,7 @@ pub fn enumerate_light_client(
                     }
                 }),
                 ("deneb", "BeaconState", "mainnet") => Box::new(move || {
-                    match run_single_merkle_proof_deneb_state_case::<pharos_types::MainnetEthSpec>(
+                    match run_single_merkle_proof_deneb_state_case::<pharos_types::MainnetBeaconSpec>(
                         &case_dir, &case_name,
                     ) {
                         CaseResult::Pass => CaseOutcome::Pass,
@@ -183,7 +185,7 @@ pub fn enumerate_light_client(
                     }
                 }),
                 ("deneb", "BeaconState", _) => Box::new(move || {
-                    match run_single_merkle_proof_deneb_state_case::<pharos_types::MinimalEthSpec>(
+                    match run_single_merkle_proof_deneb_state_case::<pharos_types::MinimalBeaconSpec>(
                         &case_dir, &case_name,
                     ) {
                         CaseResult::Pass => CaseOutcome::Pass,
@@ -192,7 +194,7 @@ pub fn enumerate_light_client(
                     }
                 }),
                 ("deneb", "BeaconBlockBody", "mainnet") => Box::new(move || {
-                    match run_single_merkle_proof_deneb_body_case::<pharos_types::MainnetEthSpec>(
+                    match run_single_merkle_proof_deneb_body_case::<pharos_types::MainnetBeaconSpec>(
                         &case_dir, &case_name,
                     ) {
                         CaseResult::Pass => CaseOutcome::Pass,
@@ -201,7 +203,7 @@ pub fn enumerate_light_client(
                     }
                 }),
                 ("deneb", "BeaconBlockBody", _) => Box::new(move || {
-                    match run_single_merkle_proof_deneb_body_case::<pharos_types::MinimalEthSpec>(
+                    match run_single_merkle_proof_deneb_body_case::<pharos_types::MinimalBeaconSpec>(
                         &case_dir, &case_name,
                     ) {
                         CaseResult::Pass => CaseOutcome::Pass,
@@ -210,25 +212,27 @@ pub fn enumerate_light_client(
                     }
                 }),
                 ("electra", "BeaconState", "mainnet") => Box::new(move || {
-                    match run_single_merkle_proof_electra_state_case::<pharos_types::MainnetEthSpec>(
-                        &case_dir, &case_name,
-                    ) {
+                    match run_single_merkle_proof_electra_state_case::<
+                        pharos_types::MainnetBeaconSpec,
+                    >(&case_dir, &case_name)
+                    {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Skip => CaseOutcome::Skip,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
                 }),
                 ("electra", "BeaconState", _) => Box::new(move || {
-                    match run_single_merkle_proof_electra_state_case::<pharos_types::MinimalEthSpec>(
-                        &case_dir, &case_name,
-                    ) {
+                    match run_single_merkle_proof_electra_state_case::<
+                        pharos_types::MinimalBeaconSpec,
+                    >(&case_dir, &case_name)
+                    {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Skip => CaseOutcome::Skip,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
                 }),
                 ("electra", "BeaconBlockBody", "mainnet") => Box::new(move || {
-                    match run_single_merkle_proof_electra_body_case::<pharos_types::MainnetEthSpec>(
+                    match run_single_merkle_proof_electra_body_case::<pharos_types::MainnetBeaconSpec>(
                         &case_dir, &case_name,
                     ) {
                         CaseResult::Pass => CaseOutcome::Pass,
@@ -237,7 +241,7 @@ pub fn enumerate_light_client(
                     }
                 }),
                 ("electra", "BeaconBlockBody", _) => Box::new(move || {
-                    match run_single_merkle_proof_electra_body_case::<pharos_types::MinimalEthSpec>(
+                    match run_single_merkle_proof_electra_body_case::<pharos_types::MinimalBeaconSpec>(
                         &case_dir, &case_name,
                     ) {
                         CaseResult::Pass => CaseOutcome::Pass,
@@ -354,7 +358,7 @@ pub fn enumerate_light_client(
 
     tasks
 }
-fn run_single_merkle_proof_case<E: EthSpec>(case_dir: &Path, case_name: &str) -> CaseResult
+fn run_single_merkle_proof_case<E: BeaconSpec>(case_dir: &Path, case_name: &str) -> CaseResult
 where
     E::AltairBeaconState: Decode + TreeHash,
 {
@@ -433,14 +437,14 @@ where
 }
 
 fn run_sync_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
-    run_sync_case_impl::<MainnetEthSpec, 512>(case_dir, case_name)
+    run_sync_case_impl::<MainnetBeaconSpec, 512>(case_dir, case_name)
 }
 
 fn run_sync_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
-    run_sync_case_impl::<MinimalEthSpec, 32>(case_dir, case_name)
+    run_sync_case_impl::<MinimalBeaconSpec, 32>(case_dir, case_name)
 }
 
-fn run_sync_case_impl<E: EthSpec, const SYNC_COMMITTEE_SIZE: u64>(
+fn run_sync_case_impl<E: BeaconSpec, const SYNC_COMMITTEE_SIZE: u64>(
     case_dir: &Path,
     case_name: &str,
 ) -> CaseResult
@@ -740,7 +744,7 @@ fn parse_root(hex: &str) -> Result<Root, String> {
     parse_bytes32(hex)
 }
 
-fn run_single_merkle_proof_capella_state_case<E: EthSpec>(
+fn run_single_merkle_proof_capella_state_case<E: BeaconSpec>(
     case_dir: &Path,
     case_name: &str,
 ) -> CaseResult
@@ -821,7 +825,7 @@ where
 }
 
 /// Run a single_merkle_proof case against a capella `BeaconBlockBody`.
-fn run_single_merkle_proof_body_case<E: EthSpec>(case_dir: &Path, case_name: &str) -> CaseResult
+fn run_single_merkle_proof_body_case<E: BeaconSpec>(case_dir: &Path, case_name: &str) -> CaseResult
 where
     E::CapellaBeaconBlockBody: Decode + TreeHash,
 {
@@ -889,11 +893,11 @@ where
 }
 
 fn run_sync_case_capella_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
-    run_sync_case_capella_impl::<MainnetEthSpec, 512, 256, 32>(case_dir, case_name)
+    run_sync_case_capella_impl::<MainnetBeaconSpec, 512, 256, 32>(case_dir, case_name)
 }
 
 fn run_sync_case_capella_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
-    run_sync_case_capella_impl::<MinimalEthSpec, 32, 256, 32>(case_dir, case_name)
+    run_sync_case_capella_impl::<MinimalBeaconSpec, 32, 256, 32>(case_dir, case_name)
 }
 
 /// Simple in-memory capella light-client store for the conformance runner.
@@ -918,7 +922,7 @@ fn run_sync_case_capella_impl<E, const S: u64, const B: u64, const X: u64>(
     case_name: &str,
 ) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     CapellaLCBootstrap<S, B, X>: Decode,
     CapellaLCUpdate<S, B, X>: Decode + Clone,
     Bytes32: Default + PartialEq + Clone,
@@ -1301,7 +1305,7 @@ where
         .as_slice()
 }
 
-fn run_single_merkle_proof_deneb_state_case<E: EthSpec>(
+fn run_single_merkle_proof_deneb_state_case<E: BeaconSpec>(
     case_dir: &Path,
     case_name: &str,
 ) -> CaseResult
@@ -1378,7 +1382,7 @@ where
     }
 }
 
-fn run_single_merkle_proof_deneb_body_case<E: EthSpec>(
+fn run_single_merkle_proof_deneb_body_case<E: BeaconSpec>(
     case_dir: &Path,
     case_name: &str,
 ) -> CaseResult
@@ -1449,11 +1453,11 @@ where
 }
 
 fn run_sync_case_deneb_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
-    run_sync_case_deneb_impl::<MainnetEthSpec, 512, 256, 32>(case_dir, case_name)
+    run_sync_case_deneb_impl::<MainnetBeaconSpec, 512, 256, 32>(case_dir, case_name)
 }
 
 fn run_sync_case_deneb_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
-    run_sync_case_deneb_impl::<MinimalEthSpec, 32, 256, 32>(case_dir, case_name)
+    run_sync_case_deneb_impl::<MinimalBeaconSpec, 32, 256, 32>(case_dir, case_name)
 }
 
 /// Simple in-memory deneb light-client store for the conformance runner.
@@ -1476,7 +1480,7 @@ fn run_sync_case_deneb_impl<E, const S: u64, const B: u64, const X: u64>(
     case_name: &str,
 ) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     DenebLCBootstrap<S, B, X>: Decode,
     DenebLCUpdate<S, B, X>: Decode + Clone,
     Bytes32: Default + PartialEq + Clone,
@@ -1839,7 +1843,7 @@ where
 
 // ── Electra light-client runners ──────────────────────────────────────────────
 
-fn run_single_merkle_proof_electra_state_case<E: EthSpec>(
+fn run_single_merkle_proof_electra_state_case<E: BeaconSpec>(
     case_dir: &Path,
     case_name: &str,
 ) -> CaseResult
@@ -1917,7 +1921,7 @@ where
     }
 }
 
-fn run_single_merkle_proof_electra_body_case<E: EthSpec>(
+fn run_single_merkle_proof_electra_body_case<E: BeaconSpec>(
     case_dir: &Path,
     case_name: &str,
 ) -> CaseResult
@@ -1988,11 +1992,11 @@ where
 }
 
 fn run_sync_case_electra_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
-    run_sync_case_electra_impl::<MainnetEthSpec, 512, 256, 32>(case_dir, case_name)
+    run_sync_case_electra_impl::<MainnetBeaconSpec, 512, 256, 32>(case_dir, case_name)
 }
 
 fn run_sync_case_electra_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
-    run_sync_case_electra_impl::<MinimalEthSpec, 32, 256, 32>(case_dir, case_name)
+    run_sync_case_electra_impl::<MinimalBeaconSpec, 32, 256, 32>(case_dir, case_name)
 }
 
 /// Simple in-memory electra light-client store for the conformance runner.
@@ -2015,7 +2019,7 @@ fn run_sync_case_electra_impl<E, const S: u64, const B: u64, const X: u64>(
     case_name: &str,
 ) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     ElectraLCBootstrap<S, B, X>: Decode,
     ElectraLCUpdate<S, B, X>: Decode + Clone,
     Bytes32: Default + PartialEq + Clone,

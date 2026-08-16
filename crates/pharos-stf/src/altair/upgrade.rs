@@ -12,7 +12,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     config::RuntimeConfig,
     phase0::{BeaconState as Phase0BeaconState, Fork, ValidatorIndex},
@@ -67,7 +67,7 @@ pub fn upgrade_to_altair<
     StateTransitionError,
 >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             Phase0BeaconState = Phase0BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

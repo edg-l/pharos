@@ -2,7 +2,7 @@
 
 use pharos_ssz::TreeHash;
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     phase0::{Deposit, DepositMessage, Epoch, Validator},
 };
 use pharos_utils::{Gwei, Hash256};
@@ -19,7 +19,7 @@ use crate::phase0::{
 ///
 /// `DEPOSIT_PROOF_LENGTH = 33` in all current presets (derived from
 /// `DEPOSIT_CONTRACT_TREE_DEPTH = 32`).
-pub fn process_deposit<E: EthSpec>(
+pub fn process_deposit<E: BeaconSpec>(
     state: &mut E::BeaconState,
     deposit: &Deposit<33>,
     verify_signatures: bool,
@@ -53,7 +53,7 @@ where
     )
 }
 
-fn apply_deposit<E: EthSpec>(
+fn apply_deposit<E: BeaconSpec>(
     state: &mut E::BeaconState,
     pubkey: &pharos_utils::BLSPubkey,
     withdrawal_credentials: &pharos_utils::Bytes32,

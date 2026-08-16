@@ -23,11 +23,11 @@ use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::config::RuntimeConfig;
 use pharos_types::phase0::primitives::{Epoch, Root, Slot, ValidatorIndex};
 use pharos_types::phase0::{BeaconBlockHeader, Checkpoint, Validator};
-use pharos_types::{EthSpec, MainnetEthSpec, SyncCommitteePubkeys};
+use pharos_types::{BeaconSpec, MainnetBeaconSpec, SyncCommitteePubkeys};
 use pharos_utils::{BLSPubkey, Bytes32, Gwei};
 use tower::ServiceExt as _;
 
-type State = <MainnetEthSpec as EthSpec>::BeaconState;
+type State = <MainnetBeaconSpec as BeaconSpec>::BeaconState;
 
 const FAR_FUTURE: u64 = u64::MAX;
 const STATE_SLOT: u64 = 64; // epoch 2 at mainnet SLOTS_PER_EPOCH=32
@@ -92,7 +92,7 @@ impl StateMock {
         let state_root: Root = state.tree_hash_root();
         Self {
             identity,
-            runtime_cfg: Arc::new(MainnetEthSpec::default_runtime_config()),
+            runtime_cfg: Arc::new(MainnetBeaconSpec::default_runtime_config()),
             state,
             head_root: Root::from([0xab; 32]),
             genesis_root: Root::from([0x00; 32]),
@@ -101,7 +101,7 @@ impl StateMock {
     }
 }
 
-impl ChainStateApi<MainnetEthSpec> for StateMock {
+impl ChainStateApi<MainnetBeaconSpec> for StateMock {
     fn head_root(&self) -> Root {
         self.head_root
     }
@@ -112,7 +112,7 @@ impl ChainStateApi<MainnetEthSpec> for StateMock {
         (
             0,
             Root::default(),
-            <MainnetEthSpec as EthSpec>::GENESIS_FORK_VERSION,
+            <MainnetBeaconSpec as BeaconSpec>::GENESIS_FORK_VERSION,
         )
     }
     fn finalized_checkpoint(&self) -> Checkpoint {
@@ -207,7 +207,7 @@ impl ChainStateApi<MainnetEthSpec> for StateMock {
     fn regenerate_state(
         &self,
         _target: RegenTarget,
-    ) -> Result<<MainnetEthSpec as EthSpec>::BeaconState, pharos_api::ApiError> {
+    ) -> Result<<MainnetBeaconSpec as BeaconSpec>::BeaconState, pharos_api::ApiError> {
         Err(pharos_api::ApiError::NotFound(
             "regen not available in mock".into(),
         ))
@@ -227,16 +227,16 @@ impl ChainStateApi<MainnetEthSpec> for StateMock {
 
     fn state_to_json(
         &self,
-        state: <MainnetEthSpec as pharos_types::EthSpec>::BeaconState,
+        state: <MainnetBeaconSpec as pharos_types::BeaconSpec>::BeaconState,
     ) -> Result<serde_json::Value, pharos_api::ApiError> {
-        pharos_api::beacon_state_to_json_full::<MainnetEthSpec>(state)
+        pharos_api::beacon_state_to_json_full::<MainnetBeaconSpec>(state)
     }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn make_router() -> axum::Router {
-    let chain: Arc<dyn ChainStateApi<MainnetEthSpec>> = Arc::new(StateMock::new());
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> = Arc::new(StateMock::new());
     build_router(ApiState::new(chain))
 }
 

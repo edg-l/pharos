@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use pharos_ssz::TreeHash;
 use pharos_storage::{RocksStore, Store as DbStore};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::phase0::operations::{ProposerSlashing, SignedBeaconBlockHeader};
 use pharos_types::phase0::primitives::{Root, Slot};
 use pharos_types::pools::OperationPools;
@@ -35,14 +35,14 @@ use pharos_utils::metrics::METRIC_SLASHER_DETECTIONS_TOTAL;
 /// `E` bounds `OperationPools<E>` and the `Store<E>` methods; the detection
 /// logic itself is fork-agnostic (a `SignedBeaconBlockHeader` is identical
 /// across forks).
-pub struct ProposerSlasher<E: EthSpec> {
+pub struct ProposerSlasher<E: BeaconSpec> {
     /// Persistent block-header index (the `slasher-proposers` CF).
     store: Arc<RocksStore>,
     /// Shared operation pools so a detected `ProposerSlashing` is block-includable.
     op_pools: Arc<OperationPools<E>>,
 }
 
-impl<E: EthSpec> ProposerSlasher<E> {
+impl<E: BeaconSpec> ProposerSlasher<E> {
     /// Create a new `ProposerSlasher` backed by `store` and `op_pools`.
     pub fn new(store: Arc<RocksStore>, op_pools: Arc<OperationPools<E>>) -> Self {
         Self { store, op_pools }
@@ -141,12 +141,12 @@ mod tests {
     use super::*;
 
     use pharos_storage::{RocksStore, RocksStoreConfig};
-    use pharos_types::MinimalEthSpec;
+    use pharos_types::MinimalBeaconSpec;
     use pharos_types::phase0::operations::BeaconBlockHeader;
     use pharos_types::phase0::primitives::ValidatorIndex;
     use pharos_utils::BLSSignature;
 
-    type E = MinimalEthSpec;
+    type E = MinimalBeaconSpec;
 
     fn temp_store() -> Arc<RocksStore> {
         let dir = std::env::temp_dir().join(format!(

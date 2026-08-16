@@ -5,7 +5,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::{
         BeaconState, SyncCommittee,
         constants::{ParticipationFlags, TIMELY_TARGET_FLAG_INDEX},
@@ -98,7 +98,7 @@ pub fn get_attestation_participation_flag_indices<
     eip7045_target_flag: bool,
 ) -> Result<Vec<usize>, StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -178,7 +178,7 @@ where
 //
 // These mirror `get_block_root` / `get_block_root_at_slot` from phase0 but
 // operate on the concrete altair `BeaconState` (which does not implement
-// `E::BeaconState` for `E: EthSpec`; the accessors from phase0 take
+// `E::BeaconState` for `E: BeaconSpec`; the accessors from phase0 take
 // `&E::BeaconState`). Rather than threading new trait bounds everywhere,
 // we inline the trivial index lookups here.
 
@@ -191,7 +191,7 @@ fn get_block_root_at_slot_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -225,7 +225,7 @@ fn get_block_root_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -285,7 +285,7 @@ pub fn get_unslashed_participating_indices<
     epoch: Epoch,
 ) -> Vec<ValidatorIndex>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -349,7 +349,7 @@ pub fn get_base_reward_per_increment<
     >,
 ) -> Gwei
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -402,7 +402,7 @@ pub fn get_base_reward<
     index: ValidatorIndex,
 ) -> Gwei
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -463,7 +463,7 @@ pub fn get_eligible_validator_indices<
     >,
 ) -> Vec<ValidatorIndex>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -529,7 +529,7 @@ pub fn is_in_inactivity_leak<
     >,
 ) -> bool
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -565,7 +565,7 @@ pub(crate) fn get_total_balance_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -601,7 +601,7 @@ pub(crate) fn get_total_active_balance_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -655,7 +655,7 @@ pub fn get_flag_index_deltas<
     flag_index: usize,
 ) -> (Vec<Gwei>, Vec<Gwei>)
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -801,7 +801,7 @@ pub fn get_inactivity_penalty_deltas<
     >,
 ) -> (Vec<Gwei>, Vec<Gwei>)
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -901,7 +901,7 @@ pub fn get_next_sync_committee_indices<
     >,
 ) -> Vec<ValidatorIndex>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -1004,7 +1004,7 @@ pub fn get_next_sync_committee<
     >,
 ) -> Result<SyncCommittee<SYNC_COMMITTEE_SIZE>, StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -1067,7 +1067,7 @@ pub(crate) fn get_seed_altair_pub<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1128,7 +1128,7 @@ pub fn slash_validator<
     whistleblower_index: Option<ValidatorIndex>,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -1358,7 +1358,7 @@ pub fn get_proposer_index_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1435,7 +1435,7 @@ pub(crate) fn initiate_validator_exit_altair_pub<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -1538,7 +1538,7 @@ pub(crate) fn initiate_validator_exit_altair_pub<
 ///
 /// Only the selection-proof *bytes* are needed; the caller holds them as a
 /// `BLSSignature` and can pass `sig.as_slice()` (or `sig.0.as_ref()`).
-pub fn is_sync_committee_aggregator<E: pharos_types::EthSpec>(
+pub fn is_sync_committee_aggregator<E: pharos_types::BeaconSpec>(
     selection_proof_bytes: &[u8],
 ) -> bool {
     let modulo = std::cmp::max(
@@ -1568,7 +1568,7 @@ pub fn is_sync_committee_aggregator<E: pharos_types::EthSpec>(
 /// - `validator_pubkey`: the 48-byte pubkey of the target validator.
 ///
 /// Returns an ordered, deduplicated `Vec<u64>` of subnet indices.
-pub fn compute_subnets_for_sync_committee<E: pharos_types::EthSpec>(
+pub fn compute_subnets_for_sync_committee<E: pharos_types::BeaconSpec>(
     current_pubkeys: &[[u8; 48]],
     next_pubkeys: &[[u8; 48]],
     state_slot: u64,
@@ -1609,7 +1609,7 @@ pub fn compute_subnets_for_sync_committee<E: pharos_types::EthSpec>(
 ///
 /// Parameters are the same as in `compute_subnets_for_sync_committee`.
 /// Returns an empty vec for an out-of-range `subcommittee_index`.
-pub fn get_sync_subcommittee_pubkeys<E: pharos_types::EthSpec>(
+pub fn get_sync_subcommittee_pubkeys<E: pharos_types::BeaconSpec>(
     current_pubkeys: &[[u8; 48]],
     next_pubkeys: &[[u8; 48]],
     state_slot: u64,

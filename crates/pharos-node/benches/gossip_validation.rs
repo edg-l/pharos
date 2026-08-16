@@ -9,7 +9,7 @@
 //!     committee_cache and seen_attestation_validators pre-populated,
 //!     isolating the pure dedup-overhead cost from committee-compute cost)
 //!
-//! All benches use `MinimalEthSpec` (6-second slots, 8 slots/epoch) so that
+//! All benches use `MinimalBeaconSpec` (6-second slots, 8 slots/epoch) so that
 //! fixture construction is deterministic and fast.
 //!
 //! **Note on cache behaviour across criterion samples**
@@ -48,8 +48,8 @@ use pharos_stf::phase0::helpers::{
 };
 use pharos_stf::process_slots_fork;
 use pharos_storage::{RocksStore, RocksStoreConfig, Store as StoreTrait};
-use pharos_types::EthSpec;
-use pharos_types::MinimalEthSpec as E;
+use pharos_types::BeaconSpec;
+use pharos_types::MinimalBeaconSpec as E;
 use pharos_types::RuntimeConfig;
 use pharos_types::altair::light_client::LightClientFinalityUpdate;
 use pharos_types::fork::ForkSchedule;
@@ -86,7 +86,7 @@ fn test_sign(msg: &[u8]) -> BLSSignature {
 
 // ── Host construction ─────────────────────────────────────────────────────────
 
-/// Build a `HostImpl<E>` (MinimalEthSpec) with 8 test validators at genesis.
+/// Build a `HostImpl<E>` (MinimalBeaconSpec) with 8 test validators at genesis.
 ///
 /// `att_slot` governs `genesis_time`: the store's genesis_time is set so that
 /// `att_slot` falls within the propagation window.
@@ -357,7 +357,7 @@ fn bench_lc_finality_update(c: &mut Criterion) {
             })
             .expect("open store"),
         );
-        let genesis_state = <E as EthSpec>::BeaconState::default();
+        let genesis_state = <E as BeaconSpec>::BeaconState::default();
         let state_root = genesis_state.tree_hash_root();
         let anchor_block = pharos_types::state::MinimalBeaconBlock::Phase0(
             pharos_types::phase0::MinimalBeaconBlock {
@@ -516,7 +516,7 @@ fn bench_attestation_unaggregated(c: &mut Criterion) {
     // att_slot=200 so all slots 1..=200 are in the propagation window.
     let (host, genesis_root, genesis_state) = make_bench_host(&dir, 200);
 
-    // Pre-compute subnet for each slot.  MinimalEthSpec has 64 attestation
+    // Pre-compute subnet for each slot.  MinimalBeaconSpec has 64 attestation
     // subnets and 8 validators; the subnet is deterministic per slot.
     let subnet_table: Vec<(Slot, u64)> = (0u64..=200)
         .map(|s| {

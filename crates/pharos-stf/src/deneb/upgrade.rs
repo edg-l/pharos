@@ -13,7 +13,7 @@
 //!    adding zeroed `blob_gas_used = 0` and `excess_blob_gas = 0`.
 
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     capella::BeaconState as CapellaBeaconState,
     config::RuntimeConfig,
     deneb::{BeaconState as DenebBeaconState, ExecutionPayloadHeader as DenebHeader},
@@ -68,7 +68,7 @@ pub fn upgrade_to_deneb<
     StateTransitionError,
 >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             CapellaBeaconState = CapellaBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

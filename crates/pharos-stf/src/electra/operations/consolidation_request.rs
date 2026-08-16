@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     electra::{BeaconState, requests::ConsolidationRequest, requests::PendingConsolidation},
     phase0::{Epoch, ValidatorIndex},
 };
@@ -59,7 +59,7 @@ pub fn is_valid_switch_to_compounding_request<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -162,7 +162,7 @@ pub fn process_consolidation_request<
     _verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         ElectraBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

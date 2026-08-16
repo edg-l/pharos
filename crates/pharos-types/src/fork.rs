@@ -420,20 +420,20 @@ mod tests {
 
     #[test]
     fn mainnet_bellatrix_fork_epoch_crossing() {
-        // Validate the mainnet fork epoch values from EthSpec consts.
-        use crate::eth_spec::EthSpec;
-        use crate::eth_spec::MainnetEthSpec;
+        // Validate the mainnet fork epoch values from BeaconSpec consts.
+        use crate::eth_spec::BeaconSpec;
+        use crate::eth_spec::MainnetBeaconSpec;
         let sched = ForkSchedule {
-            genesis_fork_version: Version::from_array(MainnetEthSpec::GENESIS_FORK_VERSION),
-            altair_fork_version: Version::from_array(MainnetEthSpec::ALTAIR_FORK_VERSION),
-            altair_fork_epoch: Epoch(MainnetEthSpec::ALTAIR_FORK_EPOCH),
-            bellatrix_fork_version: Version::from_array(MainnetEthSpec::BELLATRIX_FORK_VERSION),
-            bellatrix_fork_epoch: Epoch(MainnetEthSpec::BELLATRIX_FORK_EPOCH),
-            capella_fork_version: Version::from_array(MainnetEthSpec::CAPELLA_FORK_VERSION),
+            genesis_fork_version: Version::from_array(MainnetBeaconSpec::GENESIS_FORK_VERSION),
+            altair_fork_version: Version::from_array(MainnetBeaconSpec::ALTAIR_FORK_VERSION),
+            altair_fork_epoch: Epoch(MainnetBeaconSpec::ALTAIR_FORK_EPOCH),
+            bellatrix_fork_version: Version::from_array(MainnetBeaconSpec::BELLATRIX_FORK_VERSION),
+            bellatrix_fork_epoch: Epoch(MainnetBeaconSpec::BELLATRIX_FORK_EPOCH),
+            capella_fork_version: Version::from_array(MainnetBeaconSpec::CAPELLA_FORK_VERSION),
             capella_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH for test
-            deneb_fork_version: Version::from_array(MainnetEthSpec::DENEB_FORK_VERSION),
+            deneb_fork_version: Version::from_array(MainnetBeaconSpec::DENEB_FORK_VERSION),
             deneb_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH for test
-            electra_fork_version: Version::from_array(MainnetEthSpec::ELECTRA_FORK_VERSION),
+            electra_fork_version: Version::from_array(MainnetBeaconSpec::ELECTRA_FORK_VERSION),
             electra_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH for test
             genesis_validators_root: Root::default(),
         };

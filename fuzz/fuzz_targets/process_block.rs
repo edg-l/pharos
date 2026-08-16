@@ -9,7 +9,7 @@
 //! 2. Attempt to decode the fuzz input as a `MinimalBeaconBlock` (phase0
 //!    inner block). If decode fails, we still pass a default block to exercise
 //!    the STF with partially-valid inputs.
-//! 3. Call `process_block::<MinimalEthSpec>` on a clone of the base state with
+//! 3. Call `process_block::<MinimalBeaconSpec>` on a clone of the base state with
 //!    the decoded (or default) block and `verify_signatures = false`.
 //! 4. Discard the `Result`; assert no panic occurred.
 #![no_main]
@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 use libfuzzer_sys::fuzz_target;
 use pharos_ssz::Decode;
 use pharos_stf::phase0::process_block;
-use pharos_types::{MinimalEthSpec, phase0::MinimalBeaconBlock, state::MinimalBeaconState};
+use pharos_types::{MinimalBeaconSpec, phase0::MinimalBeaconBlock, state::MinimalBeaconState};
 use pharos_utils::Hash256;
 
 // Fixed base state — constructed once, cloned per fuzz iteration.
@@ -27,7 +27,7 @@ static BASE_STATE: OnceLock<MinimalBeaconState> = OnceLock::new();
 
 fn base_state() -> &'static MinimalBeaconState {
     BASE_STATE.get_or_init(|| {
-        pharos_stf::initialize_beacon_state_from_eth1::<MinimalEthSpec>(Hash256::default(), 0, &[])
+        pharos_stf::initialize_beacon_state_from_eth1::<MinimalBeaconSpec>(Hash256::default(), 0, &[])
     })
 }
 
@@ -41,5 +41,5 @@ fuzz_target!(|data: &[u8]| {
 
     // Call process_block with signatures disabled — we are probing for panics
     // in the STF logic, not BLS verification.
-    let _ = process_block::<MinimalEthSpec>(&mut state, &block, false);
+    let _ = process_block::<MinimalBeaconSpec>(&mut state, &block, false);
 });

@@ -7,7 +7,7 @@
 //! Per `specs/phase0/beacon-chain.md:2114-2130` (unchanged in Altair).
 
 use pharos_ssz::SszSequence;
-use pharos_types::{EthSpec, altair::BeaconState, phase0::SignedVoluntaryExit};
+use pharos_types::{BeaconSpec, altair::BeaconState, phase0::SignedVoluntaryExit};
 
 use crate::altair::helpers::initiate_validator_exit_altair_pub;
 use crate::error::{StateTransitionError, VoluntaryExitInvalidReason};
@@ -43,7 +43,7 @@ pub fn process_voluntary_exit<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

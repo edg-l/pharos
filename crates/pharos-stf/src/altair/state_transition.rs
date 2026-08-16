@@ -7,7 +7,7 @@
 
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::{BeaconBlock, BeaconState, SignedBeaconBlock},
     phase0::Slot,
     views::{BeaconBlockView, SignedBeaconBlockView},
@@ -52,7 +52,7 @@ pub fn process_slots_altair<
     target_slot: Slot,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -125,7 +125,7 @@ fn process_slot_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -230,7 +230,7 @@ pub fn state_transition<
     StateTransitionError,
 >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -376,7 +376,7 @@ fn get_domain_altair<
     const EPOCHS_PER_SLASHINGS_VECTOR: u64,
     const JUSTIFICATION_BITS_LENGTH: u64,
     const SYNC_COMMITTEE_SIZE: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -426,9 +426,9 @@ fn compute_signing_root_altair<T: TreeHash>(
 /// Dispatch trait for `process_justification_and_finalization` on altair states.
 ///
 /// Implemented via blanket impl on `altair::BeaconState<...>`. Allows
-/// code generic over `E: EthSpec` to call the altair J&F routine through
+/// code generic over `E: BeaconSpec` to call the altair J&F routine through
 /// the opaque `E::AltairBeaconState` associated type.
-pub trait AltairJaFDispatch<E: EthSpec>: Sized {
+pub trait AltairJaFDispatch<E: BeaconSpec>: Sized {
     /// Run `process_justification_and_finalization` on `self` (in place).
     fn process_jaf(&mut self) -> Result<(), EpochProcessingError>;
 }
@@ -455,7 +455,7 @@ impl<
         SYNC_COMMITTEE_SIZE,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -493,9 +493,9 @@ where
 /// Dispatch trait for `process_slots` on altair states.
 ///
 /// Implemented via blanket impl on `altair::BeaconState<...>`. Allows
-/// code generic over `E: EthSpec` to call the altair `process_slots` through
+/// code generic over `E: BeaconSpec` to call the altair `process_slots` through
 /// the opaque `E::AltairBeaconState` associated type.
-pub trait AltairProcessSlotsDispatch<E: EthSpec>: Sized {
+pub trait AltairProcessSlotsDispatch<E: BeaconSpec>: Sized {
     /// Advance `self` to `target_slot` (altair `process_slots`).
     fn process_slots_altair(
         &mut self,
@@ -525,7 +525,7 @@ impl<
         SYNC_COMMITTEE_SIZE,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
         AltairBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -568,8 +568,8 @@ where
 ///
 /// Implemented via blanket impl on `altair::BeaconState<...>`. Used by the
 /// fork-dispatch in `lib.rs::state_transition` so that code generic over
-/// `E: EthSpec` can invoke the altair STF without knowing concrete const params.
-pub trait AltairDispatch<E: EthSpec>: Sized {
+/// `E: BeaconSpec` can invoke the altair STF without knowing concrete const params.
+pub trait AltairDispatch<E: BeaconSpec>: Sized {
     /// Apply `signed_block` to `self` and return the updated state.
     fn apply_signed_block(
         self,
@@ -607,7 +607,7 @@ impl<
         SYNC_COMMITTEE_SIZE,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

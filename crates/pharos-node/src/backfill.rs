@@ -26,7 +26,7 @@ use tracing::{debug, info, warn};
 use pharos_fork_choice::Store as FcStore;
 use pharos_stf::StateTransitionError;
 use pharos_types::views::BeaconBlockView as _;
-use pharos_types::{EthSpec, phase0::primitives::Slot};
+use pharos_types::{BeaconSpec, phase0::primitives::Slot};
 
 use crate::block_ingestion::{extract_block_root, extract_parent_root};
 use crate::data_availability::NoopDataAvailabilityChecker;
@@ -90,7 +90,7 @@ pub enum BackfillError {
 /// Native `async fn` in trait (Rust 1.85 stable).  This trait is only used as
 /// a monomorphised generic `P: BackfillBlockProvider<E>` on `run_backfill_loop`;
 /// it is never invoked through `dyn`.  No `async-trait` dependency is needed.
-pub trait BackfillBlockProvider<E: EthSpec>: Send + Sync + 'static {
+pub trait BackfillBlockProvider<E: BeaconSpec>: Send + Sync + 'static {
     fn blocks_by_range(
         &self,
         start_slot: Slot,
@@ -147,7 +147,7 @@ pub async fn run_backfill_loop<E, P, EE, PP>(
     lowest_block_tx: watch::Sender<Slot>,
 ) -> Result<(), BackfillError>
 where
-    E: EthSpec,
+    E: BeaconSpec,
     P: BackfillBlockProvider<E>,
     EE: pharos_stf::ExecutionEngine,
     PP: pharos_fork_choice::PowBlockProvider + Send + Sync + 'static,
@@ -494,7 +494,7 @@ mod tests {
     use pharos_stf::phase0::helpers::{DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO};
     use pharos_stf::{NullExecutionEngine, state_transition};
     use pharos_types::{
-        EthSpec, MinimalEthSpec,
+        BeaconSpec, MinimalBeaconSpec,
         altair::{MinimalSyncAggregate, MinimalSyncCommittee},
         bellatrix::{
             MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState,
@@ -602,7 +602,7 @@ mod tests {
         let anchor_body_root: Root = anchor_body.tree_hash_root();
         let validator = Validator {
             pubkey: test_pubkey(),
-            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            effective_balance: Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             activation_epoch: Epoch(0),
             exit_epoch: Epoch(u64::MAX),
             withdrawable_epoch: Epoch(u64::MAX),
@@ -614,7 +614,7 @@ mod tests {
         let sync_committee = MinimalSyncCommittee {
             pubkeys: SszVector::from_vec(vec![
                 test_pubkey();
-                MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+                MinimalBeaconSpec::SYNC_COMMITTEE_SIZE as usize
             ])
             .unwrap(),
             aggregate_pubkey: test_pubkey(),
@@ -625,7 +625,7 @@ mod tests {
             slot: Slot(0),
             fork: Fork {
                 previous_version: Version::from_array([0x01, 0x00, 0x00, 0x01]),
-                current_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+                current_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
                 epoch: Epoch(0),
             },
             latest_block_header: BeaconBlockHeader {
@@ -638,7 +638,7 @@ mod tests {
             validators: SszList::empty_tree().with_push(validator).unwrap(),
             balances: SszList::with_push(
                 &SszList::default(),
-                Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                Gwei(MinimalBeaconSpec::MAX_EFFECTIVE_BALANCE),
             )
             .unwrap(),
             previous_epoch_participation: SszList::with_push(&SszList::default(), 0u8).unwrap(),
@@ -672,8 +672,8 @@ mod tests {
         use pharos_types::bellatrix::execution_payload::MinimalExecutionPayload;
 
         let runtime_cfg = pharos_types::config::RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+            bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
             ..Default::default()
         };
         let null_engine = NullExecutionEngine;
@@ -687,7 +687,7 @@ mod tests {
             let slot = Slot(i);
 
             let mut pre_state_advanced = state.clone();
-            process_slots_fork::<MinimalEthSpec>(
+            process_slots_fork::<MinimalBeaconSpec>(
                 &mut pre_state_advanced,
                 slot,
                 pharos_stf::ForkEpochs::never(),
@@ -700,8 +700,8 @@ mod tests {
                     ForkMinState::Bellatrix(s) => s,
                     _ => panic!("expected Bellatrix state"),
                 };
-                let epoch = slot.0 / MinimalEthSpec::SLOTS_PER_EPOCH;
-                let idx = (epoch % MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
+                let epoch = slot.0 / MinimalBeaconSpec::SLOTS_PER_EPOCH;
+                let idx = (epoch % MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
                 let randao = s.randao_mixes.get(idx).copied().unwrap_or_default();
                 let ts = s.genesis_time + slot.0 * runtime_cfg.seconds_per_slot;
                 (randao, ts)
@@ -730,8 +730,8 @@ mod tests {
 
             // Produce a valid RANDAO reveal so process_randao with
             // verify_signatures=true passes in run_backfill_loop.
-            let randao_epoch = get_current_epoch::<MinimalEthSpec>(&pre_state_advanced);
-            let randao_domain = get_domain::<MinimalEthSpec>(
+            let randao_epoch = get_current_epoch::<MinimalBeaconSpec>(&pre_state_advanced);
+            let randao_domain = get_domain::<MinimalBeaconSpec>(
                 &pre_state_advanced,
                 DOMAIN_RANDAO,
                 Some(randao_epoch),
@@ -768,7 +768,7 @@ mod tests {
                 message: draft,
                 signature: BLSSignature::from_array([0u8; 96]),
             });
-            let (post_draft, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+            let (post_draft, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
                 state.clone(),
                 &draft_signed,
                 &null_engine,
@@ -790,7 +790,7 @@ mod tests {
             // Produce a valid BLS signature so state_transition with
             // validate_result=true accepts the block in run_backfill_loop.
             let domain =
-                get_domain::<MinimalEthSpec>(&pre_state_advanced, DOMAIN_BEACON_PROPOSER, None);
+                get_domain::<MinimalBeaconSpec>(&pre_state_advanced, DOMAIN_BEACON_PROPOSER, None);
             let signing_root = compute_signing_root(&final_block, domain);
             let real_sig = test_sign(signing_root.as_slice());
 
@@ -798,7 +798,7 @@ mod tests {
                 message: final_block,
                 signature: real_sig,
             });
-            let (post_final, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+            let (post_final, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
                 state.clone(),
                 &fork_signed,
                 &null_engine,
@@ -839,7 +839,7 @@ mod tests {
         }
     }
 
-    impl BackfillBlockProvider<MinimalEthSpec> for FixtureBlockProvider {
+    impl BackfillBlockProvider<MinimalBeaconSpec> for FixtureBlockProvider {
         async fn blocks_by_range(
             &self,
             _start_slot: Slot,
@@ -854,14 +854,14 @@ mod tests {
     // ── Helper: build test components ─────────────────────────────────────────
 
     type TestBackfillHarness = (
-        Arc<RwLock<pharos_fork_choice::Store<MinimalEthSpec>>>,
-        Arc<HostImpl<MinimalEthSpec>>,
+        Arc<RwLock<pharos_fork_choice::Store<MinimalBeaconSpec>>>,
+        Arc<HostImpl<MinimalBeaconSpec>>,
         Arc<NullExecutionEngine>,
         Arc<pharos_fork_choice::NoopPowBlockProvider>,
         watch::Sender<Option<HeadChange>>,
         watch::Receiver<Option<HeadChange>>,
-        mpsc::Sender<NewPayloadRequest<MinimalEthSpec>>,
-        mpsc::Receiver<NewPayloadRequest<MinimalEthSpec>>,
+        mpsc::Sender<NewPayloadRequest<MinimalBeaconSpec>>,
+        mpsc::Receiver<NewPayloadRequest<MinimalBeaconSpec>>,
     );
 
     /// Build the fork-choice store, host, pow_provider, and channels for tests.
@@ -895,13 +895,13 @@ mod tests {
         >,
     ) -> TestBackfillHarness {
         let anchor_root: Root = anchor_block.tree_hash_root();
-        let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+        let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, anchor_block);
         // Populate the store's runtime_cfg with the minimal-preset config, exactly
         // as `main.rs` does from the loaded `--config-dir` in production. The
         // backfill loop reads `fc_store.runtime_cfg` (seconds_per_slot, fork epochs);
         // `get_forkchoice_store` defaults it to the mainnet `RuntimeConfig::default()`,
         // which would give the wrong (12s) slot timing for these minimal-spec tests.
-        fc.runtime_cfg = MinimalEthSpec::default_runtime_config();
+        fc.runtime_cfg = MinimalBeaconSpec::default_runtime_config();
         // Advance store time past genesis so on_block future-slot guard passes.
         fc.time = 10_000_000;
         // Set terminal_block_hash override so the merge-transition guard passes.
@@ -916,19 +916,21 @@ mod tests {
 
         let tmpdir = tempfile::tempdir().unwrap();
         let store = Arc::new(
-            pharos_storage::RocksStore::open::<MinimalEthSpec>(pharos_storage::RocksStoreConfig {
-                path: tmpdir.path().join("chain_db"),
-                create_if_missing: true,
-            })
+            pharos_storage::RocksStore::open::<MinimalBeaconSpec>(
+                pharos_storage::RocksStoreConfig {
+                    path: tmpdir.path().join("chain_db"),
+                    create_if_missing: true,
+                },
+            )
             .unwrap(),
         );
         let genesis_validators_root = Root::default();
         // Bellatrix-at-genesis schedule: all three epochs = 0.
         let fork_schedule = ForkSchedule {
-            genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-            altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+            genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+            altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
             altair_fork_epoch: Epoch(0),
-            bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+            bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
             bellatrix_fork_epoch: Epoch(0),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX),
@@ -938,7 +940,7 @@ mod tests {
             electra_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root,
         };
-        let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+        let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
             store,
             Arc::clone(&fc),
             genesis_validators_root,
@@ -954,7 +956,7 @@ mod tests {
         let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
 
         let (head_tx, head_rx) = watch::channel::<Option<HeadChange>>(None);
-        let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+        let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(64);
 
         (
             fc,
@@ -1003,7 +1005,7 @@ mod tests {
 
         let mut handle = tokio::spawn(async move {
             run_backfill_loop::<
-                MinimalEthSpec,
+                MinimalBeaconSpec,
                 _,
                 NullExecutionEngine,
                 pharos_fork_choice::NoopPowBlockProvider,
@@ -1033,7 +1035,7 @@ mod tests {
         // Head must be unchanged (still at slot 0).
         let head_slot = {
             let s = fc_for_assert.read();
-            let root = get_head::<MinimalEthSpec>(&s);
+            let root = get_head::<MinimalBeaconSpec>(&s);
             s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
         };
         assert_eq!(
@@ -1088,7 +1090,7 @@ mod tests {
 
         let handle = tokio::spawn(async move {
             run_backfill_loop::<
-                MinimalEthSpec,
+                MinimalBeaconSpec,
                 _,
                 NullExecutionEngine,
                 pharos_fork_choice::NoopPowBlockProvider,
@@ -1114,7 +1116,7 @@ mod tests {
         loop {
             let head_slot = {
                 let s = fc_for_assert.read();
-                let root = get_head::<MinimalEthSpec>(&s);
+                let root = get_head::<MinimalBeaconSpec>(&s);
                 s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
             };
             if head_slot.0 >= n_blocks {
@@ -1138,7 +1140,7 @@ mod tests {
 
         let head_slot = {
             let s = fc_for_assert.read();
-            let root = get_head::<MinimalEthSpec>(&s);
+            let root = get_head::<MinimalBeaconSpec>(&s);
             s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
         };
         assert_eq!(
@@ -1176,8 +1178,8 @@ mod tests {
             use pharos_types::config::RuntimeConfig;
 
             let cfg = RuntimeConfig {
-                seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
-                bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+                seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+                bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
                 ..Default::default()
             };
             let signed_a = signed_blocks[0].clone();
@@ -1185,7 +1187,7 @@ mod tests {
                 let s = fc.read();
                 s.block_states.get(&anchor_root).cloned().unwrap()
             };
-            let (post_a, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+            let (post_a, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
                 pre_state,
                 &signed_a,
                 &NullExecutionEngine,
@@ -1196,7 +1198,7 @@ mod tests {
 
             let mut store = fc.write();
             pharos_fork_choice::on_block::<
-                MinimalEthSpec,
+                MinimalBeaconSpec,
                 pharos_fork_choice::NoopPowBlockProvider,
             >(
                 &mut store,
@@ -1216,7 +1218,7 @@ mod tests {
 
         let handle = tokio::spawn(async move {
             run_backfill_loop::<
-                MinimalEthSpec,
+                MinimalBeaconSpec,
                 _,
                 NullExecutionEngine,
                 pharos_fork_choice::NoopPowBlockProvider,
@@ -1243,7 +1245,7 @@ mod tests {
         loop {
             let head_root = {
                 let s = fc_for_assert.read();
-                get_head::<MinimalEthSpec>(&s)
+                get_head::<MinimalBeaconSpec>(&s)
             };
             if head_root == expected_root {
                 break;
@@ -1269,7 +1271,7 @@ mod tests {
 
         let head_slot = {
             let s = fc_for_assert.read();
-            let root = get_head::<MinimalEthSpec>(&s);
+            let root = get_head::<MinimalBeaconSpec>(&s);
             s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
         };
         assert_eq!(

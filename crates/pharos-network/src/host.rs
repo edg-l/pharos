@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::capella::operations::SignedBLSToExecutionChange;
@@ -93,7 +93,7 @@ pub trait ForkContext: Send + Sync + 'static {
 /// Used by req-resp handlers to serve `BeaconBlocksByRange` and
 /// `BeaconBlocksByRoot` responses without the network crate touching storage
 /// directly.
-pub trait BlockProvider<E: EthSpec>: Send + Sync + 'static {
+pub trait BlockProvider<E: BeaconSpec>: Send + Sync + 'static {
     /// Retrieve a single block by its beacon block root.
     ///
     /// Returns `None` if the block is not in the local store.
@@ -127,7 +127,7 @@ pub trait BlockProvider<E: EthSpec>: Send + Sync + 'static {
 /// concrete operation containers in `pharos-types`. Both mainnet and minimal
 /// presets share `MAX_VALIDATORS_PER_COMMITTEE = 2048`
 /// (`presets/mainnet/phase0.yaml:10`, `presets/minimal/phase0.yaml:10`).
-pub trait GossipValidator<E: EthSpec>: Send + Sync + 'static {
+pub trait GossipValidator<E: BeaconSpec>: Send + Sync + 'static {
     /// Validate a `beacon_block` message.
     fn validate_beacon_block(&self, block: &E::SignedBeaconBlock) -> GossipVerdict;
 
@@ -281,7 +281,7 @@ pub trait GossipValidator<E: EthSpec>: Send + Sync + 'static {
 ///
 /// Per `D-light-client-server-only`: only the server (responder) side is
 /// implemented; the consumer side is M5/M7 work.
-pub trait LightClientProvider<E: EthSpec>: Send + Sync + 'static {
+pub trait LightClientProvider<E: BeaconSpec>: Send + Sync + 'static {
     /// Look up a `LightClientBootstrap` by trusted block root.
     ///
     /// Returns `None` if no snapshot is stored for `block_root`.
@@ -352,7 +352,7 @@ pub trait LightClientProvider<E: EthSpec>: Send + Sync + 'static {
 impl<T, E> LightClientProvider<E> for std::sync::Arc<T>
 where
     T: LightClientProvider<E> + ?Sized,
-    E: EthSpec,
+    E: BeaconSpec,
 {
     fn light_client_bootstrap(
         &self,
@@ -416,7 +416,7 @@ where
 /// `pharos-node`.
 ///
 /// Per `specs/deneb/p2p-interface.md:816-974`.
-pub trait BlobProvider<E: EthSpec>: Send + Sync + 'static {
+pub trait BlobProvider<E: BeaconSpec>: Send + Sync + 'static {
     /// Retrieve a contiguous range of blob sidecars starting from `start_slot`.
     ///
     /// Returns up to `count * MAX_BLOBS_PER_BLOCK` sidecars from canonical
@@ -436,7 +436,7 @@ pub trait BlobProvider<E: EthSpec>: Send + Sync + 'static {
 impl<T, E> BlobProvider<E> for Arc<T>
 where
     T: BlobProvider<E> + ?Sized,
-    E: EthSpec,
+    E: BeaconSpec,
 {
     fn blobs_by_range(&self, start_slot: Slot, count: u64) -> Vec<BlobSidecar> {
         (**self).blobs_by_range(start_slot, count)
@@ -453,14 +453,14 @@ where
 ///
 /// `Network<E, H, S>` takes a single `Arc<H>` rather than three separate arcs.
 /// The blanket impl monomorphises once per concrete `(T, E)` pair (in practice
-/// `(HostImpl, MainnetEthSpec)` plus the test mock); no dynamic dispatch is
+/// `(HostImpl, MainnetBeaconSpec)` plus the test mock); no dynamic dispatch is
 /// introduced.
-pub trait Host<E: EthSpec>: ForkContext + BlockProvider<E> + GossipValidator<E> {}
+pub trait Host<E: BeaconSpec>: ForkContext + BlockProvider<E> + GossipValidator<E> {}
 
 impl<T, E> Host<E> for T
 where
     T: ForkContext + BlockProvider<E> + GossipValidator<E>,
-    E: EthSpec,
+    E: BeaconSpec,
 {
 }
 
@@ -503,7 +503,7 @@ where
 impl<T, E> BlockProvider<E> for Arc<T>
 where
     T: BlockProvider<E> + ?Sized,
-    E: EthSpec,
+    E: BeaconSpec,
 {
     fn block_by_root(&self, root: Root) -> Option<E::SignedBeaconBlock> {
         (**self).block_by_root(root)
@@ -525,7 +525,7 @@ where
 impl<T, E> GossipValidator<E> for Arc<T>
 where
     T: GossipValidator<E> + ?Sized,
-    E: EthSpec,
+    E: BeaconSpec,
 {
     fn validate_beacon_block(&self, block: &E::SignedBeaconBlock) -> GossipVerdict {
         (**self).validate_beacon_block(block)
@@ -623,11 +623,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pharos_types::EthSpec;
+    use pharos_types::BeaconSpec;
 
     /// Compile-time witness that `Arc<T>` satisfies `Host<E>` when `T: Host<E>`.
     ///
     /// This function is never called; its existence proves the blanket impls
     /// compose correctly, resolving `Q-host-arc-vs-arclike`.
-    fn _assert_arc_is_host<E: EthSpec, T: Host<E>>(_: Arc<T>) {}
+    fn _assert_arc_is_host<E: BeaconSpec, T: Host<E>>(_: Arc<T>) {}
 }

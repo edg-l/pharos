@@ -4,7 +4,7 @@
 
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     bellatrix::{BeaconBlock, BeaconState, SignedBeaconBlock},
     config::RuntimeConfig,
@@ -56,7 +56,7 @@ pub fn process_slots_bellatrix<
     target_slot: Slot,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -144,7 +144,7 @@ fn process_slot_bellatrix<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -269,7 +269,7 @@ pub fn state_transition<
     StateTransitionError,
 >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -481,8 +481,8 @@ where
 ///
 /// Implemented via blanket impl on `bellatrix::BeaconState<...>`. Used by the
 /// fork-dispatch in `lib.rs::state_transition` so that code generic over
-/// `E: EthSpec` can invoke the bellatrix STF without knowing concrete const params.
-pub trait BellatrixDispatch<E: EthSpec, EE: ExecutionEngine>: Sized {
+/// `E: BeaconSpec` can invoke the bellatrix STF without knowing concrete const params.
+pub trait BellatrixDispatch<E: BeaconSpec, EE: ExecutionEngine>: Sized {
     /// Apply `signed_block` to `self` and return the updated state plus the
     /// `PayloadVerificationStatus` from the EL (`None` for pre-merge blocks).
     fn apply_signed_block(
@@ -530,7 +530,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -671,7 +671,7 @@ where
 }
 
 /// Dispatch trait for `process_slots` on bellatrix states.
-pub trait BellatrixProcessSlotsDispatch<E: EthSpec>: Sized {
+pub trait BellatrixProcessSlotsDispatch<E: BeaconSpec>: Sized {
     /// Advance `self` to `target_slot` (bellatrix `process_slots`).
     fn process_slots_bellatrix(
         &mut self,
@@ -705,7 +705,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

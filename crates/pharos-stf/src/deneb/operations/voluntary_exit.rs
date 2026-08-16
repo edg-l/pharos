@@ -8,7 +8,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec, config::RuntimeConfig, deneb::BeaconState, phase0::SignedVoluntaryExit,
+    BeaconSpec, config::RuntimeConfig, deneb::BeaconState, phase0::SignedVoluntaryExit,
 };
 
 use crate::deneb::helpers::initiate_validator_exit_deneb;
@@ -55,7 +55,7 @@ pub fn process_voluntary_exit<
     runtime_cfg: &RuntimeConfig,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         DenebBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

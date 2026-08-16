@@ -33,7 +33,7 @@ use pharos_node::engine_driver::{
 use pharos_ssz::TreeHash;
 use pharos_types::phase0::primitives::Root;
 use pharos_types::state::{BeaconBlock as ForkBeaconBlock, MinimalBeaconState};
-use pharos_types::{MinimalEthSpec, PayloadStatus};
+use pharos_types::{MinimalBeaconSpec, PayloadStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -142,11 +142,11 @@ async fn spawn_mock() -> Mock {
 
 // ── Test ──────────────────────────────────────────────────────────────────────
 
-/// Builds a minimal in-memory `FcStore<MinimalEthSpec>` seeded with an anchor
+/// Builds a minimal in-memory `FcStore<MinimalBeaconSpec>` seeded with an anchor
 /// block (representing the genesis) and one additional block (`block_a`).
 ///
 /// Returns `(store, anchor_root, block_a_root)`.
-fn build_two_block_store() -> (FcStore<MinimalEthSpec>, Root, Root) {
+fn build_two_block_store() -> (FcStore<MinimalBeaconSpec>, Root, Root) {
     let genesis_state = minimal_genesis_state();
     let state_root = genesis_state.tree_hash_root();
 
@@ -157,7 +157,7 @@ fn build_two_block_store() -> (FcStore<MinimalEthSpec>, Root, Root) {
     let anchor_root: Root = anchor_block.tree_hash_root();
 
     let mut store =
-        pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(genesis_state, anchor_block);
+        pharos_fork_choice::get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, anchor_block);
 
     // Insert a second block (block_a) as a direct child of the anchor.
     // We use slot 1 and parent_root = anchor_root.
@@ -223,14 +223,14 @@ async fn engine_driver_marks_invalid_payload_and_skips_in_get_head() {
     let engine_handle = spawn_engine_actor(client, None);
 
     let (head_tx, head_rx) = watch::channel::<Option<pharos_node::engine_driver::HeadChange>>(None);
-    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(16);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(16);
 
     {
         let fc_clone = Arc::clone(&fc);
         let eng = engine_handle.clone();
         let head_tx_driver = head_tx.clone();
         tokio::spawn(async move {
-            run_engine_driver_loop::<MinimalEthSpec, pharos_fork_choice::NoopPowBlockProvider>(
+            run_engine_driver_loop::<MinimalBeaconSpec, pharos_fork_choice::NoopPowBlockProvider>(
                 eng,
                 fc_clone,
                 head_rx,
@@ -302,7 +302,7 @@ async fn engine_driver_marks_invalid_payload_and_skips_in_get_head() {
         "payload status must be Invalid after engine driver processes the request"
     );
 
-    let head = pharos_fork_choice::get_head::<MinimalEthSpec>(&s);
+    let head = pharos_fork_choice::get_head::<MinimalBeaconSpec>(&s);
     assert_eq!(
         head, anchor_root,
         "get_head must return the anchor root when block_a is Invalid"
@@ -340,8 +340,8 @@ fn compute_safe_block_hash_never_returns_not_validated_head() {
     let mut raw_genesis = BeaconBlock::default();
     raw_genesis.state_root = state_root;
     let genesis_block = ForkBeaconBlock::Phase0(raw_genesis);
-    let mut store: FcStore<MinimalEthSpec> =
-        get_forkchoice_store::<MinimalEthSpec>(genesis_state, genesis_block);
+    let mut store: FcStore<MinimalBeaconSpec> =
+        get_forkchoice_store::<MinimalBeaconSpec>(genesis_state, genesis_block);
 
     let anchor_root = store.justified_checkpoint.root;
 
@@ -367,7 +367,7 @@ fn compute_safe_block_hash_never_returns_not_validated_head() {
     // compute_safe_block_hash must NOT return exec_block_hash because the block
     // is NotValidated. latest_verified_ancestor walks back to anchor (Phase0,
     // non-execution → zero hash).
-    let safe = compute_safe_block_hash::<MinimalEthSpec>(&store);
+    let safe = compute_safe_block_hash::<MinimalBeaconSpec>(&store);
     assert_ne!(
         safe, exec_block_hash,
         "a NotValidated Bellatrix head must never be the safe_block_hash"

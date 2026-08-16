@@ -28,7 +28,7 @@
 //! - `post.ssz_snappy` — raw bellatrix `BeaconState` SSZ (no fork discriminant).
 //!
 //! Hard constraint: no YAML loader (plan Phase 4 constraint 1). We use
-//! compile-time `MainnetEthSpec` / `MinimalEthSpec` preset constants for
+//! compile-time `MainnetBeaconSpec` / `MinimalBeaconSpec` preset constants for
 //! fork versions and override fork_epoch from `meta.yaml`.
 
 use std::path::{Path, PathBuf};
@@ -44,7 +44,7 @@ use pharos_stf::{
     DenebProcessSlotsDispatch, Phase0UpgradeDispatch,
 };
 use pharos_types::{
-    EthSpec, MainnetEthSpec, MinimalEthSpec,
+    BeaconSpec, MainnetBeaconSpec, MinimalBeaconSpec,
     phase0::{Epoch, Slot},
     views::BeaconStateView,
 };
@@ -265,7 +265,7 @@ fn run_case_mainnet(
     fork_epoch: Epoch,
     blocks_count: u64,
 ) -> CaseResult {
-    type E = MainnetEthSpec;
+    type E = MainnetBeaconSpec;
 
     let pre = match load_phase0_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -318,7 +318,7 @@ fn run_case_minimal(
     fork_epoch: Epoch,
     blocks_count: u64,
 ) -> CaseResult {
-    type E = MinimalEthSpec;
+    type E = MinimalBeaconSpec;
 
     let pre = match load_phase0_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -371,7 +371,7 @@ fn run_bellatrix_case_mainnet(
     fork_epoch: Epoch,
     blocks_count: u64,
 ) -> CaseResult {
-    type E = MainnetEthSpec;
+    type E = MainnetBeaconSpec;
 
     let pre = match load_altair_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -422,7 +422,7 @@ fn run_bellatrix_case_minimal(
     fork_epoch: Epoch,
     blocks_count: u64,
 ) -> CaseResult {
-    type E = MinimalEthSpec;
+    type E = MinimalBeaconSpec;
 
     let pre = match load_altair_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -490,7 +490,7 @@ fn run_bellatrix_transition_blocks<E, F>(
     cfg: &pharos_types::config::RuntimeConfig,
 ) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateView,
     E::AltairBeaconState: pharos_ssz::Decode
         + pharos_types::views::BeaconStateView
@@ -674,7 +674,7 @@ fn run_case_blocks<E, F>(
     cfg: &pharos_types::config::RuntimeConfig,
 ) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateView,
     E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
     E::AltairBeaconState: pharos_ssz::Decode
@@ -836,7 +836,7 @@ fn run_capella_case_mainnet(
     fork_epoch: Epoch,
     blocks_count: u64,
 ) -> CaseResult {
-    type E = MainnetEthSpec;
+    type E = MainnetBeaconSpec;
 
     let pre = match load_bellatrix_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -887,7 +887,7 @@ fn run_capella_case_minimal(
     fork_epoch: Epoch,
     blocks_count: u64,
 ) -> CaseResult {
-    type E = MinimalEthSpec;
+    type E = MinimalBeaconSpec;
 
     let pre = match load_bellatrix_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -941,7 +941,7 @@ fn run_capella_transition_blocks<E, F>(
     cfg: &pharos_types::config::RuntimeConfig,
 ) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateView,
     E::AltairBeaconState:
         pharos_stf::AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
@@ -1101,7 +1101,7 @@ fn run_deneb_case_mainnet(
     fork_epoch: Epoch,
     blocks_count: u64,
 ) -> CaseResult {
-    type E = MainnetEthSpec;
+    type E = MainnetBeaconSpec;
 
     let pre = match load_capella_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -1152,7 +1152,7 @@ fn run_deneb_case_minimal(
     fork_epoch: Epoch,
     blocks_count: u64,
 ) -> CaseResult {
-    type E = MinimalEthSpec;
+    type E = MinimalBeaconSpec;
 
     let pre = match load_capella_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -1206,7 +1206,7 @@ fn run_deneb_transition_blocks<E, F>(
     cfg: &pharos_types::config::RuntimeConfig,
 ) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateView,
     E::AltairBeaconState:
         pharos_stf::AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
@@ -1369,7 +1369,7 @@ fn run_electra_case_mainnet(
     fork_epoch: Epoch,
     blocks_count: u64,
 ) -> CaseResult {
-    type E = MainnetEthSpec;
+    type E = MainnetBeaconSpec;
 
     let pre = match load_deneb_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -1423,7 +1423,7 @@ fn run_electra_case_minimal(
     fork_epoch: Epoch,
     blocks_count: u64,
 ) -> CaseResult {
-    type E = MinimalEthSpec;
+    type E = MinimalBeaconSpec;
 
     let pre = match load_deneb_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -1488,7 +1488,7 @@ fn run_electra_transition_blocks<E, F>(
     cfg: &pharos_types::config::RuntimeConfig,
 ) -> CaseResult
 where
-    E: EthSpec,
+    E: BeaconSpec,
     E::BeaconState: BeaconStateView,
     E::AltairBeaconState:
         pharos_stf::AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
@@ -1701,7 +1701,7 @@ pub fn enumerate_fork_upgrade(
 }
 
 fn run_fork_electra_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
-    type E = MainnetEthSpec;
+    type E = MainnetBeaconSpec;
 
     let pre = match load_deneb_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,
@@ -1749,7 +1749,7 @@ fn run_fork_electra_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
 }
 
 fn run_fork_electra_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
-    type E = MinimalEthSpec;
+    type E = MinimalBeaconSpec;
 
     let pre = match load_deneb_state::<E>(case_dir, "pre.ssz_snappy") {
         Ok(v) => v,

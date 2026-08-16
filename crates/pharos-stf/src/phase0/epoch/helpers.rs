@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     phase0::{Epoch, ValidatorIndex},
 };
 use pharos_utils::Gwei;
@@ -24,7 +24,7 @@ use pharos_types::views::BeaconBlockBodyView;
 
 /// `get_matching_source_attestations` per
 /// `specs/phase0/beacon-chain.md:1438-1448`.
-pub fn get_matching_source_attestations<E: EthSpec>(
+pub fn get_matching_source_attestations<E: BeaconSpec>(
     state: &E::BeaconState,
     epoch: Epoch,
 ) -> Result<Vec<pharos_types::phase0::PendingAttestation<2048>>, EpochProcessingError>
@@ -51,7 +51,7 @@ where
 /// semantics: return an empty list immediately when there are no source
 /// attestations rather than calling `get_block_root` unconditionally (which
 /// would fail at slot 0 where no prior block root exists).
-pub fn get_matching_target_attestations<E: EthSpec>(
+pub fn get_matching_target_attestations<E: BeaconSpec>(
     state: &E::BeaconState,
     epoch: Epoch,
 ) -> Result<Vec<pharos_types::phase0::PendingAttestation<2048>>, EpochProcessingError>
@@ -73,7 +73,7 @@ where
 
 /// `get_matching_head_attestations` per
 /// `specs/phase0/beacon-chain.md:1461-1470`.
-pub fn get_matching_head_attestations<E: EthSpec>(
+pub fn get_matching_head_attestations<E: BeaconSpec>(
     state: &E::BeaconState,
     epoch: Epoch,
 ) -> Result<Vec<pharos_types::phase0::PendingAttestation<2048>>, EpochProcessingError>
@@ -95,7 +95,7 @@ where
 
 /// `get_unslashed_attesting_indices` per
 /// `specs/phase0/beacon-chain.md:1472-1481`.
-pub fn get_unslashed_attesting_indices<E: EthSpec>(
+pub fn get_unslashed_attesting_indices<E: BeaconSpec>(
     state: &E::BeaconState,
     attestations: &[pharos_types::phase0::PendingAttestation<2048>],
 ) -> HashSet<ValidatorIndex>
@@ -121,7 +121,7 @@ where
 }
 
 /// `get_attesting_balance` per `specs/phase0/beacon-chain.md:1482-1487`.
-pub fn get_attesting_balance<E: EthSpec>(
+pub fn get_attesting_balance<E: BeaconSpec>(
     state: &E::BeaconState,
     attestations: &[pharos_types::phase0::PendingAttestation<2048>],
 ) -> Gwei

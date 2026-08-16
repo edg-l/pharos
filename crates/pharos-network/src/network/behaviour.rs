@@ -12,7 +12,7 @@
 
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{gossipsub, identify, ping, request_response};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 
 use crate::rpc::codec::RpcCodec;
 use crate::rpc::types::{RpcRequest, RpcResponse};
@@ -35,12 +35,14 @@ macro_rules! rpc_behaviour_wrapper {
     ($name:ident, $event_name:ident) => {
         /// Newtype wrapping `request_response::Behaviour<RpcCodec<E>>` to give each
         /// per-method RPC sub-behaviour a unique `type ToSwarm` for the derive macro.
-        pub struct $name<E: EthSpec>(pub request_response::Behaviour<RpcCodec<E>>);
+        pub struct $name<E: BeaconSpec>(pub request_response::Behaviour<RpcCodec<E>>);
 
         /// Per-method event newtype so the outer enum has non-conflicting From impls.
-        pub struct $event_name<E: EthSpec>(pub request_response::Event<RpcRequest, RpcResponse<E>>);
+        pub struct $event_name<E: BeaconSpec>(
+            pub request_response::Event<RpcRequest, RpcResponse<E>>,
+        );
 
-        impl<E: EthSpec> std::fmt::Debug for $event_name<E>
+        impl<E: BeaconSpec> std::fmt::Debug for $event_name<E>
         where
             RpcResponse<E>: std::fmt::Debug,
         {
@@ -51,7 +53,7 @@ macro_rules! rpc_behaviour_wrapper {
             }
         }
 
-        impl<E: EthSpec + Send + Sync + 'static> NetworkBehaviour for $name<E> {
+        impl<E: BeaconSpec + Send + Sync + 'static> NetworkBehaviour for $name<E> {
             type ConnectionHandler =
                 <request_response::Behaviour<RpcCodec<E>> as NetworkBehaviour>::ConnectionHandler;
             type ToSwarm = $event_name<E>;
@@ -170,7 +172,7 @@ rpc_behaviour_wrapper!(RpcBlobSidecarsByRootBehaviour, RpcBlobSidecarsByRootEven
 
 /// The aggregated event type produced by `PharosBehaviour<E>`.
 #[derive(Debug)]
-pub enum PharosBehaviourEvent<E: EthSpec>
+pub enum PharosBehaviourEvent<E: BeaconSpec>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -193,7 +195,7 @@ where
     Ping(ping::Event),
 }
 
-impl<E: EthSpec> From<gossipsub::Event> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<gossipsub::Event> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -202,7 +204,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcStatusEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcStatusEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -211,7 +213,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcGoodbyeEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcGoodbyeEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -220,7 +222,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcPingEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcPingEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -229,7 +231,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcMetaDataEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcMetaDataEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -238,7 +240,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcMetaDataV1Event<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcMetaDataV1Event<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -247,7 +249,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcBlocksByRangeEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcBlocksByRangeEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -256,7 +258,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcBlocksByRootEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcBlocksByRootEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -265,7 +267,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcLcBootstrapEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcLcBootstrapEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -274,7 +276,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcLcUpdatesByRangeEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcLcUpdatesByRangeEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -283,7 +285,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcLcFinalityUpdateEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcLcFinalityUpdateEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -292,7 +294,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcLcOptimisticUpdateEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcLcOptimisticUpdateEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -301,7 +303,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcBlobSidecarsByRangeEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcBlobSidecarsByRangeEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -310,7 +312,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<RpcBlobSidecarsByRootEvent<E>> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<RpcBlobSidecarsByRootEvent<E>> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -319,7 +321,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<identify::Event> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<identify::Event> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -328,7 +330,7 @@ where
     }
 }
 
-impl<E: EthSpec> From<ping::Event> for PharosBehaviourEvent<E>
+impl<E: BeaconSpec> From<ping::Event> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
 {
@@ -352,7 +354,7 @@ where
     to_swarm = "PharosBehaviourEvent<E>",
     prelude = "libp2p::swarm::derive_prelude"
 )]
-pub struct PharosBehaviour<E: EthSpec>
+pub struct PharosBehaviour<E: BeaconSpec>
 where
     RpcResponse<E>: std::fmt::Debug,
 {

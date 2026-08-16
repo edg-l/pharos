@@ -9,7 +9,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     electra::BeaconState,
     phase0::{BeaconBlockHeader, Root, Slot, ValidatorIndex},
 };
@@ -60,7 +60,7 @@ pub fn process_block_header_electra<
     block_body_root: Root,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
         ElectraBeaconState = BeaconState<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

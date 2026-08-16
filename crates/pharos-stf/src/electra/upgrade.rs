@@ -21,7 +21,7 @@
 
 use pharos_ssz::{SszSequence, SszVector};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     config::RuntimeConfig,
     deneb::BeaconState as DenebBeaconState,
     electra::{BeaconState as ElectraBeaconState, requests::PendingDeposit},
@@ -87,7 +87,7 @@ pub fn upgrade_to_electra<
     StateTransitionError,
 >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             DenebBeaconState = DenebBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

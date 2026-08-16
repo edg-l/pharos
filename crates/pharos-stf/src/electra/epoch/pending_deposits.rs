@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use pharos_ssz::{SszList, SszSequence, SszVector};
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     electra::{BeaconState, requests::PendingDeposit},
     phase0::{Epoch, Slot, ValidatorIndex},
 };
@@ -56,7 +56,7 @@ pub fn apply_pending_deposit<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -154,7 +154,7 @@ pub fn process_pending_deposits<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

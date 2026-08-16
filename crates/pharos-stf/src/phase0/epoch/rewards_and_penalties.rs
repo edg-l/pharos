@@ -9,7 +9,7 @@ use rayon::prelude::*;
 
 use pharos_ssz::{SszList, SszSequence};
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     phase0::{Attestation, Deltas, PendingAttestation, ValidatorIndex},
     views::BeaconBlockBodyView,
 };
@@ -35,19 +35,19 @@ use super::helpers::{
 // ── Small spec helpers ─────────────────────────────────────────────────────────
 
 /// `get_finality_delay` per `specs/phase0/beacon-chain.md:1593-1594`.
-fn get_finality_delay<E: EthSpec>(state: &E::BeaconState) -> u64 {
+fn get_finality_delay<E: BeaconSpec>(state: &E::BeaconState) -> u64 {
     let prev = get_previous_epoch::<E>(state).0;
     let finalized = state.finalized_checkpoint().epoch.0;
     prev.saturating_sub(finalized)
 }
 
 /// `is_in_inactivity_leak` per `specs/phase0/beacon-chain.md:1597-1598`.
-fn is_in_inactivity_leak<E: EthSpec>(state: &E::BeaconState) -> bool {
+fn is_in_inactivity_leak<E: BeaconSpec>(state: &E::BeaconState) -> bool {
     get_finality_delay::<E>(state) > E::MIN_EPOCHS_TO_INACTIVITY_PENALTY
 }
 
 /// `get_eligible_validator_indices` per `specs/phase0/beacon-chain.md:1601-1609`.
-fn get_eligible_validator_indices<E: EthSpec>(state: &E::BeaconState) -> Vec<ValidatorIndex> {
+fn get_eligible_validator_indices<E: BeaconSpec>(state: &E::BeaconState) -> Vec<ValidatorIndex> {
     let previous_epoch = get_previous_epoch::<E>(state);
     state
         .validators_iter()
@@ -70,7 +70,7 @@ fn get_eligible_validator_indices<E: EthSpec>(state: &E::BeaconState) -> Vec<Val
 /// `get_attestation_component_deltas` per `specs/phase0/beacon-chain.md:1611-1625`.
 ///
 /// Shared logic for source, target, and head deltas.
-fn get_attestation_component_deltas<E: EthSpec>(
+fn get_attestation_component_deltas<E: BeaconSpec>(
     state: &E::BeaconState,
     attestations: &[PendingAttestation<2048>],
 ) -> Result<(Vec<u64>, Vec<u64>), EpochProcessingError>
@@ -130,7 +130,7 @@ where
 // ── Public delta functions ─────────────────────────────────────────────────────
 
 /// `get_source_deltas` per `specs/phase0/beacon-chain.md:1627-1634`.
-pub fn get_source_deltas<E: EthSpec>(
+pub fn get_source_deltas<E: BeaconSpec>(
     state: &E::BeaconState,
 ) -> Result<Deltas<1_099_511_627_776u64>, EpochProcessingError>
 where
@@ -144,7 +144,7 @@ where
 }
 
 /// `get_target_deltas` per `specs/phase0/beacon-chain.md:1636-1643`.
-pub fn get_target_deltas<E: EthSpec>(
+pub fn get_target_deltas<E: BeaconSpec>(
     state: &E::BeaconState,
 ) -> Result<Deltas<1_099_511_627_776u64>, EpochProcessingError>
 where
@@ -158,7 +158,7 @@ where
 }
 
 /// `get_head_deltas` per `specs/phase0/beacon-chain.md:1645-1652`.
-pub fn get_head_deltas<E: EthSpec>(
+pub fn get_head_deltas<E: BeaconSpec>(
     state: &E::BeaconState,
 ) -> Result<Deltas<1_099_511_627_776u64>, EpochProcessingError>
 where
@@ -172,7 +172,7 @@ where
 }
 
 /// `get_inclusion_delay_deltas` per `specs/phase0/beacon-chain.md:1654-1675`.
-pub fn get_inclusion_delay_deltas<E: EthSpec>(
+pub fn get_inclusion_delay_deltas<E: BeaconSpec>(
     state: &E::BeaconState,
 ) -> Result<Deltas<1_099_511_627_776u64>, EpochProcessingError>
 where
@@ -229,7 +229,7 @@ where
 }
 
 /// `get_inactivity_penalty_deltas` per `specs/phase0/beacon-chain.md:1677-1700`.
-pub fn get_inactivity_penalty_deltas<E: EthSpec>(
+pub fn get_inactivity_penalty_deltas<E: BeaconSpec>(
     state: &E::BeaconState,
 ) -> Result<Deltas<1_099_511_627_776u64>, EpochProcessingError>
 where
@@ -297,7 +297,7 @@ fn build_deltas(
 
 // ── get_attestation_deltas ────────────────────────────────────────────────────
 
-fn get_attestation_deltas<E: EthSpec>(
+fn get_attestation_deltas<E: BeaconSpec>(
     state: &E::BeaconState,
 ) -> Result<(Vec<u64>, Vec<u64>), EpochProcessingError>
 where
@@ -343,7 +343,7 @@ where
 /// `process_rewards_and_penalties` per `specs/phase0/beacon-chain.md:1737-1749`.
 ///
 /// Sequential implementation (Phase 4). Phase 5 will add rayon parallelism.
-pub fn process_rewards_and_penalties<E: EthSpec>(
+pub fn process_rewards_and_penalties<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where

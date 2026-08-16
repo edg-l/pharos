@@ -16,7 +16,7 @@
 //! The processed prefix is truncated off `state.pending_consolidations`.
 
 use pharos_ssz::{SszList, SszSequence};
-use pharos_types::{EthSpec, electra::BeaconState};
+use pharos_types::{BeaconSpec, electra::BeaconState};
 use pharos_utils::Gwei;
 
 use crate::electra::helpers::{decrease_balance_electra, increase_balance_electra};
@@ -39,7 +39,7 @@ pub fn process_pending_consolidations<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
-    E: EthSpec,
+    E: BeaconSpec,
 >(
     state: &mut BeaconState<
         SLOTS_PER_HISTORICAL_ROOT,

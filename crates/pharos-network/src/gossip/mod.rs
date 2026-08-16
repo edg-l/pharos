@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use libp2p::gossipsub::{self, IdentTopic, TopicHash};
 use pharos_ssz::Bitvector;
 use pharos_ssz::Decode as _;
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::capella::operations::SignedBLSToExecutionChange;
 use pharos_types::deneb::BlobSidecar;
@@ -102,7 +102,7 @@ pub fn subscribe_base_topics(
 /// Called at startup when the active fork is altair or bellatrix so the node
 /// starts on the complete topic set even when those forks are at epoch 0.
 /// (`D-bellatrix-startup-topic-set`)
-pub fn subscribe_altair_extra_topics<E: EthSpec>(
+pub fn subscribe_altair_extra_topics<E: BeaconSpec>(
     gs: &mut gossipsub::Behaviour,
     fork_digest: ForkDigest,
     topic_map: &mut HashMap<TopicHash, GossipTopic>,
@@ -162,7 +162,7 @@ pub fn subscribe_altair_extra_topics<E: EthSpec>(
 /// node on a Deneb-or-later fork never receives blob sidecars over gossip, so a
 /// blob-carrying block's data-availability gate can never be satisfied at the
 /// tip (`specs/deneb/p2p-interface.md` blob-sidecar topics).
-pub fn subscribe_deneb_blob_topics<E: EthSpec>(
+pub fn subscribe_deneb_blob_topics<E: BeaconSpec>(
     gs: &mut gossipsub::Behaviour,
     fork_digest: ForkDigest,
     topic_map: &mut HashMap<TopicHash, GossipTopic>,
@@ -192,7 +192,7 @@ pub fn subscribe_deneb_blob_topics<E: EthSpec>(
 /// can be reused on the Accept path without a second decompress.
 ///
 /// SSZ-decode failures return `GossipVerdict::Reject("ssz decode")`.
-pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
+pub fn dispatch_gossip_message<E: BeaconSpec, H: Host<E>>(
     host: &H,
     topic: &GossipTopic,
     ssz_bytes: &[u8],
@@ -393,7 +393,7 @@ mod tests {
     use super::*;
     use libp2p::gossipsub::MessageAuthenticity;
     use pharos_ssz::Encode as _;
-    use pharos_types::MainnetEthSpec;
+    use pharos_types::MainnetBeaconSpec;
     use pharos_types::phase0::primitives::ForkDigest;
     use pharos_types::phase0::{
         Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing, Root,
@@ -433,18 +433,18 @@ mod tests {
         }
     }
 
-    impl BlockProvider<MainnetEthSpec> for MockHost {
+    impl BlockProvider<MainnetBeaconSpec> for MockHost {
         fn block_by_root(
             &self,
             _root: Root,
-        ) -> Option<<MainnetEthSpec as EthSpec>::SignedBeaconBlock> {
+        ) -> Option<<MainnetBeaconSpec as BeaconSpec>::SignedBeaconBlock> {
             unreachable!()
         }
         fn blocks_by_range(
             &self,
             _start_slot: Slot,
             _count: u64,
-        ) -> Vec<<MainnetEthSpec as EthSpec>::SignedBeaconBlock> {
+        ) -> Vec<<MainnetBeaconSpec as BeaconSpec>::SignedBeaconBlock> {
             unreachable!()
         }
         fn finalized_checkpoint(&self) -> Checkpoint {
@@ -455,10 +455,10 @@ mod tests {
         }
     }
 
-    impl GossipValidator<MainnetEthSpec> for MockHost {
+    impl GossipValidator<MainnetBeaconSpec> for MockHost {
         fn validate_beacon_block(
             &self,
-            _block: &<MainnetEthSpec as EthSpec>::SignedBeaconBlock,
+            _block: &<MainnetBeaconSpec as BeaconSpec>::SignedBeaconBlock,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
@@ -493,19 +493,19 @@ mod tests {
         }
         fn validate_sync_committee_contribution_and_proof(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::AltairSignedContributionAndProof,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::AltairSignedContributionAndProof,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
         fn validate_light_client_finality_update(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientFinalityUpdate,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::AltairLightClientFinalityUpdate,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
         fn validate_light_client_optimistic_update(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::AltairLightClientOptimisticUpdate,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::AltairLightClientOptimisticUpdate,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
@@ -519,14 +519,14 @@ mod tests {
 
         fn validate_capella_light_client_finality_update(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::CapellaLightClientFinalityUpdate,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::CapellaLightClientFinalityUpdate,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
 
         fn validate_capella_light_client_optimistic_update(
             &self,
-            _msg: &<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate,
+            _msg: &<MainnetBeaconSpec as BeaconSpec>::CapellaLightClientOptimisticUpdate,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }
@@ -544,7 +544,7 @@ mod tests {
 
     fn make_gossipsub() -> gossipsub::Behaviour {
         let fd = ForkDigest::from_array([0u8; 4]);
-        let cfg = gossipsub_config::<MainnetEthSpec>(fd).expect("config failed");
+        let cfg = gossipsub_config::<MainnetBeaconSpec>(fd).expect("config failed");
         gossipsub::Behaviour::new(MessageAuthenticity::Anonymous, cfg).expect("behaviour failed")
     }
 
@@ -611,7 +611,7 @@ mod tests {
         let slashing = ProposerSlashing::default();
         let ssz = slashing.as_ssz_bytes();
 
-        let verdict = dispatch_gossip_message::<MainnetEthSpec, MockHost>(&host, &topic, &ssz);
+        let verdict = dispatch_gossip_message::<MainnetBeaconSpec, MockHost>(&host, &topic, &ssz);
         assert!(
             matches!(verdict, GossipVerdict::Accept),
             "expected Accept, got {verdict:?}"
@@ -629,7 +629,8 @@ mod tests {
         };
 
         let garbage = b"not a valid ssz payload";
-        let verdict = dispatch_gossip_message::<MainnetEthSpec, MockHost>(&host, &topic, garbage);
+        let verdict =
+            dispatch_gossip_message::<MainnetBeaconSpec, MockHost>(&host, &topic, garbage);
         assert!(
             matches!(&verdict, GossipVerdict::Reject(r) if r == "ssz decode"),
             "expected Reject(ssz decode), got {verdict:?}"

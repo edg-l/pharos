@@ -1,16 +1,16 @@
 //! Accessor traits for beacon-chain block containers.
 //!
-//! STF code is generic over `<E: EthSpec>` and receives `E::BeaconBlock`,
+//! STF code is generic over `<E: BeaconSpec>` and receives `E::BeaconBlock`,
 //! `E::BeaconBlockBody`, etc. as opaque associated types. These traits
 //! expose the fields needed by the state transition function without forcing
 //! STF call sites to name the concrete const-generic preset aliases.
 //!
 //! ## Implementation note — why `E` is absent from the view traits
 //!
-//! The plan's D8 specifies `type E: EthSpec` on each view trait and a
-//! `BeaconBlockView<E = Self>` back-reference on `EthSpec::BeaconBlock`.
+//! The plan's D8 specifies `type E: BeaconSpec` on each view trait and a
+//! `BeaconBlockView<E = Self>` back-reference on `BeaconSpec::BeaconBlock`.
 //! Both approach (A) (one impl per preset alias) and approach (B) (blanket
-//! impl with `E: EthSpec<BeaconBlockBody = Self>`) fail on stable Rust 1.85:
+//! impl with `E: BeaconSpec<BeaconBlockBody = Self>`) fail on stable Rust 1.85:
 //!
 //! - (A): mainnet and minimal phase0 presets expand to identical const params
 //!   (`BeaconBlockBody<16,2,128,16,16,2048,33>`), so the two impl blocks are
@@ -21,8 +21,8 @@
 //!
 //! Solution: remove `type E` from the view traits. The traits become pure
 //! field-accessor interfaces with element associated types for the preset-
-//! specific container types. The `EthSpec` bounds on `BeaconBlock` etc. drop
-//! the `<E = Self>` constraint.  STF code still uses `<E: EthSpec>` at every
+//! specific container types. The `BeaconSpec` bounds on `BeaconBlock` etc. drop
+//! the `<E = Self>` constraint.  STF code still uses `<E: BeaconSpec>` at every
 //! function boundary; the view traits supply the field-access layer.
 //!
 //! Defined per `specs/phase0/beacon-chain.md:534-614`.

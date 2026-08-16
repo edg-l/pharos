@@ -82,7 +82,7 @@ pub use error::{
 
 use pharos_ssz::TreeHash;
 use pharos_types::{
-    BeaconStateView, EthSpec,
+    BeaconSpec, BeaconStateView,
     config::RuntimeConfig,
     phase0::{Attestation, AttesterSlashing, Deposit},
     views::{BeaconBlockBodyView, BeaconBlockView, ForkVariant, SignedBeaconBlockView},
@@ -150,14 +150,14 @@ impl ForkEpochs {
 // These traits mirror the `*ProcessSlotsDispatch` pattern: a single method on
 // the concrete inner state type that delegates to the existing concrete
 // `upgrade_to_*` free functions. They allow `process_slots_fork` — which is
-// generic over `E: EthSpec` and cannot call const-generic fns directly — to
+// generic over `E: BeaconSpec` and cannot call const-generic fns directly — to
 // invoke the upgrade through the opaque associated type.
 
 /// Dispatch trait for upgrading a phase0 state to Altair.
 ///
 /// Implemented via blanket impl on `phase0::BeaconState<...>`. Called from
 /// `process_slots_fork` when it reaches the Altair fork epoch boundary.
-pub trait Phase0UpgradeDispatch<E: EthSpec>: Sized {
+pub trait Phase0UpgradeDispatch<E: BeaconSpec>: Sized {
     /// Upgrade `self` (phase0 inner state) to an Altair inner state.
     fn upgrade_to_altair_dispatch(
         self,
@@ -190,7 +190,7 @@ impl<
         MAX_VALIDATORS_PER_COMMITTEE,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             Phase0BeaconState = pharos_types::phase0::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -239,7 +239,7 @@ where
 ///
 /// Implemented via blanket impl on `altair::BeaconState<...>`. Called from
 /// `process_slots_fork` when it reaches the Bellatrix fork epoch boundary.
-pub trait AltairUpgradeDispatch<E: EthSpec>: Sized {
+pub trait AltairUpgradeDispatch<E: BeaconSpec>: Sized {
     /// Upgrade `self` (Altair inner state) to a Bellatrix inner state.
     fn upgrade_to_bellatrix_dispatch(
         self,
@@ -271,7 +271,7 @@ impl<
         SYNC_COMMITTEE_SIZE,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -320,7 +320,7 @@ where
 ///
 /// Implemented via blanket impl on `bellatrix::BeaconState<...>`. Called from
 /// `process_slots_fork` when it reaches the Capella fork epoch boundary.
-pub trait BellatrixUpgradeDispatch<E: EthSpec>: Sized {
+pub trait BellatrixUpgradeDispatch<E: BeaconSpec>: Sized {
     /// Upgrade `self` (Bellatrix inner state) to a Capella inner state.
     fn upgrade_to_capella_dispatch(
         self,
@@ -354,7 +354,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             BellatrixBeaconState = pharos_types::bellatrix::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -405,7 +405,7 @@ where
 ///
 /// Implemented via blanket impl on `capella::BeaconState<...>`. Called from
 /// `process_slots_fork` when it reaches the Deneb fork epoch boundary.
-pub trait CapellaUpgradeDispatch<E: EthSpec>: Sized {
+pub trait CapellaUpgradeDispatch<E: BeaconSpec>: Sized {
     /// Upgrade `self` (Capella inner state) to a Deneb inner state.
     fn upgrade_to_deneb_dispatch(
         self,
@@ -439,7 +439,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             CapellaBeaconState = pharos_types::capella::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -490,7 +490,7 @@ where
 ///
 /// Implemented via blanket impl on `deneb::BeaconState<...>`. Called from
 /// `process_slots_fork` when it reaches the Electra fork epoch boundary.
-pub trait DenebUpgradeDispatch<E: EthSpec>: Sized {
+pub trait DenebUpgradeDispatch<E: BeaconSpec>: Sized {
     /// Upgrade `self` (Deneb inner state) to an Electra inner state.
     fn upgrade_to_electra_dispatch(
         self,
@@ -527,7 +527,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             DenebBeaconState = pharos_types::deneb::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -614,7 +614,7 @@ where
 /// `payload_status` is `None` for pre-merge forks (phase0/altair), `Some`
 /// for bellatrix/capella. The status is the direct EL verdict from
 /// `verify_and_notify_new_payload` / `notify_new_payload_capella`.
-pub fn state_transition<E: EthSpec, EE: ExecutionEngine>(
+pub fn state_transition<E: BeaconSpec, EE: ExecutionEngine>(
     mut state: E::BeaconState,
     signed_block: &E::SignedBeaconBlock,
     execution_engine: &EE,
@@ -785,7 +785,7 @@ where
 ///
 /// Called from `state_transition` after variant dispatch. Takes the concrete
 /// phase0 signed block (already unwrapped from the fork-enum by the caller).
-fn phase0_state_transition<E: EthSpec>(
+fn phase0_state_transition<E: BeaconSpec>(
     state: &mut E::BeaconState,
     signed_block: &E::Phase0SignedBeaconBlock,
     validate_result: bool,
@@ -867,7 +867,7 @@ where
 ///
 /// The state and block must be the same fork variant; `produce_block` ensures
 /// this by assembling the block from the head state's fork variant.
-pub fn process_block_for_production<E: EthSpec, EE: ExecutionEngine>(
+pub fn process_block_for_production<E: BeaconSpec, EE: ExecutionEngine>(
     state: E::BeaconState,
     block: &E::BeaconBlock,
     execution_engine: &EE,
@@ -977,7 +977,7 @@ where
 /// the fork variant of `state`. Called from
 /// `pharos_fork_choice::compute_pulled_up_tip` which holds a fork-enum
 /// `BeaconState` that may be any fork variant.
-pub fn process_justification_and_finalization_fork<E: EthSpec>(
+pub fn process_justification_and_finalization_fork<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>
 where
@@ -1059,7 +1059,7 @@ where
 /// Coincident non-genesis fork epochs (two forks at the same epoch) are not
 /// supported; real networks use distinct epochs. The strict `<` guard in
 /// `boundary_slot_if` is intentional.
-pub fn process_slots_fork<E: EthSpec>(
+pub fn process_slots_fork<E: BeaconSpec>(
     state: &mut E::BeaconState,
     target_slot: pharos_types::phase0::Slot,
     fork_epochs: ForkEpochs,
@@ -1219,7 +1219,7 @@ where
 // and `CapellaDispatch` in the per-fork `state_transition.rs` files.
 
 /// Dispatch trait for production block processing on Altair inner states.
-pub trait AltairProcessBlockForProduction<E: EthSpec>: Sized {
+pub trait AltairProcessBlockForProduction<E: BeaconSpec>: Sized {
     /// Apply `block` (unsigned) to `self` with `verify_signatures=false`.
     fn process_block_for_production_altair(
         &mut self,
@@ -1256,7 +1256,7 @@ impl<
         SYNC_COMMITTEE_SIZE,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -1322,7 +1322,7 @@ where
 }
 
 /// Dispatch trait for production block processing on Bellatrix inner states.
-pub trait BellatrixProcessBlockForProduction<E: EthSpec, EE: ExecutionEngine>: Sized {
+pub trait BellatrixProcessBlockForProduction<E: BeaconSpec, EE: ExecutionEngine>: Sized {
     /// Apply `block` (unsigned) to `self` with `verify_signatures=false`.
     fn process_block_for_production_bellatrix(
         &mut self,
@@ -1368,7 +1368,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -1487,7 +1487,7 @@ where
 }
 
 /// Dispatch trait for production block processing on Capella inner states.
-pub trait CapellaProcessBlockForProduction<E: EthSpec, EE: ExecutionEngine>: Sized {
+pub trait CapellaProcessBlockForProduction<E: BeaconSpec, EE: ExecutionEngine>: Sized {
     /// Apply `block` (unsigned) to `self` with `verify_signatures=false`.
     fn process_block_for_production_capella(
         &mut self,
@@ -1535,7 +1535,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -1661,7 +1661,7 @@ where
 }
 
 /// Dispatch trait for production block processing on Deneb inner states.
-pub trait DenebProcessBlockForProduction<E: EthSpec, EE: ExecutionEngine>: Sized {
+pub trait DenebProcessBlockForProduction<E: BeaconSpec, EE: ExecutionEngine>: Sized {
     /// Apply `block` (unsigned) to `self` with `verify_signatures=false`.
     fn process_block_for_production_deneb(
         &mut self,
@@ -1710,7 +1710,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -1877,7 +1877,7 @@ where
 /// Bellatrix J&F is identical to Altair J&F; this trait allows
 /// `process_justification_and_finalization_fork` to call it through the opaque
 /// `E::BellatrixBeaconState` associated type without knowing concrete const params.
-pub trait BellatrixJaFDispatch<E: EthSpec>: Sized {
+pub trait BellatrixJaFDispatch<E: BeaconSpec>: Sized {
     /// Run `process_justification_and_finalization` on `self` (in place).
     fn process_jaf_bellatrix(&mut self) -> Result<(), EpochProcessingError>;
 }
@@ -1908,7 +1908,7 @@ impl<
         MAX_EXTRA_DATA_BYTES,
     >
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -1958,7 +1958,7 @@ where
 #[cfg(test)]
 mod fork_upgrade_tests {
     use pharos_types::{
-        BeaconStateView as _, EthSpec, MinimalEthSpec, config::RuntimeConfig, phase0::Slot,
+        BeaconSpec, BeaconStateView as _, MinimalBeaconSpec, config::RuntimeConfig, phase0::Slot,
         views::ForkVariant,
     };
 
@@ -1972,8 +1972,8 @@ mod fork_upgrade_tests {
     ///
     /// The `randao_mixes` vector must be non-empty per the spec (length =
     /// EPOCHS_PER_HISTORICAL_VECTOR). `Default` fills it correctly.
-    fn make_bellatrix_state_at_slot(slot: Slot) -> <MinimalEthSpec as EthSpec>::BeaconState {
-        use pharos_types::MinimalEthSpec as E;
+    fn make_bellatrix_state_at_slot(slot: Slot) -> <MinimalBeaconSpec as BeaconSpec>::BeaconState {
+        use pharos_types::MinimalBeaconSpec as E;
 
         // Build a default inner state then set the slot; the clippy lint
         // "field assignment outside of initializer" is suppressed here because
@@ -1981,11 +1981,11 @@ mod fork_upgrade_tests {
         // syntax requires a concrete type path which is not available generically.
         #[allow(clippy::field_reassign_with_default)]
         let inner = {
-            let mut s = <E as EthSpec>::BellatrixBeaconState::default();
+            let mut s = <E as BeaconSpec>::BellatrixBeaconState::default();
             s.slot = slot;
             s
         };
-        <E as EthSpec>::bellatrix_into_state(inner)
+        <E as BeaconSpec>::bellatrix_into_state(inner)
     }
 
     /// `process_slots_fork` with a real `capella_fork_epoch` upgrades the state
@@ -1996,7 +1996,7 @@ mod fork_upgrade_tests {
     /// one epoch), applies `upgrade_to_capella`, then advances one more slot.
     #[test]
     fn process_slots_fork_upgrades_bellatrix_to_capella() {
-        type E = MinimalEthSpec;
+        type E = MinimalBeaconSpec;
         let spe = E::SLOTS_PER_EPOCH;
         // Use epoch 2 as the capella epoch so there is a clear boundary.
         let capella_epoch = 2u64;
@@ -2008,7 +2008,7 @@ mod fork_upgrade_tests {
         assert_eq!(state.fork_variant(), ForkVariant::Bellatrix);
 
         let runtime_cfg = RuntimeConfig {
-            capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+            capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
             capella_fork_epoch: capella_epoch,
             // Other fork epochs far in the future so only capella fires.
             altair_fork_epoch: u64::MAX,
@@ -2040,7 +2040,7 @@ mod fork_upgrade_tests {
     /// does NOT trigger any upgrade — it stays Bellatrix.
     #[test]
     fn process_slots_fork_never_stays_bellatrix() {
-        type E = MinimalEthSpec;
+        type E = MinimalBeaconSpec;
         let spe = E::SLOTS_PER_EPOCH;
         // Even though `capella_fork_epoch` in the runtime_cfg says epoch 2,
         // ForkEpochs::never() suppresses all upgrade triggers.
@@ -2062,15 +2062,15 @@ mod fork_upgrade_tests {
     }
 
     /// Build a minimal Altair fork-enum state at `slot` for upgrade tests.
-    fn make_altair_state_at_slot(slot: Slot) -> <MinimalEthSpec as EthSpec>::BeaconState {
-        use pharos_types::MinimalEthSpec as E;
+    fn make_altair_state_at_slot(slot: Slot) -> <MinimalBeaconSpec as BeaconSpec>::BeaconState {
+        use pharos_types::MinimalBeaconSpec as E;
         #[allow(clippy::field_reassign_with_default)]
         let inner = {
-            let mut s = <E as EthSpec>::AltairBeaconState::default();
+            let mut s = <E as BeaconSpec>::AltairBeaconState::default();
             s.slot = slot;
             s
         };
-        <E as EthSpec>::altair_into_state(inner)
+        <E as BeaconSpec>::altair_into_state(inner)
     }
 
     /// Multi-fork jump: an Altair state advanced in a SINGLE `process_slots_fork`
@@ -2089,7 +2089,7 @@ mod fork_upgrade_tests {
     /// here — the sync-committee period is not hit).
     #[test]
     fn process_slots_fork_multi_hop_altair_to_capella() {
-        type E = MinimalEthSpec;
+        type E = MinimalBeaconSpec;
         let spe = E::SLOTS_PER_EPOCH;
         // Altair already active (epoch 0); bellatrix at epoch 1, capella at epoch 2.
         let (bellatrix_epoch, capella_epoch) = (1u64, 2u64);
@@ -2098,8 +2098,8 @@ mod fork_upgrade_tests {
         assert_eq!(state.fork_variant(), ForkVariant::Altair);
 
         let runtime_cfg = RuntimeConfig {
-            bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
-            capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+            bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
+            capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
             altair_fork_epoch: 0,
             bellatrix_fork_epoch: bellatrix_epoch,
             capella_fork_epoch: capella_epoch,
@@ -2137,7 +2137,7 @@ mod fork_upgrade_tests {
     /// called before the fork-dispatch match, upgrading the state in-place so
     /// the dispatch lands in the `ForkVariant::Capella` arm.
     ///
-    /// Scenario (MinimalEthSpec, SLOTS_PER_EPOCH = 8):
+    /// Scenario (MinimalBeaconSpec, SLOTS_PER_EPOCH = 8):
     /// - pre-state : Bellatrix, slot 7 (last slot of epoch 0), one active validator
     /// - block     : Capella, slot 8 (first slot of epoch 1)
     /// - cfg       : capella_fork_epoch = 1
@@ -2145,7 +2145,7 @@ mod fork_upgrade_tests {
     fn state_transition_crosses_bellatrix_to_capella() {
         use pharos_ssz::TreeHash as _;
         use pharos_types::{
-            BeaconStateView as _, EthSpec as _, MinimalEthSpec as E,
+            BeaconSpec as _, BeaconStateView as _, MinimalBeaconSpec as E,
             phase0::{Epoch, Slot, Validator},
         };
         use pharos_utils::Gwei;
@@ -2159,7 +2159,7 @@ mod fork_upgrade_tests {
             capella_fork_epoch: capella_epoch,
             altair_fork_epoch: u64::MAX,
             bellatrix_fork_epoch: u64::MAX,
-            // Use MinimalEthSpec slot duration so the execution_payload
+            // Use MinimalBeaconSpec slot duration so the execution_payload
             // timestamp check passes: expected = genesis_time + slot * secs_per_slot.
             seconds_per_slot: E::SLOT_DURATION_MS / 1000,
             ..RuntimeConfig::default()
@@ -2179,7 +2179,7 @@ mod fork_upgrade_tests {
         // header structural checks (parent_root, proposer lookup) always run.
         #[allow(clippy::field_reassign_with_default)]
         let pre_state = {
-            let mut inner = <E as pharos_types::EthSpec>::BellatrixBeaconState::default();
+            let mut inner = <E as pharos_types::BeaconSpec>::BellatrixBeaconState::default();
             inner.slot = Slot(capella_epoch * spe - 1);
             // Add one active validator with non-zero effective_balance.
             // activation_epoch=0, exit_epoch=u64::MAX keeps it active for epoch 1.
@@ -2196,7 +2196,7 @@ mod fork_upgrade_tests {
             inner.balances =
                 pharos_ssz::SszList::from_items(std::iter::once(Gwei(E::MAX_EFFECTIVE_BALANCE)))
                     .expect("one balance fits");
-            <E as pharos_types::EthSpec>::bellatrix_into_state(inner)
+            <E as pharos_types::BeaconSpec>::bellatrix_into_state(inner)
         };
         assert_eq!(pre_state.fork_variant(), ForkVariant::Bellatrix);
 
@@ -2221,7 +2221,8 @@ mod fork_upgrade_tests {
         // parent_root computed above, and execution_payload.timestamp matching
         // compute_time_at_slot: genesis_time(0) + slot * seconds_per_slot.
         let expected_timestamp = block_slot.0 * runtime_cfg.seconds_per_slot;
-        let mut capella_inner = <E as pharos_types::EthSpec>::CapellaSignedBeaconBlock::default();
+        let mut capella_inner =
+            <E as pharos_types::BeaconSpec>::CapellaSignedBeaconBlock::default();
         capella_inner.message.slot = block_slot;
         capella_inner.message.parent_root = parent_root;
         // proposer_index=0: the only validator in the set; get_proposer_index
@@ -2281,7 +2282,7 @@ mod electra_production_tests {
     use pharos_types::views::{
         BeaconBlockView as _, BeaconStateView as _, ForkVariant, SignedBeaconBlockView as _,
     };
-    use pharos_types::{EthSpec, MinimalEthSpec};
+    use pharos_types::{BeaconSpec, MinimalBeaconSpec};
 
     use super::bellatrix::execution_engine::NullExecutionEngine;
     use super::{ForkEpochs, process_block_for_production, process_slots_fork};
@@ -2343,13 +2344,13 @@ mod electra_production_tests {
         let signed: MinimalSignedBeaconBlock =
             load_ssz_snappy(&case_dir.join("blocks_0.ssz_snappy"));
 
-        let mut pre_enum = MinimalEthSpec::electra_into_state(pre);
+        let mut pre_enum = MinimalBeaconSpec::electra_into_state(pre);
         assert_eq!(pre_enum.fork_variant(), ForkVariant::Electra);
-        let block_enum = MinimalEthSpec::electra_into_block(signed.message().clone());
+        let block_enum = MinimalBeaconSpec::electra_into_block(signed.message().clone());
         let block_slot = block_enum.slot();
 
         let runtime_cfg = pharos_types::config::RuntimeConfig {
-            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
             ..pharos_types::config::RuntimeConfig::default()
         };
 
@@ -2357,10 +2358,15 @@ mod electra_production_tests {
         // slot before processing the block (the production path is not preceded by
         // `process_slots` inside `process_block_for_production`).
         let fork_epochs = ForkEpochs::from_runtime_cfg(&runtime_cfg);
-        process_slots_fork::<MinimalEthSpec>(&mut pre_enum, block_slot, fork_epochs, &runtime_cfg)
-            .expect("process_slots_fork to the block slot must succeed");
+        process_slots_fork::<MinimalBeaconSpec>(
+            &mut pre_enum,
+            block_slot,
+            fork_epochs,
+            &runtime_cfg,
+        )
+        .expect("process_slots_fork to the block slot must succeed");
 
-        let produced = process_block_for_production::<MinimalEthSpec, NullExecutionEngine>(
+        let produced = process_block_for_production::<MinimalBeaconSpec, NullExecutionEngine>(
             pre_enum,
             &block_enum,
             &NullExecutionEngine,

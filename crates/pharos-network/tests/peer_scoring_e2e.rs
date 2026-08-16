@@ -33,7 +33,7 @@ use libp2p::identity::Keypair;
 
 use pharos_network::scoring::RpcMethod;
 use pharos_network::{NetworkBuilder, RealScorer};
-use pharos_types::MainnetEthSpec;
+use pharos_types::MainnetBeaconSpec;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_utils::metrics::{METRIC_PEER_SCORE, init_metrics_with_handle};
 
@@ -45,11 +45,11 @@ fn fd() -> ForkDigest {
     ForkDigest::from_array(FORK_DIGEST)
 }
 
-async fn build_network() -> pharos_network::Network<MainnetEthSpec, TestHost, RealScorer> {
+async fn build_network() -> pharos_network::Network<MainnetBeaconSpec, TestHost, RealScorer> {
     let local_key = Keypair::generate_secp256k1();
     let discv5_addr: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
     let (network, _handle, _discovery_handle) =
-        NetworkBuilder::<MainnetEthSpec, TestHost, _>::new(TestHost::new(fd()))
+        NetworkBuilder::<MainnetBeaconSpec, TestHost, _>::new(TestHost::new(fd()))
             .local_key(local_key)
             .tcp_listen_port(0)
             .discv5_addr(discv5_addr)

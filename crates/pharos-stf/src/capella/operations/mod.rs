@@ -15,7 +15,7 @@ pub use proposer_slashing::process_proposer_slashing_capella;
 pub use withdrawals::process_withdrawals;
 
 use pharos_types::{
-    EthSpec,
+    BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     capella::BeaconState,
     phase0::{Attestation, AttesterSlashing, Deposit},
@@ -94,7 +94,7 @@ pub fn process_operations_capella<
     verify_signatures: bool,
 ) -> Result<(), StateTransitionError>
 where
-    E: EthSpec<
+    E: BeaconSpec<
             AltairBeaconState = AltairBeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

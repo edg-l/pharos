@@ -1,6 +1,6 @@
 //! `process_proposer_slashing` per `specs/phase0/beacon-chain.md:1958-1983`.
 
-use pharos_types::{BeaconStateView, EthSpec, phase0::ProposerSlashing};
+use pharos_types::{BeaconSpec, BeaconStateView, phase0::ProposerSlashing};
 
 use crate::error::{ProposerSlashingInvalidReason, StateTransitionError};
 use crate::phase0::{
@@ -12,7 +12,7 @@ use crate::phase0::{
 };
 
 /// `process_proposer_slashing` per `specs/phase0/beacon-chain.md:1958-1983`.
-pub fn process_proposer_slashing<E: EthSpec>(
+pub fn process_proposer_slashing<E: BeaconSpec>(
     state: &mut E::BeaconState,
     slashing: &ProposerSlashing,
     verify_signatures: bool,

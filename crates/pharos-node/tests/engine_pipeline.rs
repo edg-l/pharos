@@ -48,7 +48,7 @@ use pharos_types::state::{
     BeaconBlock as ForkBeaconBlock, MinimalBeaconState as ForkMinimalBeaconState,
 };
 use pharos_types::views::BeaconBlockView as _;
-use pharos_types::{EthSpec, MinimalEthSpec, PayloadStatus};
+use pharos_types::{BeaconSpec, MinimalBeaconSpec, PayloadStatus};
 use pharos_utils::{BLSSignature, Epoch, Hash256};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -261,7 +261,7 @@ fn build_chain(
 
     let runtime_cfg = pharos_types::config::RuntimeConfig {
         seconds_per_slot: 12,
-        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         ..Default::default()
     };
     let null_engine = NullExecutionEngine;
@@ -279,7 +279,7 @@ fn build_chain(
 
         // Advance a clone to `slot` to read the updated randao_mix and timestamp.
         let mut pre_state_advanced = state.clone();
-        process_slots_fork::<MinimalEthSpec>(
+        process_slots_fork::<MinimalBeaconSpec>(
             &mut pre_state_advanced,
             slot,
             pharos_stf::ForkEpochs::never(),
@@ -293,8 +293,8 @@ fn build_chain(
                 ForkMinimalBeaconState::Bellatrix(s) => s,
                 _ => panic!("expected Bellatrix state"),
             };
-            let epoch = slot.0 / MinimalEthSpec::SLOTS_PER_EPOCH;
-            let idx = (epoch % MinimalEthSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
+            let epoch = slot.0 / MinimalBeaconSpec::SLOTS_PER_EPOCH;
+            let idx = (epoch % MinimalBeaconSpec::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
             let randao = s.randao_mixes.get(idx).copied().unwrap_or_default();
             let ts = s.genesis_time + slot.0 * runtime_cfg.seconds_per_slot;
             (randao, ts)
@@ -360,7 +360,7 @@ fn build_chain(
             signature: BLSSignature::from_array([0u8; 96]),
         });
 
-        let (post_state_draft, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_state_draft, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             state.clone(),
             &draft_signed,
             &null_engine,
@@ -390,7 +390,7 @@ fn build_chain(
         // Step 3: run STF again with the correct state_root to get the final post-state.
         // The post-state is identical to post_state_draft since validate_result=false
         // means state_root is never read by the STF computation.
-        let (post_state, _) = state_transition::<MinimalEthSpec, NullExecutionEngine>(
+        let (post_state, _) = state_transition::<MinimalBeaconSpec, NullExecutionEngine>(
             state.clone(),
             &fork_signed,
             &null_engine,
@@ -428,7 +428,7 @@ async fn engine_pipeline_drives_bellatrix_chain() {
         "anchor block state_root must match genesis state"
     );
 
-    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
+    let mut fc = get_forkchoice_store::<MinimalBeaconSpec>(genesis_state.clone(), anchor_block);
 
     // Set terminal_block_hash override so the merge-transition guard passes for block 1.
     fc.set_terminal_config(
@@ -439,7 +439,7 @@ async fn engine_pipeline_drives_bellatrix_chain() {
 
     // Advance store time so on_block's "future slot" guard doesn't reject blocks.
     // Set to a large but overflow-safe value: slot_from_time(t, 0) = t*1000/SLOT_DURATION_MS,
-    // so t = 10_000_000 yields ~1.6M slots for MinimalEthSpec (SLOT_DURATION_MS = 6_000).
+    // so t = 10_000_000 yields ~1.6M slots for MinimalBeaconSpec (SLOT_DURATION_MS = 6_000).
     fc.time = 10_000_000;
 
     let fc = Arc::new(RwLock::new(fc));
@@ -475,14 +475,14 @@ async fn engine_pipeline_drives_bellatrix_chain() {
     let engine_handle = spawn_engine_actor(client, None);
 
     let (head_tx, head_rx) = watch::channel::<Option<HeadChange>>(None);
-    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(16);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalBeaconSpec>>(16);
 
     {
         let fc_clone = Arc::clone(&fc);
         let eng = engine_handle.clone();
         let head_tx_driver = head_tx.clone();
         tokio::spawn(async move {
-            run_engine_driver_loop::<MinimalEthSpec, pharos_fork_choice::NoopPowBlockProvider>(
+            run_engine_driver_loop::<MinimalBeaconSpec, pharos_fork_choice::NoopPowBlockProvider>(
                 eng,
                 fc_clone,
                 head_rx,
@@ -501,7 +501,7 @@ async fn engine_pipeline_drives_bellatrix_chain() {
     //    then marks it Invalid in payload_statuses.
     let tmpdir = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        pharos_storage::RocksStore::open::<MinimalEthSpec>(pharos_storage::RocksStoreConfig {
+        pharos_storage::RocksStore::open::<MinimalBeaconSpec>(pharos_storage::RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
             create_if_missing: true,
         })
@@ -511,10 +511,10 @@ async fn engine_pipeline_drives_bellatrix_chain() {
     let genesis_validators_root = Root::default();
     // Bellatrix-at-genesis schedule: all three epochs = 0.
     let fork_schedule = ForkSchedule {
-        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
-        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        genesis_fork_version: Version::from_array(MinimalBeaconSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalBeaconSpec::ALTAIR_FORK_VERSION),
         altair_fork_epoch: Epoch(0),
-        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_version: Version::from_array(MinimalBeaconSpec::BELLATRIX_FORK_VERSION),
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
@@ -524,7 +524,7 @@ async fn engine_pipeline_drives_bellatrix_chain() {
         electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
-    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+    let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
         store,
         Arc::clone(&fc),
         genesis_validators_root,
@@ -554,7 +554,7 @@ async fn engine_pipeline_drives_bellatrix_chain() {
         tokio::spawn(async move {
             use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
             if let Err(e) = run_block_ingestion_loop::<
-                MinimalEthSpec,
+                MinimalBeaconSpec,
                 NullExecutionEngine,
                 NoopDataAvailabilityChecker,
             >(
@@ -722,7 +722,7 @@ async fn engine_pipeline_drives_bellatrix_chain() {
         // get_head falls back to justified_checkpoint.root = anchor_root.
         // The justified checkpoint never advances (no attestations in the fixture
         // and no epoch boundary in 4 minimal-preset slots), so anchor is the head.
-        let head = get_head::<MinimalEthSpec>(&store);
+        let head = get_head::<MinimalBeaconSpec>(&store);
         assert_eq!(
             head, anchor_root,
             "get_head must return the anchor root (all chains filtered due to Invalid slot3), got {:?}",

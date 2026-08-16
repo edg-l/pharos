@@ -36,7 +36,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use pharos_ssz::SszList;
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::phase0::misc::IndexedAttestation;
 use pharos_types::phase0::operations::AttesterSlashing;
 use pharos_types::phase0::primitives::ValidatorIndex;
@@ -76,7 +76,7 @@ struct AttestRecord {
 ///
 /// `E` is needed only to bound `OperationPools<E>` so the pool insert call
 /// compiles; the detection logic itself is fork-agnostic.
-pub struct AttestationSlasher<E: EthSpec> {
+pub struct AttestationSlasher<E: BeaconSpec> {
     /// Per-validator attestation records: `validator_index → Vec<AttestRecord>`.
     ///
     /// Protected by a single `Mutex` (the detection path is not on the hot
@@ -87,7 +87,7 @@ pub struct AttestationSlasher<E: EthSpec> {
     op_pools: Arc<OperationPools<E>>,
 }
 
-impl<E: EthSpec> AttestationSlasher<E> {
+impl<E: BeaconSpec> AttestationSlasher<E> {
     /// Create a new `AttestationSlasher` backed by `op_pools`.
     pub fn new(op_pools: Arc<OperationPools<E>>) -> Self {
         Self {
@@ -247,12 +247,12 @@ mod tests {
     use super::*;
 
     use pharos_ssz::SszList;
-    use pharos_types::MinimalEthSpec;
+    use pharos_types::MinimalBeaconSpec;
     use pharos_types::phase0::misc::{AttestationData, Checkpoint, IndexedAttestation};
     use pharos_types::phase0::primitives::{CommitteeIndex, Epoch, Root, Slot, ValidatorIndex};
     use pharos_utils::BLSSignature;
 
-    type E = MinimalEthSpec;
+    type E = MinimalBeaconSpec;
 
     fn zero_sig() -> BLSSignature {
         BLSSignature::default()

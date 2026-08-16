@@ -25,7 +25,7 @@ use tracing::{debug, warn};
 use pharos_network::network::NetworkEvent;
 use pharos_ssz::Decode as _;
 use pharos_storage::{RocksStore, Store as DbStore};
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use pharos_types::deneb::BlobSidecar;
 
 use crate::data_availability::BlobAwaitingBlocks;
@@ -40,7 +40,7 @@ use crate::data_availability::BlobAwaitingBlocks;
 ///   DA-pending blocks can be re-injected.
 ///
 /// The loop exits when `event_rx` closes.
-pub async fn run_blob_ingestion_loop<E: EthSpec>(
+pub async fn run_blob_ingestion_loop<E: BeaconSpec>(
     mut event_rx: mpsc::Receiver<NetworkEvent>,
     store: Arc<RocksStore>,
     blob_awaiting: Arc<BlobAwaitingBlocks>,

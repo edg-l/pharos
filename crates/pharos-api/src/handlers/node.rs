@@ -14,7 +14,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use libp2p::Multiaddr;
-use pharos_types::EthSpec;
+use pharos_types::BeaconSpec;
 use serde::Serialize;
 
 use crate::error::ApiError;
@@ -74,7 +74,7 @@ pub struct SyncingResponse {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 /// `GET /eth/v1/node/identity`
-pub async fn get_identity<E: EthSpec>(
+pub async fn get_identity<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
 ) -> Result<Json<IdentityResponse>, ApiError> {
     let chain = Arc::clone(&state.chain);
@@ -134,7 +134,7 @@ pub async fn get_identity<E: EthSpec>(
 }
 
 /// `GET /eth/v1/node/version`
-pub async fn get_version<E: EthSpec>(
+pub async fn get_version<E: BeaconSpec>(
     State(_state): State<Arc<ApiState<E>>>,
 ) -> Json<VersionResponse> {
     Json(VersionResponse {
@@ -149,7 +149,7 @@ pub async fn get_version<E: EthSpec>(
 }
 
 /// `GET /eth/v1/node/syncing`
-pub async fn get_syncing<E: EthSpec>(
+pub async fn get_syncing<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
 ) -> Result<Json<SyncingResponse>, ApiError> {
     let chain = Arc::clone(&state.chain);
@@ -188,7 +188,7 @@ pub async fn get_syncing<E: EthSpec>(
 /// - `200` — node synced, not optimistic, and ready.
 /// - `206` — node is syncing OR execution node is optimistic/offline.
 /// - `503` — node not initialized.
-pub async fn get_health<E: EthSpec>(State(state): State<Arc<ApiState<E>>>) -> Response {
+pub async fn get_health<E: BeaconSpec>(State(state): State<Arc<ApiState<E>>>) -> Response {
     let chain = Arc::clone(&state.chain);
     let probe = tokio::task::spawn_blocking(move || {
         chain.is_syncing() || chain.is_optimistic() || chain.el_offline()
@@ -231,7 +231,7 @@ pub struct PeersResponse {
 ///
 /// Returns a list of connected peers.
 /// Per `~/dev/beacon-APIs/apis/node/peers.yaml`.
-pub async fn get_peers<E: EthSpec>(
+pub async fn get_peers<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
 ) -> Result<Json<PeersResponse>, ApiError> {
     let chain = Arc::clone(&state.chain);
@@ -245,7 +245,7 @@ pub async fn get_peers<E: EthSpec>(
 ///
 /// Returns counts of peers in each state.
 /// Per `~/dev/beacon-APIs/apis/node/peer_count.yaml`.
-pub async fn get_peer_count<E: EthSpec>(
+pub async fn get_peer_count<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
 ) -> Result<Json<PeerCountResponse>, ApiError> {
     let chain = Arc::clone(&state.chain);

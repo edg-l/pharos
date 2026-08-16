@@ -18,7 +18,7 @@ use pharos_storage::{RocksStore, Store as DbStore};
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::bellatrix::execution_payload::ExecutionAddress;
 use pharos_types::{
-    EthSpec, OperationPools, SyncCommitteePubkeys,
+    BeaconSpec, OperationPools, SyncCommitteePubkeys,
     config::RuntimeConfig,
     phase0::misc::AttestationData,
     phase0::operations::Attestation,
@@ -92,7 +92,9 @@ fn q(v: u64) -> String {
 ///
 /// The caller must clone the state out from under any read-lock before calling
 /// this function, as serialization of large lists can be expensive.
-pub fn beacon_state_to_json_full<E: EthSpec>(state: E::BeaconState) -> Result<JsonValue, ApiError> {
+pub fn beacon_state_to_json_full<E: BeaconSpec>(
+    state: E::BeaconState,
+) -> Result<JsonValue, ApiError> {
     use pharos_types::BeaconStateView;
     use pharos_types::views::ForkVariant;
 
@@ -564,7 +566,7 @@ pub struct NodeIdentityCache {
 /// All implementations are expected to be sync and cheap (i.e. they either
 /// operate under a short read-lock or read immutable startup data). Handlers
 /// wrap calls in `tokio::task::spawn_blocking` where needed.
-pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
+pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
     /// The current fork-choice head root.
     fn head_root(&self) -> Root;
 
@@ -1019,7 +1021,7 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
 /// `pharos-api → pharos-node` dependency while allowing `NodeChainState` to
 /// call into the replay-on-read service (per `D-replay-on-read`, Task 2.4).
 pub type RegenFn<E> =
-    dyn Fn(RegenTarget) -> Result<<E as EthSpec>::BeaconState, ApiError> + Send + Sync + 'static;
+    dyn Fn(RegenTarget) -> Result<<E as BeaconSpec>::BeaconState, ApiError> + Send + Sync + 'static;
 
 /// Type alias for the block-production callback injected into `NodeChainState`.
 ///
@@ -1087,7 +1089,7 @@ pub type SyncContributionFn = dyn Fn(u64, Root, u64) -> Option<JsonValue> + Send
 pub type SyncnetsFn = dyn Fn(Vec<u8>) + Send + Sync + 'static;
 
 /// Concrete `ChainStateApi` backed by the shared fork-choice store and storage.
-pub struct NodeChainState<E: EthSpec> {
+pub struct NodeChainState<E: BeaconSpec> {
     /// Shared chain DB (cold states, anchor, etc.).
     store: Arc<RocksStore>,
     /// Live fork-choice store (in-memory head, checkpoints, blocks).
@@ -1162,7 +1164,7 @@ fn parse_execution_address(s: &str) -> Result<ExecutionAddress, ()> {
     Ok(ExecutionAddress::from(arr))
 }
 
-impl<E: EthSpec> NodeChainState<E> {
+impl<E: BeaconSpec> NodeChainState<E> {
     /// Construct without a state-regeneration service (backward-compat).
     pub fn new(
         store: Arc<RocksStore>,
@@ -1307,7 +1309,7 @@ impl<E: EthSpec> NodeChainState<E> {
     }
 }
 
-impl<E: EthSpec> ChainStateApi<E> for NodeChainState<E>
+impl<E: BeaconSpec> ChainStateApi<E> for NodeChainState<E>
 where
     E::Phase0SignedBeaconBlock: BlockApiSerializer,
     E::AltairSignedBeaconBlock: BlockApiSerializer,
@@ -1646,7 +1648,7 @@ where
             }
         };
 
-        // Use the `EthSpec` unwrap helpers to dispatch to the correct fork-specific
+        // Use the `BeaconSpec` unwrap helpers to dispatch to the correct fork-specific
         // DTO builder via the `BlockApiSerializer` trait. Each helper returns
         // `Option<&Inner>` where `Inner: BlockApiSerializer` (guaranteed by the impl
         // bounds on this `NodeChainState<E>` impl block).
@@ -2281,14 +2283,14 @@ where
 ///
 /// Injected via `axum::extract::State<Arc<ApiState<E>>>`. Handlers clone the
 /// `Arc` cheaply rather than cloning the full state.
-pub struct ApiState<E: EthSpec> {
+pub struct ApiState<E: BeaconSpec> {
     pub chain: Arc<dyn ChainStateApi<E>>,
     /// SSE broadcast bus.  `None` when built without an event bus (e.g. tests
     /// that only exercise non-SSE endpoints).
     pub event_bus: Option<Arc<EventBus>>,
 }
 
-impl<E: EthSpec> ApiState<E> {
+impl<E: BeaconSpec> ApiState<E> {
     pub fn new(chain: Arc<dyn ChainStateApi<E>>) -> Arc<Self> {
         Arc::new(Self {
             chain,

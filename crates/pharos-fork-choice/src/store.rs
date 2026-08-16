@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use pharos_ssz::TreeHash;
 use pharos_types::{
-    BeaconStateView, EthSpec, PayloadStatus,
+    BeaconSpec, BeaconStateView, PayloadStatus,
     config::RuntimeConfig,
     phase0::{Checkpoint, Epoch, Root, ValidatorIndex},
     views::BeaconBlockView,
@@ -33,7 +33,7 @@ pub struct LatestMessage {
 /// Tracks all data needed by the LMD-GHOST + FFG Casper fork-choice algorithm.
 ///
 /// Per `specs/phase0/fork-choice.md:168-185`.
-pub struct Store<E: EthSpec> {
+pub struct Store<E: BeaconSpec> {
     /// Current time in seconds since Unix epoch.
     ///
     /// Per `specs/phase0/fork-choice.md:171`.
@@ -160,7 +160,7 @@ pub struct Store<E: EthSpec> {
     pub runtime_cfg: RuntimeConfig,
 }
 
-impl<E: EthSpec> Store<E> {
+impl<E: BeaconSpec> Store<E> {
     /// Record the EL's payload-validation verdict for `root`.
     pub fn mark_payload_status(&mut self, root: Root, status: PayloadStatus) {
         self.payload_statuses.insert(root, status);
@@ -240,7 +240,7 @@ impl<E: EthSpec> Store<E> {
 /// `terminal_block_hash_activation_epoch`) default to zero / default-hash.
 /// Production callers override these via `Store::set_terminal_config` and
 /// `Store::set_fork_epochs` after construction (see `main.rs`).
-pub fn get_forkchoice_store<E: EthSpec>(
+pub fn get_forkchoice_store<E: BeaconSpec>(
     anchor_state: E::BeaconState,
     anchor_block: E::BeaconBlock,
 ) -> Store<E>
