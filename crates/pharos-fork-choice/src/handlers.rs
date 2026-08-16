@@ -8,7 +8,9 @@
 use pharos_ssz::TreeHash;
 use pharos_types::{
     BeaconStateView, EthSpec,
-    phase0::{Attestation, AttesterSlashing, Checkpoint, IndexedAttestation, Root, Slot},
+    phase0::{
+        Attestation, AttestationData, AttesterSlashing, Checkpoint, IndexedAttestation, Root, Slot,
+    },
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
 
@@ -193,8 +195,10 @@ where
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
     use crate::get_head::get_head;
+    use pharos_stf::electra::helpers::get_beacon_proposer_index_electra;
     use pharos_stf::phase0::accessors::get_beacon_proposer_index;
     use pharos_stf::process_slots_fork;
+    use pharos_types::views::ForkVariant;
 
     let is_first_block = store.proposer_boost_root == Root::default();
     let is_timely = store.block_timeliness.get(&root).copied().unwrap_or(false);
@@ -220,7 +224,15 @@ where
             None => return,
         };
         let block_proposer = block.proposer_index();
-        let computed_proposer = get_beacon_proposer_index::<E>(&head_state);
+        // [Modified in Electra:EIP7251] the proposer-index derivation uses a
+        // 16-bit random value + `MAX_EFFECTIVE_BALANCE_ELECTRA` ceiling, so an
+        // electra head-state must use the electra helper or the boost would
+        // never be applied (the phase0 computation diverges).
+        let computed_proposer = if head_state.fork_variant() == ForkVariant::Electra {
+            get_beacon_proposer_index_electra::<E>(&head_state)
+        } else {
+            get_beacon_proposer_index::<E>(&head_state)
+        };
         if block_proposer == computed_proposer {
             store.proposer_boost_root = root;
         }
@@ -440,11 +452,11 @@ where
 /// per `specs/phase0/fork-choice.md:722-733`.
 fn validate_target_epoch_against_current_time<E: EthSpec>(
     store: &Store<E>,
-    attestation: &Attestation<2048>,
+    data: &AttestationData,
 ) -> Result<(), ForkChoiceError> {
     use pharos_stf::phase0::helpers::GENESIS_EPOCH;
 
-    let target = &attestation.data.target;
+    let target = &data.target;
     let current_epoch = get_current_store_epoch::<E>(store);
     let previous_epoch = if current_epoch.0 > GENESIS_EPOCH {
         pharos_types::phase0::Epoch(current_epoch.0 - 1)
@@ -473,21 +485,38 @@ pub fn validate_on_attestation<E: EthSpec>(
 where
     E::BeaconBlock: BeaconBlockView,
 {
+    validate_on_attestation_data::<E>(store, &attestation.data, is_from_block)
+}
+
+/// `validate_on_attestation` core keyed on `AttestationData`.
+///
+/// The per-fork attestation envelope only differs in its bit fields
+/// (EIP-7549 `committee_bits` + wider `aggregation_bits`); every rule in
+/// `validate_on_attestation` reads `AttestationData` alone, so phase0 and
+/// electra share this body.
+fn validate_on_attestation_data<E: EthSpec>(
+    store: &Store<E>,
+    data: &AttestationData,
+    is_from_block: bool,
+) -> Result<(), ForkChoiceError>
+where
+    E::BeaconBlock: BeaconBlockView,
+{
     use pharos_stf::phase0::accessors::compute_epoch_at_slot;
 
-    let target = &attestation.data.target;
+    let target = &data.target;
 
     if !is_from_block {
-        validate_target_epoch_against_current_time::<E>(store, attestation)?;
+        validate_target_epoch_against_current_time::<E>(store, data)?;
     }
 
     // Epoch number and slot must match.
-    let expected_epoch = compute_epoch_at_slot(attestation.data.slot, E::SLOTS_PER_EPOCH);
+    let expected_epoch = compute_epoch_at_slot(data.slot, E::SLOTS_PER_EPOCH);
     if target.epoch != expected_epoch {
         return Err(ForkChoiceError::InvalidAttestation {
             reason: format!(
                 "target epoch {} != epoch at attestation slot {} (expected {})",
-                target.epoch.0, attestation.data.slot.0, expected_epoch.0
+                target.epoch.0, data.slot.0, expected_epoch.0
             ),
         });
     }
@@ -498,33 +527,29 @@ where
     }
 
     // Attested block root must be in the store.
-    if !store
-        .blocks
-        .contains_key(&attestation.data.beacon_block_root)
-    {
+    if !store.blocks.contains_key(&data.beacon_block_root) {
         return Err(ForkChoiceError::MissingBlock {
-            root: attestation.data.beacon_block_root,
+            root: data.beacon_block_root,
         });
     }
 
     // Attested block must not be from the future relative to the attestation.
     let attested_slot = store
         .blocks
-        .get(&attestation.data.beacon_block_root)
+        .get(&data.beacon_block_root)
         .map(|b| b.slot())
         .unwrap_or(Slot(0));
-    if attested_slot > attestation.data.slot {
+    if attested_slot > data.slot {
         return Err(ForkChoiceError::InvalidAttestation {
             reason: format!(
                 "attested block slot {} > attestation slot {}",
-                attested_slot.0, attestation.data.slot.0
+                attested_slot.0, data.slot.0
             ),
         });
     }
 
     // LMD vote must be consistent with FFG vote target.
-    let checkpoint_block =
-        get_checkpoint_block::<E>(store, attestation.data.beacon_block_root, target.epoch);
+    let checkpoint_block = get_checkpoint_block::<E>(store, data.beacon_block_root, target.epoch);
     if target.root != checkpoint_block {
         return Err(ForkChoiceError::InvalidAttestation {
             reason: "target root is not the checkpoint block for the target epoch".to_owned(),
@@ -533,11 +558,11 @@ where
 
     // Attestation must be for a past slot.
     let current_slot = get_current_slot(store);
-    if current_slot < attestation.data.slot + Slot(1) {
+    if current_slot < data.slot + Slot(1) {
         return Err(ForkChoiceError::InvalidAttestation {
             reason: format!(
                 "attestation slot {} is not in the past (current {})",
-                attestation.data.slot.0, current_slot.0
+                data.slot.0, current_slot.0
             ),
         });
     }
@@ -592,8 +617,20 @@ pub fn update_latest_messages<E: EthSpec>(
     attesting_indices: &[pharos_types::phase0::ValidatorIndex],
     attestation: &Attestation<2048>,
 ) {
-    let target = &attestation.data.target;
-    let beacon_block_root = attestation.data.beacon_block_root;
+    update_latest_messages_data::<E>(store, attesting_indices, &attestation.data);
+}
+
+/// `update_latest_messages` core keyed on `AttestationData`.
+///
+/// Shared by phase0 and electra: the LMD-vote write only depends on the
+/// attestation's `target.epoch` and `beacon_block_root`.
+fn update_latest_messages_data<E: EthSpec>(
+    store: &mut Store<E>,
+    attesting_indices: &[pharos_types::phase0::ValidatorIndex],
+    data: &AttestationData,
+) {
+    let target = &data.target;
+    let beacon_block_root = data.beacon_block_root;
     for i in attesting_indices {
         if store.equivocating_indices.contains(i) {
             continue;
@@ -680,6 +717,113 @@ where
 
     let attesting_indices: Vec<_> = indexed.attesting_indices.as_slice().to_vec();
     update_latest_messages(store, &attesting_indices, attestation);
+
+    Ok(())
+}
+
+/// `on_attestation` for electra attestations (EIP-7549).
+///
+/// The LMD-vote semantics are identical to the phase0 `on_attestation`: one
+/// latest-message vote per attester. Only the attester EXTRACTION changes —
+/// electra attestations carry `committee_bits` + a wider `aggregation_bits`,
+/// so attesters are derived via `get_attesting_indices_electra` (the
+/// committee-bits + committee-offset walk) instead of the phase0
+/// `get_attesting_indices`. The validation rules (`validate_on_attestation`,
+/// the target-checkpoint state load) and the LMD write
+/// (`update_latest_messages`) are shared with phase0 via the
+/// `AttestationData`-keyed cores.
+#[allow(clippy::type_complexity)]
+pub fn on_attestation_electra<
+    const MAX_AGGREGATION_BITS: u64,
+    const MAX_COMMITTEES_PER_SLOT: u64,
+    E: EthSpec,
+>(
+    store: &mut Store<E>,
+    attestation: &pharos_types::electra::Attestation<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT>,
+    is_from_block: bool,
+) -> Result<(), ForkChoiceError>
+where
+    E::BeaconBlock: BeaconBlockView,
+    E::BeaconState: BeaconStateWrite + Clone,
+    E::AltairBeaconState:
+        pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState:
+        pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
+    E::CapellaBeaconState:
+        pharos_stf::CapellaProcessSlotsDispatch<E> + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState:
+        pharos_stf::DenebProcessSlotsDispatch<E> + pharos_stf::DenebUpgradeDispatch<E>,
+    E::ElectraBeaconState: pharos_stf::ElectraProcessSlotsDispatch<E>,
+    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+{
+    use pharos_stf::electra::helpers::get_indexed_attestation_electra;
+    use pharos_stf::phase0::accessors::{compute_signing_root, get_domain};
+    use pharos_stf::phase0::helpers::DOMAIN_BEACON_ATTESTER;
+
+    validate_on_attestation_data::<E>(store, &attestation.data, is_from_block)?;
+    store_target_checkpoint_state::<E>(store, &attestation.data.target)?;
+
+    // Get state at target checkpoint to validate attestation.
+    let target_state = store
+        .checkpoint_states
+        .get(&attestation.data.target)
+        .ok_or(ForkChoiceError::MissingBlock {
+            root: attestation.data.target.root,
+        })?;
+
+    // [Modified in Electra:EIP7549] derive attesters via the committee-bits walk.
+    let indexed = get_indexed_attestation_electra::<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT, E>(
+        target_state,
+        attestation,
+    );
+
+    // `is_valid_indexed_attestation` for the electra indexed attestation. The
+    // phase0 predicate is hardcoded to `IndexedAttestation<2048>`; the electra
+    // index list is wider, so the equivalent checks (non-empty, strictly
+    // sorted/unique, aggregate signature) are applied here.
+    let indices = indexed.attesting_indices.as_slice();
+    if indices.is_empty() {
+        return Err(ForkChoiceError::InvalidAttestation {
+            reason: "indexed attestation has no attesters".to_owned(),
+        });
+    }
+    for w in indices.windows(2) {
+        if w[0] >= w[1] {
+            return Err(ForkChoiceError::InvalidAttestation {
+                reason: "indexed attestation indices not strictly sorted".to_owned(),
+            });
+        }
+    }
+    let pubkeys: Vec<pharos_utils::BLSPubkey> = indices
+        .iter()
+        .filter_map(|i| target_state.validator(i.0 as usize).map(|v| v.pubkey))
+        .collect();
+    if pubkeys.len() != indices.len() {
+        return Err(ForkChoiceError::InvalidAttestation {
+            reason: "indexed attestation references unknown validator".to_owned(),
+        });
+    }
+    let domain = get_domain::<E>(
+        target_state,
+        DOMAIN_BEACON_ATTESTER,
+        Some(indexed.data.target.epoch),
+    );
+    let signing_root = compute_signing_root(&indexed.data, domain);
+    let sig_ok = pharos_utils::bls::fast_aggregate_verify(
+        &pubkeys,
+        signing_root.as_slice(),
+        &indexed.signature,
+    )
+    .unwrap_or(false);
+    if !sig_ok {
+        return Err(ForkChoiceError::InvalidAttestation {
+            reason: "invalid indexed attestation signature".to_owned(),
+        });
+    }
+
+    let attesting_indices: Vec<_> = indices.to_vec();
+    update_latest_messages_data::<E>(store, &attesting_indices, &attestation.data);
 
     Ok(())
 }

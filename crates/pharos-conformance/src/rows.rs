@@ -187,8 +187,12 @@ pub fn row_table() -> &'static [RowSpec] {
         r("electra", "random", "minimal"),     // 119
         r("electra", "rewards", "mainnet"),    // 120
         r("electra", "rewards", "minimal"),    // 121
+        // M12-Electra Phase 6b: EIP-7549 fork-choice (committee-bits attester
+        // extraction) + the electra/fork_choice conformance runner.
+        r("electra", "fork_choice", "mainnet"), // 122
+        r("electra", "fork_choice", "minimal"), // 123
         // ── future forks (placeholders) ──────────────────────────────────────
-        r("fulu", "ssz_static", "-"), // 122
+        r("fulu", "ssz_static", "-"), // 124
     ];
     TABLE
 }
@@ -338,6 +342,8 @@ mod tests {
             ("electra", "random", "minimal"),
             ("electra", "rewards", "mainnet"),
             ("electra", "rewards", "minimal"),
+            ("electra", "fork_choice", "mainnet"),
+            ("electra", "fork_choice", "minimal"),
             // future placeholders
             ("fulu", "ssz_static", "-"),
         ];
@@ -419,9 +425,9 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 124.
+    /// Total row count is exactly 126.
     #[test]
     fn row_count_is_124() {
-        assert_eq!(row_table().len(), 124);
+        assert_eq!(row_table().len(), 126);
     }
 }
