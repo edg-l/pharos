@@ -131,9 +131,10 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Beacon genesis ────────────────────────────────────────────────────────
 
-    // Fetch genesis_validators_root: needed for signing-domain computation AND to
-    // verify the interchange file's genesis root (EIP-3076 precondition).
-    let genesis_validators_root = fetch_genesis_validators_root(&bn).await;
+    // Fetch genesis_validators_root (signing domains + EIP-3076 import check) and
+    // genesis_time (the slot clock is counted from genesis, not the UNIX epoch).
+    let (genesis_validators_root, genesis_time) = fetch_genesis(&bn).await;
+    info!(genesis_time, "beacon genesis fetched");
 
     // ── Import slashing protection (if requested) ─────────────────────────────
 
@@ -211,7 +212,8 @@ async fn main() -> anyhow::Result<()> {
     let duties = scheduler.duties_ref();
 
     // Epoch watch channel: duty refresh loop sends current epoch; run loop receives.
-    let startup_epoch = pharos_validator::duties::current_epoch_from_wall_clock(12_000, 32);
+    let startup_epoch =
+        pharos_validator::duties::current_epoch_from_wall_clock(genesis_time, 12_000, 32);
     let (epoch_tx, epoch_rx) = watch::channel(startup_epoch);
 
     // ── Doppelganger protection ───────────────────────────────────────────────
@@ -235,7 +237,14 @@ async fn main() -> anyhow::Result<()> {
     {
         let sched = Arc::clone(&scheduler);
         tokio::spawn(async move {
-            pharos_validator::duties::run_duty_refresh_loop(sched, epoch_tx, 32, 12_000).await;
+            pharos_validator::duties::run_duty_refresh_loop(
+                sched,
+                epoch_tx,
+                genesis_time,
+                32,
+                12_000,
+            )
+            .await;
         });
     }
 
@@ -274,6 +283,7 @@ async fn main() -> anyhow::Result<()> {
     let vc_config = Arc::new(VcConfig {
         suggested_fee_recipient: args.suggested_fee_recipient.clone(),
         graffiti: args.graffiti.clone(),
+        genesis_time,
         slots_per_epoch: 32,
         slot_duration_ms: 12_000,
         doppelganger_protection: args.doppelganger_protection,
@@ -296,30 +306,40 @@ async fn main() -> anyhow::Result<()> {
 
 // ── Genesis helpers ───────────────────────────────────────────────────────────
 
-/// Fetch `genesis_validators_root` from `GET /eth/v1/beacon/genesis`.
+/// Fetch `(genesis_validators_root, genesis_time)` from `GET /eth/v1/beacon/genesis`.
 ///
-/// Returns the zero root on failure (non-fatal; signing domains will be zero).
-async fn fetch_genesis_validators_root(bn: &BnClient) -> [u8; 32] {
+/// `genesis_validators_root` defaults to the zero root and `genesis_time` to 0 on
+/// failure or malformed fields (signing domains and the slot clock would then be
+/// wrong, but the per-slot health/fork checks gate signing until the BN is usable).
+async fn fetch_genesis(bn: &BnClient) -> ([u8; 32], u64) {
     match bn.get_genesis().await {
         Ok(val) => {
             let root_hex = val["data"]["genesis_validators_root"]
                 .as_str()
-                .unwrap_or("")
-                .to_string();
-            let hex_str = root_hex.strip_prefix("0x").unwrap_or(&root_hex);
-            if let Ok(b) = hex::decode(hex_str) {
-                if b.len() == 32 {
+                .unwrap_or("");
+            let gvr = match hex::decode(root_hex.strip_prefix("0x").unwrap_or(root_hex)) {
+                Ok(b) if b.len() == 32 => {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&b);
-                    return arr;
+                    arr
                 }
-            }
-            warn!("genesis_validators_root has unexpected format; using zero root");
-            [0u8; 32]
+                _ => {
+                    warn!("genesis_validators_root has unexpected format; using zero root");
+                    [0u8; 32]
+                }
+            };
+            let genesis_time = val["data"]["genesis_time"]
+                .as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or_else(|| {
+                    warn!("genesis_time missing/unparseable; slot clock will be wrong");
+                    0
+                });
+            (gvr, genesis_time)
         }
         Err(e) => {
-            warn!(%e, "could not fetch genesis_validators_root; using zero root (signing domains may be wrong)");
-            [0u8; 32]
+            warn!(%e, "could not fetch genesis; using zero root + genesis_time=0");
+            ([0u8; 32], 0)
         }
     }
 }

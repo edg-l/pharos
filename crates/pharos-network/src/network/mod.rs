@@ -278,11 +278,17 @@ pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScore
     event_channel_capacity: usize,
     discovery_tick: Interval,
     shutdown_signal: oneshot::Receiver<()>,
-    /// Pending outbound RPC requests: maps `OutboundRequestId` to the
+    /// Pending outbound RPC requests: maps `(method, OutboundRequestId)` to the
     /// originating method and the oneshot channel to resolve.
+    ///
+    /// The key MUST include `RpcMethod`: each per-method `request_response::Behaviour`
+    /// has an INDEPENDENT `OutboundRequestId` counter, so a `BlocksByRange` request
+    /// and a `BlocksByRoot` request both receive `OutboundRequestId(1)`. Keying by
+    /// the id alone collides them, cross-delivering responses (a ByRoot response
+    /// resolving a ByRange caller). Keying by `(method, id)` is globally unique.
     #[allow(clippy::type_complexity)]
     pending_rpc: HashMap<
-        OutboundRequestId,
+        (RpcMethod, OutboundRequestId),
         (
             RpcMethod,
             oneshot::Sender<Result<RpcResponse<E>, NetworkError>>,
@@ -502,49 +508,60 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                 self.on_gossip_event(gs_event).await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcStatus(rr_event)) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::Status)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcGoodbye(rr_event)) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::Goodbye)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcPing(rr_event)) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::Ping)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcMetaData(rr_event)) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::MetaData)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcMetaDataV1(rr_event)) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::MetaDataV1)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcBlocksByRange(
                 rr_event,
             )) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::BlocksByRange)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcBlocksByRoot(
                 rr_event,
             )) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::BlocksByRoot)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcLcBootstrap(
                 rr_event,
             )) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::LightClientBootstrap)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcLcUpdatesByRange(
                 rr_event,
             )) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::LightClientUpdatesByRange)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcLcFinalityUpdate(
                 rr_event,
             )) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::LightClientFinalityUpdate)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcLcOptimisticUpdate(
                 rr_event,
             )) => {
-                self.on_request_response_event(rr_event).await;
+                self.on_request_response_event(rr_event, RpcMethod::LightClientOptimisticUpdate)
+                    .await;
             }
             libp2p::swarm::SwarmEvent::ConnectionEstablished {
                 peer_id,
@@ -786,6 +803,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
     async fn on_request_response_event(
         &mut self,
         event: request_response::Event<RpcRequest, RpcResponse<E>>,
+        method: RpcMethod,
     ) {
         match event {
             request_response::Event::Message { peer, message, .. } => match message {
@@ -901,23 +919,37 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                     request_id,
                     response,
                 } => {
-                    // Each request_id belongs to exactly one tracking map.
-                    if let Some(hs_peer) = self.pending_status_checks.remove(&request_id) {
-                        // Handshake Status response.
-                        self.on_status_response(hs_peer, &response).await;
-                    } else if let Some(ping_peer) = self.pending_ping_checks.remove(&request_id) {
-                        // Ping keepalive seq-number check.
-                        self.on_ping_response(ping_peer, &response);
-                    } else if let Some(meta_peer) =
-                        self.pending_metadata_fetches.remove(&request_id)
+                    // Route by `method` FIRST: `OutboundRequestId` is only unique within
+                    // a single per-method behaviour, so checking maps by id alone can
+                    // cross-deliver (e.g. a BlocksByRange response consuming a Status
+                    // handshake entry that happens to share id 1). The internal-tracking
+                    // maps are keyed by id but only ever hold their own method's ids.
+                    if method == RpcMethod::Status
+                        && self.pending_status_checks.contains_key(&request_id)
                     {
-                        // GetMetaData follow-up after Ping seq-number advance.
+                        let hs_peer = self.pending_status_checks.remove(&request_id).unwrap();
+                        self.on_status_response(hs_peer, &response).await;
+                    } else if method == RpcMethod::Ping
+                        && self.pending_ping_checks.contains_key(&request_id)
+                    {
+                        let ping_peer = self.pending_ping_checks.remove(&request_id).unwrap();
+                        self.on_ping_response(ping_peer, &response);
+                    } else if (method == RpcMethod::MetaData || method == RpcMethod::MetaDataV1)
+                        && self.pending_metadata_fetches.contains_key(&request_id)
+                    {
+                        let meta_peer = self.pending_metadata_fetches.remove(&request_id).unwrap();
                         self.on_metadata_response(meta_peer, &response);
-                    } else if let Some((_method, tx)) = self.pending_rpc.remove(&request_id) {
+                    } else if let Some((_method, tx)) =
+                        self.pending_rpc.remove(&(method, request_id))
+                    {
                         // User-initiated outbound RPC (Phase 7 surface).
                         let _ = tx.send(Ok(response));
                     } else {
-                        tracing::warn!(?request_id, "received response for unknown request");
+                        tracing::warn!(
+                            ?method,
+                            ?request_id,
+                            "received response for unknown request"
+                        );
                     }
                 }
             },
@@ -928,8 +960,11 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                 ..
             } => {
                 tracing::warn!(%peer, ?error, "outbound RPC failure");
-                // Clean all tracking maps; each request_id lives in at most one.
-                if self.pending_status_checks.remove(&request_id).is_some() {
+                // Route by `method` (see the Response handler): `request_id` is only
+                // unique within a per-method behaviour.
+                if method == RpcMethod::Status
+                    && self.pending_status_checks.remove(&request_id).is_some()
+                {
                     // Handshake Status timed out or failed — abort and disconnect.
                     self.peer_manager.record_event(
                         peer,
@@ -939,7 +974,9 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                     );
                     self.peer_manager.on_disconnecting(peer);
                     self.swarm.disconnect_peer_id(peer).ok();
-                } else if self.pending_ping_checks.remove(&request_id).is_some() {
+                } else if method == RpcMethod::Ping
+                    && self.pending_ping_checks.remove(&request_id).is_some()
+                {
                     self.peer_manager.record_event(
                         peer,
                         ScoreEvent::RpcError {
@@ -947,7 +984,9 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                             kind: RpcErrorKind::ServerError,
                         },
                     );
-                } else if self.pending_metadata_fetches.remove(&request_id).is_some() {
+                } else if (method == RpcMethod::MetaData || method == RpcMethod::MetaDataV1)
+                    && self.pending_metadata_fetches.remove(&request_id).is_some()
+                {
                     self.peer_manager.record_event(
                         peer,
                         ScoreEvent::RpcError {
@@ -955,7 +994,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                             kind: RpcErrorKind::ServerError,
                         },
                     );
-                } else if let Some((method, tx)) = self.pending_rpc.remove(&request_id) {
+                } else if let Some((method, tx)) = self.pending_rpc.remove(&(method, request_id)) {
                     let _ = tx.send(Err(NetworkError::Libp2p(error.to_string())));
                     self.peer_manager.record_event(
                         peer,
@@ -1032,7 +1071,9 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
     ) {
         let method = rpc_method_from_request(&req);
         let request_id = self.send_rpc_request(&peer, req);
-        self.pending_rpc.insert(request_id, (method, reply));
+        // Key by (method, id): per-method behaviours have independent id counters.
+        self.pending_rpc
+            .insert((method, request_id), (method, reply));
     }
 
     /// Look up a parsed `GossipTopic` by its `TopicHash`.

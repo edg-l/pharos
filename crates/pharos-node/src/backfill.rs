@@ -240,8 +240,16 @@ where
                 continue;
             }
             Err(e) => {
-                warn!(error = %e, "backfill: provider failed");
-                return Err(e);
+                // A provider error (peer timeout, disconnect, malformed/mismatched
+                // response) must NOT permanently kill the backfill loop — that would
+                // strand the node with a stale head until restart. Log and retry after
+                // a delay (same recovery path as NoUsablePeers); honor shutdown first.
+                warn!(error = %e, "backfill: provider failed; retrying after delay");
+                if *shutdown_rx.borrow() {
+                    return Ok(());
+                }
+                tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
+                continue;
             }
         };
 

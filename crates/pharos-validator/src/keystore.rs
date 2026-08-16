@@ -307,23 +307,39 @@ pub fn load_all_keystores(keystore_dir: &Path, secrets_dir: &Path) -> Vec<(Strin
             }
         };
 
-        // Determine the password file: `secrets_dir/<uuid>` or `secrets_dir/<pubkey>`.
+        // Determine the password file. Different tools name the secret file
+        // differently, so try every known convention and use the first that
+        // EXISTS (not merely the first `Some`): `<uuid>`, `<pubkey-no-0x>`,
+        // `0x<pubkey>` (lighthouse layout), and the keystore filename stem.
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
         let password_file = {
-            let uuid_path = ks.uuid.as_deref().map(|u| secrets_dir.join(u));
-            let pubkey_path = ks
+            let pubkey_no_0x = ks
                 .pubkey
                 .as_deref()
                 .map(|p| secrets_dir.join(p.strip_prefix("0x").unwrap_or(p)));
-
-            let candidate = uuid_path.or(pubkey_path);
-            match candidate {
-                Some(p) if p.exists() => p,
-                _ => {
-                    // Fall back to the stem of the keystore filename.
-                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                    secrets_dir.join(stem)
-                }
-            }
+            let pubkey_0x = ks.pubkey.as_deref().map(|p| {
+                let with_0x = if p.starts_with("0x") {
+                    p.to_string()
+                } else {
+                    format!("0x{p}")
+                };
+                secrets_dir.join(with_0x)
+            });
+            let candidates = [
+                ks.uuid.as_deref().map(|u| secrets_dir.join(u)),
+                pubkey_no_0x,
+                pubkey_0x,
+                Some(secrets_dir.join(&stem)),
+            ];
+            candidates
+                .into_iter()
+                .flatten()
+                .find(|p| p.exists())
+                .unwrap_or_else(|| secrets_dir.join(&stem))
         };
 
         let password = match std::fs::read_to_string(&password_file) {

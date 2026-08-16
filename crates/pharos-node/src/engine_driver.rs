@@ -851,25 +851,37 @@ pub async fn run_engine_driver_loop<E: EthSpec, P: PowBlockProvider + Send + Syn
                                 let needs_invalidation = {
                                     let s = store.read();
                                     // Determine if req.block_root is a merge-transition block.
-                                    // A merge-transition block is the first block with a
-                                    // non-default execution payload on a chain that was
-                                    // previously pre-merge.  We detect it by checking:
-                                    // (a) the block carries execution (block_is_execution_enabled)
-                                    // (b) its parent does NOT carry execution (parent is pre-merge).
-                                    // This is the structural definition independent of state.
-                                    let block = s.blocks.get(&req.block_root);
-                                    let is_exec = block
-                                        .map(|b| block_is_execution_enabled::<E>(b))
-                                        .unwrap_or(false);
-                                    let parent_root = block
-                                        .map(|b| b.parent_root())
-                                        .unwrap_or_default();
-                                    let parent_is_exec = s
-                                        .blocks
-                                        .get(&parent_root)
-                                        .map(|b| block_is_execution_enabled::<E>(b))
-                                        .unwrap_or(false);
-                                    is_exec && !parent_is_exec
+                                    // The spec definition keys on the PARENT post-state's
+                                    // `is_merge_transition_complete` (latest_execution_payload_header
+                                    // == default), NOT the parent block body: on a merge-at-genesis
+                                    // chain (TTD=0) the genesis block body carries an empty payload
+                                    // while the genesis STATE already holds the execution header, so
+                                    // the structural "parent block has no payload" heuristic would
+                                    // falsely flag the first post-genesis block as a merge transition
+                                    // and invalidate the whole chain. Use the parent state via
+                                    // `E::is_merge_transition_block`, falling back to the structural
+                                    // check only when the parent state is unavailable.
+                                    match s.blocks.get(&req.block_root) {
+                                        Some(block) => {
+                                            let parent_root = block.parent_root();
+                                            match s.block_states.get(&parent_root) {
+                                                Some(parent_state) => {
+                                                    E::is_merge_transition_block(parent_state, block)
+                                                }
+                                                None => {
+                                                    let is_exec =
+                                                        block_is_execution_enabled::<E>(block);
+                                                    let parent_is_exec = s
+                                                        .blocks
+                                                        .get(&parent_root)
+                                                        .map(|b| block_is_execution_enabled::<E>(b))
+                                                        .unwrap_or(false);
+                                                    is_exec && !parent_is_exec
+                                                }
+                                            }
+                                        }
+                                        None => false,
+                                    }
                                 };
 
                                 if needs_invalidation {

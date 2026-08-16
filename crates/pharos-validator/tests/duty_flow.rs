@@ -411,7 +411,7 @@ async fn test_attester_slot_slashing_record_before_submit() {
     };
 
     let slot = 42u64;
-    run_attester(&bn, &entry, &duty, slot, &fork, spy_db.as_ref(), 12_000).await;
+    run_attester(&bn, &entry, &duty, slot, &fork, spy_db.as_ref(), 0, 12_000).await;
 
     let log = call_log.lock().unwrap().clone();
     eprintln!("attester call log: {:?}", log);

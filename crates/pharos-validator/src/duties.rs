@@ -173,6 +173,7 @@ pub struct FinalizedCheckpointEvent {
 pub async fn run_duty_refresh_loop(
     scheduler: Arc<DutyScheduler>,
     epoch_tx: watch::Sender<u64>,
+    genesis_time_secs: u64,
     slots_per_epoch: u64,
     slot_duration_ms: u64,
 ) {
@@ -180,7 +181,8 @@ pub async fn run_duty_refresh_loop(
     let node_count = scheduler.bn.node_count();
 
     // Seed duties for the current epoch before entering the SSE loop.
-    let now_epoch = current_epoch_from_wall_clock(slot_duration_ms, slots_per_epoch);
+    let now_epoch =
+        current_epoch_from_wall_clock(genesis_time_secs, slot_duration_ms, slots_per_epoch);
     for ep in [now_epoch, now_epoch.saturating_add(1)] {
         if let Err(e) = scheduler.refresh_epoch(ep).await {
             warn!(epoch = ep, %e, "initial duty fetch failed");
@@ -249,6 +251,7 @@ pub async fn run_duty_refresh_loop(
                             } else if line.is_empty() && !data_buf.is_empty() {
                                 // Dispatch complete SSE event.
                                 let epoch = current_epoch_from_wall_clock(
+                                    genesis_time_secs,
                                     slot_duration_ms,
                                     slots_per_epoch,
                                 );
@@ -347,23 +350,12 @@ async fn handle_head_event(
 
 // ── Wall-clock helpers ────────────────────────────────────────────────────────
 
-/// Compute the current epoch from the wall clock (UNIX epoch since genesis).
+/// Compute the current slot from the wall clock, relative to `genesis_time_secs`.
 ///
-/// When `genesis_time = 0` (tests), returns epoch 0.
-pub fn current_epoch_from_wall_clock(slot_duration_ms: u64, slots_per_epoch: u64) -> u64 {
-    if slot_duration_ms == 0 || slots_per_epoch == 0 {
-        return 0;
-    }
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let elapsed_slots = now_ms / slot_duration_ms;
-    elapsed_slots / slots_per_epoch
-}
-
-/// Compute the current slot from the wall clock.
-pub fn current_slot_from_wall_clock(slot_duration_ms: u64) -> u64 {
+/// Slots are counted from the chain's genesis, NOT the UNIX epoch: a real network
+/// has `genesis_time` far from 0, so the elapsed time must be measured from
+/// genesis. Returns 0 before genesis (and when `slot_duration_ms == 0`).
+pub fn current_slot_from_wall_clock(genesis_time_secs: u64, slot_duration_ms: u64) -> u64 {
     if slot_duration_ms == 0 {
         return 0;
     }
@@ -371,7 +363,24 @@ pub fn current_slot_from_wall_clock(slot_duration_ms: u64) -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    now_ms / slot_duration_ms
+    let genesis_ms = genesis_time_secs.saturating_mul(1000);
+    let elapsed_ms = now_ms.saturating_sub(genesis_ms);
+    elapsed_ms / slot_duration_ms
+}
+
+/// Compute the current epoch from the wall clock, relative to `genesis_time_secs`.
+///
+/// Returns epoch 0 before genesis (and when `slot_duration_ms`/`slots_per_epoch`
+/// is 0, as in unit tests).
+pub fn current_epoch_from_wall_clock(
+    genesis_time_secs: u64,
+    slot_duration_ms: u64,
+    slots_per_epoch: u64,
+) -> u64 {
+    if slot_duration_ms == 0 || slots_per_epoch == 0 {
+        return 0;
+    }
+    current_slot_from_wall_clock(genesis_time_secs, slot_duration_ms) / slots_per_epoch
 }
 
 #[cfg(test)]
@@ -380,8 +389,10 @@ mod tests {
 
     #[test]
     fn epoch_from_wall_clock_zero_returns_zero() {
-        assert_eq!(current_epoch_from_wall_clock(0, 32), 0);
-        assert_eq!(current_epoch_from_wall_clock(12_000, 0), 0);
+        assert_eq!(current_epoch_from_wall_clock(0, 0, 32), 0);
+        assert_eq!(current_epoch_from_wall_clock(0, 12_000, 0), 0);
+        // A far-future genesis (not yet reached) yields epoch 0.
+        assert_eq!(current_epoch_from_wall_clock(u64::MAX, 12_000, 32), 0);
     }
 
     #[test]

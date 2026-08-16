@@ -169,6 +169,21 @@ pub fn validate_merge_block<P: PowBlockProvider>(
         },
     )?;
 
+    // Genesis-terminal block (TTD=0 / merge-at-genesis): the terminal PoW block is
+    // the EL genesis, whose `parent_hash` is the zero hash — there is no PoW parent
+    // to fetch. `is_valid_terminal_pow_block` then reduces to the total-difficulty
+    // check alone: the `parent.total_difficulty < TTD` condition is vacuously
+    // satisfied because no parent block exists. Requiring `get_pow_block(0x0)` here
+    // (as the literal spec pseudocode does, assuming a real PoW history) would fail
+    // on every TTD=0 chain, so we special-case it. This is the genesis-sync-through-
+    // merge correctness fix (previously a known limitation).
+    if pow_block.parent_hash == zero_hash {
+        if pow_block.total_difficulty >= terminal_total_difficulty {
+            return Ok(());
+        }
+        return Err(ValidateMergeBlockError::InvalidTerminalPowBlock);
+    }
+
     let pow_parent = pow_provider.get_pow_block(pow_block.parent_hash)?.ok_or(
         ValidateMergeBlockError::PowParentNotFound {
             hash: pow_block.parent_hash,

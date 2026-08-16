@@ -89,6 +89,9 @@ pub struct ValidatorEntry {
 pub struct VcConfig {
     pub suggested_fee_recipient: String,
     pub graffiti: Option<String>,
+    /// Chain genesis time (UNIX seconds). Slots/epochs are counted from here, not
+    /// from the UNIX epoch — a real network's genesis is far from 0.
+    pub genesis_time: u64,
     pub slots_per_epoch: u64,
     pub slot_duration_ms: u64,
     /// Whether doppelganger protection is enabled (`--doppelganger-protection`).
@@ -231,6 +234,7 @@ pub async fn run_proposer(
 /// Execute the attester path for a slot.
 ///
 /// Called at `slot + 1/3 * slot_duration`.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_attester(
     bn: &BnClient,
     entry: &ValidatorEntry,
@@ -238,6 +242,7 @@ pub async fn run_attester(
     slot: u64,
     fork: &ForkContext,
     slashing_db: &dyn SlashingProtection,
+    genesis_time_secs: u64,
     slot_duration_ms: u64,
 ) {
     let committee_index: u64 = duty.committee_index.parse().unwrap_or(0);
@@ -351,7 +356,7 @@ pub async fn run_attester(
     }
 
     // Wait until slot + 2/3 before fetching the aggregate.
-    let slot_start_ms = slot * slot_duration_ms;
+    let slot_start_ms = genesis_time_secs.saturating_mul(1000) + slot * slot_duration_ms;
     let two_thirds = slot_duration_ms * 2 / 3;
     sleep_until_into_slot(slot_start_ms, two_thirds).await;
 
@@ -666,7 +671,9 @@ pub async fn run_vc_loop(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let current_slot = now_ms / config.slot_duration_ms;
+        // Slots are counted from genesis, not the UNIX epoch.
+        let genesis_ms = config.genesis_time.saturating_mul(1000);
+        let current_slot = now_ms.saturating_sub(genesis_ms) / config.slot_duration_ms;
         let current_epoch = current_slot / config.slots_per_epoch;
 
         // Advance doppelganger state.
@@ -775,7 +782,7 @@ pub async fn run_vc_loop(
         // ── Attester path (at slot + 1/3) ─────────────────────────────────────
 
         let attester_wait = config.slot_duration_ms / 3;
-        let slot_start_ms = current_slot * config.slot_duration_ms;
+        let slot_start_ms = genesis_ms + current_slot * config.slot_duration_ms;
         sleep_until_into_slot(slot_start_ms, attester_wait).await;
 
         if let Some(att_duties) = duties_for_slot.attester.get(&current_slot) {
@@ -790,6 +797,7 @@ pub async fn run_vc_loop(
                             current_slot,
                             &fork,
                             slashing_db.as_ref(),
+                            config.genesis_time,
                             config.slot_duration_ms,
                         )
                         .await;

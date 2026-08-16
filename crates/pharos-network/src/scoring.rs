@@ -43,7 +43,7 @@ pub enum ScoreEvent {
 ///
 /// Light-client variants added per `specs/altair/p2p-interface.md:445-461`.
 /// Handlers land in Phase 6; variant declarations are here so Phase 5 compiles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RpcMethod {
     Status,
     Goodbye,
