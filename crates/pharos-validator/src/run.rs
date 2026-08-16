@@ -279,32 +279,44 @@ pub async fn run_attester(
     let source_epoch: u64 = att_data.source.epoch.parse().unwrap_or(0);
     let target_epoch: u64 = att_data.target.epoch.parse().unwrap_or(0);
 
-    // Hash of the attestation data — used as the attestation_data_root for the
-    // aggregate query below. The slashing check+record happens exactly once,
-    // inside `sign_attestation`, keyed by the canonical signing root
-    // (`compute_signing_root(att_data, DOMAIN_BEACON_ATTESTER)`). Recording it
-    // here as well (with a different root) would trip the double-vote check and
-    // block every attestation — see D-commit-before-sign.
-    let att_bytes = serde_json::to_vec(&att_data).unwrap_or_default();
-    let att_hash = pharos_utils::hash::hash(&att_bytes);
+    // Build the TYPED AttestationData so we sign over its real `tree_hash_root`.
+    // The STF verifies attestation signatures over
+    // `compute_signing_root(AttestationData, DOMAIN_BEACON_ATTESTER)` when the
+    // attestation is packed into a block; a placeholder (JSON-hash) root would be
+    // rejected as an invalid signature. `att_hash` (= the data root) is also reused
+    // as the `attestation_data_root` for the aggregate query below.
+    use pharos_ssz::TreeHash;
+    use pharos_types::phase0::misc::{AttestationData, Checkpoint};
+    use pharos_types::phase0::primitives::{CommitteeIndex, Epoch, Root, Slot};
+    let parse_root = |s: &str| -> Root {
+        let st = s.strip_prefix("0x").unwrap_or(s);
+        let mut arr = [0u8; 32];
+        if let Ok(b) = hex::decode(st) {
+            let n = b.len().min(32);
+            arr[..n].copy_from_slice(&b[..n]);
+        }
+        Root::from(arr)
+    };
+    let typed_att = AttestationData {
+        slot: Slot(att_data.slot.parse().unwrap_or(0)),
+        index: CommitteeIndex(att_data.index.parse().unwrap_or(0)),
+        beacon_block_root: parse_root(&att_data.beacon_block_root),
+        source: Checkpoint {
+            epoch: Epoch(source_epoch),
+            root: parse_root(&att_data.source.root),
+        },
+        target: Checkpoint {
+            epoch: Epoch(target_epoch),
+            root: parse_root(&att_data.target.root),
+        },
+    };
+    let att_hash = typed_att.tree_hash_root();
 
     // Step 2: Sign attestation (slashing check+record committed before signing).
-    use pharos_ssz::TreeHash;
-    struct AttHashWrapper([u8; 32]);
-    impl TreeHash for AttHashWrapper {
-        const TREE_HASH_TYPE: pharos_ssz::TreeHashType = pharos_ssz::TreeHashType::Basic;
-        fn tree_hash_packed_encoding(&self) -> Vec<u8> {
-            self.0.to_vec()
-        }
-        fn tree_hash_root(&self) -> pharos_utils::Hash256 {
-            pharos_utils::Hash256::from_array(self.0)
-        }
-    }
-    let att_wrapper = AttHashWrapper(att_hash.into_inner());
     let att_sig = match sign_attestation(
         &entry.secret_key,
         &entry.pubkey_hex,
-        &att_wrapper,
+        &typed_att,
         source_epoch,
         target_epoch,
         fork,

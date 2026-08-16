@@ -111,7 +111,8 @@ pub fn sign_randao_reveal(sk: &BLSSecretKey, epoch: u64, fork: &ForkContext) -> 
 /// A newtype over `u64` that implements `TreeHash` as the spec's `uint64` SSZ type.
 ///
 /// The spec's `Epoch` type SSZ-encodes as a little-endian 8-byte integer.
-/// `tree_hash_root` of a uint64 is `SHA256(value_as_8_le_bytes || [0u8; 24])`.
+/// `tree_hash_root` of a uint64 (an SSZ basic type) is the value as 8 LE bytes
+/// right-padded to a single 32-byte chunk — it is NOT hashed.
 struct Epoch(u64);
 
 impl TreeHash for Epoch {
@@ -124,7 +125,7 @@ impl TreeHash for Epoch {
     fn tree_hash_root(&self) -> pharos_utils::Hash256 {
         let mut bytes = [0u8; 32];
         bytes[..8].copy_from_slice(&self.0.to_le_bytes());
-        pharos_utils::hash::hash(&bytes)
+        pharos_utils::Hash256::from_array(bytes)
     }
 }
 
@@ -194,7 +195,7 @@ impl TreeHash for Slot {
     fn tree_hash_root(&self) -> pharos_utils::Hash256 {
         let mut bytes = [0u8; 32];
         bytes[..8].copy_from_slice(&self.0.to_le_bytes());
-        pharos_utils::hash::hash(&bytes)
+        pharos_utils::Hash256::from_array(bytes)
     }
 }
 
