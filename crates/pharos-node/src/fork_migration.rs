@@ -63,12 +63,13 @@ pub async fn run_fork_migration_loop<E: EthSpec>(
     fork_schedule: Arc<ForkSchedule>,
     genesis_time_secs: u64,
 ) {
-    // If altair, bellatrix, capella, and deneb are all FAR_FUTURE_EPOCH, no migrations
-    // will ever occur; exit immediately to avoid a useless spinning loop.
+    // If altair, bellatrix, capella, deneb, and electra are all FAR_FUTURE_EPOCH,
+    // no migrations will ever occur; exit immediately to avoid a useless spinning loop.
     if fork_schedule.altair_fork_epoch == Epoch(u64::MAX)
         && fork_schedule.bellatrix_fork_epoch == Epoch(u64::MAX)
         && fork_schedule.capella_fork_epoch == Epoch(u64::MAX)
         && fork_schedule.deneb_fork_epoch == Epoch(u64::MAX)
+        && fork_schedule.electra_fork_epoch == Epoch(u64::MAX)
     {
         return;
     }
@@ -198,14 +199,20 @@ async fn do_migration<E: EthSpec>(
 
 /// Select the full topic set appropriate for `version` at `digest`.
 ///
-/// - genesis_fork_version → `phase0_gossip_topics` (5 base topics)
-/// - altair_fork_version  → `altair_gossip_topics` (5 base + altair extras)
+/// - genesis_fork_version   → `phase0_gossip_topics` (5 base topics)
+/// - altair_fork_version    → `altair_gossip_topics` (5 base + altair extras)
 /// - bellatrix_fork_version → `bellatrix_gossip_topics`
 ///   (5 base + same altair extras, all under the bellatrix digest)
-/// - capella_fork_version → `capella_gossip_topics`
+/// - capella_fork_version   → `capella_gossip_topics`
 ///   (5 base + altair extras + `bls_to_execution_change`)
-/// - deneb_fork_version (or unknown) → `deneb_gossip_topics`
+/// - deneb_fork_version     → `deneb_gossip_topics`
 ///   (capella topics + `blob_sidecar_<i>` subnets)
+/// - electra_fork_version   → `electra_gossip_topics`
+///   (same topic shape as Deneb; EIP-7549 uses `beacon_aggregate_and_proof`
+///   with a new container type but the same gossip topic name)
+///
+/// No `_ =>` fallback: a future fork must add an explicit arm here so that
+/// a missing case is a compile error, not a silent regression to a stale digest.
 fn topics_for_version<E: EthSpec>(
     version: Version,
     fork_schedule: &ForkSchedule,
@@ -220,11 +227,16 @@ fn topics_for_version<E: EthSpec>(
     } else if version == fork_schedule.capella_fork_version {
         capella_gossip_topics::<E>(digest)
     } else if version == fork_schedule.deneb_fork_version {
-        // Deneb adds the EIP-4844 `blob_sidecar_<i>` subnet topics on top of Capella.
         deneb_gossip_topics::<E>(digest)
+    } else if version == fork_schedule.electra_fork_version {
+        // Electra gossip topics: same topic names as Deneb (EIP-7549 reuses
+        // `beacon_aggregate_and_proof`; the new `SingleAttestation` per-subnet
+        // publication is a VC concern, not a topic addition).
+        electra_gossip_topics::<E>(digest)
     } else {
-        // Any future fork beyond Deneb: same topic shape as Deneb until extended.
-        deneb_gossip_topics::<E>(digest)
+        // Unknown version (post-Electra fork not yet specified). Use the Electra
+        // topic set as the safest known shape until a new fork arm is added.
+        electra_gossip_topics::<E>(digest)
     }
 }
 
@@ -381,6 +393,20 @@ pub(crate) fn deneb_gossip_topics<E: EthSpec>(deneb_digest: ForkDigest) -> Vec<G
     topics
 }
 
+/// The electra gossip topics: same topic names as Deneb under the electra fork digest.
+///
+/// EIP-7549 reuses the `beacon_aggregate_and_proof` topic name; the new
+/// `SingleAttestation` per-subnet publication is a validator-client concern
+/// and does not add a new gossip topic. The blob sidecar subnets are retained
+/// (electra is a superset of Deneb for DA purposes).
+///
+/// Attestation subnet topics are handled by the subnet rotation driver.
+pub(crate) fn electra_gossip_topics<E: EthSpec>(electra_digest: ForkDigest) -> Vec<GossipTopic> {
+    // Electra inherits the full Deneb topic set; the fork-digest segment is
+    // the only thing that changes at the Electra boundary.
+    deneb_gossip_topics::<E>(electra_digest)
+}
+
 /// Returns the list of altair topics for a given fork digest.
 ///
 /// Public helper used by integration tests to verify that both nodes subscribed
@@ -415,6 +441,15 @@ pub fn capella_topic_list<E: EthSpec>(capella_digest: ForkDigest) -> Vec<GossipT
 /// `blob_sidecar_<i>` subnet topics (EIP-4844).
 pub fn deneb_topic_list<E: EthSpec>(deneb_digest: ForkDigest) -> Vec<GossipTopic> {
     deneb_gossip_topics::<E>(deneb_digest)
+}
+
+/// Returns the list of electra topics for a given fork digest.
+///
+/// Public helper used by integration tests to verify that the migration
+/// correctly subscribes to the electra topic set. The electra set is identical
+/// in shape to the deneb set (same topic kinds, electra fork digest).
+pub fn electra_topic_list<E: EthSpec>(electra_digest: ForkDigest) -> Vec<GossipTopic> {
+    electra_gossip_topics::<E>(electra_digest)
 }
 
 // ── Command helpers ───────────────────────────────────────────────────────────

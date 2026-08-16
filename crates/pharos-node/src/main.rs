@@ -334,6 +334,8 @@ async fn main() -> anyhow::Result<()> {
                     inner.message().state_root()
                 } else if let Some(inner) = MainnetEthSpec::unwrap_deneb_signed_block(&signed) {
                     inner.message().state_root()
+                } else if let Some(inner) = MainnetEthSpec::unwrap_electra_signed_block(&signed) {
+                    inner.message().state_root()
                 } else {
                     unreachable!("unrecognised SignedBeaconBlock fork variant in warm restart")
                 };

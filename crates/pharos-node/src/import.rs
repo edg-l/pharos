@@ -176,6 +176,12 @@ fn signed_block_is_execution_enabled<E: EthSpec>(b: &E::SignedBeaconBlock) -> bo
             .body()
             .execution_block_hash()
             .is_some_and(|h| h != [0u8; 32])
+    } else if let Some(inner) = E::unwrap_electra_signed_block(b) {
+        inner
+            .message()
+            .body()
+            .execution_block_hash()
+            .is_some_and(|h| h != [0u8; 32])
     } else {
         false
     }
@@ -183,8 +189,9 @@ fn signed_block_is_execution_enabled<E: EthSpec>(b: &E::SignedBeaconBlock) -> bo
 
 /// Return the `slot` field of any fork variant of `SignedBeaconBlock`.
 ///
-/// Covers phase0 / altair / bellatrix / capella / deneb in one place so
-/// callers do not duplicate the five-arm match.
+/// Covers phase0 / altair / bellatrix / capella / deneb / electra in one
+/// place so callers do not duplicate the per-fork match. Adding a new fork
+/// requires extending this function — a missing arm is a compile error.
 pub fn signed_block_slot<E: EthSpec>(
     b: &E::SignedBeaconBlock,
 ) -> pharos_types::phase0::primitives::Slot {
@@ -199,6 +206,8 @@ pub fn signed_block_slot<E: EthSpec>(
         inner.message().slot()
     } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
         inner.message().slot()
+    } else if let Some(inner) = E::unwrap_electra_signed_block(b) {
+        inner.message().slot()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")
     }
@@ -208,8 +217,7 @@ pub fn signed_block_slot<E: EthSpec>(
 ///
 /// Mirrors [`signed_block_slot`]: no single trait-dispatch accessor covers all
 /// variants, so each fork is unwrapped here in ONE place. Adding a new fork
-/// requires extending this arm — keeping the per-fork unwrap out of `import_block`
-/// so a call site can never silently miss a variant.
+/// requires extending this function — a missing arm is a compile error.
 pub fn signed_block_state_root<E: EthSpec>(
     b: &E::SignedBeaconBlock,
 ) -> pharos_types::phase0::primitives::Root {
@@ -223,6 +231,8 @@ pub fn signed_block_state_root<E: EthSpec>(
     } else if let Some(inner) = E::unwrap_capella_signed_block(b) {
         inner.message().state_root()
     } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
+        inner.message().state_root()
+    } else if let Some(inner) = E::unwrap_electra_signed_block(b) {
         inner.message().state_root()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")

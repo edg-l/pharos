@@ -119,6 +119,7 @@ where
     <E::BellatrixSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::CapellaSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::DenebSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
+    <E::ElectraSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
 {
     // ── Step 1-2: fetch state ─────────────────────────────────────────────────
     let state_url = url
@@ -403,6 +404,15 @@ fn decode_state<E: EthSpec>(
             let root = state.tree_hash_root();
             Ok((state, root))
         }
+        "electra" => {
+            let inner = E::ElectraBeaconState::from_ssz_bytes(bytes)
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            let state = E::electra_into_state(inner)
+                .into_tree_backend()
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            let root = state.tree_hash_root();
+            Ok((state, root))
+        }
         other => Err(CheckpointSyncError::UnsupportedFork(other.to_owned())),
     }
 }
@@ -438,6 +448,11 @@ fn decode_signed_block<E: EthSpec>(
                 .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
             Ok(E::deneb_into_signed_block(inner))
         }
+        "electra" => {
+            let inner = E::ElectraSignedBeaconBlock::from_ssz_bytes(bytes)
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            Ok(E::electra_into_signed_block(inner))
+        }
         other => Err(CheckpointSyncError::UnsupportedFork(other.to_owned())),
     }
 }
@@ -460,6 +475,7 @@ where
     <E::BellatrixSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::CapellaSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::DenebSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
+    <E::ElectraSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
 {
     if let Some(inner) = E::unwrap_phase0_signed_block(signed) {
         return Ok(inner.message().tree_hash_root());
@@ -474,6 +490,9 @@ where
         return Ok(inner.message().tree_hash_root());
     }
     if let Some(inner) = E::unwrap_deneb_signed_block(signed) {
+        return Ok(inner.message().tree_hash_root());
+    }
+    if let Some(inner) = E::unwrap_electra_signed_block(signed) {
         return Ok(inner.message().tree_hash_root());
     }
     unreachable!("unrecognised SignedBeaconBlock fork variant")
@@ -506,7 +525,11 @@ fn extract_block_fields<E: EthSpec>(
         let msg = inner.message();
         return Ok((msg.state_root(), msg.slot(), msg.proposer_index()));
     }
-    // Unreachable: the five variants cover all fork-enum arms.
+    if let Some(inner) = E::unwrap_electra_signed_block(signed) {
+        let msg = inner.message();
+        return Ok((msg.state_root(), msg.slot(), msg.proposer_index()));
+    }
+    // Unreachable: all six fork-enum arms are covered above.
     unreachable!("unrecognised SignedBeaconBlock fork variant")
 }
 
@@ -859,8 +882,8 @@ mod tests {
                     let sb = sb.clone();
                     async move {
                         let mut headers = HeaderMap::new();
-                        // Use a truly unknown fork name (not a supported fork).
-                        headers.insert("Eth-Consensus-Version", "electra".parse().unwrap());
+                        // Use a truly unknown fork name (not any currently supported fork).
+                        headers.insert("Eth-Consensus-Version", "fulu".parse().unwrap());
                         (StatusCode::OK, headers, (*sb).clone())
                     }
                 }
@@ -875,8 +898,8 @@ mod tests {
         handle.abort();
 
         assert!(
-            matches!(result, Err(CheckpointSyncError::UnsupportedFork(ref s)) if s == "electra"),
-            "expected UnsupportedFork(electra), got {result:?}"
+            matches!(result, Err(CheckpointSyncError::UnsupportedFork(ref s)) if s == "fulu"),
+            "expected UnsupportedFork(fulu), got {result:?}"
         );
     }
 
