@@ -487,6 +487,12 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Mainnet: `262144` (`2**18`). Minimal: `64`.
     const MAX_PENDING_CONSOLIDATIONS_LIMIT: u64;
 
+    /// `MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Maximum partial-withdrawal queue entries processed per payload sweep (EIP-7251).
+    /// Mainnet: `8` (`2**3`). Minimal: `2`.
+    const MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP: u64;
+
     /// `MAX_EFFECTIVE_BALANCE_ELECTRA` from `presets/{mainnet,minimal}/electra.yaml`.
     ///
     /// Both presets: `2048000000000` (`MAX_EFFECTIVE_BALANCE * 64`).
@@ -2252,6 +2258,8 @@ impl EthSpec for MainnetEthSpec {
     const MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64 = 134_217_728;
     /// `MAX_PENDING_CONSOLIDATIONS_LIMIT` from `presets/mainnet/electra.yaml` (2^18 = 262144).
     const MAX_PENDING_CONSOLIDATIONS_LIMIT: u64 = 262_144;
+    /// `MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP` from `presets/mainnet/electra.yaml` (2^3 = 8).
+    const MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP: u64 = 8;
     /// `MAX_EFFECTIVE_BALANCE_ELECTRA` = MAX_EFFECTIVE_BALANCE * 64 = 2048000000000.
     const MAX_EFFECTIVE_BALANCE_ELECTRA: u64 = 2_048_000_000_000;
     /// `MIN_ACTIVATION_BALANCE` = 32000000000 (same as pre-electra MAX_EFFECTIVE_BALANCE).
@@ -2674,6 +2682,8 @@ impl EthSpec for MinimalEthSpec {
     const MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64 = 64;
     /// `MAX_PENDING_CONSOLIDATIONS_LIMIT` from `presets/minimal/electra.yaml` (64).
     const MAX_PENDING_CONSOLIDATIONS_LIMIT: u64 = 64;
+    /// `MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP` from `presets/minimal/electra.yaml` (2).
+    const MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP: u64 = 2;
     /// `MAX_EFFECTIVE_BALANCE_ELECTRA` = MAX_EFFECTIVE_BALANCE * 64 = 2048000000000.
     const MAX_EFFECTIVE_BALANCE_ELECTRA: u64 = 2_048_000_000_000;
     /// `MIN_ACTIVATION_BALANCE` = 32000000000.

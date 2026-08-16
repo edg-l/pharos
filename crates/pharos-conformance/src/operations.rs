@@ -5911,6 +5911,65 @@ fn electra_op_table_mainnet() -> Vec<(
                 )
             }),
         ),
+        // withdrawals: EIP-7251 — partial-queue sweep + regular validator sweep.
+        (
+            "withdrawals",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::electra::operations::process_withdrawals_electra;
+                use pharos_types::electra::{
+                    MainnetBeaconState, execution_payload::MainnetExecutionPayload,
+                };
+
+                let pre_inner =
+                    match load_ssz_snappy::<MainnetBeaconState>(&case_dir, "pre.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<MainnetBeaconState>(&case_dir, "post.ssz_snappy") {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let payload = match load_ssz_snappy::<MainnetExecutionPayload>(
+                    &case_dir,
+                    "execution_payload.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_withdrawals_electra::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    1_073_741_824,
+                    1_048_576,
+                    16, // MAX_WITHDRAWALS_PER_PAYLOAD mainnet
+                    E,
+                >(&mut pre, &payload);
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "withdrawals")
+            }),
+        ),
     ]
 }
 
@@ -6531,6 +6590,65 @@ fn electra_op_table_minimal() -> Vec<(
                     &case_name,
                     "consolidation_request",
                 )
+            }),
+        ),
+        // withdrawals: EIP-7251 — partial-queue sweep + regular validator sweep.
+        (
+            "withdrawals",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::electra::operations::process_withdrawals_electra;
+                use pharos_types::electra::{
+                    MinimalBeaconState, execution_payload::MinimalExecutionPayload,
+                };
+
+                let pre_inner =
+                    match load_ssz_snappy::<MinimalBeaconState>(&case_dir, "pre.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<MinimalBeaconState>(&case_dir, "post.ssz_snappy") {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let payload = match load_ssz_snappy::<MinimalExecutionPayload>(
+                    &case_dir,
+                    "execution_payload.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_withdrawals_electra::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64, // PENDING_PARTIAL_WITHDRAWALS_LIMIT minimal
+                    64, // PENDING_CONSOLIDATIONS_LIMIT minimal
+                    1_073_741_824,
+                    1_048_576,
+                    4, // MAX_WITHDRAWALS_PER_PAYLOAD minimal
+                    E,
+                >(&mut pre, &payload);
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "withdrawals")
             }),
         ),
     ]
