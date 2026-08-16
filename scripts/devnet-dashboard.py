@@ -620,8 +620,16 @@ PAGE = r"""<!DOCTYPE html>
   .reorg { margin:0 30px 4px; padding:11px 16px; border-radius:12px;
            background:#f8717118; border:1px solid #f8717140; color:#fda4a4;
            font-size:13.5px; font-family:var(--mono); }
-  .ftree { overflow:auto; max-height:420px; border-radius:10px; }
+  .ftree { overflow-x:auto; overflow-y:hidden; max-height:440px; border-radius:10px;
+           scrollbar-width:none; -ms-overflow-style:none; scroll-behavior:smooth; }
+  .ftree::-webkit-scrollbar { display:none; }
   .ftree svg { display:block; }
+  /* new-node entrance animations (only applied to genuinely new roots) */
+  @keyframes fcpop { 0%{opacity:0;transform:scale(.2);} 100%{opacity:1;transform:scale(1);} }
+  @keyframes fcring { 0%{opacity:.85;transform:scale(.5);} 100%{opacity:0;transform:scale(2.6);} }
+  .ftree circle.new { animation:fcpop .45s ease-out; transform-box:fill-box; transform-origin:center; }
+  .ftree circle.newring { fill:none; stroke:#4aa8ff; stroke-width:2;
+    animation:fcring .9s ease-out forwards; transform-box:fill-box; transform-origin:center; }
   .legend { display:flex; gap:18px; margin-top:12px; font-size:12px; color:var(--muted);
             flex-wrap:wrap; }
   .legend i { display:inline-block; width:10px; height:10px; border-radius:50%;
@@ -690,6 +698,9 @@ function renderForkTree(fc){
     return '<span class="muted">no fork-choice data</span>';
   const nodes = fc.nodes.slice().sort((a,b)=>a.slot-b.slot || (a.root<b.root?-1:1));
   const byRoot = {}; nodes.forEach(n=>byRoot[n.root]=n);
+  // Roots seen on the previous render → animate only the genuinely new ones
+  // (undefined on first render, so nothing animates on initial load).
+  const seen = window._fcSeen;
   const canon = new Set(fc.canonical||[]);
   const heads = new Set(fc.heads||[]);
   const children = {}; nodes.forEach(n=>{ (children[n.parent]=children[n.parent]||[]).push(n); });
@@ -738,10 +749,13 @@ function renderForkTree(fc){
     if(n.root===fc.head) strok='#fff';
     const ring = strok!=='none' ? `stroke="${strok}" stroke-width="2.5"` : '';
     const isHead = heads.has(n.root) && n.root!==fc.head;
-    dots+=`<circle cx="${cx(n)}" cy="${cy(n)}" r="${r}" fill="${fill}" ${ring}>`+
+    const isNew = seen && !seen.has(n.root);
+    dots+=`<circle class="${isNew?'new':''}" cx="${cx(n)}" cy="${cy(n)}" r="${r}" fill="${fill}" ${ring}>`+
           `<title>slot ${n.slot}\nroot ${n.root}\nweight ${Number(n.weight).toLocaleString()}\nvalidity ${n.validity}${n.root===fc.head?'\n(head)':''}${n.root===fc.finalized?'\n(finalized)':''}</title></circle>`;
+    if(isNew) dots+=`<circle class="newring" cx="${cx(n)}" cy="${cy(n)}" r="${r}"/>`;
     if(isHead) dots+=`<circle cx="${cx(n)}" cy="${cy(n)}" r="${r+4}" fill="none" stroke="#4aa8ff" stroke-width="1.3" stroke-dasharray="2 2"/>`;
   });
+  window._fcSeen = new Set(nodes.map(n=>n.root));
   const legend='<div class="legend">'+
     '<span><i style="background:#34d399"></i>canonical</span>'+
     '<span><i style="background:#3a4658"></i>orphaned</span>'+
