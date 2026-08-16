@@ -5314,7 +5314,7 @@ fn electra_op_table_mainnet() -> Vec<(
         process_attestation_electra, process_attester_slashing_electra,
         process_block_header_electra, process_deposit_electra, process_deposit_request,
         process_proposer_slashing_electra, process_sync_aggregate_electra,
-        process_voluntary_exit_electra,
+        process_voluntary_exit_electra, process_withdrawal_request,
     };
     use pharos_types::MainnetEthSpec as E;
     vec![
@@ -5793,6 +5793,65 @@ fn electra_op_table_mainnet() -> Vec<(
                 )
             }),
         ),
+        // withdrawal_request: EIP-7002 — full exit or partial withdrawal queue.
+        (
+            "withdrawal_request",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::{MainnetBeaconState, requests::WithdrawalRequest};
+
+                let pre_inner =
+                    match load_ssz_snappy::<MainnetBeaconState>(&case_dir, "pre.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<MainnetBeaconState>(&case_dir, "post.ssz_snappy") {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<WithdrawalRequest>(
+                    &case_dir,
+                    "withdrawal_request.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_withdrawal_request::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "withdrawal_request",
+                )
+            }),
+        ),
     ]
 }
 
@@ -5818,7 +5877,7 @@ fn electra_op_table_minimal() -> Vec<(
         process_attestation_electra, process_attester_slashing_electra,
         process_block_header_electra, process_deposit_electra, process_deposit_request,
         process_proposer_slashing_electra, process_sync_aggregate_electra,
-        process_voluntary_exit_electra,
+        process_voluntary_exit_electra, process_withdrawal_request,
     };
     use pharos_types::MinimalEthSpec as E;
     vec![
@@ -6294,6 +6353,65 @@ fn electra_op_table_minimal() -> Vec<(
                     post_bytes,
                     &case_name,
                     "deposit_request",
+                )
+            }),
+        ),
+        // withdrawal_request: EIP-7002 — full exit or partial withdrawal queue.
+        (
+            "withdrawal_request",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::{MinimalBeaconState, requests::WithdrawalRequest};
+
+                let pre_inner =
+                    match load_ssz_snappy::<MinimalBeaconState>(&case_dir, "pre.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<MinimalBeaconState>(&case_dir, "post.ssz_snappy") {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<WithdrawalRequest>(
+                    &case_dir,
+                    "withdrawal_request.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_withdrawal_request::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728, // PENDING_DEPOSITS_LIMIT minimal
+                    64,          // PENDING_PARTIAL_WITHDRAWALS_LIMIT minimal
+                    64,          // PENDING_CONSOLIDATIONS_LIMIT minimal
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "withdrawal_request",
                 )
             }),
         ),
