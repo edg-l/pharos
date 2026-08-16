@@ -1132,6 +1132,62 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + Sync
         + 'static;
 
+    // ── Deneb light-client assoc types ────────────────────────────────────────
+
+    /// Deneb `LightClientBootstrap` for this preset.
+    type DenebLightClientBootstrap: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Deneb `LightClientUpdate` for this preset.
+    type DenebLightClientUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Deneb `LightClientFinalityUpdate` for this preset.
+    type DenebLightClientFinalityUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + crate::views::LightClientFinalityUpdateView
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Deneb `LightClientOptimisticUpdate` for this preset.
+    type DenebLightClientOptimisticUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + crate::views::LightClientOptimisticUpdateView
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
     // ── Deneb associated types ─────────────────────────────────────────────────
 
     /// Deneb inner `BeaconState` (unwrapped; used by deneb STF entry).
@@ -1840,6 +1896,7 @@ impl EthSpec for MainnetEthSpec {
             deneb_fork_version: Self::DENEB_FORK_VERSION,
             deneb_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (mainnet real epoch loaded from config at runtime)
             max_blobs_per_block: 6, // mainnet default (configs/mainnet.yaml: MAX_BLOBS_PER_BLOCK_EL)
+            max_per_epoch_activation_churn_limit: 8, // configs/mainnet.yaml: MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT
             // configs/mainnet.yaml: TERMINAL_TOTAL_DIFFICULTY: 58750000000000000000000
             terminal_total_difficulty: pharos_utils::Uint256::from_str("58750000000000000000000")
                 .expect("valid TTD literal"),
@@ -1969,6 +2026,16 @@ impl EthSpec for MainnetEthSpec {
     type CapellaLightClientFinalityUpdate = crate::capella::MainnetLightClientFinalityUpdate;
     /// Mainnet capella `LightClientOptimisticUpdate`.
     type CapellaLightClientOptimisticUpdate = crate::capella::MainnetLightClientOptimisticUpdate;
+    /// Mainnet deneb `LightClientBootstrap`.
+    type DenebLightClientBootstrap = crate::deneb::light_client::MainnetLightClientBootstrap;
+    /// Mainnet deneb `LightClientUpdate`.
+    type DenebLightClientUpdate = crate::deneb::light_client::MainnetLightClientUpdate;
+    /// Mainnet deneb `LightClientFinalityUpdate`.
+    type DenebLightClientFinalityUpdate =
+        crate::deneb::light_client::MainnetLightClientFinalityUpdate;
+    /// Mainnet deneb `LightClientOptimisticUpdate`.
+    type DenebLightClientOptimisticUpdate =
+        crate::deneb::light_client::MainnetLightClientOptimisticUpdate;
 
     // ── Deneb associated types ────────────────────────────────────────────────
 
@@ -2240,6 +2307,7 @@ impl EthSpec for MinimalEthSpec {
             deneb_fork_version: Self::DENEB_FORK_VERSION,
             deneb_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH
             max_blobs_per_block: 6,     // minimal default
+            max_per_epoch_activation_churn_limit: 4, // configs/minimal.yaml: MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT
             // configs/minimal.yaml: large TTD to prevent accidental merge on test networks
             terminal_total_difficulty: pharos_utils::Uint256::from_str(
                 "115792089237316195423570985008687907853269984665640564039457584007913129638912",
@@ -2371,6 +2439,16 @@ impl EthSpec for MinimalEthSpec {
     type CapellaLightClientFinalityUpdate = crate::capella::MinimalLightClientFinalityUpdate;
     /// Minimal capella `LightClientOptimisticUpdate`.
     type CapellaLightClientOptimisticUpdate = crate::capella::MinimalLightClientOptimisticUpdate;
+    /// Minimal deneb `LightClientBootstrap`.
+    type DenebLightClientBootstrap = crate::deneb::light_client::MinimalLightClientBootstrap;
+    /// Minimal deneb `LightClientUpdate`.
+    type DenebLightClientUpdate = crate::deneb::light_client::MinimalLightClientUpdate;
+    /// Minimal deneb `LightClientFinalityUpdate`.
+    type DenebLightClientFinalityUpdate =
+        crate::deneb::light_client::MinimalLightClientFinalityUpdate;
+    /// Minimal deneb `LightClientOptimisticUpdate`.
+    type DenebLightClientOptimisticUpdate =
+        crate::deneb::light_client::MinimalLightClientOptimisticUpdate;
 
     // ── Deneb associated types ────────────────────────────────────────────────
 

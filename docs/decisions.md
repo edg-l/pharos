@@ -3448,3 +3448,176 @@ the v2 → v3 bump in M-Storage). No in-place migration: blob sidecars from befo
 M10-DA were never stored (the column family did not exist), so there is no data to
 migrate. The v4 CF set is the v3 set (20 CFs) plus `CF_BLOB_SIDECARS`, registered
 in `all_cfs()` and opened in `RocksStore::open`.
+
+---
+
+## M10-Deneb decisions
+
+Full Deneb STF, Engine API V3, Deneb block+sidecar production, full conformance,
+and live devnet acceptance. Built on the M10-DA substrate (KZG crate, blob types,
+`Fork::Deneb` plumbing, blob gossip/req-resp/storage, DA gate). Plan:
+`docs/m10-deneb-plan.md`.
+
+### D-deneb-stf-delegates-to-capella — Deneb STF delegates unchanged logic to Capella
+
+**Status**: Proposed.
+
+Deneb adds three consensus-layer EIP deltas on top of Capella: EIP-4844
+(`process_execution_payload` with versioned hashes), EIP-7044 (fixed voluntary-exit
+domain), EIP-7045 (widened attestation inclusion range), and EIP-7514 (activation
+churn cap). Every other STF step, epoch sub-routine, and block-processing helper
+is identical to Capella. The implementation delegates to Capella via state projection
+(`deneb_state_to_capella`) for all unchanged paths, overriding only the four EIP
+delta operations. This mirrors how Capella delegates to Bellatrix/Altair. The
+`DenebDispatch`, `DenebJaFDispatch`, `DenebProcessSlotsDispatch`, and
+`DenebUpgradeDispatch` blanket-impl traits in `pharos-stf/src/lib.rs` wire the
+fork-dispatch entry points.
+
+### D-eip7044-voluntary-exit-fixed-domain — voluntary exits use capella_fork_version regardless of state fork
+
+**Status**: Proposed.
+
+EIP-7044 (`specs/deneb/beacon-chain.md:510-513`): starting at Deneb, voluntary
+exits always sign with `compute_domain(DOMAIN_VOLUNTARY_EXIT, CAPELLA_FORK_VERSION,
+genesis_validators_root)`, ignoring the state's current fork version. This makes
+exits signed in the Capella era valid forever in subsequent forks. The Deneb
+`process_voluntary_exit` accepts `runtime_cfg: &RuntimeConfig` and reads
+`runtime_cfg.capella_fork_version` to compute the domain. All callers through
+`process_operations_deneb` and `process_block` (deneb) thread `runtime_cfg`.
+
+### D-eip7045-attestation-range — deneb drops the upper slot bound for attestations
+
+**Status**: Proposed.
+
+EIP-7045 (`specs/deneb/beacon-chain.md`): the `state.slot <= data.slot +
+SLOTS_PER_EPOCH` upper-bound check is removed from `process_attestation` in Deneb.
+Only the lower bound `data.slot + MIN_ATTESTATION_INCLUSION_DELAY <= state.slot`
+remains. In practice this doubles the attestation inclusion window from one epoch
+to two, allowing attestations to be included later without being penalised. All
+other attestation logic delegates to the Altair implementation via projection.
+
+### D-eip7045-gossip-window-node-epoch — gossip-level EIP-7045 window gated on wall epoch
+
+**Status**: Proposed.
+
+Per OQ1 resolution: the gossip validator in `host_impl.rs` widens the attestation
+`data.slot` acceptance window to the previous-or-current epoch when the node's
+wall epoch is at or after `DENEB_FORK_EPOCH`. This is Phase 4 work (`4.1`); the
+STF-level change (task 1.6) is independent and applies in the Deneb STF path
+regardless of fork epoch. The two surfaces must agree: the gossip window controls
+which messages are admitted for STF processing, and the STF controls what the
+`process_attestation` rule rejects on import.
+
+### D-eip7514-activation-churn — deneb caps validator activation queue via MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT
+
+**Status**: Proposed.
+
+EIP-7514 (`specs/deneb/beacon-chain.md`): `process_registry_updates` uses
+`get_validator_activation_churn_limit = min(MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT,
+get_validator_churn_limit(state))` for the activation queue instead of the
+unbounded `get_validator_churn_limit`. `MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT` is
+8 on mainnet and 4 on minimal (from `configs/{mainnet,minimal}.yaml`). This is a
+runtime constant stored in `RuntimeConfig.max_per_epoch_activation_churn_limit`
+and threaded through `process_epoch_deneb` into `process_registry_updates_deneb`.
+
+### D-engine-v3-newpayload-wire — Engine V3 newPayloadV3 carries versioned hashes and parent beacon block root
+
+**Status**: Proposed.
+
+`engine_newPayloadV3` (cancun.md) takes three parameters:
+`(executionPayload: ExecutionPayloadV3, expectedBlobVersionedHashes: List[Hash32],
+parentBeaconBlockRoot: DATA)`. The JSON field name is `expectedBlobVersionedHashes`
+(camelCase). `ExecutionPayloadV3` extends V2 with `blobGasUsed` and `excessBlobGas`.
+The `NewPayloadWire::V3` variant in `pharos-engine/src/client.rs` carries these
+three fields. The version is selected for Deneb heads in the engine driver. Phase 3
+work.
+
+### D-versioned-hash-in-kzg-crate — kzg_commitment_to_versioned_hash lives in pharos-kzg
+
+**Status**: Proposed.
+
+The helper `kzg_commitment_to_versioned_hash(commitment: &[u8;48]) -> [u8;32]`
+(EIP-4844: SHA-256 of the 48-byte commitment, overwrite byte[0] = `0x01`) is
+implemented in `pharos-kzg/src/lib.rs`. It is the only place in the codebase that
+performs this transformation, and it is tightly coupled to KZG operations. The
+`pharos-stf` crate depends on `pharos-kzg` (already does for blob inclusion proof
+verification), so `process_execution_payload` in `deneb/operations/execution_payload.rs`
+can call it directly. `sha2` is added as a dependency of `pharos-kzg` for the
+SHA-256 computation.
+
+### D-engine-v3-version-selection — V3 methods selected for Deneb fork heads
+
+**Status**: Proposed.
+
+The engine driver in `pharos-node/src/engine_driver.rs` selects `engine_newPayloadV3`,
+`engine_forkchoiceUpdatedV3`, and `engine_getPayloadV3` when the head block is a
+Deneb variant, falling back to V2 for Capella, V1 for Bellatrix. This mirrors the
+V1/V2 version-selection logic already in place. The `GetPayloadVersion`,
+`NewPayloadVersion`, and `ForkchoiceUpdatedVersion` enums in
+`pharos-engine/src/client.rs` each gain a `V3` variant. Phase 3 work.
+
+### D-getpayloadv3-blobs-bundle — getPayloadV3 returns BlobsBundleV1 alongside the payload
+
+**Status**: Proposed.
+
+`engine_getPayloadV3` (cancun.md) returns `GetPayloadV3Response { executionPayload,
+blockValue, blobsBundle: BlobsBundleV1, shouldOverrideBuilder }`. `BlobsBundleV1`
+contains parallel `commitments`, `proofs`, and `blobs` lists. The node extracts
+`commitments` to populate `block.body.blob_kzg_commitments` and stores the full
+bundle to produce `BlobSidecar`s for publishing. Phase 3/4 work.
+
+### D-getblobsv1-da-fallback — getBlobsV1 is the DA-gate fallback when gossip sidecars are missing
+
+**Status**: Proposed.
+
+Per OQ2 resolution: when the DA checker returns `NotAvailable` (missing sidecars),
+the import path calls `engine_getBlobsV1(versioned_hashes)` on the local EL before
+parking the block to wait for gossip sidecars. If the EL returns all blobs (no
+null entries), the blobs are converted to `BlobSidecar`s, stored, and the DA check
+is re-run immediately. This avoids gossip latency on self-produced blocks and on
+reorgs where the EL already has the blobs in its pool. Phase 3 work (`3.7`).
+
+### D-deneb-block-production-sidecars — BlobSidecars built from BlobsBundleV1 at proposal time
+
+**Status**: Proposed.
+
+When proposing a Deneb block, the VC triggers `prepare_execution_payload_v3` which
+calls `engine_getPayloadV3` to obtain `(ExecutionPayloadV3, BlobsBundleV1,
+block_value)`. The node assembles the `SignedBeaconBlock`, then builds one
+`BlobSidecar` per blob in the bundle: `blob`, `commitment`, `proof` from the bundle;
+`signed_block_header` from the signed block; `kzg_commitment_inclusion_proof` via the
+Merkle proof machinery (gindex `8192 + index`, depth 17, reusing
+`verify_blob_sidecar_inclusion_proof` machinery). Bundle lengths
+`blobs == commitments == proofs` are asserted. Sidecars are published on the
+blob-sidecar gossip topics alongside the block. Phase 4 work.
+
+### D-deneb-lc-header — Deneb light-client header uses STF-verified block.state_root
+
+**Status**: Proposed.
+
+Per the M4c lesson (`D-bellatrix-lc-header-uses-state-root`): the Deneb
+`LightClientHeader` beacon field is constructed using `block.state_root` (the
+STF-verified value written by the proposer) rather than a recomputed
+`state.tree_hash_root()` on a projected state. A projected Deneb→Capella state
+would omit `blob_gas_used` and `excess_blob_gas` from
+`latest_execution_payload_header`, producing a different root than what consumers
+verify against. The `EXECUTION_PAYLOAD_GINDEX = 25`, `depth = 4` constants for the
+execution branch proof are the same as Capella (the body structure is identical at
+the field-9 position). Deneb LC types (`LightClientHeader`,
+`LightClientBootstrap`/`Update`/`FinalityUpdate`/`OptimisticUpdate`) mirror the
+Capella types but use `deneb::ExecutionPayloadHeader` (adds `blob_gas_used`,
+`excess_blob_gas`).
+
+### D-deneb-execution-engine-trait-arm — notify_new_payload_deneb is a defaulted method on ExecutionEngine
+
+**Status**: Proposed.
+
+`ExecutionEngine` gains a defaulted `notify_new_payload_deneb` method that accepts
+the Deneb `ExecutionPayload` plus `versioned_hashes: &[[u8;32]]` and
+`parent_beacon_block_root: Root`. The default implementation strips the Deneb-only
+fields and forwards to `notify_new_payload_capella` (which in turn strips withdrawals
+for V1). This keeps `NullExecutionEngine` and `FixedExecutionEngine` working for
+conformance tests without changes. The production `ExecutionEngineHandle` in
+`pharos-node` overrides this to call `engine_newPayloadV3` (Phase 3). The
+`parent_beacon_block_root` source is `state.latest_block_header.parent_root`, read
+before any header mutation in `process_execution_payload` (per plan 1.4).

@@ -301,7 +301,12 @@ where
         + pharos_ssz::TreeHash,
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, EE>
         + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, EE>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,

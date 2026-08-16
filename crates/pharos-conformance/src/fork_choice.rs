@@ -129,7 +129,12 @@ where
         + pharos_ssz::TreeHash,
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -195,7 +200,12 @@ where
         + Decode,
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -268,7 +278,12 @@ where
         + Decode,
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -353,7 +368,12 @@ where
         + pharos_ssz::TreeHash,
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -434,7 +454,12 @@ where
         + pharos_ssz::TreeHash,
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -747,7 +772,12 @@ where
         + Decode,
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>,
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -1466,7 +1496,12 @@ where
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::CapellaJaFDispatch<E>
         + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
         + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -1547,7 +1582,12 @@ where
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::CapellaJaFDispatch<E>
         + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
         + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -1639,7 +1679,12 @@ where
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::CapellaJaFDispatch<E>
         + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
         + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash

@@ -338,6 +338,59 @@ pub trait Store<E: EthSpec>: Send + Sync + 'static {
         &self,
     ) -> Result<Option<E::CapellaLightClientOptimisticUpdate>, StorageError>;
 
+    // ── Deneb light-client snapshot put/get (schema v5, D-deneb-lc-header) ────
+    //
+    // Separate CFs for deneb LC types, which have a different SSZ layout than
+    // Capella (deneb ExecutionPayloadHeader adds blob_gas_used / excess_blob_gas).
+
+    /// Store an SSZ-encoded Deneb `LightClientBootstrap`, keyed by `block_root`.
+    fn put_light_client_bootstrap_deneb(
+        &self,
+        block_root: Root,
+        bootstrap: &E::DenebLightClientBootstrap,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the Deneb `LightClientBootstrap` for `block_root`, if stored.
+    fn get_light_client_bootstrap_deneb(
+        &self,
+        block_root: &Root,
+    ) -> Result<Option<E::DenebLightClientBootstrap>, StorageError>;
+
+    /// Store an SSZ-encoded Deneb `LightClientUpdate` for `period`.
+    fn put_light_client_update_deneb(
+        &self,
+        period: u64,
+        update: &E::DenebLightClientUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the Deneb `LightClientUpdate` for `period`, if stored.
+    fn get_light_client_update_deneb(
+        &self,
+        period: u64,
+    ) -> Result<Option<E::DenebLightClientUpdate>, StorageError>;
+
+    /// Overwrite the single-row latest Deneb `LightClientFinalityUpdate`.
+    fn put_light_client_finality_update_deneb(
+        &self,
+        update: &E::DenebLightClientFinalityUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the latest stored Deneb `LightClientFinalityUpdate`, if any.
+    fn get_light_client_finality_update_deneb(
+        &self,
+    ) -> Result<Option<E::DenebLightClientFinalityUpdate>, StorageError>;
+
+    /// Overwrite the single-row latest Deneb `LightClientOptimisticUpdate`.
+    fn put_light_client_optimistic_update_deneb(
+        &self,
+        update: &E::DenebLightClientOptimisticUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the latest stored Deneb `LightClientOptimisticUpdate`, if any.
+    fn get_light_client_optimistic_update_deneb(
+        &self,
+    ) -> Result<Option<E::DenebLightClientOptimisticUpdate>, StorageError>;
+
     // ── Blob sidecar store (schema v4, D-blob-store-cf-keyed-by-root-index) ───
 
     /// Store an SSZ-encoded `BlobSidecar` keyed by `(block_root, index)`.

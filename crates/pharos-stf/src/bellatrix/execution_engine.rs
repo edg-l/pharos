@@ -11,6 +11,8 @@
 
 use pharos_types::bellatrix::ExecutionPayload;
 use pharos_types::capella::ExecutionPayload as CapellaExecutionPayload;
+use pharos_types::deneb::ExecutionPayload as DenebExecutionPayload;
+use pharos_types::phase0::primitives::Root;
 
 // ── PayloadVerificationStatus ─────────────────────────────────────────────────
 
@@ -123,6 +125,57 @@ pub trait ExecutionEngine: Send + Sync + 'static {
             base_fee_per_gas: payload.base_fee_per_gas,
             block_hash: payload.block_hash,
             transactions: payload.transactions.clone(),
+        })
+    }
+
+    /// `notify_new_payload` for Deneb payloads (with blob gas fields).
+    ///
+    /// **CONSENSUS-SAFETY WARNING**: any `ExecutionEngine` that talks to a REAL
+    /// execution client MUST override this method to call `engine_newPayloadV3`
+    /// with the full Deneb payload INCLUDING `versioned_hashes` and
+    /// `parent_beacon_block_root`. The default strips the Deneb-only fields and
+    /// forwards to `notify_new_payload_capella`, which in turn strips withdrawals.
+    /// The default is only safe for test/null engines. The production
+    /// `ExecutionEngineHandle` in `pharos-node` overrides this (Phase 3).
+    ///
+    /// `versioned_hashes` is derived from `body.blob_kzg_commitments` via
+    /// `kzg_commitment_to_versioned_hash`. `parent_beacon_block_root` is
+    /// `state.latest_block_header.parent_root` (read before header mutation).
+    fn notify_new_payload_deneb<
+        const MAX_BYTES_PER_TRANSACTION: u64,
+        const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+        const BYTES_PER_LOGS_BLOOM: u64,
+        const MAX_EXTRA_DATA_BYTES: u64,
+        const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    >(
+        &self,
+        payload: &DenebExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+        >,
+        _versioned_hashes: &[[u8; 32]],
+        _parent_beacon_block_root: Root,
+    ) -> PayloadVerificationStatus {
+        // Default: strip Deneb-only fields, forward to Capella V2.
+        self.notify_new_payload_capella(&CapellaExecutionPayload {
+            parent_hash: payload.parent_hash,
+            fee_recipient: payload.fee_recipient,
+            state_root: payload.state_root,
+            receipts_root: payload.receipts_root,
+            logs_bloom: payload.logs_bloom.clone(),
+            prev_randao: payload.prev_randao,
+            block_number: payload.block_number,
+            gas_limit: payload.gas_limit,
+            gas_used: payload.gas_used,
+            timestamp: payload.timestamp,
+            extra_data: payload.extra_data.clone(),
+            base_fee_per_gas: payload.base_fee_per_gas,
+            block_hash: payload.block_hash,
+            transactions: payload.transactions.clone(),
+            withdrawals: payload.withdrawals.clone(),
         })
     }
 

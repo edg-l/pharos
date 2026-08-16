@@ -48,8 +48,8 @@ use pharos_stf::phase0::state_write::BeaconStateWrite;
 use pharos_stf::{
     AltairDispatch, AltairProcessSlotsDispatch, AltairUpgradeDispatch, BellatrixDispatch,
     BellatrixProcessSlotsDispatch, BellatrixUpgradeDispatch, CapellaDispatch,
-    CapellaProcessSlotsDispatch, ForkEpochs, NullExecutionEngine, Phase0UpgradeDispatch,
-    process_slots_fork, state_transition,
+    CapellaProcessSlotsDispatch, CapellaUpgradeDispatch, DenebDispatch, DenebProcessSlotsDispatch,
+    ForkEpochs, NullExecutionEngine, Phase0UpgradeDispatch, process_slots_fork, state_transition,
 };
 use pharos_storage::{ForkChoiceSnapshot, RocksStore, StorageError, Store};
 use pharos_types::PayloadStatus;
@@ -102,7 +102,12 @@ where
         + BellatrixProcessSlotsDispatch<E>
         + BellatrixUpgradeDispatch<E>
         + TreeHash,
-    E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine> + CapellaProcessSlotsDispatch<E>,
+    E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: DenebDispatch<E, NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
     // 1. Hot states CF.
@@ -184,7 +189,12 @@ where
         + BellatrixProcessSlotsDispatch<E>
         + BellatrixUpgradeDispatch<E>
         + TreeHash,
-    E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine> + CapellaProcessSlotsDispatch<E>,
+    E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: DenebDispatch<E, NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
     if start_slot >= target_slot {
@@ -295,7 +305,12 @@ where
         + BellatrixProcessSlotsDispatch<E>
         + BellatrixUpgradeDispatch<E>
         + TreeHash,
-    E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine> + CapellaProcessSlotsDispatch<E>,
+    E::CapellaBeaconState: CapellaDispatch<E, NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: DenebDispatch<E, NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
     // ── Step 1: Determine the hot window start (split_slot) ───────────────────

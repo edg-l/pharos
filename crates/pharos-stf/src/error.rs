@@ -74,6 +74,11 @@ pub enum StateTransitionError {
     /// `process_bls_to_execution_change` rejection.
     #[error("invalid BLS-to-execution change: {0}")]
     InvalidBlsToExecutionChange(&'static str),
+
+    /// `process_execution_payload` (Deneb) blob commitment count exceeded
+    /// `MAX_BLOBS_PER_BLOCK` per EIP-4844.
+    #[error("too many blob commitments in block: {count} > max {max}")]
+    TooManyBlobCommitments { count: usize, max: u64 },
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]

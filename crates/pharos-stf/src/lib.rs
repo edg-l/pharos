@@ -18,7 +18,7 @@ pub mod error;
 pub mod phase0;
 
 pub use altair::light_client_dispatch::{
-    AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds,
+    AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds, DenebDispatchBounds,
 };
 pub use altair::state_transition::{AltairDispatch, AltairJaFDispatch, AltairProcessSlotsDispatch};
 pub use bellatrix::execution_engine::{
@@ -30,6 +30,7 @@ pub use capella::state_transition::{
     CapellaDispatch, CapellaJaFDispatch, CapellaProcessSlotsDispatch,
     GetExpectedWithdrawalsDispatch,
 };
+pub use deneb::state_transition::{DenebDispatch, DenebJaFDispatch, DenebProcessSlotsDispatch};
 pub use phase0::block::process_block;
 pub use phase0::epoch::justification_and_finalization::process_justification_and_finalization;
 pub use phase0::epoch::process_epoch;
@@ -384,6 +385,91 @@ where
     }
 }
 
+/// Dispatch trait for upgrading a Capella state to Deneb.
+///
+/// Implemented via blanket impl on `capella::BeaconState<...>`. Called from
+/// `process_slots_fork` when it reaches the Deneb fork epoch boundary.
+pub trait CapellaUpgradeDispatch<E: EthSpec>: Sized {
+    /// Upgrade `self` (Capella inner state) to a Deneb inner state.
+    fn upgrade_to_deneb_dispatch(
+        self,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<E::DenebBeaconState, StateTransitionError>;
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    E,
+> CapellaUpgradeDispatch<E>
+    for pharos_types::capella::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    E: EthSpec<
+            CapellaBeaconState = pharos_types::capella::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            DenebBeaconState = pharos_types::deneb::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+        >,
+{
+    fn upgrade_to_deneb_dispatch(
+        self,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<E::DenebBeaconState, StateTransitionError> {
+        deneb::upgrade::upgrade_to_deneb::<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            E,
+        >(self, runtime_cfg)
+    }
+}
+
 /// `state_transition` per `specs/phase0/beacon-chain.md:1370-1393`.
 ///
 /// Dispatches on the `BeaconState` fork variant:
@@ -440,7 +526,11 @@ where
         + BellatrixProcessSlotsDispatch<E>
         + BellatrixUpgradeDispatch<E>
         + TreeHash,
-    E::CapellaBeaconState: CapellaDispatch<E, EE> + CapellaProcessSlotsDispatch<E> + TreeHash,
+    E::CapellaBeaconState: CapellaDispatch<E, EE>
+        + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>
+        + TreeHash,
+    E::DenebBeaconState: DenebDispatch<E, EE> + DenebProcessSlotsDispatch<E> + TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
     // Advance the state through any fork boundaries to the block's target slot.
@@ -520,8 +610,23 @@ where
             return Ok((wrapped, payload_status));
         }
         ForkVariant::Deneb => {
-            // Deneb STF not yet implemented (M10-Deneb follow-on).
-            unimplemented!("Deneb state transition not yet implemented")
+            // Unwrap fork-enum state and block to their inner deneb types.
+            let deneb_signed = E::unwrap_deneb_signed_block(signed_block)
+                .ok_or(StateTransitionError::UnsupportedFork)?;
+            let deneb_inner = E::unwrap_deneb_state(&state)
+                .ok_or(StateTransitionError::UnsupportedFork)?
+                .clone();
+            // Apply the deneb state transition via the `DenebDispatch` blanket impl.
+            let (updated, payload_status) = deneb_inner.apply_signed_block(
+                deneb_signed,
+                execution_engine,
+                validate_result,
+                runtime_cfg,
+            )?;
+            // Wrap the result back into the fork-enum + invalidate the root cache.
+            let mut wrapped = E::deneb_into_state(updated);
+            wrapped.invalidate_root_cache();
+            return Ok((wrapped, payload_status));
         }
     }
     // STF mutated `state` (phase0 + altair arms operate on `&mut state`); reset
@@ -690,8 +795,11 @@ where
             Ok(wrapped)
         }
         ForkVariant::Deneb => {
-            // Deneb block production not yet implemented (M10-Deneb follow-on).
-            unimplemented!("Deneb block production not yet implemented")
+            // Deneb block production wired in Phase 4 (deneb block assembly).
+            // For now the arm exists to avoid `unimplemented!` panics; real block
+            // production via DenebProcessBlockForProduction will replace this in Phase 4.
+            let _ = (state, block, execution_engine, runtime_cfg);
+            Err(StateTransitionError::UnsupportedFork)
         }
     }
 }
@@ -710,6 +818,7 @@ where
     E::AltairBeaconState: AltairJaFDispatch<E>,
     E::BellatrixBeaconState: BellatrixJaFDispatch<E>,
     E::CapellaBeaconState: CapellaJaFDispatch<E>,
+    E::DenebBeaconState: DenebJaFDispatch<E>,
     E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
             Attestation = pharos_types::phase0::Attestation<2048>,
         >,
@@ -737,8 +846,12 @@ where
             Ok(())
         }
         ForkVariant::Deneb => {
-            // Deneb epoch processing not yet implemented (M10-Deneb follow-on).
-            unimplemented!("Deneb justification and finalization not yet implemented")
+            let mut inner = E::unwrap_deneb_state(state)
+                .expect("fork_variant is Deneb")
+                .clone();
+            inner.process_jaf_deneb()?;
+            *state = E::deneb_into_state(inner);
+            Ok(())
         }
     }
 }
@@ -782,7 +895,8 @@ where
     E::BeaconState: phase0::state_write::BeaconStateWrite + TreeHash,
     E::AltairBeaconState: AltairProcessSlotsDispatch<E>,
     E::BellatrixBeaconState: BellatrixProcessSlotsDispatch<E>,
-    E::CapellaBeaconState: CapellaProcessSlotsDispatch<E>,
+    E::CapellaBeaconState: CapellaProcessSlotsDispatch<E> + CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: DenebProcessSlotsDispatch<E>,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::AltairBeaconState: AltairUpgradeDispatch<E>,
     E::BellatrixBeaconState: BellatrixUpgradeDispatch<E>,
@@ -851,8 +965,11 @@ where
                 *state = E::capella_into_state(inner);
             }
             ForkVariant::Deneb => {
-                // Deneb process_slots not yet implemented; unreachable in current code paths.
-                unreachable!("process_slots_fork called on Deneb state (not yet implemented)")
+                let mut inner = E::unwrap_deneb_state(state)
+                    .expect("fork_variant is Deneb")
+                    .clone();
+                inner.process_slots_deneb(step_target, runtime_cfg)?;
+                *state = E::deneb_into_state(inner);
             }
         }
 
@@ -880,8 +997,10 @@ where
                         *state = E::capella_into_state(upgraded);
                     }
                     ForkVariant::Capella => {
-                        // Deneb upgrade not yet implemented; loop terminates at Capella→Deneb boundary.
-                        break;
+                        let inner = E::into_capella_state(state.clone())
+                            .expect("fork_variant is Capella");
+                        let upgraded = inner.upgrade_to_deneb_dispatch(runtime_cfg)?;
+                        *state = E::deneb_into_state(upgraded);
                     }
                     ForkVariant::Deneb => {
                         // Deneb is the last supported fork; no successor boundary.

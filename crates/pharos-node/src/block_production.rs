@@ -31,8 +31,9 @@ use pharos_ssz::{Bitvector, SszList, TreeHash};
 use pharos_stf::{
     AltairProcessBlockForProduction, AltairProcessSlotsDispatch, AltairUpgradeDispatch,
     BellatrixProcessBlockForProduction, BellatrixProcessSlotsDispatch, BellatrixUpgradeDispatch,
-    CapellaProcessBlockForProduction, CapellaProcessSlotsDispatch, ForkEpochs,
-    GetExpectedWithdrawalsDispatch, Phase0UpgradeDispatch, StateTransitionError,
+    CapellaProcessBlockForProduction, CapellaProcessSlotsDispatch, CapellaUpgradeDispatch,
+    DenebProcessSlotsDispatch, ForkEpochs, GetExpectedWithdrawalsDispatch, Phase0UpgradeDispatch,
+    StateTransitionError,
     phase0::state_write::BeaconStateWrite, process_slots_fork,
 };
 use pharos_stf::{
@@ -735,7 +736,9 @@ where
     E::CapellaBeaconState: CapellaProcessBlockForProduction<E, ExecutionEngineHandle>
         + TreeHash
         + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>
         + GetExpectedWithdrawalsDispatch<E>,
+    E::DenebBeaconState: DenebProcessSlotsDispatch<E>,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -1004,7 +1007,8 @@ where
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: AltairProcessSlotsDispatch<E>,
     E::BellatrixBeaconState: BellatrixProcessSlotsDispatch<E>,
-    E::CapellaBeaconState: CapellaProcessSlotsDispatch<E>,
+    E::CapellaBeaconState: CapellaProcessSlotsDispatch<E> + CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: DenebProcessSlotsDispatch<E>,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::AltairBeaconState: AltairUpgradeDispatch<E>,
     E::BellatrixBeaconState: BellatrixUpgradeDispatch<E>,
@@ -1071,7 +1075,8 @@ where
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: AltairProcessSlotsDispatch<E>,
     E::BellatrixBeaconState: BellatrixProcessSlotsDispatch<E>,
-    E::CapellaBeaconState: CapellaProcessSlotsDispatch<E>,
+    E::CapellaBeaconState: CapellaProcessSlotsDispatch<E> + CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: DenebProcessSlotsDispatch<E>,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::AltairBeaconState: AltairUpgradeDispatch<E>,
     E::BellatrixBeaconState: BellatrixUpgradeDispatch<E>,

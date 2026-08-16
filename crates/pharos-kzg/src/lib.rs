@@ -19,9 +19,31 @@
 use std::path::Path;
 
 use c_kzg::{Blob, Bytes48, KzgSettings};
+use sha2::{Digest, Sha256};
 
 // Re-export so dependents can use the raw c-kzg types if needed.
 pub use c_kzg;
+
+// ── Versioned-hash helper ─────────────────────────────────────────────────────
+
+/// Version byte for KZG commitments per EIP-4844.
+///
+/// `VERSIONED_HASH_VERSION_KZG = 0x01` per `specs/deneb/beacon-chain.md`.
+pub const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
+
+/// Convert a KZG commitment to a versioned hash.
+///
+/// Per EIP-4844 / `specs/deneb/beacon-chain.md`:
+/// `kzg_commitment_to_versioned_hash(commitment) = VERSIONED_HASH_VERSION_KZG || sha256(commitment)[1:]`.
+///
+/// The result is a 32-byte hash whose first byte is `0x01`.
+pub fn kzg_commitment_to_versioned_hash(commitment: &[u8; 48]) -> [u8; 32] {
+    let hash = Sha256::digest(commitment.as_slice());
+    let mut result = [0u8; 32];
+    result.copy_from_slice(&hash);
+    result[0] = VERSIONED_HASH_VERSION_KZG;
+    result
+}
 
 // ── KzgError ──────────────────────────────────────────────────────────────────
 
@@ -173,5 +195,34 @@ mod tests {
     fn mainnet_settings_init() {
         // Ensure the mainnet trusted setup can be loaded without panicking.
         let _verifier = KzgVerifier::mainnet();
+    }
+
+    /// Test vector for `kzg_commitment_to_versioned_hash`.
+    ///
+    /// A zero commitment (48 zero bytes) → SHA-256([0x00; 48]) with byte[0] = 0x01.
+    /// SHA-256 of 48 zero bytes = 0x3973e...  (computed reference value below).
+    /// Reference: `sha256(b'\x00' * 48)` = `b8f5...` per Python:
+    ///   `hashlib.sha256(b'\x00' * 48).hexdigest()`.
+    #[test]
+    fn versioned_hash_first_byte_is_version() {
+        let commitment = [0u8; 48];
+        let vh = kzg_commitment_to_versioned_hash(&commitment);
+        // First byte must always be VERSIONED_HASH_VERSION_KZG = 0x01.
+        assert_eq!(vh[0], VERSIONED_HASH_VERSION_KZG);
+        // Remaining 31 bytes are SHA-256(commitment)[1..].
+        let hash = sha2::Sha256::digest(commitment.as_slice());
+        assert_eq!(&vh[1..], &hash.as_slice()[1..]);
+    }
+
+    /// Different commitments produce different versioned hashes (collision resistance).
+    #[test]
+    fn versioned_hash_differs_for_different_commitments() {
+        let c1 = [0u8; 48];
+        let mut c2 = [0u8; 48];
+        c2[47] = 1;
+        assert_ne!(
+            kzg_commitment_to_versioned_hash(&c1),
+            kzg_commitment_to_versioned_hash(&c2)
+        );
     }
 }

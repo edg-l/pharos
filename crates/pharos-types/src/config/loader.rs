@@ -152,6 +152,11 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         .get("MAX_BLOBS_PER_BLOCK")
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(6);
+    // MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT (EIP-7514): present in Deneb+ configs, default 8.
+    let max_per_epoch_activation_churn_limit = config_map
+        .get("MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(8);
     let deposit_chain_id = extract_u64(&config_map, "DEPOSIT_CHAIN_ID")?;
     let deposit_contract_address = extract_address20(&config_map, "DEPOSIT_CONTRACT_ADDRESS")?;
     let terminal_total_difficulty = extract_uint256(&config_map, "TERMINAL_TOTAL_DIFFICULTY")?;
@@ -223,6 +228,7 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         deneb_fork_version,
         deneb_fork_epoch,
         max_blobs_per_block,
+        max_per_epoch_activation_churn_limit,
         terminal_total_difficulty,
         terminal_block_hash,
         terminal_block_hash_activation_epoch,

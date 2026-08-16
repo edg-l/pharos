@@ -91,6 +91,11 @@ pub struct RuntimeConfig {
     /// This is the EL-side maximum that the CL enforces when building/validating blocks.
     /// Mainnet default: 6. Can be overridden via the runtime config YAML.
     pub max_blobs_per_block: u64,
+    /// `MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT` per EIP-7514 / `configs/{mainnet,minimal}.yaml`.
+    ///
+    /// Caps the number of validators activated per epoch in Deneb+ to prevent sudden
+    /// surges from overwhelming the network. Mainnet: 8, minimal: 4.
+    pub max_per_epoch_activation_churn_limit: u64,
     /// `TERMINAL_TOTAL_DIFFICULTY` from `configs/{mainnet,minimal}.yaml`.
     ///
     /// `Uint256` because the mainnet value (`58750000000000000000000`) and especially

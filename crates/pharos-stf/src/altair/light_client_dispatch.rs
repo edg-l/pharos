@@ -36,6 +36,15 @@ use pharos_types::{
             LightClientUpdate as CapellaLCUpdate,
         },
     },
+    deneb::{
+        BeaconBlock as DenebBeaconBlock, BeaconState as DenebBeaconState,
+        light_client::{
+            LightClientBootstrap as DenebLCBootstrap,
+            LightClientFinalityUpdate as DenebLCFinalityUpdate,
+            LightClientOptimisticUpdate as DenebLCOptimisticUpdate,
+            LightClientUpdate as DenebLCUpdate,
+        },
+    },
     phase0::operations::BeaconBlockHeader,
 };
 use pharos_utils::Bytes32;
@@ -48,6 +57,8 @@ use crate::altair::light_client::{
 use crate::bellatrix::helpers::bellatrix_state_to_altair;
 use crate::capella::helpers::capella_state_to_altair;
 use crate::capella::light_client::capella_block_to_light_client_header;
+use crate::deneb::helpers::deneb_state_to_altair;
+use crate::deneb::light_client::deneb_block_to_light_client_header;
 
 // ── AltairDispatchBounds ──────────────────────────────────────────────────────
 
@@ -1557,6 +1568,749 @@ where
     Bytes32: Default + Clone,
 {
     CapellaLCOptimisticUpdate {
+        attested_header: update.attested_header.clone(),
+        sync_aggregate: update.sync_aggregate.clone(),
+        signature_slot: update.signature_slot,
+    }
+}
+
+// ── DenebDispatchBounds ───────────────────────────────────────────────────────
+
+/// Dispatch trait for running the LC snapshot writes on deneb states.
+///
+/// Projects the deneb state to altair (via `deneb_state_to_altair`)
+/// for the state fields, and uses a Deneb-specific body hash for the
+/// `body_root` field in `LightClientHeader` (includes `blob_kzg_commitments`).
+///
+/// Stores results using the deneb LC column families.
+pub trait DenebDispatchBounds<E: EthSpec>: Sized {
+    /// Run the LC snapshot writes using `self` (deneb post-state).
+    fn call_update_lc_snapshots_deneb<S: pharos_storage::Store<E>>(
+        &self,
+        block: &E::DenebBeaconBlock,
+        attested_state: Option<&Self>,
+        attested_block: Option<&E::DenebBeaconBlock>,
+        finalized_block: Option<&E::DenebBeaconBlock>,
+        store: &S,
+    );
+}
+
+impl<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
+    E,
+> DenebDispatchBounds<E>
+    for DenebBeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    E: EthSpec<
+            AltairBeaconState = AltairBeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+            DenebBeaconState = DenebBeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            DenebBeaconBlock = DenebBeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+            >,
+            AltairLightClientBootstrap = LightClientBootstrap<SYNC_COMMITTEE_SIZE>,
+            AltairLightClientUpdate = LightClientUpdate<SYNC_COMMITTEE_SIZE>,
+            AltairLightClientFinalityUpdate = LightClientFinalityUpdate<SYNC_COMMITTEE_SIZE>,
+            AltairLightClientOptimisticUpdate = LightClientOptimisticUpdate<SYNC_COMMITTEE_SIZE>,
+            DenebLightClientBootstrap = DenebLCBootstrap<
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            DenebLightClientUpdate = DenebLCUpdate<
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            DenebLightClientFinalityUpdate = DenebLCFinalityUpdate<
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            DenebLightClientOptimisticUpdate = DenebLCOptimisticUpdate<
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+        >,
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: TreeHash,
+    pharos_types::deneb::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+    >: TreeHash,
+    pharos_types::deneb::ExecutionPayload<
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+    >: TreeHash,
+    pharos_types::bellatrix::Transaction<MAX_BYTES_PER_TRANSACTION>: Default + Clone,
+    pharos_types::capella::Withdrawal: Default + Clone,
+    pharos_types::deneb::execution_payload::ExecutionPayloadHeader<
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >: TreeHash,
+    Bytes32: Default + Clone,
+{
+    fn call_update_lc_snapshots_deneb<S: pharos_storage::Store<E>>(
+        &self,
+        block: &DenebBeaconBlock<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+            MAX_BLS_TO_EXECUTION_CHANGES,
+            MAX_BLOB_COMMITMENTS_PER_BLOCK,
+        >,
+        attested_state: Option<&Self>,
+        attested_block: Option<
+            &DenebBeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+            >,
+        >,
+        finalized_block: Option<
+            &DenebBeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+            >,
+        >,
+        store: &S,
+    ) {
+        use pharos_ssz::TreeHash as _;
+        use pharos_storage::Store as StoreT;
+
+        // Project deneb state to altair for state-based LC operations.
+        let post_state_altair = deneb_state_to_altair(self);
+
+        // Block root uses the full Deneb block hash (includes blob_kzg_commitments).
+        let block_root = block.tree_hash_root();
+
+        // 1. Store LightClientBootstrap for this block.
+        if let Some(bootstrap) = create_lc_bootstrap_deneb::<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+            MAX_BLS_TO_EXECUTION_CHANGES,
+            MAX_BLOB_COMMITMENTS_PER_BLOCK,
+        >(&post_state_altair, block)
+        {
+            let _ = StoreT::put_light_client_bootstrap_deneb(store, block_root, &bootstrap);
+        }
+
+        // 2. Build update from (block, attested_state, attested_block).
+        let maybe_update = attested_state
+            .zip(attested_block)
+            .and_then(|(att_s, att_b)| {
+                let att_s_altair = deneb_state_to_altair(att_s);
+                create_lc_update_deneb::<
+                    MAX_PROPOSER_SLASHINGS,
+                    MAX_ATTESTER_SLASHINGS,
+                    MAX_ATTESTATIONS,
+                    MAX_DEPOSITS,
+                    MAX_VOLUNTARY_EXITS,
+                    MAX_VALIDATORS_PER_COMMITTEE,
+                    DEPOSIT_PROOF_LENGTH,
+                    SLOTS_PER_HISTORICAL_ROOT,
+                    HISTORICAL_ROOTS_LIMIT,
+                    ETH1_DATA_VOTES_LIMIT,
+                    VALIDATOR_REGISTRY_LIMIT,
+                    EPOCHS_PER_HISTORICAL_VECTOR,
+                    EPOCHS_PER_SLASHINGS_VECTOR,
+                    JUSTIFICATION_BITS_LENGTH,
+                    SYNC_COMMITTEE_SIZE,
+                    MAX_BYTES_PER_TRANSACTION,
+                    MAX_TRANSACTIONS_PER_PAYLOAD,
+                    BYTES_PER_LOGS_BLOOM,
+                    MAX_EXTRA_DATA_BYTES,
+                    MAX_WITHDRAWALS_PER_PAYLOAD,
+                    MAX_BLS_TO_EXECUTION_CHANGES,
+                    MAX_BLOB_COMMITMENTS_PER_BLOCK,
+                    E,
+                >(
+                    &post_state_altair,
+                    block,
+                    &att_s_altair,
+                    att_b,
+                    finalized_block,
+                )
+            });
+
+        if let Some(update) = maybe_update {
+            let period =
+                compute_sync_committee_period_at_slot::<E>(update.attested_header.beacon.slot);
+            let should_store = match StoreT::get_light_client_update_deneb(store, period) {
+                Ok(Some(existing)) => is_better_deneb_update::<
+                    SYNC_COMMITTEE_SIZE,
+                    BYTES_PER_LOGS_BLOOM,
+                    MAX_EXTRA_DATA_BYTES,
+                >(&update, &existing),
+                _ => true,
+            };
+            if should_store {
+                let _ = StoreT::put_light_client_update_deneb(store, period, &update);
+            }
+
+            if is_finality_update_deneb(&update) {
+                let finality_update = create_lc_finality_update_deneb(&update);
+                let _ = StoreT::put_light_client_finality_update_deneb(store, &finality_update);
+            }
+
+            let optimistic_update = create_lc_optimistic_update_deneb(&update);
+            let _ = StoreT::put_light_client_optimistic_update_deneb(store, &optimistic_update);
+        }
+    }
+}
+
+// ── Deneb LC helper functions ─────────────────────────────────────────────────
+
+/// Build a Deneb `LightClientBootstrap`.
+#[allow(clippy::too_many_arguments)]
+fn create_lc_bootstrap_deneb<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
+>(
+    state: &AltairBeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    block: &DenebBeaconBlock<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+    >,
+) -> Option<DenebLCBootstrap<SYNC_COMMITTEE_SIZE, BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>>
+where
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: TreeHash,
+    pharos_types::deneb::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+    >: TreeHash,
+    pharos_types::deneb::ExecutionPayload<
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+    >: TreeHash,
+    pharos_types::bellatrix::Transaction<MAX_BYTES_PER_TRANSACTION>: Default + Clone,
+    pharos_types::capella::Withdrawal: Default + Clone,
+    pharos_types::deneb::execution_payload::ExecutionPayloadHeader<
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >: TreeHash,
+    Bytes32: Default + Clone,
+{
+    use pharos_ssz::TreeHash as _;
+
+    if state.slot != state.latest_block_header.slot {
+        return None;
+    }
+
+    // Use the STF-verified block.state_root (deneb post-state includes blob_gas_used).
+    let mut header = state.latest_block_header.clone();
+    header.state_root = block.state_root;
+    let block_root = header.tree_hash_root();
+
+    if block_root != block.tree_hash_root() {
+        return None;
+    }
+
+    let branch_hashes = compute_state_proof(state, CURRENT_SYNC_COMMITTEE_GINDEX);
+    debug_assert_eq!(
+        branch_hashes.len(),
+        CURRENT_SYNC_COMMITTEE_BRANCH_DEPTH as usize
+    );
+    let mut branch_vec: Vec<Bytes32> = branch_hashes;
+    while branch_vec.len() < CURRENT_SYNC_COMMITTEE_BRANCH_DEPTH as usize {
+        branch_vec.push(Bytes32::default());
+    }
+    let current_sync_committee_branch = SszVector::from_vec(branch_vec).unwrap_or_default();
+
+    Some(DenebLCBootstrap {
+        header: deneb_block_to_light_client_header(block),
+        current_sync_committee: state.current_sync_committee.clone(),
+        current_sync_committee_branch,
+    })
+}
+
+/// Build a Deneb `LightClientUpdate`.
+#[allow(clippy::too_many_arguments)]
+fn create_lc_update_deneb<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
+    E: EthSpec,
+>(
+    _post_state: &AltairBeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    block: &DenebBeaconBlock<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+    >,
+    attested_state: &AltairBeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    attested_block: &DenebBeaconBlock<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+    >,
+    finalized_block: Option<
+        &DenebBeaconBlock<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+            MAX_BLS_TO_EXECUTION_CHANGES,
+            MAX_BLOB_COMMITMENTS_PER_BLOCK,
+        >,
+    >,
+) -> Option<DenebLCUpdate<SYNC_COMMITTEE_SIZE, BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>>
+where
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: TreeHash,
+    pharos_types::deneb::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+    >: TreeHash,
+    pharos_types::deneb::ExecutionPayload<
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+    >: TreeHash,
+    pharos_types::bellatrix::Transaction<MAX_BYTES_PER_TRANSACTION>: Default + Clone,
+    pharos_types::capella::Withdrawal: Default + Clone,
+    pharos_types::deneb::execution_payload::ExecutionPayloadHeader<
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >: TreeHash,
+    Bytes32: Default + Clone,
+{
+    use pharos_ssz::TreeHash as _;
+
+    let n_participants = count_participants(&block.body.sync_aggregate.sync_committee_bits);
+    if n_participants < MIN_SYNC_COMMITTEE_PARTICIPANTS {
+        return None;
+    }
+
+    let update_signature_period = compute_sync_committee_period_at_slot::<E>(block.slot);
+
+    if attested_state.slot != attested_state.latest_block_header.slot {
+        return None;
+    }
+    let mut attested_header = attested_state.latest_block_header.clone();
+    attested_header.state_root = attested_block.state_root;
+    let attested_block_root = attested_header.tree_hash_root();
+    if attested_block_root != attested_block.tree_hash_root() {
+        return None;
+    }
+    if attested_block_root != block.parent_root {
+        return None;
+    }
+
+    let update_attested_period = compute_sync_committee_period_at_slot::<E>(attested_block.slot);
+
+    let (next_sync_committee, next_sync_committee_branch) =
+        if update_attested_period == update_signature_period {
+            let nsc_branch_hashes = compute_state_proof(attested_state, NEXT_SYNC_COMMITTEE_GINDEX);
+            let mut nsc_vec: Vec<Bytes32> = nsc_branch_hashes;
+            while nsc_vec.len() < NEXT_SYNC_COMMITTEE_BRANCH_DEPTH as usize {
+                nsc_vec.push(Bytes32::default());
+            }
+            (
+                attested_state.next_sync_committee.clone(),
+                SszVector::from_vec(nsc_vec).unwrap_or_default(),
+            )
+        } else {
+            Default::default()
+        };
+
+    let (finalized_header, finality_branch) = if let Some(fin_block) = finalized_block {
+        let header = if fin_block.slot.0 != 0 {
+            deneb_block_to_light_client_header(fin_block)
+        } else {
+            Default::default()
+        };
+        let fin_branch_hashes = compute_state_proof(attested_state, FINALIZED_ROOT_GINDEX);
+        let mut fin_vec: Vec<Bytes32> = fin_branch_hashes;
+        while fin_vec.len() < FINALITY_BRANCH_DEPTH as usize {
+            fin_vec.push(Bytes32::default());
+        }
+        (header, SszVector::from_vec(fin_vec).unwrap_or_default())
+    } else {
+        Default::default()
+    };
+
+    Some(DenebLCUpdate {
+        attested_header: deneb_block_to_light_client_header(attested_block),
+        next_sync_committee,
+        next_sync_committee_branch,
+        finalized_header,
+        finality_branch,
+        sync_aggregate: block.body.sync_aggregate.clone(),
+        signature_slot: block.slot,
+    })
+}
+
+fn is_finality_update_deneb<
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+>(
+    update: &DenebLCUpdate<SYNC_COMMITTEE_SIZE, BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>,
+) -> bool
+where
+    Bytes32: Default + Clone + PartialEq,
+{
+    update.finality_branch.as_slice()
+        != vec![Bytes32::default(); FINALITY_BRANCH_DEPTH as usize].as_slice()
+}
+
+fn is_better_deneb_update<
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+>(
+    new: &DenebLCUpdate<SYNC_COMMITTEE_SIZE, BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>,
+    existing: &DenebLCUpdate<SYNC_COMMITTEE_SIZE, BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>,
+) -> bool
+where
+    Bytes32: Default + Clone + PartialEq,
+{
+    // Prefer updates with finality branch over those without.
+    let new_has_fin = is_finality_update_deneb(new);
+    let existing_has_fin = is_finality_update_deneb(existing);
+    if new_has_fin != existing_has_fin {
+        return new_has_fin;
+    }
+    // Both or neither have finality: prefer more participants.
+    let new_bits = count_participants(&new.sync_aggregate.sync_committee_bits);
+    let existing_bits = count_participants(&existing.sync_aggregate.sync_committee_bits);
+    new_bits > existing_bits
+}
+
+fn create_lc_finality_update_deneb<
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+>(
+    update: &DenebLCUpdate<SYNC_COMMITTEE_SIZE, BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>,
+) -> DenebLCFinalityUpdate<SYNC_COMMITTEE_SIZE, BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>
+where
+    Bytes32: Default + Clone,
+{
+    DenebLCFinalityUpdate {
+        attested_header: update.attested_header.clone(),
+        finalized_header: update.finalized_header.clone(),
+        finality_branch: update.finality_branch.clone(),
+        sync_aggregate: update.sync_aggregate.clone(),
+        signature_slot: update.signature_slot,
+    }
+}
+
+fn create_lc_optimistic_update_deneb<
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+>(
+    update: &DenebLCUpdate<SYNC_COMMITTEE_SIZE, BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>,
+) -> DenebLCOptimisticUpdate<SYNC_COMMITTEE_SIZE, BYTES_PER_LOGS_BLOOM, MAX_EXTRA_DATA_BYTES>
+where
+    Bytes32: Default + Clone,
+{
+    DenebLCOptimisticUpdate {
         attested_header: update.attested_header.clone(),
         sync_aggregate: update.sync_aggregate.clone(),
         signature_slot: update.signature_slot,

@@ -3198,6 +3198,7 @@ name = "pharos-kzg"
 version = "0.14.0"
 dependencies = [
  "c-kzg",
+ "sha2 0.11.0",
  "thiserror 2.0.18",
 ]
 
@@ -3294,6 +3295,7 @@ name = "pharos-stf"
 version = "0.14.0"
 dependencies = [
  "criterion",
+ "pharos-kzg",
  "pharos-ssz",
  "pharos-storage",
  "pharos-types",

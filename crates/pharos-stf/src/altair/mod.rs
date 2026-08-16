@@ -13,4 +13,6 @@ pub mod slot;
 pub mod state_transition;
 pub mod upgrade;
 
-pub use light_client_dispatch::{AltairDispatchBounds, BellatrixDispatchBounds};
+pub use light_client_dispatch::{
+    AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds, DenebDispatchBounds,
+};

@@ -152,15 +152,33 @@ pub const CF_RESTORE_POINTS: &str = "restore-points";
 /// Per `D-blob-store-cf-keyed-by-root-index`.
 pub const CF_BLOB_SIDECARS: &str = "blob-sidecars";
 
-/// Returns all twenty-one column-family names in declaration order.
+// ── Schema v5 column families (Deneb LC) ──────────────────────────────────────
+//
+// Four new CFs added for Deneb light-client types, which have a different SSZ
+// layout than Capella LC (deneb `ExecutionPayloadHeader` adds `blob_gas_used` and
+// `excess_blob_gas`).
+
+/// Stores SSZ-encoded Deneb `LightClientBootstrap` objects, keyed by block root.
+pub const CF_LC_BOOTSTRAP_DENEB: &str = "deneb-light-client-bootstrap";
+
+/// Stores SSZ-encoded Deneb `LightClientUpdate` objects, keyed by sync-committee period.
+pub const CF_LC_UPDATE_DENEB: &str = "deneb-light-client-update";
+
+/// Single-row CF storing the latest SSZ-encoded Deneb `LightClientFinalityUpdate`.
+pub const CF_LC_FINALITY_UPDATE_DENEB: &str = "deneb-latest-finality-update";
+
+/// Single-row CF storing the latest SSZ-encoded Deneb `LightClientOptimisticUpdate`.
+pub const CF_LC_OPTIMISTIC_UPDATE_DENEB: &str = "deneb-latest-optimistic-update";
+
+/// Returns all twenty-five column-family names in declaration order.
 ///
 /// Used when opening the database with `DB::open_cf_descriptors` so every CF
 /// is registered. The ordering does not affect correctness; RocksDB looks up
 /// CFs by name.
 ///
-/// Per `D-schema-v4-migration`: the full v4 CF set (20 v3 CFs + 1 new) is
-/// declared here so a fresh v4 DB opens with all CFs at first boot.
-pub fn all_cfs() -> [&'static str; 21] {
+/// Per `D-schema-v5-migration`: the full v5 CF set (21 v4 CFs + 4 new Deneb LC) is
+/// declared here so a fresh v5 DB opens with all CFs at first boot.
+pub fn all_cfs() -> [&'static str; 25] {
     [
         CF_DEFAULT,
         CF_BLOCKS,
@@ -183,5 +201,9 @@ pub fn all_cfs() -> [&'static str; 21] {
         CF_COLD_STATES,
         CF_RESTORE_POINTS,
         CF_BLOB_SIDECARS,
+        CF_LC_BOOTSTRAP_DENEB,
+        CF_LC_UPDATE_DENEB,
+        CF_LC_FINALITY_UPDATE_DENEB,
+        CF_LC_OPTIMISTIC_UPDATE_DENEB,
     ]
 }

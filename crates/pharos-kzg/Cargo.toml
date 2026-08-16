@@ -9,4 +9,5 @@ description = "KZG polynomial commitment wrappers over c-kzg for Pharos."
 
 [dependencies]
 c-kzg = { workspace = true, features = ["ethereum_kzg_settings"] }
+sha2.workspace = true
 thiserror.workspace = true

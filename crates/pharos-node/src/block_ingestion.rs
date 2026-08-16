@@ -23,8 +23,8 @@ use pharos_network::network::NetworkEvent;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
 use pharos_ssz::Decode;
 use pharos_stf::{
-    AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds, ExecutionEngine,
-    StateTransitionError,
+    AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds, DenebDispatchBounds,
+    ExecutionEngine, StateTransitionError,
 };
 use pharos_storage::StorageError;
 use pharos_types::views::{
@@ -175,7 +175,13 @@ where
     E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, EE>
         + pharos_stf::CapellaJaFDispatch<E>
         + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
         + CapellaDispatchBounds<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, EE>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash
+        + DenebDispatchBounds<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock:
         pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
@@ -192,6 +198,9 @@ where
         + pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::DenebBeaconBlock: pharos_types::views::BeaconBlockView,
+    E::DenebSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
     EE: ExecutionEngine + 'static,
@@ -482,6 +491,7 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
     E::AltairBeaconState: AltairDispatchBounds<E>,
     E::BellatrixBeaconState: BellatrixDispatchBounds<E>,
     E::CapellaBeaconState: CapellaDispatchBounds<E>,
+    E::DenebBeaconState: DenebDispatchBounds<E>,
     S: pharos_storage::Store<E>,
     E::AltairSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
@@ -492,6 +502,9 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
     E::CapellaSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
     E::CapellaBeaconBlock: pharos_types::views::BeaconBlockView,
+    E::DenebSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::DenebBeaconBlock: pharos_types::views::BeaconBlockView,
     E::BeaconState: pharos_types::views::BeaconStateView,
 {
     use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _};
@@ -600,8 +613,37 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
             );
         }
         ForkVariant::Deneb => {
-            // Deneb inherits Capella LC type; Deneb STF not yet fully implemented.
-            // LC snapshot writes are a no-op until the Deneb STF lands.
+            let Some(deneb_signed) = E::unwrap_deneb_signed_block(signed_block) else {
+                return;
+            };
+            let deneb_block = deneb_signed.message();
+            let Some(post_state_deneb) = E::unwrap_deneb_state(post_state) else {
+                return;
+            };
+
+            let attested_root = deneb_block.parent_root();
+            let finalized_root = post_state.finalized_checkpoint().root;
+
+            let attested_block_opt = fc_store
+                .blocks
+                .get(&attested_root)
+                .and_then(|b| E::unwrap_deneb_block(b));
+            let attested_state_opt = fc_store
+                .block_states
+                .get(&attested_root)
+                .and_then(|s| E::unwrap_deneb_state(s));
+            let finalized_block_opt = fc_store
+                .blocks
+                .get(&finalized_root)
+                .and_then(|b| E::unwrap_deneb_block(b));
+
+            post_state_deneb.call_update_lc_snapshots_deneb::<S>(
+                deneb_block,
+                attested_state_opt,
+                attested_block_opt,
+                finalized_block_opt,
+                store,
+            );
         }
     }
 }

@@ -7,6 +7,7 @@ pub mod blob_sidecar;
 pub mod block;
 pub mod body;
 pub mod execution_payload;
+pub mod light_client;
 pub mod state;
 
 pub use blob::{BYTES_PER_BLOB, Blob, BlobIndex, KZGCommitment, KZGProof};
