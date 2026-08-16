@@ -1040,7 +1040,9 @@ pub async fn get_pending_deposits<E: EthSpec>(
             .state_by_block_root(resolved.block_root)
             .ok_or_else(|| ApiError::NotFound(format!("state not found for id '{state_id}'")))?;
 
-        if beacon_state.fork_variant() != ForkVariant::Electra {
+        // Electra-or-later allowlist: extend this match when a post-electra
+        // fork variant (e.g. Fulu) is added (ForkVariant has no Ord).
+        if !matches!(beacon_state.fork_variant(), ForkVariant::Electra) {
             return Err(ApiError::BadRequest(
                 "pending_deposits is only available for Electra+ states".to_string(),
             ));
@@ -1051,10 +1053,10 @@ pub async fn get_pending_deposits<E: EthSpec>(
             .into_iter()
             .map(|d| {
                 serde_json::json!({
-                    "pubkey": format!("0x{}", hex::encode(&d.pubkey)),
-                    "withdrawal_credentials": format!("0x{}", hex::encode(&d.withdrawal_credentials)),
+                    "pubkey": format!("0x{}", hex::encode(d.pubkey)),
+                    "withdrawal_credentials": format!("0x{}", hex::encode(d.withdrawal_credentials)),
                     "amount": d.amount.to_string(),
-                    "signature": format!("0x{}", hex::encode(&d.signature)),
+                    "signature": format!("0x{}", hex::encode(d.signature)),
                     "slot": d.slot.to_string(),
                 })
             })
@@ -1121,7 +1123,9 @@ pub async fn get_pending_partial_withdrawals<E: EthSpec>(
             .state_by_block_root(resolved.block_root)
             .ok_or_else(|| ApiError::NotFound(format!("state not found for id '{state_id}'")))?;
 
-        if beacon_state.fork_variant() != ForkVariant::Electra {
+        // Electra-or-later allowlist: extend this match when a post-electra
+        // fork variant (e.g. Fulu) is added (ForkVariant has no Ord).
+        if !matches!(beacon_state.fork_variant(), ForkVariant::Electra) {
             return Err(ApiError::BadRequest(
                 "pending_partial_withdrawals is only available for Electra+ states".to_string(),
             ));
@@ -1202,7 +1206,9 @@ pub async fn get_pending_consolidations<E: EthSpec>(
             .state_by_block_root(resolved.block_root)
             .ok_or_else(|| ApiError::NotFound(format!("state not found for id '{state_id}'")))?;
 
-        if beacon_state.fork_variant() != ForkVariant::Electra {
+        // Electra-or-later allowlist: extend this match when a post-electra
+        // fork variant (e.g. Fulu) is added (ForkVariant has no Ord).
+        if !matches!(beacon_state.fork_variant(), ForkVariant::Electra) {
             return Err(ApiError::BadRequest(
                 "pending_consolidations is only available for Electra+ states".to_string(),
             ));
@@ -1263,7 +1269,7 @@ pub async fn get_pending_consolidations<E: EthSpec>(
 /// `POST /eth/v1/beacon/states/{state_id}/validator_identities`
 /// (+ GET variant via the same handler)
 ///
-/// Returns filtered list of validator identities (index, pubkey, withdrawal_credentials).
+/// Returns filtered list of validator identities (index, pubkey, activation_epoch).
 /// Body: JSON array of validator indices or 0x-prefixed pubkeys (empty = all validators).
 /// Per `beacon-APIs/apis/beacon/states/validator_identities.yaml`.
 pub async fn post_validator_identities<E: EthSpec>(
@@ -1299,10 +1305,12 @@ pub async fn post_validator_identities<E: EthSpec>(
         let data: Vec<serde_json::Value> = indices_to_check
             .filter_map(|idx| {
                 let v = beacon_state.validator(idx)?;
+                // ValidatorIdentity schema (beacon-APIs): index, pubkey,
+                // activation_epoch (all required) — NOT withdrawal_credentials.
                 Some(serde_json::json!({
                     "index": idx.to_string(),
                     "pubkey": format!("0x{}", hex::encode(v.pubkey.as_slice())),
-                    "withdrawal_credentials": format!("0x{}", hex::encode(v.withdrawal_credentials.as_slice())),
+                    "activation_epoch": v.activation_epoch.0.to_string(),
                 }))
             })
             .collect();
@@ -1364,7 +1372,9 @@ pub async fn get_proposer_lookahead<E: EthSpec>(
             .state_by_block_root(resolved.block_root)
             .ok_or_else(|| ApiError::NotFound(format!("state not found for id '{state_id}'")))?;
 
-        if beacon_state.fork_variant() != ForkVariant::Electra {
+        // Electra-or-later allowlist: extend this match when a post-electra
+        // fork variant (e.g. Fulu) is added (ForkVariant has no Ord).
+        if !matches!(beacon_state.fork_variant(), ForkVariant::Electra) {
             return Err(ApiError::BadRequest(
                 "proposer_lookahead is only available for Electra+ states".to_string(),
             ));
@@ -1383,9 +1393,9 @@ pub async fn get_proposer_lookahead<E: EthSpec>(
             .map(|offset| {
                 let slot = Slot(start_slot + offset);
                 // Reuse the helper from validator_duties.
+                use pharos_stf::electra::helpers::compute_proposer_index_electra;
                 use pharos_stf::phase0::accessors::{
-                    compute_epoch_at_slot as epat, compute_proposer_index,
-                    get_active_validator_indices, get_seed,
+                    compute_epoch_at_slot as epat, get_active_validator_indices, get_seed,
                 };
                 use pharos_stf::phase0::helpers::{DOMAIN_BEACON_PROPOSER, uint_to_bytes};
                 use pharos_utils::{Bytes4, hash};
@@ -1402,7 +1412,9 @@ pub async fn get_proposer_lookahead<E: EthSpec>(
                 input[32..].copy_from_slice(&slot_bytes);
                 let seed = hash::hash(&input);
                 let indices = get_active_validator_indices::<E>(&beacon_state, epoch);
-                let proposer = compute_proposer_index::<E>(&beacon_state, &indices, &seed);
+                // EIP-7251: electra uses the 16-bit proposer selection (vs the
+                // phase0 8-bit accessor); the two yield different indices.
+                let proposer = compute_proposer_index_electra::<E>(&beacon_state, &indices, &seed);
                 JsonValue::String(proposer.0.to_string())
             })
             .collect();
