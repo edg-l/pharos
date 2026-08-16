@@ -160,6 +160,19 @@ bench: ## Run criterion benches. Captured to $(LOGS)/bench.log. Records bench-hi
 bench-check: ## Compare HEAD's bench-history/<sha>.json vs the latest baseline; fail on regression. Run on PERF_HOST after `make bench`. Tune with REGRESSION_PCT / NOISE_SIGMA. NOT part of `make ci` (benches are slow + PERF_HOST-only).
 	./scripts/bench-check.sh
 
+.PHONY: fuzz-build
+fuzz-build: ## Build all fuzz targets (requires nightly). Captured to $(LOGS)/fuzz-build.log.
+	@mkdir -p $(LOGS)
+	cargo +nightly fuzz build 2>&1 | tee $(LOGS)/fuzz-build.log
+
+.PHONY: fuzz-smoke
+fuzz-smoke: ## Run each fuzz target for 30 s each (smoke test, requires nightly). Captured to $(LOGS)/fuzz-smoke.log.
+	@mkdir -p $(LOGS)
+	@: > $(LOGS)/fuzz-smoke.log
+	cargo +nightly fuzz run ssz_decode   -- -max_total_time=30 2>&1 | tee -a $(LOGS)/fuzz-smoke.log
+	cargo +nightly fuzz run process_block -- -max_total_time=30 2>&1 | tee -a $(LOGS)/fuzz-smoke.log
+	cargo +nightly fuzz run rpc_codec    -- -max_total_time=30 2>&1 | tee -a $(LOGS)/fuzz-smoke.log
+
 .PHONY: clean
 clean: ## Clear the cargo target directory.
 	$(CARGO) clean

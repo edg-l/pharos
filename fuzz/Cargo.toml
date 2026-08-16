@@ -1,0 +1,49 @@
+[package]
+name = "pharos-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Intentionally NOT a workspace member. Keeping this crate out of the main
+# workspace prevents libfuzzer-sys from propagating into normal builds.
+# Run via: cargo +nightly fuzz build   (from the repo root)
+#       or: cargo +nightly fuzz run <target>
+# See docs/fuzz.md for the overnight campaign and make fuzz-smoke usage.
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+pharos-ssz = { path = "../crates/pharos-ssz" }
+pharos-types = { path = "../crates/pharos-types" }
+pharos-stf = { path = "../crates/pharos-stf" }
+pharos-utils = { path = "../crates/pharos-utils" }
+pharos-storage = { path = "../crates/pharos-storage" }
+pharos-kzg = { path = "../crates/pharos-kzg" }
+pharos-network = { path = "../crates/pharos-network" }
+
+snap = "1"
+futures = "0.3"
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[[bin]]
+name = "ssz_decode"
+path = "fuzz_targets/ssz_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "process_block"
+path = "fuzz_targets/process_block.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "rpc_codec"
+path = "fuzz_targets/rpc_codec.rs"
+test = false
+doc = false
