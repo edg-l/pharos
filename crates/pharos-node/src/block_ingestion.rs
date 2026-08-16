@@ -1107,6 +1107,7 @@ where
     E::CapellaSignedBeaconBlock: pharos_ssz::Encode,
     E::DenebSignedBeaconBlock: pharos_ssz::Encode,
     E::ElectraSignedBeaconBlock: pharos_ssz::Encode,
+    E::FuluSignedBeaconBlock: pharos_ssz::Encode,
 {
     use pharos_ssz::Encode as _;
     if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
@@ -1120,6 +1121,8 @@ where
     } else if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
         inner.as_ssz_bytes()
     } else if let Some(inner) = E::unwrap_electra_signed_block(signed_block) {
+        inner.as_ssz_bytes()
+    } else if let Some(inner) = E::unwrap_fulu_signed_block(signed_block) {
         inner.as_ssz_bytes()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")
