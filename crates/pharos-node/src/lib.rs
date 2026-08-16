@@ -15,6 +15,7 @@ pub mod column_ingestion;
 pub mod column_prune;
 pub mod custody;
 pub mod data_availability;
+pub mod debug;
 pub mod engine_driver;
 pub mod engine_keepalive;
 pub mod fork_migration;

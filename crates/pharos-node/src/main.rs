@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use libp2p::Multiaddr;
 use libp2p::multiaddr::Protocol;
 use parking_lot::RwLock;
@@ -277,6 +277,67 @@ struct Args {
     log_level: String,
 }
 
+// ── `pharos debug` subcommands ──────────────────────────────────────────────────
+//
+// Offline diagnostic calculators. Parsed via a separate top-level `Parser` so
+// the node-run `Args` (with its `required_unless_present` constraints) is not
+// validated when the user invokes a debug tool. Dispatched from `main` before
+// `Args::parse()` when argv[1] == "debug".
+
+/// Top-level wrapper matching the `pharos` binary name for the debug parse path.
+#[derive(Parser, Debug)]
+#[command(name = "pharos", version, long_version = pharos_utils::version::LONG_VERSION)]
+struct DebugCli {
+    #[command(subcommand)]
+    cmd: DebugGroup,
+}
+
+#[derive(Subcommand, Debug)]
+enum DebugGroup {
+    /// Offline diagnostic calculators (no node startup, no network).
+    Debug {
+        #[command(subcommand)]
+        tool: DebugTool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DebugTool {
+    /// PeerDAS custody calculator: node id + cgc -> custody groups, columns, subnets.
+    Das {
+        /// 32-byte node id as hex (with or without a `0x` prefix).
+        #[arg(long, value_name = "HEX")]
+        node_id: String,
+        /// Custody group count. Defaults to the preset `CUSTODY_REQUIREMENT` (4).
+        #[arg(long, value_name = "N")]
+        cgc: Option<u64>,
+        /// Preset whose custody constants to use.
+        #[arg(long, default_value = "mainnet", value_name = "PRESET")]
+        preset: pharos_node::debug::das::Preset,
+        /// Restrict the subnet report to a single column index.
+        #[arg(long, value_name = "K")]
+        column: Option<u64>,
+        /// Emit JSON instead of the human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Dispatch a `pharos debug <tool>` invocation. Returns after printing; never
+/// starts the node.
+fn run_debug(cli: DebugCli) -> anyhow::Result<()> {
+    let DebugGroup::Debug { tool } = cli.cmd;
+    match tool {
+        DebugTool::Das {
+            node_id,
+            cgc,
+            preset,
+            column,
+            json,
+        } => pharos_node::debug::das::run(&node_id, cgc, preset, column, json),
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Extract `(IpAddr, tcp_port)` from a `/ip4/<addr>/tcp/<port>` multiaddr.
@@ -328,6 +389,12 @@ fn peer_info_to_json(info: &pharos_network::PeerInfo) -> JsonValue {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `pharos debug <tool>` is an offline calculator path: parse the separate
+    // debug CLI (so the node-run `Args` constraints don't apply), run it, exit.
+    if std::env::args().nth(1).as_deref() == Some("debug") {
+        return run_debug(DebugCli::parse());
+    }
+
     // Parse args first so --log-format / --log-level are available before the
     // subscriber is installed.  Tracing before this point uses the default
     // no-op subscriber; startup errors are surfaced via anyhow after init.
