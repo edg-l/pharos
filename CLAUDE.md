@@ -613,8 +613,24 @@ Closed. Full Electra (Pectra) consensus-layer fork, 7-phase plan in
 `D-electra-lc-uses-block-state-root`, `D-schema-v6-migration`,
 `D-electra-vc-single-attestation`, `D-electra-sync-optimistic-runner`.
 
-Deferred: live Electra devnet acceptance (Phase 7-devnet, separate run);
-`electra/networking` conformance (M13, requires running p2p stack);
+**Phase 7-devnet — Live Electra-transition acceptance PASSED** (Lighthouse v8.1.3 +
+ethrex v13, `ELECTRA_FORK_EPOCH=1`, deneb-genesis → electra at epoch 1, prague aligned):
+pharos followed the live `upgrade_to_electra` crossing and tracked head==wall
+(`sync_distance=0`) for 6+ epochs on the electra fork via Engine V4 `newPayloadV4`; a
+pharos-vc-produced **electra block (slot 212, proposer 56) was kept canonical on
+lighthouse** (slots 217/218 also accepted); 0 bans / 0 panics / 0 reorgs. THREE live-only
+correctness fixes (the M12 analogue of M5-follow/M6-Capella/M9): (1) EL genesis needed the
+Prague system-contract predeploys EIP-7002/7251/2935 — devnet-infra, `gen-testnet.sh`
+(`D-electra-devnet-prague-syscontracts`); (2) `produce_block` API handler had a stale
+`unreachable!()` electra serialize arm — `main.rs` (`D-electra-produce-block-serialize-arm`);
+(3) proposer-DUTIES endpoint used the phase0 8-bit proposer accessor instead of the
+electra 16-bit one → VC signed as the wrong proposer → `InvalidBlockSignature` —
+`validator_duties.rs` (`D-electra-duties-proposer-16bit`). All three fixed and re-verified
+live. The 16-bit proposer gotcha recurred at THREE dispatch sites (production 6d,
+lookahead 6e, duties devnet); every proposer-selection site must route through
+`compute_proposer_index_electra` on electra states.
+
+Deferred: `electra/networking` conformance (M13, requires running p2p stack);
 `electra/fast_confirmation` conformance (M13, pharos-fork-choice extension);
 cross-committee `compute_on_chain_aggregate` merging (perf concern, M-perf/M11).
 
