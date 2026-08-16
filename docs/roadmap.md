@@ -252,6 +252,34 @@ performance in mind so we don't paint ourselves into a corner:
 Don't implement EIPs linearly. Build state-transition primitives once, then
 layer forks on top of them.
 
+### Shipped ledger & numbering note
+
+The milestone numbers below drifted from the original plan as unplanned
+interludes (live-follow hardening, persistent storage, optimistic sync) claimed
+slots. **`CLAUDE.md` milestone blocks + `docs/decisions.md` are authoritative for
+what actually shipped.** Order as shipped (v0.13.0):
+
+| # | Milestone | Status |
+|---|-----------|--------|
+| M0–M4 | Foundations → Bellatrix + Engine API (+ M4a/b/perf/c/d/e) | DONE |
+| M5-follow | Live cross-client gossip block-following hardening | DONE |
+| M6-Capella | Capella fork (withdrawals, BLS-to-exec, historical summaries) | DONE |
+| M-Storage | Hot/cold persistent chain storage (RocksDB freezer + replay) | DONE |
+| M7-BeaconAPI | Beacon REST API (axum) | DONE |
+| M8-OptimisticSync | Spec-correct optimistic sync | DONE |
+| M9-Validator | In-house validator client (`pharos-vc`) + BN production surface | DONE |
+| **M10-Deneb** | Deneb fork (KZG/blobs) | **next fork, not started** |
+| M11 | Productionization (entrenched bucket; parallel hardening track) | planned |
+| M12-Electra | Electra fork | planned |
+| M13-Fulu | Fulu / PeerDAS | planned |
+
+The detailed sections below use these corrected numbers. M5-follow,
+M-Storage, and M8-OptimisticSync have no standalone section here (they were
+unplanned); see their `CLAUDE.md` blocks. "Capella" is **M6** (not the
+originally-planned M5); "Deneb" moved to **M10** (after the validator client),
+not M6. **M11 stays = Productionization** (its entrenched "deferred to M11"
+number across the codebase); the later forks continue at M12/M13.
+
 ### M0 — Foundations (no fork yet)
 - In-house SSZ encode/decode + Merkleization + derive macros.
 - Phase 0 type containers (`BeaconBlock`, `BeaconState`, etc.) per
@@ -598,7 +626,7 @@ exercised against real peer processes.
   realistic first-cross-client interop estimates. Bugs surfaced here
   are fixed in M4d, not deferred to M5.
 
-### M5 — Capella
+### M6 — Capella — **DONE** (shipped as M6-Capella; "M5" was the M5-follow live-gossip hardening)
 Capella is a CL-only fork in pharos terms: no new cryptographic primitive
 (unlike Deneb/KZG), so the work is STF + containers + Engine API V2 + a
 fork-digest gossip migration that mirrors the M4d Bellatrix bring-up. EL-side
@@ -670,19 +698,7 @@ withdrawals are EIP-4895; the CL side is `specs/capella/*`.
   Likely a 2–3 slice milestone: (a) types + STF + conformance, (b) Engine API
   V2 + gossip/fork-digest migration, (c) devnet acceptance + wrap-up.
 
-### M6 — Deneb
-- KZG commitments via `c-kzg`, blob sidecars, blob gossip topics.
-- Spec tests `deneb` green.
-- **KZG trusted setup loading**: load the EF mainnet trusted setup
-  (or per-network setup) at startup, validate against expected
-  commitment, cache in `pharos-engine` (used by both gossip
-  validation and Engine API blob calls).
-- New gossip topics: `blob_sidecar_{subnet_id}` (0..BLOB_SIDECAR_SUBNET_COUNT).
-- New req-resp methods: `BlobSidecarsByRange`,
-  `BlobSidecarsByRoot`. Codec extension required.
-- `engine_getBlobsV1` Engine API call for blob retrieval.
-
-### M7 — Beacon API
+### M7 — Beacon API — **DONE** (shipped as M7-BeaconAPI)
 
 Bring `pharos-api` from its stub to a VC-drivable, Kurtosis-runnable HTTP
 surface on `axum 0.8`. Read endpoints over fork-choice + storage,
@@ -1023,15 +1039,32 @@ The server MUST NOT return 400 on an unrecognised-but-spec-listed topic.
   - Graceful degradation: if all BNs are unhealthy, skip duties
     (never sign without a confirmed canonical state).
 
-### M9 — Electra
+### M10 — Deneb — next fork (not started)
+- KZG commitments via `c-kzg`, blob sidecars, blob gossip topics.
+- Spec tests `deneb` green.
+- **KZG trusted setup loading**: load the EF mainnet trusted setup
+  (or per-network setup) at startup, validate against expected
+  commitment, cache in `pharos-engine` (used by both gossip
+  validation and Engine API blob calls).
+- New gossip topics: `blob_sidecar_{subnet_id}` (0..BLOB_SIDECAR_SUBNET_COUNT).
+- New req-resp methods: `BlobSidecarsByRange`,
+  `BlobSidecarsByRoot`. Codec extension required.
+- `engine_getBlobsV1` Engine API call for blob retrieval.
+
+### M12 — Electra
 - EIP-6110, 7002, 7251, 7549, 7685, 7691.
 - Spec tests `electra` green.
 
-### M10 — Fulu / PeerDAS
+### M13 — Fulu / PeerDAS
 - Column sidecars, custody, sampling.
 - Spec tests `fulu` green.
 
 ### M11 — Productionization
+> Kept at **M11** — its entrenched number, referenced as the "deferred to M11"
+> productionization bucket throughout the codebase and `docs/decisions.md`. It is
+> a parallel hardening track, not a strict gate before the later forks (M12-Electra,
+> M13-Fulu); some items here (hot/cold DB split, forward backfill) already shipped
+> early in M-Storage / M4b.
 - **Weak subjectivity** check on checkpoint state (checkpoint sync
   itself moved to M4). Reject checkpoint older than
   `MIN_VALIDATOR_WITHDRAWABILITY_DELAY + CHURN_LIMIT_QUOTIENT / 2`
@@ -1100,7 +1133,7 @@ The server MUST NOT return 400 on an unrecognised-but-spec-listed topic.
 
 ## Cross-cutting (no single milestone)
 
-These land somewhere across M0-M11; pinning the milestone here so they
+These land somewhere across M0-M13; pinning the milestone here so they
 don't get dropped.
 
 - **CI strategy** (M0 baseline, kept current through every milestone):
