@@ -61,12 +61,13 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 ///   randao_mixes_reset, historical_summaries_update, participation_flag_updates,
 ///   sync_committee_updates
 /// - deneb (12): same as capella
-/// - electra (11, Phase 4a): justification_and_finalization, inactivity_updates,
+/// - electra (12, Phases 4a/4b): justification_and_finalization, inactivity_updates,
 ///   rewards_and_penalties, registry_updates (electra-native), slashings
-///   (electra-native), eth1_data_reset, slashings_reset, randao_mixes_reset,
-///   historical_summaries_update, participation_flag_updates, sync_committee_updates.
-///   `pending_deposits`, `pending_consolidations`, `effective_balance_updates` are
-///   NOT registered until Phases 4b/4c add their electra-native impls.
+///   (electra-native), pending_deposits (electra-native, Phase 4b), eth1_data_reset,
+///   slashings_reset, randao_mixes_reset, historical_summaries_update,
+///   participation_flag_updates. `sync_committee_updates`, `pending_consolidations`,
+///   `effective_balance_updates` are NOT registered until Phase 4c adds their
+///   electra-native impls.
 ///
 /// Supported forks: `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`,
 /// `"electra"`.
@@ -1687,6 +1688,7 @@ fn enumerate_electra_ep_subs_mainnet(
     use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
     use pharos_stf::deneb::epoch::process_rewards_and_penalties_deneb;
     use pharos_stf::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
+    use pharos_stf::electra::epoch::pending_deposits::process_pending_deposits as process_pending_deposits_electra;
     use pharos_stf::electra::epoch::registry_updates::process_registry_updates as process_registry_updates_electra;
     use pharos_stf::electra::epoch::slashings::process_slashings as process_slashings_electra;
     use pharos_stf::electra::helpers::{electra_state_to_deneb, update_electra_from_deneb};
@@ -1758,6 +1760,25 @@ fn enumerate_electra_ep_subs_mainnet(
         }),
         ("slashings", |s| {
             process_slashings_electra::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                134_217_728,
+                134_217_728,
+                262_144,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+        ("pending_deposits", |s| {
+            process_pending_deposits_electra::<
                 8192,
                 16_777_216,
                 2048,
@@ -1916,6 +1937,7 @@ fn enumerate_electra_ep_subs_minimal(
     use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
     use pharos_stf::deneb::epoch::process_rewards_and_penalties_deneb;
     use pharos_stf::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
+    use pharos_stf::electra::epoch::pending_deposits::process_pending_deposits as process_pending_deposits_electra;
     use pharos_stf::electra::epoch::registry_updates::process_registry_updates as process_registry_updates_electra;
     use pharos_stf::electra::epoch::slashings::process_slashings as process_slashings_electra;
     use pharos_stf::electra::helpers::{electra_state_to_deneb, update_electra_from_deneb};
@@ -1985,6 +2007,25 @@ fn enumerate_electra_ep_subs_minimal(
         }),
         ("slashings", |s| {
             process_slashings_electra::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                134_217_728,
+                64,
+                64,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+        ("pending_deposits", |s| {
+            process_pending_deposits_electra::<
                 64,
                 16_777_216,
                 32,

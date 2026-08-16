@@ -8,6 +8,7 @@
 //! EIP-7251 churn/consolidation/registry deltas are handled by the electra-native
 //! epoch steps in Phase 4. See `docs/m12-electra-plan.md` Phase 4a–4c.
 
+pub mod pending_deposits;
 pub mod registry_updates;
 pub mod slashings;
 

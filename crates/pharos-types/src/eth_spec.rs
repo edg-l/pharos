@@ -477,6 +477,12 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Both presets: `134217728` (`2**27`).
     const MAX_PENDING_DEPOSITS_LIMIT: u64;
 
+    /// `MAX_PENDING_DEPOSITS_PER_EPOCH` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `16`. Caps how many pending deposits `process_pending_deposits`
+    /// drains from the queue in a single epoch.
+    const MAX_PENDING_DEPOSITS_PER_EPOCH: u64 = 16;
+
     /// `MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT` from `presets/{mainnet,minimal}/electra.yaml`.
     ///
     /// Mainnet: `134217728` (`2**27`). Minimal: `64`.

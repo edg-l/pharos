@@ -222,7 +222,7 @@ fn apply_deposit_electra<
 /// Appends the validator (via the modified `get_validator_from_deposit`), its
 /// balance, participation flags, and inactivity score.
 #[allow(clippy::too_many_arguments)]
-fn add_validator_to_registry_electra<
+pub(crate) fn add_validator_to_registry_electra<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
     const ETH1_DATA_VOTES_LIMIT: u64,
