@@ -208,6 +208,12 @@ pub struct HostImpl<E: EthSpec> {
     /// in the incoming bitvector is already set in the stored OR-vector.
     /// Capacity: 4096 entries.
     seen_sync_contribution_data: RwLock<LruCache<(Slot, Root, u64), Vec<bool>>>,
+    /// In-memory slasher (Phase A): detects double-vote and surround-vote
+    /// attestation pairs from gossip-accepted attestations.
+    ///
+    /// Shares the same `op_pools` Arc so detected `AttesterSlashing`s are
+    /// surfaced immediately for block inclusion without an extra channel.
+    pub(crate) slasher: crate::slasher::AttestationSlasher<E>,
     _phantom: PhantomData<E>,
 }
 
@@ -232,6 +238,9 @@ impl<E: EthSpec> HostImpl<E> {
             fork_schedule,
             genesis_time_secs,
         };
+
+        // Create op_pools Arc first so it can be shared with the slasher.
+        let op_pools = OperationPools::new();
 
         Self {
             store,
@@ -281,7 +290,8 @@ impl<E: EthSpec> HostImpl<E> {
             seen_sync_contribution_data: RwLock::new(LruCache::new(
                 NonZeroUsize::new(4096).unwrap(),
             )),
-            op_pools: OperationPools::new(),
+            op_pools: op_pools.clone(),
+            slasher: crate::slasher::AttestationSlasher::new(op_pools),
             _phantom: PhantomData,
         }
     }
@@ -1181,6 +1191,8 @@ where
         // Feed the operation pool: insert the accepted unaggregated attestation
         // so block-production can aggregate it (Task 2.4).
         self.op_pools.insert_attestation(att.clone());
+        // Feed the slasher: check for double-vote / surround-vote.
+        self.slasher.observe(&indexed, self.current_epoch().0);
         GossipVerdict::Accept
     }
 
@@ -1444,6 +1456,9 @@ where
         // (Task 2.4). The aggregate is extracted from the `AggregateAndProof`.
         self.op_pools
             .insert_attestation(saap.message.aggregate.clone());
+        // Feed the slasher: check for double-vote / surround-vote on the aggregate's
+        // indexed attestation (same path as unaggregated, covering all attesting indices).
+        self.slasher.observe(&indexed, self.current_epoch().0);
         GossipVerdict::Accept
     }
 

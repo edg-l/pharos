@@ -45,6 +45,9 @@ pub const METRIC_FORK_CHOICE_GET_HEAD_SECONDS: &str = "pharos_fork_choice_get_he
 /// Engine API call latency histogram (label: `method`).
 pub const METRIC_ENGINE_CALL_LATENCY_SECONDS: &str = "pharos_engine_call_latency_seconds";
 
+/// Slasher detection counter (label: `kind` = `double_vote` | `surround_vote`).
+pub const METRIC_SLASHER_DETECTIONS_TOTAL: &str = "pharos_slasher_detections_total";
+
 // ── Registry init ─────────────────────────────────────────────────────────────
 
 /// Install the global Prometheus recorder and start the HTTP exporter on
@@ -130,6 +133,11 @@ pub fn describe_metrics() {
         Unit::Seconds,
         "Engine API call latency in seconds, by method"
     );
+    describe_counter!(
+        METRIC_SLASHER_DETECTIONS_TOTAL,
+        Unit::Count,
+        "Number of slashable attestation pairs detected, by kind (double_vote or surround_vote)"
+    );
 }
 
 /// Force each declared metric to appear in Prometheus output by recording an
@@ -149,4 +157,5 @@ pub fn register_metrics() {
     histogram!(METRIC_STF_PROCESS_EPOCH_SECONDS).record(0.0);
     histogram!(METRIC_FORK_CHOICE_GET_HEAD_SECONDS).record(0.0);
     histogram!(METRIC_ENGINE_CALL_LATENCY_SECONDS).record(0.0);
+    counter!(METRIC_SLASHER_DETECTIONS_TOTAL).absolute(0);
 }
