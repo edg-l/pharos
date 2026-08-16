@@ -239,6 +239,50 @@ pub fn signed_block_state_root<E: EthSpec>(
     }
 }
 
+/// Build the `SignedBeaconBlockHeader` of a fork-enum signed block.
+///
+/// Mirrors [`signed_block_slot`] / [`signed_block_state_root`]: no single
+/// trait-dispatch accessor covers every variant, so each fork is unwrapped here
+/// in ONE place. Adding a fork requires extending this function — a missing arm
+/// is a compile error.
+pub fn signed_block_header<E: EthSpec>(
+    b: &E::SignedBeaconBlock,
+) -> pharos_types::phase0::operations::SignedBeaconBlockHeader {
+    use crate::slasher::proposer::header_from_parts;
+    use pharos_ssz::TreeHash;
+    use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
+
+    macro_rules! header_of {
+        ($inner:expr) => {{
+            let msg = $inner.message();
+            header_from_parts(
+                msg.slot(),
+                msg.proposer_index().0,
+                msg.parent_root(),
+                msg.state_root(),
+                msg.body().tree_hash_root(),
+                *$inner.signature(),
+            )
+        }};
+    }
+
+    if let Some(inner) = E::unwrap_phase0_signed_block(b) {
+        header_of!(inner)
+    } else if let Some(inner) = E::unwrap_altair_signed_block(b) {
+        header_of!(inner)
+    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(b) {
+        header_of!(inner)
+    } else if let Some(inner) = E::unwrap_capella_signed_block(b) {
+        header_of!(inner)
+    } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
+        header_of!(inner)
+    } else if let Some(inner) = E::unwrap_electra_signed_block(b) {
+        header_of!(inner)
+    } else {
+        unreachable!("unknown fork variant in SignedBeaconBlock")
+    }
+}
+
 // ── import_block ──────────────────────────────────────────────────────────────
 
 /// Core block-import sequence.

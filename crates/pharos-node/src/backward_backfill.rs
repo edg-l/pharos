@@ -45,7 +45,7 @@ use pharos_types::{
     phase0::primitives::{Root, Slot},
 };
 
-use crate::state_regen::{RegenError, StateRegenService};
+use crate::state_regen::{RegenError, ReplayBounds, StateRegenService};
 
 // ── BackwardBackfillError ──────────────────────────────────────────────────────
 
@@ -97,49 +97,7 @@ pub async fn run_backward_backfill_loop<E>(
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), BackwardBackfillError>
 where
-    E: EthSpec,
-    E::BeaconState:
-        pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash + Clone,
-    E::BeaconBlock: pharos_types::views::BeaconBlockView + pharos_ssz::TreeHash + Clone,
-    E::SignedBeaconBlock: pharos_ssz::Decode
-        + pharos_types::views::SignedBeaconBlockView<Message = E::BeaconBlock>
-        + Clone,
-    E::Phase0BeaconBlock:
-        pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
-    E::Phase0SignedBeaconBlock: pharos_ssz::Decode
-        + pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-    E::Phase0BeaconBlockBody: pharos_ssz::TreeHash
-        + pharos_types::views::BeaconBlockBodyView<
-            Attestation = pharos_types::phase0::Attestation<2048>,
-            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
-            Deposit = pharos_types::phase0::Deposit<33>,
-        >,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + pharos_stf::AltairJaFDispatch<E>
-        + pharos_stf::AltairProcessSlotsDispatch<E>
-        + pharos_stf::AltairUpgradeDispatch<E>,
-    E::AltairBeaconBlock: pharos_types::views::BeaconBlockView + Clone,
-    E::AltairSignedBeaconBlock: pharos_ssz::Decode
-        + pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::BellatrixJaFDispatch<E>
-        + pharos_stf::BellatrixProcessSlotsDispatch<E>
-        + pharos_stf::BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>
-        + pharos_stf::CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::DenebProcessSlotsDispatch<E>
-        + pharos_stf::DenebUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::ElectraProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
-    E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
-        + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E: ReplayBounds,
 {
     let interval = E::SLOTS_PER_HISTORICAL_ROOT;
 

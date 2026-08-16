@@ -36,7 +36,6 @@
 
 use std::sync::Arc;
 
-use pharos_stf::NullExecutionEngine;
 use pharos_stf::phase0::accessors::{compute_epoch_at_slot, get_indexed_attestation};
 use pharos_storage::{RocksStore, Store as DbStore};
 use pharos_types::EthSpec;
@@ -46,8 +45,8 @@ use pharos_types::views::{BeaconBlockView, SignedBeaconBlockView};
 use tracing::{info, warn};
 
 use super::AttestationSlasher;
-use super::proposer::{ProposerSlasher, ProposerSlasherError, header_from_parts};
-use crate::state_regen::{RegenError, StateRegenService};
+use super::proposer::{ProposerSlasher, ProposerSlasherError};
+use crate::state_regen::{RegenError, SlasherReplayBounds, StateRegenService};
 
 /// Chain-history replay slasher (Phase B).
 ///
@@ -89,55 +88,7 @@ impl<E: EthSpec> ChainReplaySlasher<E> {
     /// aborts the whole scan.
     pub fn replay(&self, from_slot: Slot, to_slot: Slot) -> Result<u64, ReplayError>
     where
-        E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
-                Attestation = Attestation<2048>,
-                AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
-                Deposit = pharos_types::phase0::Deposit<33>,
-            >,
-        E::BeaconState:
-            pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash + Clone,
-        E::BeaconBlock: BeaconBlockView + pharos_ssz::TreeHash + Clone,
-        E::SignedBeaconBlock:
-            pharos_ssz::Decode + SignedBeaconBlockView<Message = E::BeaconBlock> + Clone,
-        E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
-        E::Phase0SignedBeaconBlock:
-            pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-        E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-            + pharos_stf::AltairJaFDispatch<E>
-            + pharos_stf::AltairProcessSlotsDispatch<E>
-            + pharos_stf::AltairUpgradeDispatch<E>,
-        E::AltairBeaconBlock: BeaconBlockView + Clone,
-        E::AltairSignedBeaconBlock:
-            pharos_ssz::Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
-        E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, NullExecutionEngine>
-            + pharos_stf::BellatrixJaFDispatch<E>
-            + pharos_stf::BellatrixProcessSlotsDispatch<E>
-            + pharos_stf::BellatrixUpgradeDispatch<E>
-            + pharos_ssz::TreeHash,
-        E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, NullExecutionEngine>
-            + pharos_stf::CapellaJaFDispatch<E>
-            + pharos_stf::CapellaProcessSlotsDispatch<E>
-            + pharos_stf::CapellaUpgradeDispatch<E>,
-        E::DenebBeaconState: pharos_stf::DenebDispatch<E, NullExecutionEngine>
-            + pharos_stf::DenebProcessSlotsDispatch<E>
-            + pharos_stf::DenebUpgradeDispatch<E>
-            + pharos_ssz::TreeHash,
-        E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
-            + pharos_stf::ElectraProcessSlotsDispatch<E>
-            + pharos_ssz::TreeHash,
-        E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
-        E::BellatrixSignedBeaconBlock:
-            pharos_ssz::Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
-        <E::AltairBeaconBlock as BeaconBlockView>::Body:
-            pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-        <E::BellatrixBeaconBlock as BeaconBlockView>::Body:
-            pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-        <E::CapellaBeaconBlock as BeaconBlockView>::Body:
-            pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-        <E::DenebBeaconBlock as BeaconBlockView>::Body:
-            pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-        E::CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
-        E::DenebSignedBeaconBlock: SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+        E: SlasherReplayBounds,
     {
         let mut scanned: u64 = 0;
         let mut slot = from_slot;
@@ -169,55 +120,7 @@ impl<E: EthSpec> ChainReplaySlasher<E> {
     /// Scan one canonical block: proposer header + attestations.
     fn scan_block(&self, block_root: Root) -> Result<(), ReplayError>
     where
-        E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
-                Attestation = Attestation<2048>,
-                AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
-                Deposit = pharos_types::phase0::Deposit<33>,
-            >,
-        E::BeaconState:
-            pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash + Clone,
-        E::BeaconBlock: BeaconBlockView + pharos_ssz::TreeHash + Clone,
-        E::SignedBeaconBlock:
-            pharos_ssz::Decode + SignedBeaconBlockView<Message = E::BeaconBlock> + Clone,
-        E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
-        E::Phase0SignedBeaconBlock:
-            pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-        E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-            + pharos_stf::AltairJaFDispatch<E>
-            + pharos_stf::AltairProcessSlotsDispatch<E>
-            + pharos_stf::AltairUpgradeDispatch<E>,
-        E::AltairBeaconBlock: BeaconBlockView + Clone,
-        E::AltairSignedBeaconBlock:
-            pharos_ssz::Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
-        E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, NullExecutionEngine>
-            + pharos_stf::BellatrixJaFDispatch<E>
-            + pharos_stf::BellatrixProcessSlotsDispatch<E>
-            + pharos_stf::BellatrixUpgradeDispatch<E>
-            + pharos_ssz::TreeHash,
-        E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, NullExecutionEngine>
-            + pharos_stf::CapellaJaFDispatch<E>
-            + pharos_stf::CapellaProcessSlotsDispatch<E>
-            + pharos_stf::CapellaUpgradeDispatch<E>,
-        E::DenebBeaconState: pharos_stf::DenebDispatch<E, NullExecutionEngine>
-            + pharos_stf::DenebProcessSlotsDispatch<E>
-            + pharos_stf::DenebUpgradeDispatch<E>
-            + pharos_ssz::TreeHash,
-        E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
-            + pharos_stf::ElectraProcessSlotsDispatch<E>
-            + pharos_ssz::TreeHash,
-        E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
-        E::BellatrixSignedBeaconBlock:
-            pharos_ssz::Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
-        <E::AltairBeaconBlock as BeaconBlockView>::Body:
-            pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-        <E::BellatrixBeaconBlock as BeaconBlockView>::Body:
-            pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-        <E::CapellaBeaconBlock as BeaconBlockView>::Body:
-            pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-        <E::DenebBeaconBlock as BeaconBlockView>::Body:
-            pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-        E::CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
-        E::DenebSignedBeaconBlock: SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+        E: SlasherReplayBounds,
     {
         // Load the signed block (hot CF, then cold CF for migrated history).
         let hot = <RocksStore as DbStore<E>>::get_block(&self.store, &block_root)?;
@@ -251,47 +154,11 @@ impl<E: EthSpec> ChainReplaySlasher<E> {
     }
 }
 
-/// Build the `SignedBeaconBlockHeader` of a fork-enum signed block.
-///
-/// Mirrors [`crate::import::signed_block_slot`] / `signed_block_state_root`:
-/// no single trait-dispatch accessor covers every variant, so each fork is
-/// unwrapped here in ONE place. Adding a fork requires extending this function
-/// — a missing arm is a compile error.
-pub fn signed_block_header<E: EthSpec>(
-    b: &E::SignedBeaconBlock,
-) -> pharos_types::phase0::operations::SignedBeaconBlockHeader {
-    use pharos_ssz::TreeHash;
-
-    macro_rules! header_of {
-        ($inner:expr) => {{
-            let msg = $inner.message();
-            header_from_parts(
-                msg.slot(),
-                msg.proposer_index().0,
-                msg.parent_root(),
-                msg.state_root(),
-                msg.body().tree_hash_root(),
-                *$inner.signature(),
-            )
-        }};
-    }
-
-    if let Some(inner) = E::unwrap_phase0_signed_block(b) {
-        header_of!(inner)
-    } else if let Some(inner) = E::unwrap_altair_signed_block(b) {
-        header_of!(inner)
-    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(b) {
-        header_of!(inner)
-    } else if let Some(inner) = E::unwrap_capella_signed_block(b) {
-        header_of!(inner)
-    } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
-        header_of!(inner)
-    } else if let Some(inner) = E::unwrap_electra_signed_block(b) {
-        header_of!(inner)
-    } else {
-        unreachable!("unknown fork variant in SignedBeaconBlock")
-    }
-}
+/// Re-export of the shared fork-unwrap header helper, co-located beside
+/// [`crate::import::signed_block_slot`] / `signed_block_state_root` so a fork
+/// add touches ONE site. Kept here so the historical
+/// `slasher::replay::signed_block_header` path stays valid for callers/tests.
+pub use crate::import::signed_block_header;
 
 /// Extract the phase0-family `Attestation<2048>`s from a fork-enum signed block.
 ///
@@ -352,56 +219,7 @@ where
 /// propagated, so a slasher failure never takes the node down.
 pub async fn run_replay<E>(slasher: Arc<ChainReplaySlasher<E>>, from_slot: Slot, to_slot: Slot)
 where
-    E: EthSpec,
-    E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
-            Deposit = pharos_types::phase0::Deposit<33>,
-        >,
-    E::BeaconState:
-        pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash + Clone,
-    E::BeaconBlock: BeaconBlockView + pharos_ssz::TreeHash + Clone,
-    E::SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::BeaconBlock> + Clone,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + pharos_stf::AltairJaFDispatch<E>
-        + pharos_stf::AltairProcessSlotsDispatch<E>
-        + pharos_stf::AltairUpgradeDispatch<E>,
-    E::AltairBeaconBlock: BeaconBlockView + Clone,
-    E::AltairSignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, NullExecutionEngine>
-        + pharos_stf::BellatrixJaFDispatch<E>
-        + pharos_stf::BellatrixProcessSlotsDispatch<E>
-        + pharos_stf::BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, NullExecutionEngine>
-        + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>
-        + pharos_stf::CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, NullExecutionEngine>
-        + pharos_stf::DenebProcessSlotsDispatch<E>
-        + pharos_stf::DenebUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
-        + pharos_stf::ElectraProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
-    E::BellatrixSignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
-    <E::AltairBeaconBlock as BeaconBlockView>::Body:
-        pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-    <E::BellatrixBeaconBlock as BeaconBlockView>::Body:
-        pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-    <E::CapellaBeaconBlock as BeaconBlockView>::Body:
-        pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-    <E::DenebBeaconBlock as BeaconBlockView>::Body:
-        pharos_types::views::BeaconBlockBodyView<Attestation = Attestation<2048>>,
-    E::CapellaSignedBeaconBlock: SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
-    E::DenebSignedBeaconBlock: SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E: SlasherReplayBounds,
 {
     info!(
         from_slot = from_slot.0,
