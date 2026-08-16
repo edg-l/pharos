@@ -4043,3 +4043,25 @@ chain freezes at the fork. The Deneb-genesis devnet never needed them; Electra i
 fork that does. The devnet generator (`~/.cache/pharos-devnet/gen-testnet.sh`) now merges
 these predeploys (extracted from `ethrex/fixtures/genesis/l1.json`) into the EL genesis and
 sets `pragueTime` to the electra fork wall-clock plus a `prague` blob-schedule entry.
+
+### D-electra-duties-proposer-16bit — proposer-duties endpoint must use the electra 16-bit accessor (devnet-found)
+
+**Status**: Accepted. Live-only correctness bug, found on the M12-Electra transition devnet
+after the produce-serialize-arm fix (`D-electra-produce-block-serialize-arm`).
+
+`proposer_index_at_slot` in `crates/pharos-api/src/handlers/validator_duties.rs` (backing
+`GET /eth/v1/validator/duties/proposer/{epoch}`) unconditionally used the phase0 8-bit
+`compute_proposer_index`. On a multi-validator electra network the 8-bit and the EIP-7251
+16-bit `compute_proposer_index_electra` select DIFFERENT validators for some slots. The VC
+asks the duties endpoint who proposes a slot, signs the produced block as that validator,
+but `produce_block` (correctly) stamps the block with the 16-bit electra proposer; the STF
+then verifies `state.validators[electra_proposer].pubkey` against the phase0-proposer's
+signature and rejects with `InvalidBlockSignature`. Fixed by fork-gating the final
+selection to `compute_proposer_index_electra` for `ForkVariant::Electra` (mirroring the
+already-fixed lookahead handler in `states.rs` and `produce_block`). Single-validator
+setups and the in-process 6d round-trip test masked it (both accessors return index 0).
+This was the THIRD site of the recurring electra 16-bit-proposer dispatch gotcha (after
+block production in 6d and proposer-lookahead in 6e); all proposer-selection sites must
+route through the electra accessor on electra states. The serialization path itself is
+sound — proven by the `electra_signing_root_repro.rs` regression test (VC-side and
+STF-side signing roots are byte-identical).

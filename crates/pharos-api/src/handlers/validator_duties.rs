@@ -153,10 +153,13 @@ fn proposer_index_at_slot<E: EthSpec>(
     state: &E::BeaconState,
     slot: pharos_types::phase0::Slot,
 ) -> pharos_types::phase0::ValidatorIndex {
+    use pharos_stf::electra::helpers::compute_proposer_index_electra;
     use pharos_stf::phase0::accessors::{
         compute_epoch_at_slot, compute_proposer_index, get_active_validator_indices, get_seed,
     };
     use pharos_stf::phase0::helpers::{DOMAIN_BEACON_PROPOSER, uint_to_bytes};
+    use pharos_types::BeaconStateView;
+    use pharos_types::views::ForkVariant;
     use pharos_utils::{Bytes4, hash};
 
     let epoch = compute_epoch_at_slot(slot, E::SLOTS_PER_EPOCH);
@@ -167,7 +170,14 @@ fn proposer_index_at_slot<E: EthSpec>(
     input[32..].copy_from_slice(&slot_bytes);
     let seed = hash::hash(&input);
     let indices = get_active_validator_indices::<E>(state, epoch);
-    compute_proposer_index::<E>(state, &indices, &seed)
+    // EIP-7251: electra (and later) uses the 16-bit proposer selection. This MUST
+    // match `produce_block`/`get_beacon_proposer_index_electra` and the STF, or the
+    // VC signs as the wrong proposer and the block fails the step-2 signature check.
+    if matches!(state.fork_variant(), ForkVariant::Electra) {
+        compute_proposer_index_electra::<E>(state, &indices, &seed)
+    } else {
+        compute_proposer_index::<E>(state, &indices, &seed)
+    }
 }
 
 /// Compute the `dependent_root` for proposer duties.
