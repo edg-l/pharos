@@ -621,7 +621,7 @@ PAGE = r"""<!DOCTYPE html>
            background:#f8717118; border:1px solid #f8717140; color:#fda4a4;
            font-size:13.5px; font-family:var(--mono); }
   .ftree { overflow-x:auto; overflow-y:hidden; max-height:440px; border-radius:10px;
-           scrollbar-width:none; -ms-overflow-style:none; scroll-behavior:smooth; }
+           scrollbar-width:none; -ms-overflow-style:none; }
   .ftree::-webkit-scrollbar { display:none; }
   .ftree svg { display:block; }
   /* new-node entrance animations (only applied to genuinely new roots) */
@@ -847,16 +847,25 @@ function render(s){
         `from slot ${r.slot==null?'?':r.slot} · old ${short(r.old_head)} → new ${short(r.new_head)}</div>`).join('')
     : '';
 
-  // Fork-choice tree "tails" the head: keep the newest (rightmost) slots in
-  // view, but only auto-scroll when already near the right edge so a user who
-  // scrolls back to inspect history isn't yanked forward each refresh.
+  // Fork-choice tree: only rebuild the SVG when the data actually changes
+  // (new node, head move, reorg, finalized move) — rebuilding every second
+  // would reset scroll and re-run animations. When it does change, pin to the
+  // right INSTANTLY (no smooth scroll), so existing nodes shift one column left
+  // and the new node pops in — instead of the whole tree re-scrolling.
   {
     const host = $('forkchoice');
-    const prev = host.querySelector('.ftree');
-    const stick = !prev ||
-      (prev.scrollWidth - prev.scrollLeft - prev.clientWidth < 60);
-    host.innerHTML = renderForkTree(s.fork_choice);
-    if(stick){ const ft = host.querySelector('.ftree'); if(ft) ft.scrollLeft = ft.scrollWidth; }
+    const fc = s.fork_choice;
+    const last = fc && fc.nodes.length ? fc.nodes[fc.nodes.length-1].root : '';
+    const sig = fc ? `${fc.head}|${fc.nodes.length}|${last}|${fc.finalized}` : 'none';
+    if(sig !== window._fcSig){
+      window._fcSig = sig;
+      const prev = host.querySelector('.ftree');
+      const stick = !prev ||
+        (prev.scrollWidth - prev.scrollLeft - prev.clientWidth < 60);
+      host.innerHTML = renderForkTree(fc);
+      const ft = host.querySelector('.ftree');
+      if(ft && stick) ft.scrollLeft = ft.scrollWidth;
+    }
   }
 
   $('chain').innerHTML = kv([
