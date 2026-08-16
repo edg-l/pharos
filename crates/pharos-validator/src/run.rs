@@ -634,9 +634,6 @@ pub async fn run_vc_loop(
     config: Arc<VcConfig>,
     genesis_validators_root: [u8; 32],
 ) {
-    let slot_duration = Duration::from_millis(config.slot_duration_ms);
-    let mut ticker = tokio::time::interval(slot_duration);
-
     // Build index → entry map for fast lookup.
     let val_map: HashMap<u64, &ValidatorEntry> = validators.iter().map(|e| (e.index, e)).collect();
     let pubkey_map: HashMap<String, &ValidatorEntry> = validators
@@ -656,16 +653,24 @@ pub async fn run_vc_loop(
         *epoch_rx.borrow(),
     );
 
-    loop {
-        ticker.tick().await;
+    // Slots are counted from genesis, not the UNIX epoch.
+    let genesis_ms = config.genesis_time.saturating_mul(1000);
 
+    loop {
+        // Align to the next slot boundary so the proposer path fires at t≈0.
+        // A free-running `interval` would carry a fixed phase offset vs slot
+        // starts (whatever the VC startup phase happened to be), pushing block
+        // proposals past the t=1/3 attestation cutoff — attesters then vote the
+        // parent, the block accrues zero weight, and a proposer-boost-aware peer
+        // (e.g. lighthouse) re-orgs it straight back out.
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        // Slots are counted from genesis, not the UNIX epoch.
-        let genesis_ms = config.genesis_time.saturating_mul(1000);
-        let current_slot = now_ms.saturating_sub(genesis_ms) / config.slot_duration_ms;
+        let current_slot = now_ms.saturating_sub(genesis_ms) / config.slot_duration_ms + 1;
+        let slot_start_ms = genesis_ms + current_slot * config.slot_duration_ms;
+        sleep_until_into_slot(slot_start_ms, 0).await;
+
         let current_epoch = current_slot / config.slots_per_epoch;
 
         // Advance doppelganger state.
@@ -774,7 +779,6 @@ pub async fn run_vc_loop(
         // ── Attester path (at slot + 1/3) ─────────────────────────────────────
 
         let attester_wait = config.slot_duration_ms / 3;
-        let slot_start_ms = genesis_ms + current_slot * config.slot_duration_ms;
         sleep_until_into_slot(slot_start_ms, attester_wait).await;
 
         if let Some(att_duties) = duties_for_slot.attester.get(&current_slot) {
