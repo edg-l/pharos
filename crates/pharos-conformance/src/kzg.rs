@@ -104,7 +104,9 @@ pub fn enumerate_kzg(root: &Path, row_ordinal: u32) -> Vec<CaseTask> {
                     let val: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&text) {
                         Ok(v) => v,
                         Err(e) => {
-                            return CaseOutcome::Fail(format!("{case_name}: yaml parse error: {e}"));
+                            return CaseOutcome::Fail(format!(
+                                "{case_name}: yaml parse error: {e}"
+                            ));
                         }
                     };
                     let result = match sub_cat_owned {
