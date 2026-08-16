@@ -6,11 +6,21 @@
 
 use std::path::{Path, PathBuf};
 
-use pharos_ssz::Decode;
+use pharos_ssz::{Decode, Encode, TreeHash};
+use pharos_stf::phase0::BeaconStateWrite;
+use pharos_stf::{
+    AltairProcessSlotsDispatch, AltairUpgradeDispatch, BellatrixProcessSlotsDispatch,
+    BellatrixUpgradeDispatch, CapellaProcessSlotsDispatch, CapellaUpgradeDispatch,
+    DenebProcessSlotsDispatch, Phase0UpgradeDispatch, state_transition,
+};
 use pharos_types::EthSpec;
+use pharos_types::config::RuntimeConfig;
+use pharos_types::phase0::{Attestation, AttesterSlashing, Deposit};
+use pharos_types::views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView};
 
 use crate::fs_util::read_dir_sorted;
 use crate::snappy::decompress_raw;
+use crate::task::CaseOutcome;
 
 // ── WalkOpts ──────────────────────────────────────────────────────────────────
 
@@ -166,35 +176,81 @@ pub fn load_pre_post<S: Decode>(dir: &Path) -> Result<(S, Option<S>), String> {
     Ok((pre, post))
 }
 
-/// Load `pre.ssz_snappy` and `post.ssz_snappy` as phase0 `BeaconState`s, then
-/// wrap each in the fork-enum `E::BeaconState` via `E::phase0_into_state`.
-///
-/// Phase0 fixture files contain raw phase0 SSZ without a fork-discriminant
-/// prefix. This helper decodes them as `E::Phase0BeaconState` and promotes to
-/// the fork-enum so they can be passed to STF functions.
-pub fn load_pre_post_phase0_state<E: EthSpec>(
+// ── Generic fork-state / fork-block loaders ─────────────────────────────────────
+//
+// Per-fork fixture files contain raw SSZ for that fork without a fork-discriminant
+// prefix. The two generic helpers below decode the inner per-fork type via the
+// caller-supplied `into_state` / `into_block` promotion closure (typically one of
+// `E::<fork>_into_state` / `E::<fork>_into_signed_block`) and wrap the result in
+// the fork-enum so it can be passed to STF functions. Decoding the inner type is
+// driven entirely by type inference at the call site, so the `S: Decode` bound is
+// what each per-fork wrapper specialises (e.g. `E::AltairBeaconState: Decode`).
+
+/// Load `pre.ssz_snappy` (required) and `post.ssz_snappy` (optional) as the inner
+/// per-fork state type `S`, promoting each to the fork-enum via `into_state`.
+pub fn load_pre_post_state<E, S, F>(
     dir: &Path,
+    into_state: F,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
-    E::Phase0BeaconState: Decode,
+    E: EthSpec,
+    S: Decode,
+    F: Fn(S) -> E::BeaconState,
 {
-    let pre_inner: E::Phase0BeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
-    let pre = E::phase0_into_state(pre_inner);
+    let pre_inner: S = load_ssz_snappy(dir, "pre.ssz_snappy")?;
+    let pre = into_state(pre_inner);
     let post = if dir.join("post.ssz_snappy").exists() {
-        let post_inner: E::Phase0BeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
-        Some(E::phase0_into_state(post_inner))
+        let post_inner: S = load_ssz_snappy(dir, "post.ssz_snappy")?;
+        Some(into_state(post_inner))
     } else {
         None
     };
     Ok((pre, post))
 }
 
-/// Decode a single `<name>.ssz_snappy` file as a phase0 `SignedBeaconBlock`,
-/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
-///
-/// Phase0 fixture block files contain raw phase0 SSZ without a fork-discriminant
-/// prefix. This helper decodes them as `E::Phase0SignedBeaconBlock` and promotes
-/// to the fork-enum so they can be passed to STF functions.
+/// Decode `<name>.ssz_snappy` as the inner per-fork state type `S`, promoting it
+/// to the fork-enum via `into_state`.
+pub fn load_state<E, S, F>(dir: &Path, name: &str, into_state: F) -> Result<E::BeaconState, String>
+where
+    E: EthSpec,
+    S: Decode,
+    F: Fn(S) -> E::BeaconState,
+{
+    let inner: S = load_ssz_snappy(dir, name)?;
+    Ok(into_state(inner))
+}
+
+/// Decode `<name>.ssz_snappy` as the inner per-fork block type `S`, promoting it
+/// to the fork-enum via `into_block`.
+pub fn load_signed_block<E, S, F>(
+    dir: &Path,
+    name: &str,
+    into_block: F,
+) -> Result<E::SignedBeaconBlock, String>
+where
+    E: EthSpec,
+    S: Decode,
+    F: Fn(S) -> E::SignedBeaconBlock,
+{
+    let inner: S = load_ssz_snappy(dir, name)?;
+    Ok(into_block(inner))
+}
+
+// ── Per-fork loader wrappers ────────────────────────────────────────────────────
+//
+// Thin one-line specialisations of the generic loaders above, kept `pub` because
+// they are called from every conformance category dispatcher (and the
+// `pharos-ssz` bench). Each fixes the inner per-fork type and the promotion fn.
+
+pub fn load_pre_post_phase0_state<E: EthSpec>(
+    dir: &Path,
+) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
+where
+    E::Phase0BeaconState: Decode,
+{
+    load_pre_post_state::<E, E::Phase0BeaconState, _>(dir, E::phase0_into_state)
+}
+
 pub fn load_phase0_signed_block<E: EthSpec>(
     dir: &Path,
     name: &str,
@@ -202,61 +258,32 @@ pub fn load_phase0_signed_block<E: EthSpec>(
 where
     E::Phase0SignedBeaconBlock: Decode,
 {
-    let inner: E::Phase0SignedBeaconBlock = load_ssz_snappy(dir, name)?;
-    Ok(E::phase0_into_signed_block(inner))
+    load_signed_block::<E, E::Phase0SignedBeaconBlock, _>(dir, name, E::phase0_into_signed_block)
 }
 
-/// Decode a single `<name>.ssz_snappy` file as a phase0 `BeaconState`,
-/// then wrap it in the fork-enum `E::BeaconState`.
-///
-/// For use when a single raw phase0 state file (not a pre/post pair) needs to
-/// be decoded and promoted to the fork-enum.
 pub fn load_phase0_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::Phase0BeaconState: Decode,
 {
-    let inner: E::Phase0BeaconState = load_ssz_snappy(dir, name)?;
-    Ok(E::phase0_into_state(inner))
+    load_state::<E, E::Phase0BeaconState, _>(dir, name, E::phase0_into_state)
 }
 
-/// Load `pre.ssz_snappy` and `post.ssz_snappy` as altair `BeaconState`s, then
-/// wrap each in the fork-enum `E::BeaconState` via `E::altair_into_state`.
-///
-/// Altair fixture files contain raw altair SSZ without a fork-discriminant
-/// prefix. This helper decodes them as `E::AltairBeaconState` and promotes to
-/// the fork-enum so they can be passed to STF functions.
 pub fn load_pre_post_altair_state<E: EthSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
     E::AltairBeaconState: Decode,
 {
-    let pre_inner: E::AltairBeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
-    let pre = E::altair_into_state(pre_inner);
-    let post = if dir.join("post.ssz_snappy").exists() {
-        let post_inner: E::AltairBeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
-        Some(E::altair_into_state(post_inner))
-    } else {
-        None
-    };
-    Ok((pre, post))
+    load_pre_post_state::<E, E::AltairBeaconState, _>(dir, E::altair_into_state)
 }
 
-/// Load `pre.ssz_snappy` as an altair `BeaconState`, wrapped in the fork-enum.
 pub fn load_altair_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::AltairBeaconState: Decode,
 {
-    let inner: E::AltairBeaconState = load_ssz_snappy(dir, name)?;
-    Ok(E::altair_into_state(inner))
+    load_state::<E, E::AltairBeaconState, _>(dir, name, E::altair_into_state)
 }
 
-/// Decode a single `<name>.ssz_snappy` file as an altair `SignedBeaconBlock`,
-/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
-///
-/// Altair fixture block files contain raw altair SSZ without a fork-discriminant
-/// prefix. This helper decodes them as `E::AltairSignedBeaconBlock` and promotes
-/// to the fork-enum so they can be passed to STF functions.
 pub fn load_altair_signed_block<E: EthSpec>(
     dir: &Path,
     name: &str,
@@ -264,44 +291,25 @@ pub fn load_altair_signed_block<E: EthSpec>(
 where
     E::AltairSignedBeaconBlock: Decode,
 {
-    let inner: E::AltairSignedBeaconBlock = load_ssz_snappy(dir, name)?;
-    Ok(E::altair_into_signed_block(inner))
+    load_signed_block::<E, E::AltairSignedBeaconBlock, _>(dir, name, E::altair_into_signed_block)
 }
 
-/// Load `pre.ssz_snappy` and `post.ssz_snappy` as bellatrix `BeaconState`s, then
-/// wrap each in the fork-enum `E::BeaconState` via `E::bellatrix_into_state`.
-///
-/// Bellatrix fixture files contain raw bellatrix SSZ without a fork-discriminant
-/// prefix. This helper decodes them as `E::BellatrixBeaconState` and promotes to
-/// the fork-enum so they can be passed to STF functions.
 pub fn load_pre_post_bellatrix_state<E: EthSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
     E::BellatrixBeaconState: Decode,
 {
-    let pre_inner: E::BellatrixBeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
-    let pre = E::bellatrix_into_state(pre_inner);
-    let post = if dir.join("post.ssz_snappy").exists() {
-        let post_inner: E::BellatrixBeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
-        Some(E::bellatrix_into_state(post_inner))
-    } else {
-        None
-    };
-    Ok((pre, post))
+    load_pre_post_state::<E, E::BellatrixBeaconState, _>(dir, E::bellatrix_into_state)
 }
 
-/// Load `pre.ssz_snappy` as a bellatrix `BeaconState`, wrapped in the fork-enum.
 pub fn load_bellatrix_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::BellatrixBeaconState: Decode,
 {
-    let inner: E::BellatrixBeaconState = load_ssz_snappy(dir, name)?;
-    Ok(E::bellatrix_into_state(inner))
+    load_state::<E, E::BellatrixBeaconState, _>(dir, name, E::bellatrix_into_state)
 }
 
-/// Decode a single `<name>.ssz_snappy` file as a bellatrix `SignedBeaconBlock`,
-/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
 pub fn load_bellatrix_signed_block<E: EthSpec>(
     dir: &Path,
     name: &str,
@@ -309,40 +317,29 @@ pub fn load_bellatrix_signed_block<E: EthSpec>(
 where
     E::BellatrixSignedBeaconBlock: Decode,
 {
-    let inner: E::BellatrixSignedBeaconBlock = load_ssz_snappy(dir, name)?;
-    Ok(E::bellatrix_into_signed_block(inner))
+    load_signed_block::<E, E::BellatrixSignedBeaconBlock, _>(
+        dir,
+        name,
+        E::bellatrix_into_signed_block,
+    )
 }
 
-/// Load `pre.ssz_snappy` and optionally `post.ssz_snappy` as capella
-/// `BeaconState`s, wrapped in the fork-enum.
 pub fn load_pre_post_capella_state<E: EthSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
     E::CapellaBeaconState: Decode,
 {
-    let pre_inner: E::CapellaBeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
-    let pre = E::capella_into_state(pre_inner);
-    let post = if dir.join("post.ssz_snappy").exists() {
-        let post_inner: E::CapellaBeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
-        Some(E::capella_into_state(post_inner))
-    } else {
-        None
-    };
-    Ok((pre, post))
+    load_pre_post_state::<E, E::CapellaBeaconState, _>(dir, E::capella_into_state)
 }
 
-/// Load `<name>.ssz_snappy` as a capella `BeaconState`, wrapped in the fork-enum.
 pub fn load_capella_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::CapellaBeaconState: Decode,
 {
-    let inner: E::CapellaBeaconState = load_ssz_snappy(dir, name)?;
-    Ok(E::capella_into_state(inner))
+    load_state::<E, E::CapellaBeaconState, _>(dir, name, E::capella_into_state)
 }
 
-/// Decode a single `<name>.ssz_snappy` file as a capella `SignedBeaconBlock`,
-/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
 pub fn load_capella_signed_block<E: EthSpec>(
     dir: &Path,
     name: &str,
@@ -350,40 +347,25 @@ pub fn load_capella_signed_block<E: EthSpec>(
 where
     E::CapellaSignedBeaconBlock: Decode,
 {
-    let inner: E::CapellaSignedBeaconBlock = load_ssz_snappy(dir, name)?;
-    Ok(E::capella_into_signed_block(inner))
+    load_signed_block::<E, E::CapellaSignedBeaconBlock, _>(dir, name, E::capella_into_signed_block)
 }
 
-/// Load `pre.ssz_snappy` and optionally `post.ssz_snappy` as deneb
-/// `BeaconState`s, wrapped in the fork-enum.
 pub fn load_pre_post_deneb_state<E: EthSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
     E::DenebBeaconState: Decode,
 {
-    let pre_inner: E::DenebBeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
-    let pre = E::deneb_into_state(pre_inner);
-    let post = if dir.join("post.ssz_snappy").exists() {
-        let post_inner: E::DenebBeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
-        Some(E::deneb_into_state(post_inner))
-    } else {
-        None
-    };
-    Ok((pre, post))
+    load_pre_post_state::<E, E::DenebBeaconState, _>(dir, E::deneb_into_state)
 }
 
-/// Load `<name>.ssz_snappy` as a deneb `BeaconState`, wrapped in the fork-enum.
 pub fn load_deneb_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::DenebBeaconState: Decode,
 {
-    let inner: E::DenebBeaconState = load_ssz_snappy(dir, name)?;
-    Ok(E::deneb_into_state(inner))
+    load_state::<E, E::DenebBeaconState, _>(dir, name, E::deneb_into_state)
 }
 
-/// Decode a single `<name>.ssz_snappy` file as a deneb `SignedBeaconBlock`,
-/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
 pub fn load_deneb_signed_block<E: EthSpec>(
     dir: &Path,
     name: &str,
@@ -391,40 +373,25 @@ pub fn load_deneb_signed_block<E: EthSpec>(
 where
     E::DenebSignedBeaconBlock: Decode,
 {
-    let inner: E::DenebSignedBeaconBlock = load_ssz_snappy(dir, name)?;
-    Ok(E::deneb_into_signed_block(inner))
+    load_signed_block::<E, E::DenebSignedBeaconBlock, _>(dir, name, E::deneb_into_signed_block)
 }
 
-/// Load `pre.ssz_snappy` and optionally `post.ssz_snappy` as electra
-/// `BeaconState`s, wrapped in the fork-enum.
 pub fn load_pre_post_electra_state<E: EthSpec>(
     dir: &Path,
 ) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
 where
     E::ElectraBeaconState: Decode,
 {
-    let pre_inner: E::ElectraBeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
-    let pre = E::electra_into_state(pre_inner);
-    let post = if dir.join("post.ssz_snappy").exists() {
-        let post_inner: E::ElectraBeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
-        Some(E::electra_into_state(post_inner))
-    } else {
-        None
-    };
-    Ok((pre, post))
+    load_pre_post_state::<E, E::ElectraBeaconState, _>(dir, E::electra_into_state)
 }
 
-/// Load `<name>.ssz_snappy` as an electra `BeaconState`, wrapped in the fork-enum.
 pub fn load_electra_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::ElectraBeaconState: Decode,
 {
-    let inner: E::ElectraBeaconState = load_ssz_snappy(dir, name)?;
-    Ok(E::electra_into_state(inner))
+    load_state::<E, E::ElectraBeaconState, _>(dir, name, E::electra_into_state)
 }
 
-/// Decode a single `<name>.ssz_snappy` file as an electra `SignedBeaconBlock`,
-/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
 pub fn load_electra_signed_block<E: EthSpec>(
     dir: &Path,
     name: &str,
@@ -432,8 +399,128 @@ pub fn load_electra_signed_block<E: EthSpec>(
 where
     E::ElectraSignedBeaconBlock: Decode,
 {
-    let inner: E::ElectraSignedBeaconBlock = load_ssz_snappy(dir, name)?;
-    Ok(E::electra_into_signed_block(inner))
+    load_signed_block::<E, E::ElectraSignedBeaconBlock, _>(dir, name, E::electra_into_signed_block)
+}
+
+// ── Generic block-sequence case runner ──────────────────────────────────────────
+
+/// Run one block-sequence conformance case (the shared shape of `sanity/blocks`,
+/// `random`, and `finality`).
+///
+/// Loads `(pre, post)` via `load_pre_post`, then applies `blocks_<i>.ssz_snappy`
+/// for `i in 0..blocks_count` through `state_transition` (with the supplied
+/// `runtime_cfg` and `validate_result`), loading each block via `load_block`.
+///
+/// Verdict, byte-for-byte identical to the former per-fork copies:
+/// - all blocks applied + `post` present → compare final state SSZ to `post`.
+/// - all blocks applied + no `post`       → `Fail` (a block was expected to fail).
+/// - a block failed + no `post`           → `Pass` (negative test).
+/// - a block failed + `post` present      → `Fail` (unexpected block failure).
+///
+/// `load_pre_post` and `load_block` are passed as `fn`/closure so the caller fixes
+/// the per-fork fixture decode; `runtime_cfg` is passed by the caller so each call
+/// site preserves the exact config it used previously (see the per-category
+/// dispatchers for which forks pass `RuntimeConfig::default()` vs
+/// `E::default_runtime_config()`).
+#[allow(clippy::type_complexity)]
+pub fn run_blocks_case<E, FState, FBlock>(
+    case_dir: &Path,
+    case_name: &str,
+    blocks_count: u64,
+    validate_result: bool,
+    runtime_cfg: &RuntimeConfig,
+    load_pre_post: FState,
+    load_block: FBlock,
+) -> CaseOutcome
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + AltairProcessSlotsDispatch<E>
+        + AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + TreeHash
+        + Decode,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + TreeHash
+        + Decode,
+    E::Phase0BeaconState: Decode + Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    FState: Fn(&Path) -> Result<(E::BeaconState, Option<E::BeaconState>), String>,
+    FBlock: Fn(&Path, &str) -> Result<E::SignedBeaconBlock, String>,
+{
+    let (pre, post) = match load_pre_post(case_dir) {
+        Ok(v) => v,
+        Err(e) => return CaseOutcome::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut current: Option<E::BeaconState> = Some(pre);
+    let mut block_error: Option<String> = None;
+
+    for i in 0..blocks_count {
+        let block_file = format!("blocks_{i}.ssz_snappy");
+        let block = match load_block(case_dir, &block_file) {
+            Ok(v) => v,
+            Err(e) => return CaseOutcome::Fail(format!("{case_name}: {e}")),
+        };
+        let state = current.take().unwrap();
+        match state_transition::<E, pharos_stf::NullExecutionEngine>(
+            state,
+            &block,
+            &pharos_stf::NullExecutionEngine,
+            validate_result,
+            runtime_cfg,
+        ) {
+            Ok((new_state, _)) => current = Some(new_state),
+            Err(e) => {
+                block_error = Some(format!("{e}"));
+                break;
+            }
+        }
+    }
+
+    match (block_error, post) {
+        // All blocks applied, post present — compare states.
+        (None, Some(expected)) => {
+            let state = current.unwrap();
+            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
+                CaseOutcome::Pass
+            } else {
+                CaseOutcome::Fail(format!("{case_name}: state mismatch after block sequence"))
+            }
+        }
+        // All blocks applied but no post expected — should have failed.
+        (None, None) => CaseOutcome::Fail(format!(
+            "{case_name}: expected a block to fail but all blocks applied successfully"
+        )),
+        // A block failed and we expected it (no post) — negative test passed.
+        (Some(_), None) => CaseOutcome::Pass,
+        // A block failed unexpectedly (post was present).
+        (Some(e), Some(_)) => {
+            CaseOutcome::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
+        }
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

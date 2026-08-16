@@ -23,18 +23,15 @@
 
 use std::path::{Path, PathBuf};
 
-use pharos_ssz::{Encode, TreeHash};
+use pharos_ssz::Encode;
 use pharos_stf::altair::state_transition::process_slots_altair;
 use pharos_stf::phase0::BeaconStateWrite;
-use pharos_stf::{
-    AltairProcessSlotsDispatch, AltairUpgradeDispatch, BellatrixProcessSlotsDispatch,
-    BellatrixUpgradeDispatch, CapellaProcessSlotsDispatch, CapellaUpgradeDispatch,
-    DenebProcessSlotsDispatch, Phase0UpgradeDispatch, process_slots, state_transition,
-};
+use pharos_stf::process_slots;
+use pharos_types::config::RuntimeConfig;
 use pharos_types::{
     BeaconStateView, EthSpec, MainnetEthSpec, MinimalEthSpec,
-    phase0::{Attestation, AttesterSlashing, Deposit, Slot},
-    views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
+    phase0::{Attestation, Slot},
+    views::BeaconBlockBodyView,
 };
 
 use crate::fixture_walker::{
@@ -43,7 +40,7 @@ use crate::fixture_walker::{
     load_deneb_state, load_electra_signed_block, load_electra_state, load_phase0_signed_block,
     load_pre_post_altair_state, load_pre_post_bellatrix_state, load_pre_post_capella_state,
     load_pre_post_deneb_state, load_pre_post_electra_state, load_pre_post_phase0_state,
-    walk_category,
+    run_blocks_case, walk_category,
 };
 use crate::fs_util::dir_name;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
@@ -90,181 +87,169 @@ pub fn enumerate_sanity(
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_blocks_case::<MainnetEthSpec>(
+                    run_blocks_case::<MainnetEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &RuntimeConfig::default(),
+                        load_pre_post_phase0_state::<MainnetEthSpec>,
+                        load_phase0_signed_block::<MainnetEthSpec>,
+                    )
                 }),
                 ("phase0", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_blocks_case::<MinimalEthSpec>(
+                    run_blocks_case::<MinimalEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &RuntimeConfig::default(),
+                        load_pre_post_phase0_state::<MinimalEthSpec>,
+                        load_phase0_signed_block::<MinimalEthSpec>,
+                    )
                 }),
                 ("altair", "mainnet") => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_altair_blocks_case::<MainnetEthSpec>(
+                    run_blocks_case::<MainnetEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &RuntimeConfig::default(),
+                        load_pre_post_altair_state::<MainnetEthSpec>,
+                        load_altair_signed_block::<MainnetEthSpec>,
+                    )
                 }),
                 ("altair", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_altair_blocks_case::<MinimalEthSpec>(
+                    run_blocks_case::<MinimalEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &RuntimeConfig::default(),
+                        load_pre_post_altair_state::<MinimalEthSpec>,
+                        load_altair_signed_block::<MinimalEthSpec>,
+                    )
                 }),
                 ("bellatrix", "mainnet") => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_bellatrix_blocks_case::<MainnetEthSpec>(
+                    run_blocks_case::<MainnetEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &MainnetEthSpec::default_runtime_config(),
+                        load_pre_post_bellatrix_state::<MainnetEthSpec>,
+                        load_bellatrix_signed_block::<MainnetEthSpec>,
+                    )
                 }),
                 ("bellatrix", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_bellatrix_blocks_case::<MinimalEthSpec>(
+                    run_blocks_case::<MinimalEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &MinimalEthSpec::default_runtime_config(),
+                        load_pre_post_bellatrix_state::<MinimalEthSpec>,
+                        load_bellatrix_signed_block::<MinimalEthSpec>,
+                    )
                 }),
                 ("capella", "mainnet") => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_capella_blocks_case::<MainnetEthSpec>(
+                    run_blocks_case::<MainnetEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &MainnetEthSpec::default_runtime_config(),
+                        load_pre_post_capella_state::<MainnetEthSpec>,
+                        load_capella_signed_block::<MainnetEthSpec>,
+                    )
                 }),
                 ("capella", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_capella_blocks_case::<MinimalEthSpec>(
+                    run_blocks_case::<MinimalEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &MinimalEthSpec::default_runtime_config(),
+                        load_pre_post_capella_state::<MinimalEthSpec>,
+                        load_capella_signed_block::<MinimalEthSpec>,
+                    )
                 }),
                 ("deneb", "mainnet") => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_deneb_blocks_case::<MainnetEthSpec>(
+                    run_blocks_case::<MainnetEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &MainnetEthSpec::default_runtime_config(),
+                        load_pre_post_deneb_state::<MainnetEthSpec>,
+                        load_deneb_signed_block::<MainnetEthSpec>,
+                    )
                 }),
                 ("deneb", _) => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_deneb_blocks_case::<MinimalEthSpec>(
+                    run_blocks_case::<MinimalEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &MinimalEthSpec::default_runtime_config(),
+                        load_pre_post_deneb_state::<MinimalEthSpec>,
+                        load_deneb_signed_block::<MinimalEthSpec>,
+                    )
                 }),
                 ("electra", "mainnet") => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_electra_blocks_case::<MainnetEthSpec>(
+                    run_blocks_case::<MainnetEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &MainnetEthSpec::default_runtime_config(),
+                        load_pre_post_electra_state::<MainnetEthSpec>,
+                        load_electra_signed_block::<MainnetEthSpec>,
+                    )
                 }),
                 _ => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
                     };
-                    match run_electra_blocks_case::<MinimalEthSpec>(
+                    run_blocks_case::<MinimalEthSpec, _, _>(
                         &case_dir,
                         &case_name,
                         n,
                         validate_result,
-                    ) {
-                        CaseResult::Pass => CaseOutcome::Pass,
-                        CaseResult::Skip => CaseOutcome::Skip,
-                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
-                    }
+                        &MinimalEthSpec::default_runtime_config(),
+                        load_pre_post_electra_state::<MinimalEthSpec>,
+                        load_electra_signed_block::<MinimalEthSpec>,
+                    )
                 }),
             };
             tasks.push(CaseTask {
@@ -399,95 +384,6 @@ pub fn enumerate_sanity(
     tasks
 }
 
-fn run_blocks_case<E>(
-    case_dir: &Path,
-    case_name: &str,
-    blocks_count: u64,
-    validate_result: bool,
-) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState:
-        pharos_stf::AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_stf::DenebUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::ElectraProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let (pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-
-    let mut current: Option<E::BeaconState> = Some(pre);
-    let mut block_error: Option<String> = None;
-
-    for i in 0..blocks_count {
-        let block_file = format!("blocks_{i}.ssz_snappy");
-        let block = match load_phase0_signed_block::<E>(case_dir, &block_file) {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let state = current.take().unwrap();
-        match state_transition::<E, pharos_stf::NullExecutionEngine>(
-            state,
-            &block,
-            &pharos_stf::NullExecutionEngine,
-            validate_result,
-            &pharos_types::config::RuntimeConfig::default(),
-        ) {
-            Ok((new_state, _)) => current = Some(new_state),
-            Err(e) => {
-                block_error = Some(format!("{e}"));
-                break;
-            }
-        }
-    }
-
-    match (block_error, post) {
-        // All blocks applied, post present — compare states.
-        (None, Some(expected)) => {
-            let state = current.unwrap();
-            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after block sequence"))
-            }
-        }
-        // All blocks applied but no post expected — should have failed.
-        (None, None) => CaseResult::Fail(format!(
-            "{case_name}: expected a block to fail but all blocks applied successfully"
-        )),
-        // A block failed and we expected it (no post) — negative test passed.
-        (Some(_), None) => CaseResult::Pass,
-        // A block failed unexpectedly (post was present).
-        (Some(e), Some(_)) => {
-            CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
-        }
-    }
-}
-
 fn run_slots_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
     E: EthSpec,
@@ -540,94 +436,6 @@ fn read_u64_yaml(path: &Path) -> Result<u64, String> {
         .map_err(|e| format!("yaml parse {}: {e}", path.display()))?;
     val.as_u64()
         .ok_or_else(|| format!("{}: expected integer, got {:?}", path.display(), val))
-}
-
-fn run_altair_blocks_case<E>(
-    case_dir: &Path,
-    case_name: &str,
-    blocks_count: u64,
-    validate_result: bool,
-) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + AltairProcessSlotsDispatch<E>
-        + AltairUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_stf::DenebUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::ElectraProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::AltairSignedBeaconBlock: pharos_ssz::Decode,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let (pre, post) = match load_pre_post_altair_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-
-    let mut current: Option<E::BeaconState> = Some(pre);
-    let mut block_error: Option<String> = None;
-
-    for i in 0..blocks_count {
-        let block_file = format!("blocks_{i}.ssz_snappy");
-        let block = match load_altair_signed_block::<E>(case_dir, &block_file) {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let state = current.take().unwrap();
-        match state_transition::<E, pharos_stf::NullExecutionEngine>(
-            state,
-            &block,
-            &pharos_stf::NullExecutionEngine,
-            validate_result,
-            &pharos_types::config::RuntimeConfig::default(),
-        ) {
-            Ok((new_state, _)) => current = Some(new_state),
-            Err(e) => {
-                block_error = Some(format!("{e}"));
-                break;
-            }
-        }
-    }
-
-    match (block_error, post) {
-        (None, Some(expected)) => {
-            let state = current.unwrap();
-            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after block sequence"))
-            }
-        }
-        (None, None) => CaseResult::Fail(format!(
-            "{case_name}: expected a block to fail but all blocks applied successfully"
-        )),
-        (Some(_), None) => CaseResult::Pass,
-        (Some(e), Some(_)) => {
-            CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
-        }
-    }
 }
 
 fn run_altair_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
@@ -697,95 +505,6 @@ fn run_altair_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult
         CaseResult::Pass
     } else {
         CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
-    }
-}
-
-fn run_bellatrix_blocks_case<E>(
-    case_dir: &Path,
-    case_name: &str,
-    blocks_count: u64,
-    validate_result: bool,
-) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + AltairProcessSlotsDispatch<E>
-        + AltairUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_stf::DenebUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::ElectraProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let (pre, post) = match load_pre_post_bellatrix_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-
-    let mut current: Option<E::BeaconState> = Some(pre);
-    let mut block_error: Option<String> = None;
-
-    for i in 0..blocks_count {
-        let block_file = format!("blocks_{i}.ssz_snappy");
-        let block = match load_bellatrix_signed_block::<E>(case_dir, &block_file) {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let state = current.take().unwrap();
-        match state_transition::<E, pharos_stf::NullExecutionEngine>(
-            state,
-            &block,
-            &pharos_stf::NullExecutionEngine,
-            validate_result,
-            &E::default_runtime_config(),
-        ) {
-            Ok((new_state, _)) => current = Some(new_state),
-            Err(e) => {
-                block_error = Some(format!("{e}"));
-                break;
-            }
-        }
-    }
-
-    match (block_error, post) {
-        (None, Some(expected)) => {
-            let state = current.unwrap();
-            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after block sequence"))
-            }
-        }
-        (None, None) => CaseResult::Fail(format!(
-            "{case_name}: expected a block to fail but all blocks applied successfully"
-        )),
-        (Some(_), None) => CaseResult::Pass,
-        (Some(e), Some(_)) => {
-            CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
-        }
     }
 }
 
@@ -882,96 +601,6 @@ enum CaseResult {
     Skip,
 }
 
-fn run_capella_blocks_case<E>(
-    case_dir: &Path,
-    case_name: &str,
-    blocks_count: u64,
-    validate_result: bool,
-) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + AltairProcessSlotsDispatch<E>
-        + AltairUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_stf::DenebUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::ElectraProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::CapellaSignedBeaconBlock: pharos_ssz::Decode,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let (pre, post) = match load_pre_post_capella_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-
-    let mut current: Option<E::BeaconState> = Some(pre);
-    let mut block_error: Option<String> = None;
-
-    for i in 0..blocks_count {
-        let block_file = format!("blocks_{i}.ssz_snappy");
-        let block = match load_capella_signed_block::<E>(case_dir, &block_file) {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let state = current.take().unwrap();
-        match state_transition::<E, pharos_stf::NullExecutionEngine>(
-            state,
-            &block,
-            &pharos_stf::NullExecutionEngine,
-            validate_result,
-            &E::default_runtime_config(),
-        ) {
-            Ok((new_state, _)) => current = Some(new_state),
-            Err(e) => {
-                block_error = Some(format!("{e}"));
-                break;
-            }
-        }
-    }
-
-    match (block_error, post) {
-        (None, Some(expected)) => {
-            let state = current.unwrap();
-            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after block sequence"))
-            }
-        }
-        (None, None) => CaseResult::Fail(format!(
-            "{case_name}: expected a block to fail but all blocks applied successfully"
-        )),
-        (Some(_), None) => CaseResult::Pass,
-        (Some(e), Some(_)) => {
-            CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
-        }
-    }
-}
-
 fn run_capella_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::capella::state_transition::process_slots_capella;
     use pharos_types::MainnetEthSpec as E;
@@ -1052,190 +681,6 @@ fn run_capella_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResul
         CaseResult::Pass
     } else {
         CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
-    }
-}
-
-fn run_deneb_blocks_case<E>(
-    case_dir: &Path,
-    case_name: &str,
-    blocks_count: u64,
-    validate_result: bool,
-) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + AltairProcessSlotsDispatch<E>
-        + AltairUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_stf::DenebUpgradeDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::ElectraProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::DenebSignedBeaconBlock: pharos_ssz::Decode,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let (pre, post) = match load_pre_post_deneb_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-
-    let mut current: Option<E::BeaconState> = Some(pre);
-    let mut block_error: Option<String> = None;
-
-    for i in 0..blocks_count {
-        let block_file = format!("blocks_{i}.ssz_snappy");
-        let block = match load_deneb_signed_block::<E>(case_dir, &block_file) {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let state = current.take().unwrap();
-        match state_transition::<E, pharos_stf::NullExecutionEngine>(
-            state,
-            &block,
-            &pharos_stf::NullExecutionEngine,
-            validate_result,
-            &E::default_runtime_config(),
-        ) {
-            Ok((new_state, _)) => current = Some(new_state),
-            Err(e) => {
-                block_error = Some(format!("{e}"));
-                break;
-            }
-        }
-    }
-
-    match (block_error, post) {
-        (None, Some(expected)) => {
-            let state = current.unwrap();
-            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after block sequence"))
-            }
-        }
-        (None, None) => CaseResult::Fail(format!(
-            "{case_name}: expected a block to fail but all blocks applied successfully"
-        )),
-        (Some(_), None) => CaseResult::Pass,
-        (Some(e), Some(_)) => {
-            CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
-        }
-    }
-}
-
-fn run_electra_blocks_case<E>(
-    case_dir: &Path,
-    case_name: &str,
-    blocks_count: u64,
-    validate_result: bool,
-) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + AltairProcessSlotsDispatch<E>
-        + AltairUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_stf::DenebUpgradeDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::ElectraJaFDispatch<E>
-        + pharos_stf::ElectraProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::ElectraSignedBeaconBlock: pharos_ssz::Decode,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let (pre, post) = match load_pre_post_electra_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-
-    let mut current: Option<E::BeaconState> = Some(pre);
-    let mut block_error: Option<String> = None;
-
-    for i in 0..blocks_count {
-        let block_file = format!("blocks_{i}.ssz_snappy");
-        let block = match load_electra_signed_block::<E>(case_dir, &block_file) {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let state = current.take().unwrap();
-        match state_transition::<E, pharos_stf::NullExecutionEngine>(
-            state,
-            &block,
-            &pharos_stf::NullExecutionEngine,
-            validate_result,
-            &E::default_runtime_config(),
-        ) {
-            Ok((new_state, _)) => current = Some(new_state),
-            Err(e) => {
-                block_error = Some(format!("{e}"));
-                break;
-            }
-        }
-    }
-
-    match (block_error, post) {
-        (None, Some(expected)) => {
-            let state = current.unwrap();
-            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after block sequence"))
-            }
-        }
-        (None, None) => CaseResult::Fail(format!(
-            "{case_name}: expected a block to fail but all blocks applied successfully"
-        )),
-        (Some(_), None) => CaseResult::Pass,
-        (Some(e), Some(_)) => {
-            CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
-        }
     }
 }
 
