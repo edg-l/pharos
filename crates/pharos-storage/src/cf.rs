@@ -132,15 +132,35 @@ pub const CF_COLD_STATES: &str = "cold-states";
 /// Written by Phase-3 freezer; read by Phase-2 regen for nearest-restore-point lookup.
 pub const CF_RESTORE_POINTS: &str = "restore-points";
 
-/// Returns all twenty column-family names in declaration order.
+// ── Schema v4 column families (D-schema-v4-migration) ─────────────────────────
+//
+// One new CF added in M10-DA Phase 4:
+//   `blob-sidecars` — per-block blob sidecar storage keyed by
+//   `block_root (32 B) || index_be (8 B)`.
+// Opening a v3 DB returns `SchemaMismatch` → operator must resync.
+
+/// Per-block blob sidecar store.
+///
+/// Per schema v4 (`D-blob-store-cf-keyed-by-root-index`, M10-DA Phase 4):
+/// key = `block_root` (32 B) `||` `index` (8 B big-endian u64),
+/// value = SSZ `BlobSidecar`.
+///
+/// The 32-byte `block_root` prefix enables a RocksDB prefix iterator that
+/// returns all sidecars for a given block in index order (big-endian keys
+/// sort numerically, so index 0 < 1 < 2 … within the same block root prefix).
+///
+/// Per `D-blob-store-cf-keyed-by-root-index`.
+pub const CF_BLOB_SIDECARS: &str = "blob-sidecars";
+
+/// Returns all twenty-one column-family names in declaration order.
 ///
 /// Used when opening the database with `DB::open_cf_descriptors` so every CF
 /// is registered. The ordering does not affect correctness; RocksDB looks up
 /// CFs by name.
 ///
-/// Per `D-schema-v3-migration`: the full v3 CF set (16 original + 4 new) is
-/// declared here so a fresh v3 DB opens with all CFs at first boot.
-pub fn all_cfs() -> [&'static str; 20] {
+/// Per `D-schema-v4-migration`: the full v4 CF set (20 v3 CFs + 1 new) is
+/// declared here so a fresh v4 DB opens with all CFs at first boot.
+pub fn all_cfs() -> [&'static str; 21] {
     [
         CF_DEFAULT,
         CF_BLOCKS,
@@ -162,5 +182,6 @@ pub fn all_cfs() -> [&'static str; 20] {
         CF_COLD_BLOCKS,
         CF_COLD_STATES,
         CF_RESTORE_POINTS,
+        CF_BLOB_SIDECARS,
     ]
 }

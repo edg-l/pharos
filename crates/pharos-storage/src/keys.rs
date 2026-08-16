@@ -12,6 +12,15 @@ use pharos_types::phase0::primitives::{Root, Slot};
 
 use crate::error::StorageError;
 
+// ── Blob sidecar key layout (D-blob-store-cf-keyed-by-root-index) ─────────────
+//
+// key = block_root (32 bytes) || index (8 bytes, big-endian u64)
+//
+// The big-endian index suffix means that RocksDB's lexicographic comparator
+// produces the same order as numeric index order within the same block-root
+// prefix (0 < 1 < 2 …). A prefix iterator on the 32-byte `block_root` thus
+// yields all sidecars in ascending index order without a separate sort step.
+
 /// Encodes a `Slot` as an 8-byte big-endian key.
 ///
 /// Big-endian order is required for correct lexicographic range scans on the
@@ -27,6 +36,22 @@ pub fn slot_key(slot: Slot) -> [u8; 8] {
 /// and `states` CFs.
 pub fn root_key(root: &Root) -> &[u8] {
     root.as_slice()
+}
+
+/// Encodes a `(block_root, blob_index)` pair as the 40-byte compound key used
+/// in the `blob-sidecars` CF.
+///
+/// Layout: `block_root[0..32] || index.to_be_bytes()[0..8]`.
+/// Big-endian index ensures lexicographic order == numeric index order within
+/// the same `block_root` prefix, enabling a single prefix scan to return
+/// all sidecars in ascending index order.
+///
+/// Per `D-blob-store-cf-keyed-by-root-index`.
+pub fn blob_sidecar_key(root: &Root, index: u64) -> [u8; 40] {
+    let mut key = [0u8; 40];
+    key[..32].copy_from_slice(root.as_slice());
+    key[32..40].copy_from_slice(&index.to_be_bytes());
+    key
 }
 
 /// Parses a big-endian 8-byte slice back into a `Slot`.

@@ -8,6 +8,7 @@
 
 use pharos_types::EthSpec;
 use pharos_types::PayloadStatus;
+use pharos_types::deneb::BlobSidecar;
 use pharos_types::phase0::primitives::{Root, Slot};
 
 use crate::error::StorageError;
@@ -336,4 +337,49 @@ pub trait Store<E: EthSpec>: Send + Sync + 'static {
     fn get_light_client_optimistic_update_capella(
         &self,
     ) -> Result<Option<E::CapellaLightClientOptimisticUpdate>, StorageError>;
+
+    // ── Blob sidecar store (schema v4, D-blob-store-cf-keyed-by-root-index) ───
+
+    /// Store an SSZ-encoded `BlobSidecar` keyed by `(block_root, index)`.
+    ///
+    /// Key layout: `block_root` (32 B) `||` `index` (8 B big-endian u64).
+    /// Big-endian index ensures sidecars are returned in ascending index order
+    /// by the prefix-scan `get_blob_sidecars_by_root`.
+    ///
+    /// Per `D-blob-store-cf-keyed-by-root-index`.
+    fn put_blob_sidecar(
+        &self,
+        block_root: Root,
+        index: u64,
+        sidecar: &BlobSidecar,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the `BlobSidecar` for `(block_root, index)`, if stored.
+    fn get_blob_sidecar(
+        &self,
+        block_root: &Root,
+        index: u64,
+    ) -> Result<Option<BlobSidecar>, StorageError>;
+
+    /// Retrieve all `BlobSidecar`s for `block_root`, ordered by ascending index.
+    ///
+    /// Implemented via a RocksDB prefix iterator on the 32-byte `block_root`
+    /// prefix of the `blob-sidecars` CF keys. Returns an empty vec when no
+    /// sidecars have been stored for this root.
+    fn get_blob_sidecars_by_root(
+        &self,
+        block_root: &Root,
+    ) -> Result<Vec<BlobSidecar>, StorageError>;
+
+    /// Delete all `BlobSidecar`s whose block slot is strictly below `prune_slot`.
+    ///
+    /// Implemented by scanning the `blob-sidecars` CF, decoding the
+    /// `signed_block_header.message.slot` from each sidecar, and deleting
+    /// entries whose slot falls below the prune horizon.
+    ///
+    /// Called from `run_blob_prune_loop` when
+    /// `current_epoch - epoch_of(blob) > MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS`.
+    /// The `slot_to_block_root` index is NOT pruned (it is navigational and
+    /// must persist indefinitely per `D-blob-store-cf-keyed-by-root-index`).
+    fn prune_blob_sidecars_below_slot(&self, prune_slot: Slot) -> Result<(), StorageError>;
 }

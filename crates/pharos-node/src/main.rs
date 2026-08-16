@@ -25,6 +25,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::info;
 
 use pharos_node::ExecutionEngineHandle;
+use pharos_node::blob_prune::run_blob_prune_loop;
 use pharos_node::block_ingestion::{IngestionEgress, ReinjectBlock, run_block_ingestion_loop};
 use pharos_node::checkpoint_sync::{apply_anchor, fetch_checkpoint};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
@@ -1138,6 +1139,31 @@ async fn main() -> anyhow::Result<()> {
         );
     } else {
         info!("--no-freezer: hot/cold migration disabled");
+    }
+
+    // ── Blob prune loop (W8: separate head-watch loop per D-blob-store-cf-keyed-by-root-index)
+    //
+    // Driven off a clone of `head_rx` (same pattern as the freezer loop).
+    // Deletes blob sidecars whose epoch is older than
+    // `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` behind the head epoch, clamped
+    // to never prune at or below `deneb_fork_epoch`.
+    {
+        let blob_prune_head_rx = head_rx.clone();
+        let blob_prune_store = Arc::clone(&store_arc);
+        let blob_prune_fc = Arc::clone(&fork_choice);
+        let deneb_fork_epoch = runtime_cfg.deneb_fork_epoch;
+        let blob_prune_shutdown = pharos_node_shutdown_rx.clone();
+        tokio::spawn(async move {
+            run_blob_prune_loop::<MainnetEthSpec>(
+                blob_prune_head_rx,
+                blob_prune_store,
+                blob_prune_fc,
+                deneb_fork_epoch,
+                blob_prune_shutdown,
+            )
+            .await;
+        });
+        info!(deneb_fork_epoch, "blob prune loop started");
     }
 
     // Spawn engine driver loop + block ingestion loop when the engine is active.

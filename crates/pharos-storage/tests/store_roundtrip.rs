@@ -59,15 +59,16 @@ fn make_snapshot(head_slot: u64) -> ForkChoiceSnapshot {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// Opening a fresh DB writes schema_version=3; reopening reads it back.
+/// Opening a fresh DB writes schema_version=4; reopening reads it back.
 ///
 /// Version history:
 /// - v1 (M3a): initial schema.
 /// - v2 (M4a): added `payload-status` CF.
 /// - v3 (M-Storage Phase 1): added `state-summary`, `cold-blocks`, `cold-states`,
 ///   `restore-points` CFs per `D-schema-v3-migration`.
+/// - v4 (M10-DA Phase 4): added `blob-sidecars` CF per `D-schema-v4-migration`.
 #[test]
-fn open_empty_db_writes_schema_version_3() {
+fn open_empty_db_writes_schema_version_4() {
     let dir = tempfile::tempdir().expect("tempdir");
     {
         let _store = open(dir.path());
@@ -77,7 +78,7 @@ fn open_empty_db_writes_schema_version_3() {
     let val = <S as Store<E>>::get_metadata(&store, b"schema_version")
         .expect("get schema_version")
         .expect("schema_version must be present");
-    assert_eq!(val, 3u32.to_le_bytes(), "schema_version must be 3 LE");
+    assert_eq!(val, 4u32.to_le_bytes(), "schema_version must be 4 LE");
 }
 
 /// Store a `StateSummary`, retrieve it, assert field equality.
@@ -263,7 +264,7 @@ fn schema_mismatch_detected() {
     match result {
         Err(StorageError::SchemaMismatch { found, expected }) => {
             assert_eq!(found, 99, "found must be 99");
-            assert_eq!(expected, 3, "expected must be 3");
+            assert_eq!(expected, 4, "expected must be 4");
         }
         other => panic!("expected SchemaMismatch, got {other:?}"),
     }

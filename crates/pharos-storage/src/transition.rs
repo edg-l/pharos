@@ -8,6 +8,7 @@
 
 use pharos_types::EthSpec;
 use pharos_types::PayloadStatus;
+use pharos_types::deneb::BlobSidecar;
 use pharos_types::phase0::primitives::{Root, Slot};
 
 use crate::forkchoice::ForkChoiceSnapshot;
@@ -66,6 +67,17 @@ pub struct BlockTransition<E: EthSpec> {
     /// Never bypassed with a separate `put_metadata` call on the live import
     /// path; all metadata writes ride the atomic batch.
     pub metadata: Vec<(&'static [u8], Vec<u8>)>,
+
+    /// Blob sidecars to write atomically with the block.
+    ///
+    /// Per `D-blob-store-cf-keyed-by-root-index` (M10-DA Phase 4, Task 4.3):
+    /// each `(block_root, index, BlobSidecar)` triple is written to the
+    /// `blob-sidecars` CF in the same `WriteBatch` as the block so that
+    /// block + blobs are either both present or both absent after a crash.
+    ///
+    /// Empty for all pre-Deneb blocks and Deneb blocks with no blob commitments.
+    /// Populated by the Deneb import path when blob sidecars arrive.
+    pub blob_sidecars: Vec<(Root, u64, BlobSidecar)>,
 }
 
 impl<E: EthSpec> BlockTransition<E> {
@@ -81,6 +93,7 @@ impl<E: EthSpec> BlockTransition<E> {
             payload_status: None,
             state_summary: None,
             metadata: Vec::new(),
+            blob_sidecars: Vec::new(),
         }
     }
 }

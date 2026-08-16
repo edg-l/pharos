@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use pharos_ssz::{Decode, Encode};
+use pharos_types::deneb::BlobSidecar;
 use pharos_types::phase0::primitives::{Root, Slot};
 use pharos_types::{BeaconStateView, EthSpec, PayloadStatus};
 use rocksdb::{
@@ -16,15 +17,15 @@ use rocksdb::{
 use tracing::warn;
 
 use crate::cf::{
-    CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_COLD_BLOCKS, CF_COLD_STATES, CF_FORKCHOICE,
-    CF_LC_BOOTSTRAP, CF_LC_BOOTSTRAP_CAPELLA, CF_LC_FINALITY_UPDATE, CF_LC_FINALITY_UPDATE_CAPELLA,
-    CF_LC_OPTIMISTIC_UPDATE, CF_LC_OPTIMISTIC_UPDATE_CAPELLA, CF_LC_UPDATE, CF_LC_UPDATE_CAPELLA,
-    CF_METADATA, CF_PAYLOAD_STATUS, CF_RESTORE_POINTS, CF_SLOT_TO_BLOCK_ROOT, CF_STATE_SUMMARY,
-    CF_STATES, LC_LATEST_KEY, all_cfs,
+    CF_BLOB_SIDECARS, CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_COLD_BLOCKS, CF_COLD_STATES,
+    CF_FORKCHOICE, CF_LC_BOOTSTRAP, CF_LC_BOOTSTRAP_CAPELLA, CF_LC_FINALITY_UPDATE,
+    CF_LC_FINALITY_UPDATE_CAPELLA, CF_LC_OPTIMISTIC_UPDATE, CF_LC_OPTIMISTIC_UPDATE_CAPELLA,
+    CF_LC_UPDATE, CF_LC_UPDATE_CAPELLA, CF_METADATA, CF_PAYLOAD_STATUS, CF_RESTORE_POINTS,
+    CF_SLOT_TO_BLOCK_ROOT, CF_STATE_SUMMARY, CF_STATES, LC_LATEST_KEY, all_cfs,
 };
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
-use crate::keys::{parse_slot_key, root_key, slot_key};
+use crate::keys::{blob_sidecar_key, parse_slot_key, root_key, slot_key};
 use crate::state_summary::StateSummary;
 use crate::store::{ColdMigrationBatch, Store};
 use crate::transition::BlockTransition;
@@ -43,7 +44,12 @@ use crate::transition::BlockTransition;
 ///   `StorageError::SchemaMismatch`; the operator must resync from checkpoint
 ///   (no in-place migration: the live node had no post-startup block/state
 ///   persistence to preserve before this milestone).
-const SCHEMA_VERSION: u32 = 3;
+/// - v4 (M10-DA Phase 4): added `blob-sidecars` CF for Deneb blob sidecar
+///   storage per `D-blob-store-cf-keyed-by-root-index` and
+///   `D-schema-v4-migration`. Opening a v3 database returns
+///   `StorageError::SchemaMismatch`; the operator must resync from checkpoint
+///   (no in-place migration).
+const SCHEMA_VERSION: u32 = 4;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -68,7 +74,7 @@ pub struct RocksStore {
 
 impl RocksStore {
     /// Open (or create) the RocksDB database at `cfg.path` with the full
-    /// schema-v3 column-family set registered (`cf::all_cfs`).
+    /// schema-v4 column-family set registered (`cf::all_cfs`).
     ///
     /// Steps per `D-rocksdb`:
     /// 1. Build global `Options` with `create_if_missing` / `create_missing_column_families`.
@@ -393,6 +399,14 @@ impl<E: EthSpec> Store<E> for RocksStore {
             let cf = self.cf_handle(CF_METADATA)?;
             for (key, value) in &batch.metadata {
                 wb.put_cf(cf, *key, value);
+            }
+        }
+
+        if !batch.blob_sidecars.is_empty() {
+            let cf = self.cf_handle(CF_BLOB_SIDECARS)?;
+            for (block_root, index, sidecar) in &batch.blob_sidecars {
+                let key = blob_sidecar_key(block_root, *index);
+                wb.put_cf(cf, key, sidecar.as_ssz_bytes());
             }
         }
 
@@ -829,6 +843,98 @@ impl<E: EthSpec> Store<E> for RocksStore {
             }
         }
     }
+
+    // ── Blob sidecar store (schema v4) ────────────────────────────────────────
+
+    fn put_blob_sidecar(
+        &self,
+        block_root: Root,
+        index: u64,
+        sidecar: &BlobSidecar,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_BLOB_SIDECARS)?;
+        let key = blob_sidecar_key(&block_root, index);
+        self.db.put_cf(cf, key, sidecar.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_blob_sidecar(
+        &self,
+        block_root: &Root,
+        index: u64,
+    ) -> Result<Option<BlobSidecar>, StorageError> {
+        let cf = self.cf_handle(CF_BLOB_SIDECARS)?;
+        let key = blob_sidecar_key(block_root, index);
+        match self.db.get_cf(cf, key)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let sidecar = BlobSidecar::from_ssz_bytes(&bytes)?;
+                Ok(Some(sidecar))
+            }
+        }
+    }
+
+    fn get_blob_sidecars_by_root(
+        &self,
+        block_root: &Root,
+    ) -> Result<Vec<BlobSidecar>, StorageError> {
+        let cf = self.cf_handle(CF_BLOB_SIDECARS)?;
+        // Prefix scan: all keys starting with the 32-byte block_root, in
+        // lexicographic order (= ascending blob index order, big-endian suffix).
+        let prefix = root_key(block_root);
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
+
+        let mut sidecars = Vec::new();
+        for item in iter {
+            let (k, v) = item?;
+            // Stop when the key no longer starts with block_root (32 bytes).
+            if k.len() < 32 || &k[..32] != prefix {
+                break;
+            }
+            let sidecar = BlobSidecar::from_ssz_bytes(&v)?;
+            sidecars.push(sidecar);
+        }
+        Ok(sidecars)
+    }
+
+    fn prune_blob_sidecars_below_slot(&self, prune_slot: Slot) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_BLOB_SIDECARS)?;
+        // Collect keys to delete — cannot delete while iterating the same CF.
+        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
+        let mut to_delete: Vec<Vec<u8>> = Vec::new();
+
+        for item in iter {
+            let (k, v) = item?;
+            let sidecar = match BlobSidecar::from_ssz_bytes(&v) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        key_len = k.len(),
+                        val_len = v.len(),
+                        error = ?e,
+                        "blob-sidecars CF: corrupt sidecar value; skipping"
+                    );
+                    continue;
+                }
+            };
+            let slot = sidecar.signed_block_header.message.slot;
+            if slot < prune_slot {
+                to_delete.push(k.to_vec());
+            }
+        }
+
+        if !to_delete.is_empty() {
+            let mut wb = WriteBatch::default();
+            let cf = self.cf_handle(CF_BLOB_SIDECARS)?;
+            for key in &to_delete {
+                wb.delete_cf(cf, key);
+            }
+            self.db.write(wb)?;
+        }
+        Ok(())
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -868,7 +974,7 @@ mod tests {
     }
 
     /// Opening a database written with schema v1 (before the `payload-status` CF was added)
-    /// must return `SchemaMismatch { found: 1, expected: 3 }`.
+    /// must return `SchemaMismatch { found: 1, expected: 4 }`.
     #[test]
     fn schema_v1_returns_mismatch() {
         use rocksdb::{ColumnFamilyDescriptor, DB, Options};
@@ -904,7 +1010,7 @@ mod tests {
                 .expect("write v1 sentinel");
         }
 
-        // Now open with the current `RocksStore::open` which expects v3.
+        // Now open with the current `RocksStore::open` which expects v4.
         let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
@@ -915,15 +1021,15 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 1,
-                    expected: 3
+                    expected: 4
                 })
             ),
-            "expected SchemaMismatch{{found:1,expected:3}}, got {result:?}"
+            "expected SchemaMismatch{{found:1,expected:4}}, got {result:?}"
         );
     }
 
     /// Opening a database written with schema v2 (before the v3 CFs were added)
-    /// must return `SchemaMismatch { found: 2, expected: 3 }`.
+    /// must return `SchemaMismatch { found: 2, expected: 4 }`.
     #[test]
     fn schema_v2_returns_mismatch() {
         use rocksdb::{ColumnFamilyDescriptor, DB, Options};
@@ -964,7 +1070,7 @@ mod tests {
                 .expect("write v2 sentinel");
         }
 
-        // Now open with the current `RocksStore::open` which expects v3.
+        // Now open with the current `RocksStore::open` which expects v4.
         let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
@@ -975,14 +1081,14 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 2,
-                    expected: 3
+                    expected: 4
                 })
             ),
-            "expected SchemaMismatch{{found:2,expected:3}}, got {result:?}"
+            "expected SchemaMismatch{{found:2,expected:4}}, got {result:?}"
         );
     }
 
-    /// Opening a fresh v3 database must allow reading/writing the `payload-status` and
+    /// Opening a fresh v4 database must allow reading/writing the `payload-status` and
     /// `state-summary` CFs.
     #[test]
     fn fresh_db_payload_status_cf_queryable() {
@@ -993,7 +1099,7 @@ mod tests {
             path: dir.path().join("chain_db"),
             create_if_missing: true,
         })
-        .expect("open fresh v2 store");
+        .expect("open fresh v4 store");
 
         let root = Root::from([0x42u8; 32]);
 
