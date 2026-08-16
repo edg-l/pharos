@@ -2529,38 +2529,7 @@ fn read_execution_valid(case_dir: &Path) -> bool {
 
 // ── Capella operations ────────────────────────────────────────────────────────
 
-/// Run all capella operation sub-categories for the mainnet preset.
-pub fn run_operations_capella_mainnet(root: &Path) -> OpsResult {
-    let mut total = OpsResult::new();
-    total.merge(run_capella_block_header_mainnet(root));
-    total.merge(run_capella_proposer_slashing_mainnet(root));
-    total.merge(run_capella_attester_slashing_mainnet(root));
-    total.merge(run_capella_deposit_mainnet(root));
-    total.merge(run_capella_attestation_mainnet(root));
-    total.merge(run_capella_voluntary_exit_mainnet(root));
-    total.merge(run_capella_sync_aggregate_mainnet(root));
-    total.merge(run_capella_execution_payload_mainnet(root));
-    total.merge(run_capella_withdrawals_mainnet(root));
-    total.merge(run_capella_bls_to_execution_change_mainnet(root));
-    total
-}
-
-/// Run all capella operation sub-categories for the minimal preset.
-pub fn run_operations_capella_minimal(root: &Path) -> OpsResult {
-    let mut total = OpsResult::new();
-    total.merge(run_capella_block_header_minimal(root));
-    total.merge(run_capella_proposer_slashing_minimal(root));
-    total.merge(run_capella_attester_slashing_minimal(root));
-    total.merge(run_capella_deposit_minimal(root));
-    total.merge(run_capella_attestation_minimal(root));
-    total.merge(run_capella_voluntary_exit_minimal(root));
-    total.merge(run_capella_sync_aggregate_minimal(root));
-    total.merge(run_capella_execution_payload_minimal(root));
-    total.merge(run_capella_withdrawals_minimal(root));
-    total.merge(run_capella_bls_to_execution_change_minimal(root));
-    total
-}
-
+/// Walk options for capella operation fixtures.
 fn capella_ops_walk_opts() -> WalkOpts {
     WalkOpts {
         meta_required: false,
@@ -2568,1407 +2537,1371 @@ fn capella_ops_walk_opts() -> WalkOpts {
     }
 }
 
-fn run_capella_op_preset(
-    root: &Path,
+/// Descriptor table for capella operations — mainnet preset.
+///
+/// Sub order (verified from `run_operations_capella_mainnet` body):
+///   block_header, proposer_slashing, attester_slashing, deposit, attestation,
+///   voluntary_exit, sync_aggregate, execution_payload, withdrawals,
+///   bls_to_execution_change
+///
+/// block_header, sync_aggregate, execution_payload, and withdrawals are bespoke
+/// (projection through `capella_state_to_altair` / `update_capella_from_altair`,
+/// or loading `execution_payload.ssz_snappy` / `body.ssz_snappy`).
+/// proposer_slashing, attester_slashing, and bls_to_execution_change operate
+/// directly on the capella state.
+/// deposit, attestation, and voluntary_exit project via capella_state_to_altair.
+#[allow(clippy::type_complexity)]
+fn capella_op_table_mainnet() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)> {
+    use pharos_types::MainnetEthSpec as E;
+    vec![
+        // block_header: bespoke — projects via capella_state_to_altair, patches body_root.
+        (
+            "block_header",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_ssz::TreeHash as _;
+                use pharos_stf::altair::block::process_block_header_altair;
+                use pharos_stf::capella::helpers::{
+                    capella_state_to_altair, update_capella_from_altair,
+                };
+                use pharos_types::capella::MainnetBeaconBlock;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let block =
+                    match load_ssz_snappy::<MainnetBeaconBlock>(&case_dir, "block.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let mut altair_state = capella_state_to_altair(&pre);
+                let altair_block = pharos_stf::capella::capella_block_to_altair_block(&block);
+                let result = process_block_header_altair::<
+                    16,
+                    2,
+                    128,
+                    16,
+                    16,
+                    2048,
+                    33,
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut altair_state, &altair_block);
+                if result.is_ok() {
+                    altair_state.latest_block_header.body_root = block.body.tree_hash_root();
+                }
+                update_capella_from_altair(&mut pre, altair_state);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "block_header",
+                )
+            }),
+        ),
+        // proposer_slashing: operates directly on capella state.
+        (
+            "proposer_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::capella::operations::process_proposer_slashing_capella;
+                use pharos_types::phase0::ProposerSlashing;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<ProposerSlashing>(
+                    &case_dir,
+                    "proposer_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_proposer_slashing_capella::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "proposer_slashing",
+                )
+            }),
+        ),
+        // attester_slashing: operates directly on capella state.
+        (
+            "attester_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::capella::operations::process_attester_slashing_capella;
+                use pharos_types::phase0::AttesterSlashing;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<AttesterSlashing<2048>>(
+                    &case_dir,
+                    "attester_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_attester_slashing_capella::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attester_slashing",
+                )
+            }),
+        ),
+        // deposit: projects via capella_state_to_altair.
+        (
+            "deposit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_deposit;
+                use pharos_stf::capella::helpers::{
+                    capella_state_to_altair, update_capella_from_altair,
+                };
+                use pharos_types::phase0::Deposit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<Deposit<33>>(&case_dir, "deposit.ssz_snappy") {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = capella_state_to_altair(&pre);
+                let result = process_deposit::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_capella_from_altair(&mut pre, altair_state);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "deposit")
+            }),
+        ),
+        // attestation: projects via capella_state_to_altair.
+        (
+            "attestation",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_attestation;
+                use pharos_stf::capella::helpers::{
+                    capella_state_to_altair, update_capella_from_altair,
+                };
+                use pharos_types::phase0::Attestation;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op =
+                    match load_ssz_snappy::<Attestation<2048>>(&case_dir, "attestation.ssz_snappy")
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let mut altair_state = capella_state_to_altair(&pre);
+                let result = process_attestation::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_capella_from_altair(&mut pre, altair_state);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+            }),
+        ),
+        // voluntary_exit: projects via capella_state_to_altair.
+        (
+            "voluntary_exit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_voluntary_exit;
+                use pharos_stf::capella::helpers::{
+                    capella_state_to_altair, update_capella_from_altair,
+                };
+                use pharos_types::phase0::SignedVoluntaryExit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<SignedVoluntaryExit>(
+                    &case_dir,
+                    "voluntary_exit.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = capella_state_to_altair(&pre);
+                let result = process_voluntary_exit::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_capella_from_altair(&mut pre, altair_state);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "voluntary_exit",
+                )
+            }),
+        ),
+        // sync_aggregate: bespoke — projects via capella_state_to_altair, uses MainnetSyncAggregate.
+        (
+            "sync_aggregate",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, meta| {
+                use pharos_stf::altair::operations::process_sync_aggregate;
+                use pharos_stf::capella::helpers::{
+                    capella_state_to_altair, update_capella_from_altair,
+                };
+                use pharos_types::altair::MainnetSyncAggregate;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<MainnetSyncAggregate>(
+                    &case_dir,
+                    "sync_aggregate.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = capella_state_to_altair(&pre);
+                let result = process_sync_aggregate::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_capella_from_altair(&mut pre, altair_state);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "sync_aggregate",
+                )
+            }),
+        ),
+        // execution_payload: bespoke — uses read_execution_valid + FixedExecutionEngine.
+        (
+            "execution_payload",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::FixedExecutionEngine;
+                use pharos_stf::capella::operations::process_execution_payload;
+                use pharos_types::capella::MainnetBeaconBlockBody;
+
+                let execution_valid = read_execution_valid(&case_dir);
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let body =
+                    match load_ssz_snappy::<MainnetBeaconBlockBody>(&case_dir, "body.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let engine = FixedExecutionEngine(execution_valid);
+                let mut pre = pre_inner;
+                let result =
+                    process_execution_payload::<
+                        16,
+                        2,
+                        128,
+                        16,
+                        16,
+                        2048,
+                        33,
+                        512,
+                        1_073_741_824,
+                        1_048_576,
+                        256,
+                        32,
+                        16, // MAX_WITHDRAWALS_PER_PAYLOAD mainnet
+                        16, // MAX_BLS_TO_EXECUTION_CHANGES mainnet
+                        8192,
+                        16_777_216,
+                        2048,
+                        1_099_511_627_776,
+                        65536,
+                        8192,
+                        4,
+                        E,
+                        FixedExecutionEngine,
+                    >(&mut pre, &body, &engine, &E::default_runtime_config());
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result.map(|_| ()),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "execution_payload",
+                )
+            }),
+        ),
+        // withdrawals: bespoke — loads execution_payload.ssz_snappy, direct capella state.
+        (
+            "withdrawals",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::capella::operations::process_withdrawals;
+                use pharos_types::capella::MainnetExecutionPayload;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let payload = match load_ssz_snappy::<MainnetExecutionPayload>(
+                    &case_dir,
+                    "execution_payload.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_withdrawals::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    1_073_741_824,
+                    1_048_576,
+                    16, // MAX_WITHDRAWALS_PER_PAYLOAD mainnet
+                    E,
+                >(&mut pre, &payload);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "withdrawals")
+            }),
+        ),
+        // bls_to_execution_change: operates directly on capella state.
+        (
+            "bls_to_execution_change",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::capella::operations::process_bls_to_execution_change;
+                use pharos_types::capella::SignedBLSToExecutionChange;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<SignedBLSToExecutionChange>(
+                    &case_dir,
+                    "address_change.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_bls_to_execution_change::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "bls_to_execution_change",
+                )
+            }),
+        ),
+    ]
+}
+
+/// Descriptor table for capella operations — minimal preset.
+///
+/// Same sub order as mainnet: block_header, proposer_slashing, attester_slashing,
+/// deposit, attestation, voluntary_exit, sync_aggregate, execution_payload,
+/// withdrawals, bls_to_execution_change.
+#[allow(clippy::type_complexity)]
+fn capella_op_table_minimal() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)> {
+    use pharos_types::MinimalEthSpec as E;
+    vec![
+        // block_header: bespoke — projects via capella_state_to_altair, patches body_root.
+        (
+            "block_header",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_ssz::TreeHash as _;
+                use pharos_stf::altair::block::process_block_header_altair;
+                use pharos_stf::capella::helpers::{
+                    capella_state_to_altair, update_capella_from_altair,
+                };
+                use pharos_types::capella::MinimalBeaconBlock;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let block =
+                    match load_ssz_snappy::<MinimalBeaconBlock>(&case_dir, "block.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let mut altair_state = capella_state_to_altair(&pre);
+                let altair_block = pharos_stf::capella::capella_block_to_altair_block(&block);
+                let result = process_block_header_altair::<
+                    16,
+                    2,
+                    128,
+                    16,
+                    16,
+                    2048,
+                    33,
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut altair_state, &altair_block);
+                if result.is_ok() {
+                    altair_state.latest_block_header.body_root = block.body.tree_hash_root();
+                }
+                update_capella_from_altair(&mut pre, altair_state);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "block_header",
+                )
+            }),
+        ),
+        // proposer_slashing: operates directly on capella state.
+        (
+            "proposer_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::capella::operations::process_proposer_slashing_capella;
+                use pharos_types::phase0::ProposerSlashing;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<ProposerSlashing>(
+                    &case_dir,
+                    "proposer_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_proposer_slashing_capella::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "proposer_slashing",
+                )
+            }),
+        ),
+        // attester_slashing: operates directly on capella state.
+        (
+            "attester_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::capella::operations::process_attester_slashing_capella;
+                use pharos_types::phase0::AttesterSlashing;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<AttesterSlashing<2048>>(
+                    &case_dir,
+                    "attester_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_attester_slashing_capella::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attester_slashing",
+                )
+            }),
+        ),
+        // deposit: projects via capella_state_to_altair.
+        (
+            "deposit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_deposit;
+                use pharos_stf::capella::helpers::{
+                    capella_state_to_altair, update_capella_from_altair,
+                };
+                use pharos_types::phase0::Deposit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<Deposit<33>>(&case_dir, "deposit.ssz_snappy") {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = capella_state_to_altair(&pre);
+                let result =
+                    process_deposit::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                        &mut altair_state,
+                        &op,
+                        bls_verify(&meta),
+                    );
+                update_capella_from_altair(&mut pre, altair_state);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "deposit")
+            }),
+        ),
+        // attestation: projects via capella_state_to_altair.
+        (
+            "attestation",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_attestation;
+                use pharos_stf::capella::helpers::{
+                    capella_state_to_altair, update_capella_from_altair,
+                };
+                use pharos_types::phase0::Attestation;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op =
+                    match load_ssz_snappy::<Attestation<2048>>(&case_dir, "attestation.ssz_snappy")
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let mut altair_state = capella_state_to_altair(&pre);
+                let result =
+                    process_attestation::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                        &mut altair_state,
+                        &op,
+                        bls_verify(&meta),
+                    );
+                update_capella_from_altair(&mut pre, altair_state);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+            }),
+        ),
+        // voluntary_exit: projects via capella_state_to_altair.
+        (
+            "voluntary_exit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_voluntary_exit;
+                use pharos_stf::capella::helpers::{
+                    capella_state_to_altair, update_capella_from_altair,
+                };
+                use pharos_types::phase0::SignedVoluntaryExit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<SignedVoluntaryExit>(
+                    &case_dir,
+                    "voluntary_exit.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = capella_state_to_altair(&pre);
+                let result = process_voluntary_exit::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_capella_from_altair(&mut pre, altair_state);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "voluntary_exit",
+                )
+            }),
+        ),
+        // sync_aggregate: bespoke — projects via capella_state_to_altair, uses MinimalSyncAggregate.
+        (
+            "sync_aggregate",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, meta| {
+                use pharos_stf::altair::operations::process_sync_aggregate;
+                use pharos_stf::capella::helpers::{
+                    capella_state_to_altair, update_capella_from_altair,
+                };
+                use pharos_types::altair::MinimalSyncAggregate;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<MinimalSyncAggregate>(
+                    &case_dir,
+                    "sync_aggregate.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = capella_state_to_altair(&pre);
+                let result = process_sync_aggregate::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_capella_from_altair(&mut pre, altair_state);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "sync_aggregate",
+                )
+            }),
+        ),
+        // execution_payload: bespoke — uses read_execution_valid + FixedExecutionEngine.
+        (
+            "execution_payload",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::FixedExecutionEngine;
+                use pharos_stf::capella::operations::process_execution_payload;
+                use pharos_types::capella::MinimalBeaconBlockBody;
+
+                let execution_valid = read_execution_valid(&case_dir);
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let body =
+                    match load_ssz_snappy::<MinimalBeaconBlockBody>(&case_dir, "body.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let engine = FixedExecutionEngine(execution_valid);
+                let mut pre = pre_inner;
+                let result =
+                    process_execution_payload::<
+                        16,
+                        2,
+                        128,
+                        16,
+                        16,
+                        2048,
+                        33,
+                        32,
+                        1_073_741_824,
+                        1_048_576,
+                        256,
+                        32,
+                        4,  // MAX_WITHDRAWALS_PER_PAYLOAD minimal
+                        16, // MAX_BLS_TO_EXECUTION_CHANGES minimal
+                        64,
+                        16_777_216,
+                        32,
+                        1_099_511_627_776,
+                        64,
+                        64,
+                        4,
+                        E,
+                        FixedExecutionEngine,
+                    >(&mut pre, &body, &engine, &E::default_runtime_config());
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result.map(|_| ()),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "execution_payload",
+                )
+            }),
+        ),
+        // withdrawals: bespoke — loads execution_payload.ssz_snappy, direct capella state.
+        (
+            "withdrawals",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::capella::operations::process_withdrawals;
+                use pharos_types::capella::MinimalExecutionPayload;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let payload = match load_ssz_snappy::<MinimalExecutionPayload>(
+                    &case_dir,
+                    "execution_payload.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_withdrawals::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    1_073_741_824,
+                    1_048_576,
+                    4, // MAX_WITHDRAWALS_PER_PAYLOAD minimal
+                    E,
+                >(&mut pre, &payload);
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "withdrawals")
+            }),
+        ),
+        // bls_to_execution_change: operates directly on capella state.
+        (
+            "bls_to_execution_change",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::capella::operations::process_bls_to_execution_change;
+                use pharos_types::capella::SignedBLSToExecutionChange;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::capella_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<SignedBLSToExecutionChange>(
+                    &case_dir,
+                    "address_change.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_bls_to_execution_change::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::capella_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "bls_to_execution_change",
+                )
+            }),
+        ),
+    ]
+}
+
+/// Enumerate all capella operation cases for one preset, returning `CaseTask`s
+/// with sequential `case_ordinal` in (sub-table-order, walk-order).
+fn enumerate_operations_capella(
+    root: &std::path::Path,
     preset: &str,
-    sub: &str,
-    run_case: impl Fn(&Path, &str, bool) -> CaseResult + Sync + Send,
-) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "capella",
-        "operations",
-        Some(sub),
-        capella_ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("capella/operations/{preset}/{sub}/{}", dir_name(&case_dir));
-            let verify_signatures = bls_verify(&meta);
-            run_case(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn cmp_capella_result(
-    result: Result<(), pharos_stf::StateTransitionError>,
-    current_bytes: Vec<u8>,
-    post_bytes: Option<Vec<u8>>,
-    case_name: &str,
-    op: &str,
-) -> CaseResult {
-    match (result, post_bytes) {
-        (Ok(()), Some(expected)) => {
-            if current_bytes == expected {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after {op}"))
-            }
-        }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
-    }
-}
-
-// ── capella/block_header ──────────────────────────────────────────────────────
-
-fn run_capella_block_header_mainnet(root: &Path) -> OpsResult {
-    run_capella_op_preset(root, "mainnet", "block_header", |case_dir, case_name, _| {
-        use pharos_ssz::TreeHash as _;
-        use pharos_stf::altair::block::process_block_header_altair;
-        use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
-        use pharos_types::{MainnetEthSpec as E, capella::MainnetBeaconBlock};
-
-        let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-            case_dir,
-            "pre.ssz_snappy",
-        ) {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-            match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                case_dir,
-                "post.ssz_snappy",
-            ) {
-                Ok(v) => Some(E::capella_into_state(v)),
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            }
-        } else {
-            None
-        };
-        let block = match load_ssz_snappy::<MainnetBeaconBlock>(case_dir, "block.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let mut pre = pre_inner;
-        let mut altair_state = capella_state_to_altair(&pre);
-        let altair_block = pharos_stf::capella::capella_block_to_altair_block(&block);
-        let result = process_block_header_altair::<
-            16,
-            2,
-            128,
-            16,
-            16,
-            2048,
-            33,
-            8192,
-            16_777_216,
-            2048,
-            1_099_511_627_776,
-            65536,
-            8192,
-            4,
-            512,
-            E,
-        >(&mut altair_state, &altair_block);
-        if result.is_ok() {
-            altair_state.latest_block_header.body_root = block.body.tree_hash_root();
-        }
-        update_capella_from_altair(&mut pre, altair_state);
-        cmp_capella_result(
-            result,
-            E::capella_into_state(pre).as_ssz_bytes(),
-            post_inner.map(|s| s.as_ssz_bytes()),
-            case_name,
-            "block_header",
-        )
-    })
-}
-
-fn run_capella_block_header_minimal(root: &Path) -> OpsResult {
-    run_capella_op_preset(root, "minimal", "block_header", |case_dir, case_name, _| {
-        use pharos_ssz::TreeHash as _;
-        use pharos_stf::altair::block::process_block_header_altair;
-        use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
-        use pharos_types::{MinimalEthSpec as E, capella::MinimalBeaconBlock};
-
-        let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-            case_dir,
-            "pre.ssz_snappy",
-        ) {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-            match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                case_dir,
-                "post.ssz_snappy",
-            ) {
-                Ok(v) => Some(E::capella_into_state(v)),
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            }
-        } else {
-            None
-        };
-        let block = match load_ssz_snappy::<MinimalBeaconBlock>(case_dir, "block.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let mut pre = pre_inner;
-        let mut altair_state = capella_state_to_altair(&pre);
-        let altair_block = pharos_stf::capella::capella_block_to_altair_block(&block);
-        let result = process_block_header_altair::<
-            16,
-            2,
-            128,
-            16,
-            16,
-            2048,
-            33,
-            64,
-            16_777_216,
-            32,
-            1_099_511_627_776,
-            64,
-            64,
-            4,
-            32,
-            E,
-        >(&mut altair_state, &altair_block);
-        if result.is_ok() {
-            altair_state.latest_block_header.body_root = block.body.tree_hash_root();
-        }
-        update_capella_from_altair(&mut pre, altair_state);
-        cmp_capella_result(
-            result,
-            E::capella_into_state(pre).as_ssz_bytes(),
-            post_inner.map(|s| s.as_ssz_bytes()),
-            case_name,
-            "block_header",
-        )
-    })
-}
-
-// ── capella/proposer_slashing ─────────────────────────────────────────────────
-
-fn run_capella_proposer_slashing_mainnet(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "mainnet",
-        "proposer_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::capella::operations::process_proposer_slashing_capella;
-            use pharos_types::{MainnetEthSpec as E, phase0::ProposerSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing =
-                match load_ssz_snappy::<ProposerSlashing>(case_dir, "proposer_slashing.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let result = process_proposer_slashing_capella::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                256,
-                32,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "proposer_slashing",
-            )
-        },
-    )
-}
-
-fn run_capella_proposer_slashing_minimal(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "minimal",
-        "proposer_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::capella::operations::process_proposer_slashing_capella;
-            use pharos_types::{MinimalEthSpec as E, phase0::ProposerSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing =
-                match load_ssz_snappy::<ProposerSlashing>(case_dir, "proposer_slashing.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let result = process_proposer_slashing_capella::<
-                64,
-                16_777_216,
-                32,
-                1_099_511_627_776,
-                64,
-                64,
-                4,
-                32,
-                256,
-                32,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "proposer_slashing",
-            )
-        },
-    )
-}
-
-// ── capella/attester_slashing ─────────────────────────────────────────────────
-
-fn run_capella_attester_slashing_mainnet(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "mainnet",
-        "attester_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::capella::operations::process_attester_slashing_capella;
-            use pharos_types::{MainnetEthSpec as E, phase0::AttesterSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing = match load_ssz_snappy::<AttesterSlashing<2048>>(
-                case_dir,
-                "attester_slashing.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let mut pre = pre_inner;
-            let result = process_attester_slashing_capella::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                256,
-                32,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attester_slashing",
-            )
-        },
-    )
-}
-
-fn run_capella_attester_slashing_minimal(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "minimal",
-        "attester_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::capella::operations::process_attester_slashing_capella;
-            use pharos_types::{MinimalEthSpec as E, phase0::AttesterSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing = match load_ssz_snappy::<AttesterSlashing<2048>>(
-                case_dir,
-                "attester_slashing.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let mut pre = pre_inner;
-            let result = process_attester_slashing_capella::<
-                64,
-                16_777_216,
-                32,
-                1_099_511_627_776,
-                64,
-                64,
-                4,
-                32,
-                256,
-                32,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attester_slashing",
-            )
-        },
-    )
-}
-
-// ── capella/deposit ───────────────────────────────────────────────────────────
-
-fn run_capella_deposit_mainnet(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "mainnet",
-        "deposit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_deposit;
-            use pharos_stf::capella::helpers::{
-                capella_state_to_altair, update_capella_from_altair,
-            };
-            use pharos_types::{MainnetEthSpec as E, phase0::Deposit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let deposit = match load_ssz_snappy::<Deposit<33>>(case_dir, "deposit.ssz_snappy") {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let mut pre = pre_inner;
-            let mut altair_state = capella_state_to_altair(&pre);
-            let result = process_deposit::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut altair_state, &deposit, verify_signatures);
-            update_capella_from_altair(&mut pre, altair_state);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "deposit",
-            )
-        },
-    )
-}
-
-fn run_capella_deposit_minimal(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "minimal",
-        "deposit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_deposit;
-            use pharos_stf::capella::helpers::{
-                capella_state_to_altair, update_capella_from_altair,
-            };
-            use pharos_types::{MinimalEthSpec as E, phase0::Deposit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let deposit = match load_ssz_snappy::<Deposit<33>>(case_dir, "deposit.ssz_snappy") {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let mut pre = pre_inner;
-            let mut altair_state = capella_state_to_altair(&pre);
-            let result = process_deposit::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                &mut altair_state,
-                &deposit,
-                verify_signatures,
-            );
-            update_capella_from_altair(&mut pre, altair_state);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "deposit",
-            )
-        },
-    )
-}
-
-// ── capella/attestation ───────────────────────────────────────────────────────
-
-fn run_capella_attestation_mainnet(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "mainnet",
-        "attestation",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_attestation;
-            use pharos_stf::capella::helpers::{
-                capella_state_to_altair, update_capella_from_altair,
-            };
-            use pharos_types::{MainnetEthSpec as E, phase0::Attestation};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let attestation =
-                match load_ssz_snappy::<Attestation<2048>>(case_dir, "attestation.ssz_snappy") {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let mut altair_state = capella_state_to_altair(&pre);
-            let result = process_attestation::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut altair_state, &attestation, verify_signatures);
-            update_capella_from_altair(&mut pre, altair_state);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attestation",
-            )
-        },
-    )
-}
-
-fn run_capella_attestation_minimal(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "minimal",
-        "attestation",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_attestation;
-            use pharos_stf::capella::helpers::{
-                capella_state_to_altair, update_capella_from_altair,
-            };
-            use pharos_types::{MinimalEthSpec as E, phase0::Attestation};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let attestation =
-                match load_ssz_snappy::<Attestation<2048>>(case_dir, "attestation.ssz_snappy") {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let mut altair_state = capella_state_to_altair(&pre);
-            let result =
-                process_attestation::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                    &mut altair_state,
-                    &attestation,
-                    verify_signatures,
-                );
-            update_capella_from_altair(&mut pre, altair_state);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attestation",
-            )
-        },
-    )
-}
-
-// ── capella/voluntary_exit ────────────────────────────────────────────────────
-
-fn run_capella_voluntary_exit_mainnet(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "mainnet",
-        "voluntary_exit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_voluntary_exit;
-            use pharos_stf::capella::helpers::{
-                capella_state_to_altair, update_capella_from_altair,
-            };
-            use pharos_types::{MainnetEthSpec as E, phase0::SignedVoluntaryExit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let exit =
-                match load_ssz_snappy::<SignedVoluntaryExit>(case_dir, "voluntary_exit.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let mut altair_state = capella_state_to_altair(&pre);
-            let result = process_voluntary_exit::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut altair_state, &exit, verify_signatures);
-            update_capella_from_altair(&mut pre, altair_state);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "voluntary_exit",
-            )
-        },
-    )
-}
-
-fn run_capella_voluntary_exit_minimal(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "minimal",
-        "voluntary_exit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_voluntary_exit;
-            use pharos_stf::capella::helpers::{
-                capella_state_to_altair, update_capella_from_altair,
-            };
-            use pharos_types::{MinimalEthSpec as E, phase0::SignedVoluntaryExit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let exit =
-                match load_ssz_snappy::<SignedVoluntaryExit>(case_dir, "voluntary_exit.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let mut altair_state = capella_state_to_altair(&pre);
-            let result =
-                process_voluntary_exit::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                    &mut altair_state,
-                    &exit,
-                    verify_signatures,
-                );
-            update_capella_from_altair(&mut pre, altair_state);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "voluntary_exit",
-            )
-        },
-    )
-}
-
-// ── capella/sync_aggregate ────────────────────────────────────────────────────
-
-fn run_capella_sync_aggregate_mainnet(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "capella",
-        "operations",
-        Some("sync_aggregate"),
-        capella_ops_walk_opts(),
-    )
-    .collect();
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "capella/operations/mainnet/sync_aggregate/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_capella_sync_aggregate_case_mainnet(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_capella_sync_aggregate_case_mainnet(
-    case_dir: &Path,
-    case_name: &str,
-    verify_signatures: bool,
-) -> CaseResult {
-    use pharos_stf::altair::operations::process_sync_aggregate;
-    use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
-    use pharos_types::{MainnetEthSpec as E, altair::MainnetSyncAggregate};
-
-    let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::capella_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
+    row_ordinal: u32,
+) -> Vec<crate::task::CaseTask> {
+    let table = if preset == "mainnet" {
+        capella_op_table_mainnet()
     } else {
-        None
+        capella_op_table_minimal()
     };
-    let sync_aggregate =
-        match load_ssz_snappy::<MainnetSyncAggregate>(case_dir, "sync_aggregate.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-    let mut pre = pre_inner;
-    let mut altair_state = capella_state_to_altair(&pre);
-    let result = process_sync_aggregate::<
-        8192,
-        16_777_216,
-        2048,
-        1_099_511_627_776,
-        65536,
-        8192,
-        4,
-        512,
-        E,
-    >(&mut altair_state, &sync_aggregate, verify_signatures);
-    update_capella_from_altair(&mut pre, altair_state);
-    cmp_capella_result(
-        result,
-        E::capella_into_state(pre).as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "sync_aggregate",
-    )
-}
-
-fn run_capella_sync_aggregate_minimal(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "capella",
-        "operations",
-        Some("sync_aggregate"),
-        capella_ops_walk_opts(),
-    )
-    .collect();
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "capella/operations/minimal/sync_aggregate/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_capella_sync_aggregate_case_minimal(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
+    let mut case_ordinal: u32 = 0;
+    let mut tasks = Vec::new();
+    for (sub, apply) in table {
+        let apply = std::sync::Arc::new(apply);
+        let sub_tasks = enumerate_op(
+            root,
+            "capella",
+            preset,
+            sub,
+            row_ordinal,
+            &mut case_ordinal,
+            capella_ops_walk_opts(),
+            move |dir, name, meta| apply(dir, name, meta),
+        );
+        tasks.extend(sub_tasks);
     }
-    out
+    tasks
 }
 
-fn run_capella_sync_aggregate_case_minimal(
-    case_dir: &Path,
-    case_name: &str,
-    verify_signatures: bool,
-) -> CaseResult {
-    use pharos_stf::altair::operations::process_sync_aggregate;
-    use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
-    use pharos_types::{MinimalEthSpec as E, altair::MinimalSyncAggregate};
-
-    let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::capella_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let sync_aggregate =
-        match load_ssz_snappy::<MinimalSyncAggregate>(case_dir, "sync_aggregate.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-    let mut pre = pre_inner;
-    let mut altair_state = capella_state_to_altair(&pre);
-    let result = process_sync_aggregate::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-        &mut altair_state,
-        &sync_aggregate,
-        verify_signatures,
-    );
-    update_capella_from_altair(&mut pre, altair_state);
-    cmp_capella_result(
-        result,
-        E::capella_into_state(pre).as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "sync_aggregate",
-    )
+/// Run all capella operation sub-categories for the mainnet preset.
+pub fn run_operations_capella_mainnet(root: &Path) -> OpsResult {
+    let tasks = enumerate_operations_capella(root, "mainnet", 0);
+    drain_tasks_to_ops_result(tasks)
 }
 
-// ── capella/execution_payload ─────────────────────────────────────────────────
-
-fn run_capella_execution_payload_mainnet(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "capella",
-        "operations",
-        Some("execution_payload"),
-        capella_ops_walk_opts(),
-    )
-    .collect();
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!(
-                "capella/operations/mainnet/execution_payload/{}",
-                dir_name(&case_dir)
-            );
-            run_capella_execution_payload_case_mainnet(&case_dir, &case_name)
-        })
-        .collect();
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_capella_execution_payload_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
-    use pharos_stf::FixedExecutionEngine;
-    use pharos_stf::capella::operations::process_execution_payload;
-    use pharos_types::{MainnetEthSpec as E, capella::MainnetBeaconBlockBody};
-
-    let execution_valid = read_execution_valid(case_dir);
-    let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::capella_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let body = match load_ssz_snappy::<MainnetBeaconBlockBody>(case_dir, "body.ssz_snappy") {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let engine = FixedExecutionEngine(execution_valid);
-    let mut pre = pre_inner;
-    let result = process_execution_payload::<
-        16,
-        2,
-        128,
-        16,
-        16,
-        2048,
-        33,
-        512,
-        1_073_741_824,
-        1_048_576,
-        256,
-        32,
-        16, // MAX_WITHDRAWALS_PER_PAYLOAD mainnet
-        16, // MAX_BLS_TO_EXECUTION_CHANGES mainnet
-        8192,
-        16_777_216,
-        2048,
-        1_099_511_627_776,
-        65536,
-        8192,
-        4,
-        E,
-        FixedExecutionEngine,
-    >(&mut pre, &body, &engine, &E::default_runtime_config());
-    cmp_capella_result(
-        result.map(|_| ()),
-        E::capella_into_state(pre).as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "execution_payload",
-    )
-}
-
-fn run_capella_execution_payload_minimal(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "capella",
-        "operations",
-        Some("execution_payload"),
-        capella_ops_walk_opts(),
-    )
-    .collect();
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!(
-                "capella/operations/minimal/execution_payload/{}",
-                dir_name(&case_dir)
-            );
-            run_capella_execution_payload_case_minimal(&case_dir, &case_name)
-        })
-        .collect();
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_capella_execution_payload_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
-    use pharos_stf::FixedExecutionEngine;
-    use pharos_stf::capella::operations::process_execution_payload;
-    use pharos_types::{MinimalEthSpec as E, capella::MinimalBeaconBlockBody};
-
-    let execution_valid = read_execution_valid(case_dir);
-    let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::capella_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let body = match load_ssz_snappy::<MinimalBeaconBlockBody>(case_dir, "body.ssz_snappy") {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let engine = FixedExecutionEngine(execution_valid);
-    let mut pre = pre_inner;
-    let result = process_execution_payload::<
-        16,
-        2,
-        128,
-        16,
-        16,
-        2048,
-        33,
-        32,
-        1_073_741_824,
-        1_048_576,
-        256,
-        32,
-        4,  // MAX_WITHDRAWALS_PER_PAYLOAD minimal
-        16, // MAX_BLS_TO_EXECUTION_CHANGES minimal
-        64,
-        16_777_216,
-        32,
-        1_099_511_627_776,
-        64,
-        64,
-        4,
-        E,
-        FixedExecutionEngine,
-    >(&mut pre, &body, &engine, &E::default_runtime_config());
-    cmp_capella_result(
-        result.map(|_| ()),
-        E::capella_into_state(pre).as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "execution_payload",
-    )
-}
-
-// ── capella/withdrawals ───────────────────────────────────────────────────────
-
-fn run_capella_withdrawals_mainnet(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "capella",
-        "operations",
-        Some("withdrawals"),
-        capella_ops_walk_opts(),
-    )
-    .collect();
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!(
-                "capella/operations/mainnet/withdrawals/{}",
-                dir_name(&case_dir)
-            );
-            run_capella_withdrawals_case_mainnet(&case_dir, &case_name)
-        })
-        .collect();
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_capella_withdrawals_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
-    use pharos_stf::capella::operations::process_withdrawals;
-    use pharos_types::{MainnetEthSpec as E, capella::MainnetExecutionPayload};
-
-    let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::capella_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let payload = match load_ssz_snappy::<MainnetExecutionPayload>(
-        case_dir,
-        "execution_payload.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let mut pre = pre_inner;
-    let result = process_withdrawals::<
-        8192,
-        16_777_216,
-        2048,
-        1_099_511_627_776,
-        65536,
-        8192,
-        4,
-        512,
-        256,
-        32,
-        1_073_741_824,
-        1_048_576,
-        16, // MAX_WITHDRAWALS_PER_PAYLOAD mainnet
-        E,
-    >(&mut pre, &payload);
-    cmp_capella_result(
-        result,
-        E::capella_into_state(pre).as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "withdrawals",
-    )
-}
-
-fn run_capella_withdrawals_minimal(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "capella",
-        "operations",
-        Some("withdrawals"),
-        capella_ops_walk_opts(),
-    )
-    .collect();
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!(
-                "capella/operations/minimal/withdrawals/{}",
-                dir_name(&case_dir)
-            );
-            run_capella_withdrawals_case_minimal(&case_dir, &case_name)
-        })
-        .collect();
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_capella_withdrawals_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
-    use pharos_stf::capella::operations::process_withdrawals;
-    use pharos_types::{MinimalEthSpec as E, capella::MinimalExecutionPayload};
-
-    let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::capella_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let payload = match load_ssz_snappy::<MinimalExecutionPayload>(
-        case_dir,
-        "execution_payload.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let mut pre = pre_inner;
-    let result = process_withdrawals::<
-        64,
-        16_777_216,
-        32,
-        1_099_511_627_776,
-        64,
-        64,
-        4,
-        32,
-        256,
-        32,
-        1_073_741_824,
-        1_048_576,
-        4, // MAX_WITHDRAWALS_PER_PAYLOAD minimal
-        E,
-    >(&mut pre, &payload);
-    cmp_capella_result(
-        result,
-        E::capella_into_state(pre).as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "withdrawals",
-    )
-}
-
-// ── capella/bls_to_execution_change ──────────────────────────────────────────
-
-fn run_capella_bls_to_execution_change_mainnet(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "mainnet",
-        "bls_to_execution_change",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::capella::operations::process_bls_to_execution_change;
-            use pharos_types::{MainnetEthSpec as E, capella::SignedBLSToExecutionChange};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let signed_change = match load_ssz_snappy::<SignedBLSToExecutionChange>(
-                case_dir,
-                "address_change.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let mut pre = pre_inner;
-            let result = process_bls_to_execution_change::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                256,
-                32,
-                E,
-            >(&mut pre, &signed_change, verify_signatures);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "bls_to_execution_change",
-            )
-        },
-    )
-}
-
-fn run_capella_bls_to_execution_change_minimal(root: &Path) -> OpsResult {
-    run_capella_op_preset(
-        root,
-        "minimal",
-        "bls_to_execution_change",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::capella::operations::process_bls_to_execution_change;
-            use pharos_types::{MinimalEthSpec as E, capella::SignedBLSToExecutionChange};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::capella::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::capella_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let signed_change = match load_ssz_snappy::<SignedBLSToExecutionChange>(
-                case_dir,
-                "address_change.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let mut pre = pre_inner;
-            let result = process_bls_to_execution_change::<
-                64,
-                16_777_216,
-                32,
-                1_099_511_627_776,
-                64,
-                64,
-                4,
-                32,
-                256,
-                32,
-                E,
-            >(&mut pre, &signed_change, verify_signatures);
-            cmp_capella_result(
-                result,
-                E::capella_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "bls_to_execution_change",
-            )
-        },
-    )
+/// Run all capella operation sub-categories for the minimal preset.
+pub fn run_operations_capella_minimal(root: &Path) -> OpsResult {
+    let tasks = enumerate_operations_capella(root, "minimal", 0);
+    drain_tasks_to_ops_result(tasks)
 }
 
 // ── Deneb operations entry points ─────────────────────────────────────────────
