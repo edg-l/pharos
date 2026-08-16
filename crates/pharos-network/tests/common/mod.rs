@@ -195,8 +195,10 @@ impl ForkContext for TestHost {
             Fork::Phase0 => self.fork_digest,
             Fork::Altair => self.altair_fork_digest.unwrap_or(self.fork_digest),
             Fork::Bellatrix => self.bellatrix_fork_digest.unwrap_or(self.fork_digest),
-            // Tests don't have a capella or deneb digest; fall back to bellatrix if available.
-            Fork::Capella | Fork::Deneb => self.bellatrix_fork_digest.unwrap_or(self.fork_digest),
+            // Tests don't have a capella/deneb/electra digest; fall back to bellatrix if available.
+            Fork::Capella | Fork::Deneb | Fork::Electra => {
+                self.bellatrix_fork_digest.unwrap_or(self.fork_digest)
+            }
         }
     }
 

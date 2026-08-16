@@ -35,6 +35,7 @@ use crate::rpc::size_bounds::{
 use crate::rpc::types::{
     LightClientBootstrapRequest, LightClientUpdatesByRangeRequest, MAX_REQUEST_BLOB_SIDECARS,
     MAX_REQUEST_BLOCKS, MetaDataResponse, RpcRequest, RpcResponse,
+    compute_max_request_blob_sidecars,
 };
 use crate::rpc::varint::{read_varint, write_varint};
 use crate::scoring::RpcMethod;
@@ -188,9 +189,9 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     ));
                 }
                 // For blob sidecar methods, context bytes MUST indicate Deneb or later.
-                // Per `specs/deneb/p2p-interface.md`.
+                // Per `specs/deneb/p2p-interface.md` and `specs/electra/p2p-interface.md`.
                 RpcMethod::BlobSidecarsByRange | RpcMethod::BlobSidecarsByRoot
-                    if !matches!(chunk_fork, Some(Fork::Deneb)) =>
+                    if !matches!(chunk_fork, Some(Fork::Deneb) | Some(Fork::Electra)) =>
                 {
                     return Err(io::Error::other(
                         "blob sidecar chunk has non-deneb context bytes",
@@ -237,6 +238,14 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     }
                     // Dispatch SSZ decode based on the chunk's fork (context bytes).
                     let block = match chunk_fork {
+                        Some(Fork::Electra) => {
+                            let inner = read_ssz_snappy_payload::<_, E::ElectraSignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::electra_into_signed_block(inner)
+                        }
                         Some(Fork::Deneb) => {
                             let inner = read_ssz_snappy_payload::<_, E::DenebSignedBeaconBlock>(
                                 io,
@@ -332,11 +341,16 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     break;
                 }
                 // Blob sidecar streaming: each success chunk is one BlobSidecar.
-                // Context bytes MUST be Deneb (validated above).
+                // Context bytes MUST be Deneb or Electra (validated above).
                 // Per `specs/deneb/p2p-interface.md` (BlobSidecarsByRange v1 /
-                // BlobSidecarsByRoot v1).
+                // BlobSidecarsByRoot v1) and `specs/electra/p2p-interface.md:90-100`
+                // (EIP-7691 raises `compute_max_request_blob_sidecars`).
                 RpcMethod::BlobSidecarsByRange | RpcMethod::BlobSidecarsByRoot => {
-                    if blob_sidecars.len() >= MAX_REQUEST_BLOB_SIDECARS as usize {
+                    let max_sidecars = compute_max_request_blob_sidecars(matches!(
+                        chunk_fork,
+                        Some(Fork::Electra)
+                    ));
+                    if blob_sidecars.len() >= max_sidecars as usize {
                         return Err(io::Error::other(
                             "response exceeds MAX_REQUEST_BLOB_SIDECARS",
                         ));
@@ -487,7 +501,9 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     // per `specs/altair/p2p-interface.md:445-461` and
                     // `specs/capella/p2p-interface.md`.
                     // Dispatch to the inner SSZ bytes (no fork discriminant byte).
-                    let (fork, ssz) = if let Some(inner) = E::unwrap_deneb_signed_block(block) {
+                    let (fork, ssz) = if let Some(inner) = E::unwrap_electra_signed_block(block) {
+                        (Fork::Electra, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_deneb_signed_block(block) {
                         (Fork::Deneb, inner.as_ssz_bytes())
                     } else if let Some(inner) = E::unwrap_capella_signed_block(block) {
                         (Fork::Capella, inner.as_ssz_bytes())

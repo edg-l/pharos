@@ -33,6 +33,8 @@ pub enum Fork {
     Capella,
     /// Deneb fork.
     Deneb,
+    /// Electra fork.
+    Electra,
 }
 
 // ── SubnetId ──────────────────────────────────────────────────────────────────

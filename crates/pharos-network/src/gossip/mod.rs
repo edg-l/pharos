@@ -26,6 +26,7 @@ use pharos_types::EthSpec;
 use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::capella::operations::SignedBLSToExecutionChange;
 use pharos_types::deneb::BlobSidecar;
+use pharos_types::electra::attestation::SingleAttestation;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::phase0::{
     Attestation, AttesterSlashing, ProposerSlashing, SignedAggregateAndProof, SignedVoluntaryExit,
@@ -203,6 +204,15 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
             // digest per `specs/altair/p2p-interface.md` and
             // `specs/bellatrix/p2p-interface.md`.
             match host.fork_from_context(&topic.fork_digest.into_inner()) {
+                Some(crate::types::Fork::Electra) => {
+                    match E::ElectraSignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
+                        Ok(inner) => {
+                            let block = E::electra_into_signed_block(inner);
+                            host.validate_beacon_block(&block)
+                        }
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
+                }
                 Some(crate::types::Fork::Deneb) => {
                     match E::DenebSignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
                         Ok(inner) => {
@@ -252,15 +262,41 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
             }
         }
         GossipTopicKind::BeaconAggregateAndProof => {
-            match SignedAggregateAndProof::<2048>::from_ssz_bytes(ssz_bytes) {
-                Ok(saap) => host.validate_aggregate_and_proof(&saap),
-                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+            // EIP-7549: from Electra onward the aggregate carries the electra
+            // `Attestation` (with `committee_bits`). Pre-electra keeps the phase0
+            // `SignedAggregateAndProof`. Selection is by the topic's fork digest.
+            // Per `specs/electra/p2p-interface.md:225`.
+            match host.fork_from_context(&topic.fork_digest.into_inner()) {
+                Some(crate::types::Fork::Electra) => {
+                    match E::ElectraSignedAggregateAndProof::from_ssz_bytes(ssz_bytes) {
+                        Ok(saap) => host.validate_aggregate_and_proof_electra(&saap),
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
+                }
+                _ => match SignedAggregateAndProof::<2048>::from_ssz_bytes(ssz_bytes) {
+                    Ok(saap) => host.validate_aggregate_and_proof(&saap),
+                    Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                },
             }
         }
         GossipTopicKind::BeaconAttestation(subnet) => {
-            match Attestation::<2048>::from_ssz_bytes(ssz_bytes) {
-                Ok(att) => host.validate_attestation(*subnet, &att),
-                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+            // EIP-7549 PEER-BAN HAZARD: from Electra onward the subnet topic
+            // carries `SingleAttestation`, NOT the multi-committee `Attestation`.
+            // Decoding the wrong shape is a wrong-length SSZ decode -> instant
+            // -100 peer ban. Pre-electra subnets keep phase0 `Attestation<2048>`.
+            // Selection is by the topic's fork digest.
+            // Per `specs/electra/p2p-interface.md:476-591`.
+            match host.fork_from_context(&topic.fork_digest.into_inner()) {
+                Some(crate::types::Fork::Electra) => {
+                    match SingleAttestation::from_ssz_bytes(ssz_bytes) {
+                        Ok(att) => host.validate_single_attestation(*subnet, &att),
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
+                }
+                _ => match Attestation::<2048>::from_ssz_bytes(ssz_bytes) {
+                    Ok(att) => host.validate_attestation(*subnet, &att),
+                    Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                },
             }
         }
         GossipTopicKind::VoluntaryExit => match SignedVoluntaryExit::from_ssz_bytes(ssz_bytes) {
@@ -298,7 +334,9 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
             // `specs/capella/light-client/p2p-interface.md` and
             // `specs/deneb/light-client/p2p-interface.md` (Deneb inherits Capella LC).
             match host.fork_from_context(&topic.fork_digest.into_inner()) {
-                Some(crate::types::Fork::Capella) | Some(crate::types::Fork::Deneb) => {
+                Some(crate::types::Fork::Capella)
+                | Some(crate::types::Fork::Deneb)
+                | Some(crate::types::Fork::Electra) => {
                     match E::CapellaLightClientFinalityUpdate::from_ssz_bytes(ssz_bytes) {
                         Ok(msg) => host.validate_capella_light_client_finality_update(&msg),
                         Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
@@ -312,7 +350,9 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
         }
         GossipTopicKind::LightClientOptimisticUpdate => {
             match host.fork_from_context(&topic.fork_digest.into_inner()) {
-                Some(crate::types::Fork::Capella) | Some(crate::types::Fork::Deneb) => {
+                Some(crate::types::Fork::Capella)
+                | Some(crate::types::Fork::Deneb)
+                | Some(crate::types::Fork::Electra) => {
                     match E::CapellaLightClientOptimisticUpdate::from_ssz_bytes(ssz_bytes) {
                         Ok(msg) => host.validate_capella_light_client_optimistic_update(&msg),
                         Err(_) => GossipVerdict::Reject("ssz decode".to_string()),

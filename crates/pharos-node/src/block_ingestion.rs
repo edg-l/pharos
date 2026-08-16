@@ -757,8 +757,19 @@ where
         + pharos_types::views::SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
     E::DenebSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::ElectraSignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::ElectraBeaconBlock>,
 {
     match host.fork_from_context(&topic.fork_digest.into_inner()) {
+        Some(pharos_network::types::Fork::Electra) => {
+            match E::ElectraSignedBeaconBlock::from_ssz_bytes(data) {
+                Ok(inner) => Some(E::electra_into_signed_block(inner)),
+                Err(e) => {
+                    warn!(error = ?e, "block_ingestion: electra SSZ decode failed; dropping");
+                    None
+                }
+            }
+        }
         Some(pharos_network::types::Fork::Deneb) => {
             match E::DenebSignedBeaconBlock::from_ssz_bytes(data) {
                 Ok(inner) => Some(E::deneb_into_signed_block(inner)),

@@ -1515,6 +1515,24 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + 'static
         + crate::views::BeaconBlockBodyView;
 
+    /// Electra `SignedAggregateAndProof` for this preset (EIP-7549 `committee_bits`).
+    ///
+    /// Const params `<MAX_AGGREGATION_BITS_ELECTRA, MAX_COMMITTEES_PER_SLOT>`.
+    /// Used by the `beacon_aggregate_and_proof` gossip validator for electra-epoch
+    /// messages. Per `specs/electra/p2p-interface.md:225`.
+    type ElectraSignedAggregateAndProof: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + crate::views::ElectraSignedAggregateAndProofView
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
     /// Electra `LightClientBootstrap` for this preset.
     type ElectraLightClientBootstrap: pharos_ssz::Encode
         + pharos_ssz::Decode
@@ -2502,6 +2520,9 @@ impl EthSpec for MainnetEthSpec {
     type ElectraBeaconBlock = crate::electra::MainnetBeaconBlock;
     type ElectraSignedBeaconBlock = crate::electra::MainnetSignedBeaconBlock;
     type ElectraBeaconBlockBody = crate::electra::MainnetBeaconBlockBody;
+    /// Mainnet electra `SignedAggregateAndProof` (EIP-7549).
+    type ElectraSignedAggregateAndProof =
+        crate::electra::attestation::MainnetSignedAggregateAndProof;
     /// Mainnet electra `LightClientBootstrap` (re-exported from deneb).
     type ElectraLightClientBootstrap = crate::electra::light_client::MainnetLightClientBootstrap;
     /// Mainnet electra `LightClientUpdate`.
@@ -2928,6 +2949,9 @@ impl EthSpec for MinimalEthSpec {
     type ElectraBeaconBlock = crate::electra::MinimalBeaconBlock;
     type ElectraSignedBeaconBlock = crate::electra::MinimalSignedBeaconBlock;
     type ElectraBeaconBlockBody = crate::electra::MinimalBeaconBlockBody;
+    /// Minimal electra `SignedAggregateAndProof` (EIP-7549).
+    type ElectraSignedAggregateAndProof =
+        crate::electra::attestation::MinimalSignedAggregateAndProof;
     /// Minimal electra `LightClientBootstrap` (re-exported from deneb).
     type ElectraLightClientBootstrap = crate::electra::light_client::MinimalLightClientBootstrap;
     /// Minimal electra `LightClientUpdate`.

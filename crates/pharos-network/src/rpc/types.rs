@@ -36,6 +36,27 @@ pub const MAX_REQUEST_BLOCKS_DENEB: u64 = 128;
 /// Per `specs/deneb/p2p-interface.md`.
 pub const MAX_REQUEST_BLOB_SIDECARS: u64 = 768;
 
+/// Maximum number of blob sidecars returnable in a single request in Electra
+/// and later (EIP-7691).
+///
+/// `compute_max_request_blob_sidecars() = MAX_REQUEST_BLOCKS_DENEB * MAX_BLOBS_PER_BLOCK_ELECTRA`
+/// = 128 * 9 = 1152.
+///
+/// Per `specs/electra/p2p-interface.md:90-100` (modified `compute_max_request_blob_sidecars`).
+pub const MAX_REQUEST_BLOB_SIDECARS_ELECTRA: u64 = 1152;
+
+/// `compute_max_request_blob_sidecars()` per `specs/electra/p2p-interface.md:90-100`.
+///
+/// Returns the deneb bound (768) before Electra and the EIP-7691 bound (1152)
+/// from Electra onward. `is_electra` selects which.
+pub fn compute_max_request_blob_sidecars(is_electra: bool) -> u64 {
+    if is_electra {
+        MAX_REQUEST_BLOB_SIDECARS_ELECTRA
+    } else {
+        MAX_REQUEST_BLOB_SIDECARS
+    }
+}
+
 // ── MetaDataResponse ──────────────────────────────────────────────────────────
 
 /// A `MetaData` response carrying either v1 (Phase-0) or v2 (Altair) metadata.

@@ -14,6 +14,7 @@ use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::capella::operations::SignedBLSToExecutionChange;
 use pharos_types::deneb::BlobSidecar;
+use pharos_types::electra::attestation::SingleAttestation;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
     Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing, Root,
@@ -229,6 +230,45 @@ pub trait GossipValidator<E: EthSpec>: Send + Sync + 'static {
     /// `subnet` is the subnet id extracted from the topic string.
     /// All 14 validation rules per `specs/deneb/p2p-interface.md:497-585`.
     fn validate_blob_sidecar(&self, subnet: SubnetId, sidecar: &BlobSidecar) -> GossipVerdict;
+
+    // ── Electra gossip topics (EIP-7549) ──────────────────────────────────────
+    //
+    // Per `specs/electra/p2p-interface.md:225,476-591`.
+
+    /// Validate a `beacon_attestation_{subnet_id}` message for an electra-epoch
+    /// message: the subnet topic now carries `SingleAttestation`, NOT the
+    /// multi-committee `Attestation`. Conflating the two SSZ shapes is an instant
+    /// peer-ban hazard.
+    ///
+    /// `subnet` is the subnet id extracted from the topic string.
+    /// Per `specs/electra/p2p-interface.md:476-591`.
+    ///
+    /// The default body returns `Ignore`; concrete hosts override it. This lets
+    /// non-electra test mocks compile unchanged.
+    fn validate_single_attestation(
+        &self,
+        subnet: SubnetId,
+        att: &SingleAttestation,
+    ) -> GossipVerdict {
+        let _ = (subnet, att);
+        GossipVerdict::Ignore("single attestation validator not implemented".to_string())
+    }
+
+    /// Validate a `beacon_aggregate_and_proof` message for an electra-epoch
+    /// message: the aggregate carries the electra `Attestation` with
+    /// `committee_bits` (EIP-7549). The multi-committee type stays on this
+    /// aggregate path only; the subnet path uses `SingleAttestation`.
+    ///
+    /// Per `specs/electra/p2p-interface.md:225`.
+    ///
+    /// The default body returns `Ignore`; concrete hosts override it.
+    fn validate_aggregate_and_proof_electra(
+        &self,
+        msg: &E::ElectraSignedAggregateAndProof,
+    ) -> GossipVerdict {
+        let _ = msg;
+        GossipVerdict::Ignore("electra aggregate validator not implemented".to_string())
+    }
 }
 
 // ── LightClientProvider ───────────────────────────────────────────────────────
@@ -538,6 +578,21 @@ where
 
     fn validate_blob_sidecar(&self, subnet: SubnetId, sidecar: &BlobSidecar) -> GossipVerdict {
         (**self).validate_blob_sidecar(subnet, sidecar)
+    }
+
+    fn validate_single_attestation(
+        &self,
+        subnet: SubnetId,
+        att: &SingleAttestation,
+    ) -> GossipVerdict {
+        (**self).validate_single_attestation(subnet, att)
+    }
+
+    fn validate_aggregate_and_proof_electra(
+        &self,
+        msg: &E::ElectraSignedAggregateAndProof,
+    ) -> GossipVerdict {
+        (**self).validate_aggregate_and_proof_electra(msg)
     }
 }
 

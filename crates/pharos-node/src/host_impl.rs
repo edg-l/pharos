@@ -161,6 +161,13 @@ pub struct HostImpl<E: EthSpec> {
     /// set bit in the incoming bitlist is already set in the stored bitlist.
     /// Capacity: 2048 entries.
     seen_aggregate_data: RwLock<LruCache<Root, pharos_ssz::Bitlist<2048>>>,
+    /// EIP-7549 electra aggregate seen-cache. Keyed by
+    /// `(hash_tree_root(aggregate.data), committee_index)` per
+    /// `specs/electra/p2p-interface.md:301-308`; gates the RAG6-analogue
+    /// weakened-superset IGNORE rule for electra aggregates (the committee index
+    /// is now read from `committee_bits` rather than `data.index`).
+    /// Capacity: 2048 entries.
+    seen_aggregate_data_electra: RwLock<LruCache<(Root, u64), pharos_ssz::Bitlist<131072>>>,
     /// Tracks validator indices for which a `voluntary_exit` has been accepted.
     /// Gates the duplicate-exit IGNORE rule per `specs/phase0/p2p-interface.md`.
     /// Capacity: 4096 entries (D-seen-cache-shape).
@@ -251,6 +258,9 @@ impl<E: EthSpec> HostImpl<E> {
             committee_cache: RwLock::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
             seen_aggregators: RwLock::new(LruCache::new(NonZeroUsize::new(8192).unwrap())),
             seen_aggregate_data: RwLock::new(LruCache::new(NonZeroUsize::new(2048).unwrap())),
+            seen_aggregate_data_electra: RwLock::new(LruCache::new(
+                NonZeroUsize::new(2048).unwrap(),
+            )),
             seen_voluntary_exit_indices: RwLock::new(LruCache::new(
                 NonZeroUsize::new(4096).unwrap(),
             )),
@@ -653,6 +663,7 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
             Fork::Bellatrix => sched.bellatrix_fork_version,
             Fork::Capella => sched.capella_fork_version,
             Fork::Deneb => sched.deneb_fork_version,
+            Fork::Electra => sched.electra_fork_version,
         };
         compute_fork_digest(version, &self.fork_context.genesis_validators_root)
     }
@@ -683,6 +694,10 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
         let deneb_digest = compute_fork_digest(sched.deneb_fork_version, gvr);
         if *ctx == deneb_digest.into_inner() {
             return Some(Fork::Deneb);
+        }
+        let electra_digest = compute_fork_digest(sched.electra_fork_version, gvr);
+        if *ctx == electra_digest.into_inner() {
+            return Some(Fork::Electra);
         }
         None
     }
@@ -903,11 +918,22 @@ where
             }
         }
 
-        // Step 9b — [New in Deneb:EIP4844] [REJECT] len(blob_kzg_commitments) > MAX_BLOBS_PER_BLOCK.
-        // Per `specs/deneb/p2p-interface.md:279-281`.
+        // Step 9b — blob-commitment count REJECT.
+        //   Deneb (EIP-4844): len(blob_kzg_commitments) > MAX_BLOBS_PER_BLOCK
+        //     per `specs/deneb/p2p-interface.md:279-281`.
+        //   Electra (EIP-7691): the bound is widened to MAX_BLOBS_PER_BLOCK_ELECTRA
+        //     per `specs/electra/p2p-interface.md:208-211`.
+        // The bound is fork-gated by the block's own fork variant so a deneb
+        // block keeps the deneb cap even when the wall clock is in electra.
         {
             use pharos_types::views::BeaconBlockBodyView as _;
-            if let Some(deneb_block) = E::unwrap_deneb_block(&block_msg) {
+            if let Some(electra_block) = E::unwrap_electra_block(&block_msg) {
+                let num_commitments = electra_block.body().num_blob_kzg_commitments();
+                if num_commitments > self.runtime_cfg.max_blobs_per_block_electra as usize {
+                    self.invalid_block_roots.write().put(block_root, ());
+                    return GossipVerdict::Reject("block: too many blob kzg commitments".into());
+                }
+            } else if let Some(deneb_block) = E::unwrap_deneb_block(&block_msg) {
                 let num_commitments = deneb_block.body().num_blob_kzg_commitments();
                 if num_commitments > self.runtime_cfg.max_blobs_per_block as usize {
                     self.invalid_block_roots.write().put(block_root, ());
@@ -2721,6 +2747,457 @@ where
 
         // Mark tuple as seen and accept.
         self.seen_blob_sidecar_tuples.write().put(tuple_key, ());
+        GossipVerdict::Accept
+    }
+
+    /// Validate a `beacon_attestation_{subnet_id}` `SingleAttestation` (electra,
+    /// EIP-7549) per `specs/electra/p2p-interface.md:486-591`.
+    ///
+    /// Step order (spec):
+    ///   1.  Defensive — head state unavailable (IGNORE).
+    ///   2.  [REJECT]  `data.index` is zero (EIP-7549).
+    ///   3.  [REJECT]  committee index within range.
+    ///   4.  [REJECT]  attestation is for the correct subnet.
+    ///   5.  [IGNORE]  attestation slot within propagation range (EIP-7045 window).
+    ///   6.  [REJECT]  attestation's epoch matches its target.
+    ///   7.  [REJECT]  attester is a member of the committee (EIP-7549).
+    ///   8.  [IGNORE]  no other valid attestation seen for this validator/epoch.
+    ///   9.  [REJECT]  attestation signature is valid (single-validator BLS verify).
+    ///  10.  [IGNORE]  block being voted for has been seen.
+    ///  11.  [REJECT]  block being voted for passes validation.
+    ///  12.  [REJECT]  target block is an ancestor of the LMD vote block.
+    ///  13.  [IGNORE]  finalized checkpoint is an ancestor of the block.
+    ///  14.  Insert into seen cache `(attester_index, target_epoch)`; return Accept.
+    fn validate_single_attestation(
+        &self,
+        subnet: SubnetId,
+        att: &pharos_types::electra::attestation::SingleAttestation,
+    ) -> GossipVerdict {
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_signing_root, compute_subnet_for_attestation,
+            get_committee_count_per_slot, get_domain,
+        };
+        use pharos_stf::phase0::helpers::DOMAIN_BEACON_ATTESTER;
+        use pharos_types::BeaconStateView as _;
+        use pharos_types::phase0::primitives::{
+            ATTESTATION_PROPAGATION_SLOT_RANGE, MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS,
+        };
+
+        let data = &att.data;
+        let committee_index = att.committee_index.0;
+        let attester_index = att.attester_index.0;
+        let target_epoch = data.target.epoch;
+
+        // Step 1 — Defensive: head state must be available.
+        let head_state = match self.head_state_at_slot(data.slot) {
+            Some(s) => s,
+            None => return GossipVerdict::Ignore("single-att: head state unavailable".into()),
+        };
+
+        // Step 2 — [REJECT] data.index is zero (EIP-7549: committee index now
+        // lives in `committee_index`, not `data.index`).
+        if data.index.0 != 0 {
+            return GossipVerdict::Reject("single-att: data index is non-zero".into());
+        }
+
+        // Step 3 — [REJECT] committee index within range.
+        let att_epoch = compute_epoch_at_slot(data.slot, E::SLOTS_PER_EPOCH);
+        let committee_count = get_committee_count_per_slot::<E>(&head_state, att_epoch);
+        if committee_index >= committee_count {
+            return GossipVerdict::Reject("single-att: committee index out of range".into());
+        }
+
+        // Step 4 — [REJECT] attestation is for the correct subnet.
+        let expected_subnet =
+            compute_subnet_for_attestation::<E>(committee_count, data.slot, committee_index);
+        if expected_subnet != subnet {
+            return GossipVerdict::Reject("single-att: wrong subnet".into());
+        }
+
+        // Step 5 — [IGNORE] attestation slot within propagation range (EIP-7045).
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as u64,
+            Err(_) => return GossipVerdict::Ignore("single-att: clock unavailable".into()),
+        };
+        let genesis_time_s = self.fork_choice.read().genesis_time;
+        let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
+        let att_slot = data.slot.0;
+        let att_slot_start_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+            att_slot
+                .saturating_mul(seconds_per_slot)
+                .saturating_mul(1000),
+        );
+        if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < att_slot_start_ms {
+            return GossipVerdict::Ignore("single-att: slot not in propagation range".into());
+        }
+        let wall_epoch = self.current_epoch();
+        let deneb_fork_epoch = self.fork_context.fork_schedule.deneb_fork_epoch;
+        if wall_epoch >= deneb_fork_epoch {
+            // EIP-7045: earliest = start of (wall_epoch - 1). Always true at electra.
+            let prev_epoch = wall_epoch.0.saturating_sub(1);
+            let earliest_slot = prev_epoch.saturating_mul(E::SLOTS_PER_EPOCH);
+            if att_slot < earliest_slot {
+                return GossipVerdict::Ignore("single-att: slot not in propagation range".into());
+            }
+        } else {
+            let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
+            let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+                (att_slot.saturating_add(range).saturating_add(1))
+                    .saturating_mul(seconds_per_slot)
+                    .saturating_mul(1000),
+            );
+            if end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms {
+                return GossipVerdict::Ignore("single-att: slot not in propagation range".into());
+            }
+        }
+
+        // Step 6 — [REJECT] attestation's epoch matches its target.
+        if target_epoch != compute_epoch_at_slot(data.slot, E::SLOTS_PER_EPOCH) {
+            return GossipVerdict::Reject("single-att: target epoch mismatch".into());
+        }
+
+        // Step 7 — [REJECT] attester is a member of the committee (EIP-7549).
+        let committee = match self.lookup_or_compute_committee(data.slot, committee_index) {
+            Some(c) => c,
+            None => return GossipVerdict::Ignore("single-att: committee unavailable".into()),
+        };
+        if !committee.contains(&attester_index) {
+            return GossipVerdict::Reject("single-att: attester not in committee".into());
+        }
+
+        // Step 8 — [IGNORE] no other valid attestation seen for this validator/epoch.
+        // Reuses the unaggregated seen-cache (key `(attester_index, target_epoch)`).
+        if self
+            .seen_attestation_validators
+            .read()
+            .peek(&(attester_index, target_epoch))
+            .is_some()
+        {
+            return GossipVerdict::Ignore("single-att: duplicate validator/epoch".into());
+        }
+
+        // Step 9 — [REJECT] attestation signature is valid (single-validator verify).
+        let attester_pubkey = match head_state.validator(attester_index as usize) {
+            Some(v) => v.pubkey,
+            None => return GossipVerdict::Reject("single-att: attester index out of range".into()),
+        };
+        let domain = get_domain::<E>(&head_state, DOMAIN_BEACON_ATTESTER, Some(target_epoch));
+        let signing_root = compute_signing_root(data, domain);
+        match pharos_utils::bls::verify(&attester_pubkey, signing_root.as_ref(), &att.signature) {
+            Ok(true) => {}
+            _ => return GossipVerdict::Reject("single-att: invalid signature".into()),
+        }
+
+        // Steps 10-13 require the fork-choice lock.
+        {
+            let fc = self.fork_choice.read();
+
+            // Step 10 — [IGNORE] block being voted for has been seen.
+            if !fc.blocks.contains_key(&data.beacon_block_root) {
+                return GossipVerdict::Ignore("single-att: voted block unseen".into());
+            }
+
+            // Step 11 — [REJECT] block being voted for passes validation.
+            if !fc.block_states.contains_key(&data.beacon_block_root) {
+                return GossipVerdict::Reject("single-att: voted block invalid".into());
+            }
+
+            // Step 12 — [REJECT] target block is an ancestor of the LMD vote block.
+            let target_cp = pharos_fork_choice::get_checkpoint_block::<E>(
+                &*fc,
+                data.beacon_block_root,
+                target_epoch,
+            );
+            if target_cp != data.target.root {
+                return GossipVerdict::Reject("single-att: target not ancestor".into());
+            }
+
+            // Step 13 — [IGNORE] finalized checkpoint is an ancestor of the block.
+            let final_cp = pharos_fork_choice::get_checkpoint_block::<E>(
+                &*fc,
+                data.beacon_block_root,
+                fc.finalized_checkpoint.epoch,
+            );
+            if final_cp != fc.finalized_checkpoint.root {
+                return GossipVerdict::Ignore("single-att: finalized not ancestor".into());
+            }
+        }
+
+        // Step 14 — Insert into seen cache and accept.
+        self.seen_attestation_validators
+            .write()
+            .put((attester_index, target_epoch), ());
+        GossipVerdict::Accept
+    }
+
+    /// Validate an electra `beacon_aggregate_and_proof` (EIP-7549) per
+    /// `specs/electra/p2p-interface.md:225-…`.
+    ///
+    /// Mirrors the phase0 `validate_aggregate_and_proof` 17-step pipeline with
+    /// the EIP-7549 changes: `aggregate.data.index` MUST be zero, the committee
+    /// index is read from EXACTLY ONE set bit in `committee_bits`, and the seen
+    /// cache is keyed by `(hash_tree_root(aggregate.data), committee_index)`.
+    fn validate_aggregate_and_proof_electra(
+        &self,
+        saap: &E::ElectraSignedAggregateAndProof,
+    ) -> GossipVerdict {
+        use pharos_ssz::SszList;
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_signing_root, get_committee_count_per_slot, get_domain,
+        };
+        use pharos_stf::phase0::helpers::{DOMAIN_AGGREGATE_AND_PROOF, DOMAIN_SELECTION_PROOF};
+        use pharos_stf::phase0::predicates::{is_aggregator, is_valid_indexed_attestation};
+        use pharos_types::BeaconStateView as _;
+        use pharos_types::phase0::IndexedAttestation;
+        use pharos_types::phase0::primitives::{
+            ATTESTATION_PROPAGATION_SLOT_RANGE, MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS, ValidatorIndex,
+        };
+        use pharos_types::views::ElectraSignedAggregateAndProofView as _;
+
+        let data = saap.aggregate_data();
+
+        // Step 1 — defensive: head state available.
+        let head_state = match self.head_state_at_slot(data.slot) {
+            Some(s) => s,
+            None => return GossipVerdict::Ignore("agg-e: head state unavailable".into()),
+        };
+
+        // Step E1 — [REJECT] aggregate data index is zero (EIP-7549).
+        if data.index.0 != 0 {
+            return GossipVerdict::Reject("agg-e: aggregate data index is non-zero".into());
+        }
+
+        // Step E2 — [REJECT] exactly one committee specified by `committee_bits`.
+        let committee_indices = saap.committee_indices();
+        if committee_indices.len() != 1 {
+            return GossipVerdict::Reject(
+                "agg-e: committee bits must specify exactly one committee".into(),
+            );
+        }
+        let committee_index = committee_indices[0];
+
+        // Step 2 — [REJECT] committee index within range.
+        let att_epoch = compute_epoch_at_slot(data.slot, E::SLOTS_PER_EPOCH);
+        let committee_count = get_committee_count_per_slot::<E>(&head_state, att_epoch);
+        if committee_index >= committee_count {
+            return GossipVerdict::Reject("agg-e: committee index out of range".into());
+        }
+
+        // Step 3 — [IGNORE] aggregate slot within propagation range (EIP-7045).
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as u64,
+            Err(_) => return GossipVerdict::Ignore("agg-e: clock unavailable".into()),
+        };
+        let genesis_time_s = self.fork_choice.read().genesis_time;
+        let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
+        let agg_slot = data.slot.0;
+        let agg_slot_start_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+            agg_slot
+                .saturating_mul(seconds_per_slot)
+                .saturating_mul(1000),
+        );
+        if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < agg_slot_start_ms {
+            return GossipVerdict::Ignore("agg-e: slot not in propagation range".into());
+        }
+        let wall_epoch = self.current_epoch();
+        let deneb_fork_epoch = self.fork_context.fork_schedule.deneb_fork_epoch;
+        if wall_epoch >= deneb_fork_epoch {
+            let prev_epoch = wall_epoch.0.saturating_sub(1);
+            let earliest_slot = prev_epoch.saturating_mul(E::SLOTS_PER_EPOCH);
+            if agg_slot < earliest_slot {
+                return GossipVerdict::Ignore("agg-e: slot not in propagation range".into());
+            }
+        } else {
+            let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
+            let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+                (agg_slot.saturating_add(range).saturating_add(1))
+                    .saturating_mul(seconds_per_slot)
+                    .saturating_mul(1000),
+            );
+            if end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms {
+                return GossipVerdict::Ignore("agg-e: slot not in propagation range".into());
+            }
+        }
+
+        // Step 4 — [REJECT] target epoch matches slot epoch.
+        let target_epoch = data.target.epoch;
+        if target_epoch != compute_epoch_at_slot(data.slot, E::SLOTS_PER_EPOCH) {
+            return GossipVerdict::Reject("agg-e: target epoch mismatch".into());
+        }
+
+        // Step 5 — [REJECT] aggregation bits length matches committee size.
+        let committee = match self.lookup_or_compute_committee(data.slot, committee_index) {
+            Some(c) => c,
+            None => return GossipVerdict::Ignore("agg-e: committee unavailable".into()),
+        };
+        let aggregation_bits = saap.aggregation_bits();
+        if aggregation_bits.len() != committee.len() {
+            return GossipVerdict::Reject("agg-e: agg bits length mismatch".into());
+        }
+
+        // Step 6 — [REJECT] aggregate has at least one participant.
+        let mut attesting: Vec<ValidatorIndex> = committee
+            .iter()
+            .zip(aggregation_bits.iter())
+            .filter_map(|(idx, bit)| {
+                if *bit {
+                    Some(ValidatorIndex(*idx))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if attesting.is_empty() {
+            return GossipVerdict::Reject("agg-e: no participants".into());
+        }
+
+        // Step 7 — [IGNORE] weakened-superset check, keyed (htr(data), committee_index).
+        let data_root = {
+            use pharos_ssz::TreeHash as _;
+            data.tree_hash_root()
+        };
+        let cache_key = (data_root, committee_index);
+        {
+            let read = self.seen_aggregate_data_electra.read();
+            if let Some(stored) = read.peek(&cache_key) {
+                let mut covered = true;
+                for (i, b) in aggregation_bits.iter().enumerate() {
+                    if *b && !stored.get(i).unwrap_or(false) {
+                        covered = false;
+                        break;
+                    }
+                }
+                if covered {
+                    return GossipVerdict::Ignore("agg-e: superset seen".into());
+                }
+            }
+        }
+
+        // Step 8 — [IGNORE] first valid aggregate from this aggregator this epoch.
+        let aggregator_index = saap.aggregator_index().0;
+        if self
+            .seen_aggregators
+            .read()
+            .peek(&(aggregator_index, target_epoch))
+            .is_some()
+        {
+            return GossipVerdict::Ignore("agg-e: duplicate aggregator/epoch".into());
+        }
+
+        // Step 9 — [REJECT] selection proof selects validator as aggregator.
+        if !is_aggregator(committee.len(), saap.selection_proof()) {
+            return GossipVerdict::Reject("agg-e: not selected as aggregator".into());
+        }
+
+        // Step 10 — [REJECT] aggregator index is within committee.
+        if !committee.contains(&aggregator_index) {
+            return GossipVerdict::Reject("agg-e: aggregator not in committee".into());
+        }
+
+        // Step 11 — [REJECT] selection-proof signature is valid.
+        let aggregator_pubkey = match head_state.validator(aggregator_index as usize) {
+            Some(v) => v.pubkey,
+            None => return GossipVerdict::Reject("agg-e: aggregator index out of range".into()),
+        };
+        let domain_sel = get_domain::<E>(&head_state, DOMAIN_SELECTION_PROOF, Some(target_epoch));
+        let signing_root_sel = compute_signing_root(&data.slot, domain_sel);
+        match pharos_utils::bls::verify(
+            &aggregator_pubkey,
+            signing_root_sel.as_ref(),
+            saap.selection_proof(),
+        ) {
+            Ok(true) => {}
+            _ => return GossipVerdict::Reject("agg-e: invalid selection proof signature".into()),
+        }
+
+        // Step 12 — [REJECT] aggregator signature over AggregateAndProof is valid.
+        let domain_aap =
+            get_domain::<E>(&head_state, DOMAIN_AGGREGATE_AND_PROOF, Some(target_epoch));
+        // The signing root is over the `AggregateAndProof` message; we have its
+        // tree-hash root via the view, so build the signing root from the domain.
+        let signing_root_aap = {
+            use pharos_ssz::TreeHash as _;
+            use pharos_types::phase0::SigningData;
+            SigningData {
+                object_root: saap.message_tree_hash_root(),
+                domain: domain_aap,
+            }
+            .tree_hash_root()
+        };
+        match pharos_utils::bls::verify(
+            &aggregator_pubkey,
+            signing_root_aap.as_ref(),
+            saap.outer_signature(),
+        ) {
+            Ok(true) => {}
+            _ => return GossipVerdict::Reject("agg-e: invalid aggregator signature".into()),
+        }
+
+        // Step 13 — [REJECT] aggregate signature is valid (single committee, ≤2048).
+        attesting.sort();
+        let indexed = IndexedAttestation::<2048> {
+            attesting_indices: match SszList::from_vec(attesting) {
+                Ok(l) => l,
+                Err(_) => {
+                    return GossipVerdict::Reject("agg-e: too many attesting indices".into());
+                }
+            },
+            data: data.clone(),
+            signature: *saap.aggregate_signature(),
+        };
+        // The aggregate signature is verified inside `is_valid_indexed_attestation`
+        // (DOMAIN_BEACON_ATTESTER + fast_aggregate_verify).
+        if !is_valid_indexed_attestation::<E>(&head_state, &indexed, true) {
+            return GossipVerdict::Reject("agg-e: invalid aggregate signature".into());
+        }
+
+        // Steps 14-16 require the fork-choice lock.
+        {
+            let fc = self.fork_choice.read();
+
+            if !fc.blocks.contains_key(&data.beacon_block_root) {
+                return GossipVerdict::Ignore("agg-e: voted block unseen".into());
+            }
+            if !fc.block_states.contains_key(&data.beacon_block_root) {
+                return GossipVerdict::Reject("agg-e: voted block invalid".into());
+            }
+            let target_cp = pharos_fork_choice::get_checkpoint_block::<E>(
+                &*fc,
+                data.beacon_block_root,
+                target_epoch,
+            );
+            if target_cp != data.target.root {
+                return GossipVerdict::Reject("agg-e: target not ancestor".into());
+            }
+            let final_cp = pharos_fork_choice::get_checkpoint_block::<E>(
+                &*fc,
+                data.beacon_block_root,
+                fc.finalized_checkpoint.epoch,
+            );
+            if final_cp != fc.finalized_checkpoint.root {
+                return GossipVerdict::Ignore("agg-e: finalized not ancestor".into());
+            }
+        }
+
+        // Step 17 — insert into seen caches and accept.
+        self.seen_aggregators
+            .write()
+            .put((aggregator_index, target_epoch), ());
+        {
+            let mut write = self.seen_aggregate_data_electra.write();
+            let stored = write.get_or_insert_mut(cache_key, || {
+                let mut bl = pharos_ssz::Bitlist::<131072>::with_capacity(committee.len());
+                for _ in 0..committee.len() {
+                    let _ = bl.push(false);
+                }
+                bl
+            });
+            for (i, b) in aggregation_bits.iter().enumerate() {
+                if *b {
+                    stored.set(i, true);
+                }
+            }
+        }
         GossipVerdict::Accept
     }
 }
@@ -8178,6 +8655,324 @@ mod tests {
             host.validate_blob_sidecar(0, &sidecar),
             GossipVerdict::Reject("blob: invalid inclusion proof".into()),
             "rule 11 (inclusion proof) must fire before rule 12 (KZG)"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 6a — Electra (EIP-7549 / EIP-7691) gossip-validator tests.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Build a signed `SingleAttestation` for `attester_index` in the slot-0,
+    /// committee-0 committee. `index` is the (must-be-zero) `data.index`.
+    fn make_single_attestation(
+        beacon_block_root: Root,
+        head_state: &ForkMinimalState,
+        committee_index: u64,
+        attester_index: u64,
+        data_index: u64,
+        flip_sig: bool,
+    ) -> pharos_types::electra::attestation::SingleAttestation {
+        use pharos_types::phase0::primitives::ValidatorIndex;
+
+        let mut data = make_att_data(beacon_block_root);
+        data.index = CommitteeIndex(data_index);
+        let domain =
+            att_get_domain::<MinimalEthSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
+        let signing_root = att_signing_root(&data, domain);
+        let mut sig_bytes: [u8; 96] = att_test_sign(signing_root.as_ref()).into();
+        if flip_sig {
+            sig_bytes[0] ^= 0xff;
+        }
+        pharos_types::electra::attestation::SingleAttestation {
+            committee_index: CommitteeIndex(committee_index),
+            attester_index: ValidatorIndex(attester_index),
+            data,
+            signature: BLSSignature::from_array(sig_bytes),
+        }
+    }
+
+    /// Happy path: a well-formed `SingleAttestation` on the correct subnet is
+    /// accepted, and a second copy is deduplicated by the seen-cache.
+    #[test]
+    fn single_attestation_accepts_happy_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        let attester = {
+            use pharos_stf::phase0::accessors::get_beacon_committee;
+            get_beacon_committee::<MinimalEthSpec>(&genesis_state, Slot(0), 0)[0].0
+        };
+        let att = make_single_attestation(genesis_root, &genesis_state, 0, attester, 0, false);
+
+        assert_eq!(
+            host.validate_single_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Accept,
+        );
+
+        // Second copy: seen-cache (attester_index, target_epoch) dedups -> IGNORE.
+        assert_eq!(
+            host.validate_single_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Ignore("single-att: duplicate validator/epoch".into()),
+        );
+    }
+
+    /// EIP-7549 step 2: `data.index != 0` is a REJECT.
+    #[test]
+    fn single_attestation_rejects_nonzero_data_index() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        let attester = {
+            use pharos_stf::phase0::accessors::get_beacon_committee;
+            get_beacon_committee::<MinimalEthSpec>(&genesis_state, Slot(0), 0)[0].0
+        };
+        // data_index = 1 (non-zero) -> reject.
+        let att = make_single_attestation(genesis_root, &genesis_state, 0, attester, 1, false);
+
+        assert_eq!(
+            host.validate_single_attestation(att_expected_subnet(), &att),
+            GossipVerdict::Reject("single-att: data index is non-zero".into()),
+        );
+    }
+
+    /// Step 4: an attestation delivered on the wrong subnet is a REJECT.
+    #[test]
+    fn single_attestation_rejects_wrong_subnet() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+
+        let attester = {
+            use pharos_stf::phase0::accessors::get_beacon_committee;
+            get_beacon_committee::<MinimalEthSpec>(&genesis_state, Slot(0), 0)[0].0
+        };
+        let att = make_single_attestation(genesis_root, &genesis_state, 0, attester, 0, false);
+
+        // Expected subnet is 0; deliver on subnet 7 -> reject.
+        assert_eq!(
+            host.validate_single_attestation(7, &att),
+            GossipVerdict::Reject("single-att: wrong subnet".into()),
+        );
+    }
+
+    /// Build a signed electra `SignedAggregateAndProof` (with `committee_bits`)
+    /// for the slot-0 committee. `committee_bits_set` selects which committee
+    /// bits are set (the EIP-7549 "exactly one" rule is keyed off this).
+    fn make_signed_aap_electra(
+        beacon_block_root: Root,
+        head_state: &ForkMinimalState,
+        aggregator_index: u64,
+        committee_bits_set: &[usize],
+    ) -> pharos_types::electra::attestation::MinimalSignedAggregateAndProof {
+        use pharos_ssz::{Bitlist, Bitvector};
+        use pharos_stf::phase0::accessors::get_beacon_committee;
+        use pharos_types::electra::attestation::{AggregateAndProof, Attestation};
+
+        let mut data = make_att_data(beacon_block_root);
+        data.index = CommitteeIndex(0);
+
+        let committee_len = get_beacon_committee::<MinimalEthSpec>(head_state, Slot(0), 0).len();
+        // aggregation_bits: all committee members attesting (electra Bitlist type).
+        let mut agg_bits = Bitlist::<8192>::new();
+        for _ in 0..committee_len {
+            agg_bits.push(true).unwrap();
+        }
+        // committee_bits (Bitvector[MAX_COMMITTEES_PER_SLOT=4] for minimal).
+        let mut committee_bits = Bitvector::<4>::new();
+        for &i in committee_bits_set {
+            committee_bits.set(i, true);
+        }
+
+        // Aggregate attestation signature over data (DOMAIN_BEACON_ATTESTER).
+        let att_domain =
+            att_get_domain::<MinimalEthSpec>(head_state, DOMAIN_BEACON_ATTESTER, Some(Epoch(0)));
+        let att_signing = att_signing_root(&data, att_domain);
+        let att_sig_bytes: [u8; 96] = att_test_sign(att_signing.as_ref()).into();
+
+        let aggregate = Attestation::<8192, 4> {
+            aggregation_bits: agg_bits,
+            data: data.clone(),
+            signature: BLSSignature::from_array(att_sig_bytes),
+            committee_bits,
+        };
+
+        let selection_proof = {
+            let sr = sel_signing_root(head_state, Slot(0));
+            BLSSignature::from_array(att_test_sign(sr.as_ref()).into())
+        };
+        let message = AggregateAndProof::<8192, 4> {
+            aggregator_index: pharos_types::phase0::primitives::ValidatorIndex(aggregator_index),
+            aggregate,
+            selection_proof,
+        };
+
+        // Aggregator signature over the electra AggregateAndProof.
+        let aap_domain = att_get_domain::<MinimalEthSpec>(
+            head_state,
+            DOMAIN_AGGREGATE_AND_PROOF,
+            Some(Epoch(0)),
+        );
+        let aap_signing = att_signing_root(&message, aap_domain);
+        let aap_sig_bytes: [u8; 96] = att_test_sign(aap_signing.as_ref()).into();
+
+        pharos_types::electra::attestation::SignedAggregateAndProof {
+            message,
+            signature: BLSSignature::from_array(aap_sig_bytes),
+        }
+    }
+
+    /// EIP-7549 happy path: an electra aggregate with EXACTLY ONE committee bit
+    /// set is accepted.
+    #[test]
+    fn aggregate_electra_accepts_exactly_one_committee_bit() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator = agg_test_aggregator_index(&genesis_state);
+
+        let saap = make_signed_aap_electra(genesis_root, &genesis_state, aggregator, &[0]);
+
+        assert_eq!(
+            host.validate_aggregate_and_proof_electra(&saap),
+            GossipVerdict::Accept,
+        );
+    }
+
+    /// EIP-7549 step E2: an electra aggregate with MORE THAN ONE committee bit
+    /// set is a REJECT.
+    #[test]
+    fn aggregate_electra_rejects_multiple_committee_bits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 0);
+        let aggregator = agg_test_aggregator_index(&genesis_state);
+
+        // Two committee bits set (0 and 1) -> reject.
+        let saap = make_signed_aap_electra(genesis_root, &genesis_state, aggregator, &[0, 1]);
+
+        assert_eq!(
+            host.validate_aggregate_and_proof_electra(&saap),
+            GossipVerdict::Reject(
+                "agg-e: committee bits must specify exactly one committee".into()
+            ),
+        );
+    }
+
+    /// Build an electra `SignedBeaconBlock` child of genesis at slot 1 carrying
+    /// `num_commitments` blob KZG commitments. The proposer signature is left
+    /// unsigned (the EIP-7691 count check at step 9b runs BEFORE the proposer
+    /// signature verify, so this isolates the blob-count gate).
+    fn make_electra_block_with_commitments(
+        parent_root: Root,
+        parent_state_root: Root,
+        num_commitments: usize,
+    ) -> <MinimalEthSpec as EthSpec>::SignedBeaconBlock {
+        use pharos_ssz::SszList;
+        use pharos_types::deneb::KZGCommitment;
+        use pharos_types::electra::{MinimalBeaconBlock, MinimalBeaconBlockBody};
+        use pharos_types::phase0::primitives::ValidatorIndex;
+
+        let commitments: Vec<KZGCommitment> = (0..num_commitments)
+            .map(|_| KZGCommitment::default())
+            .collect();
+        let body = MinimalBeaconBlockBody {
+            blob_kzg_commitments: SszList::from_vec(commitments)
+                .expect("commitments within MAX_BLOB_COMMITMENTS_PER_BLOCK"),
+            ..Default::default()
+        };
+        let block = MinimalBeaconBlock {
+            slot: Slot(1),
+            proposer_index: ValidatorIndex(0),
+            parent_root,
+            state_root: parent_state_root,
+            body,
+        };
+        let signed = pharos_types::electra::MinimalSignedBeaconBlock {
+            message: block,
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        MinimalEthSpec::electra_into_signed_block(signed)
+    }
+
+    /// EIP-7691 (`specs/electra/p2p-interface.md:208-211`): the blob-commitment
+    /// count REJECT fires for an electra block with `cap + 1` commitments but NOT
+    /// for `cap` commitments (`cap = MAX_BLOBS_PER_BLOCK_ELECTRA`). Boundary test
+    /// of step 9b; the count gate runs before the proposer-signature verify, so a
+    /// block at `cap` proceeds past 9b (it later fails on the absent signature,
+    /// which is NOT the "too many blob kzg commitments" reject).
+    #[test]
+    fn block_rejects_too_many_blob_commitments_electra() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // att_slot=2 places the genesis clock so the slot-1 child block is in the
+        // past (otherwise the future-slot IGNORE at step 2 fires before step 9b).
+        let (host, genesis_root, genesis_state) = make_att_test_host(&dir, 2);
+        let parent_state_root = genesis_state.tree_hash_root();
+
+        let cap = host.runtime_cfg.max_blobs_per_block_electra as usize;
+        assert_eq!(
+            cap, 9,
+            "MAX_BLOBS_PER_BLOCK_ELECTRA is 9 for mainnet config"
+        );
+
+        // `cap + 1` commitments -> the EIP-7691 count reject.
+        let too_many =
+            make_electra_block_with_commitments(genesis_root, parent_state_root, cap + 1);
+        assert_eq!(
+            host.validate_beacon_block(&too_many),
+            GossipVerdict::Reject("block: too many blob kzg commitments".into()),
+        );
+
+        // `cap` commitments -> the count gate does NOT fire (the block proceeds
+        // past step 9b and is rejected later for the unsigned proposer signature
+        // / proposer-mismatch, never for the commitment count).
+        let at_cap = make_electra_block_with_commitments(genesis_root, parent_state_root, cap);
+        let verdict = host.validate_beacon_block(&at_cap);
+        assert_ne!(
+            verdict,
+            GossipVerdict::Reject("block: too many blob kzg commitments".into()),
+            "at-cap block must pass the EIP-7691 count gate, got {verdict:?}",
+        );
+    }
+
+    /// PEER-BAN HAZARD (M5-follow lesson): the electra `SingleAttestation` and the
+    /// phase0 `Attestation` have DIFFERENT SSZ wire lengths. Decoding the wrong
+    /// shape on the subnet topic is an instant -100 ban. This wire-bytes test
+    /// pins the round-trip AND the length difference so the dispatch can never
+    /// silently conflate the two.
+    #[test]
+    fn single_attestation_wire_bytes_distinct_from_phase0_attestation() {
+        use pharos_ssz::{Decode as _, Encode as _};
+        use pharos_types::electra::attestation::SingleAttestation;
+        use pharos_types::phase0::primitives::ValidatorIndex;
+
+        let single = SingleAttestation {
+            committee_index: CommitteeIndex(3),
+            attester_index: ValidatorIndex(42),
+            data: make_att_data(Root::default()),
+            signature: BLSSignature::from_array([7u8; 96]),
+        };
+        let single_bytes = single.as_ssz_bytes();
+        // Round-trip.
+        let decoded = SingleAttestation::from_ssz_bytes(&single_bytes)
+            .expect("SingleAttestation must round-trip");
+        assert_eq!(decoded, single);
+
+        // SingleAttestation is fixed-size: 8 (committee_index) + 8 (attester_index)
+        // + 128 (AttestationData) + 96 (signature) = 240 bytes.
+        assert_eq!(single_bytes.len(), 240, "SingleAttestation SSZ length");
+
+        // A phase0 Attestation<2048> with a single attester is variable-length and
+        // longer (4-byte offset + variable aggregation_bits + data + signature).
+        let mut bits = pharos_ssz::Bitlist::<2048>::new();
+        bits.push(true).unwrap();
+        let phase0 = pharos_types::phase0::Attestation::<2048> {
+            aggregation_bits: bits,
+            data: make_att_data(Root::default()),
+            signature: BLSSignature::from_array([7u8; 96]),
+        };
+        let phase0_bytes = phase0.as_ssz_bytes();
+        assert_ne!(
+            single_bytes.len(),
+            phase0_bytes.len(),
+            "SingleAttestation and phase0 Attestation MUST have different wire lengths \
+             (conflating them is a -100 peer-ban hazard)",
         );
     }
 }

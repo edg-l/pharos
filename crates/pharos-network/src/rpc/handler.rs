@@ -17,11 +17,11 @@ use crate::host::{BlobProvider, Host, LightClientProvider};
 use crate::peer::manager::PeerManager;
 use crate::rpc::min_epochs::compute_min_epochs_for_block_requests;
 use crate::rpc::types::{
-    MAX_REQUEST_BLOB_SIDECARS, MAX_REQUEST_BLOCKS, MAX_REQUEST_LIGHT_CLIENT_UPDATES,
-    MetaDataResponse, RpcRequest, RpcResponse,
+    MAX_REQUEST_BLOCKS, MAX_REQUEST_LIGHT_CLIENT_UPDATES, MetaDataResponse, RpcRequest,
+    RpcResponse, compute_max_request_blob_sidecars,
 };
 use crate::scoring::{HandshakeFailKind, PeerScorer, ScoreEvent};
-use crate::types::DisconnectReason;
+use crate::types::{DisconnectReason, Fork};
 
 /// Handle an inbound `RpcRequest` and produce an `RpcResponse`.
 ///
@@ -173,7 +173,13 @@ where
         // Count is clamped to `MAX_REQUEST_BLOB_SIDECARS` to bound response size.
         RpcRequest::BlobSidecarsByRange(req) => {
             use pharos_types::phase0::primitives::Slot;
-            let count = req.count.min(MAX_REQUEST_BLOB_SIDECARS);
+            // EIP-7691: the per-request blob bound is 128 * MAX_BLOBS_PER_BLOCK_ELECTRA
+            // from Electra onward (`specs/electra/p2p-interface.md:90-100`).
+            let is_electra = matches!(
+                host.fork_from_context(&host.current_fork_digest().into_inner()),
+                Some(Fork::Electra)
+            );
+            let count = req.count.min(compute_max_request_blob_sidecars(is_electra));
             let sidecars = host.blobs_by_range(Slot(req.start_slot), count);
             RpcResponse::BlobSidecars(sidecars)
         }

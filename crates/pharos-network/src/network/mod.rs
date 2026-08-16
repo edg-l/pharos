@@ -2061,8 +2061,13 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
                     &mut topic_map,
                 )?;
             }
-            Some(crate::types::Fork::Deneb) => {
-                // Deneb: altair extras + the EIP-4844 blob_sidecar subnets.
+            Some(crate::types::Fork::Deneb) | Some(crate::types::Fork::Electra) => {
+                // Deneb/Electra: altair extras + the EIP-4844 blob_sidecar subnets.
+                // Electra keeps the same gossip topic set as Deneb (the
+                // beacon_attestation_* / beacon_aggregate_and_proof topics carry
+                // the EIP-7549 attestation types but the topic NAMES are unchanged,
+                // and they are already subscribed by `subscribe_base_topics`).
+                // Per `specs/electra/p2p-interface.md:101-118`.
                 subscribe_altair_extra_topics::<E>(
                     &mut swarm.behaviour_mut().gossipsub,
                     fork_digest,
@@ -2074,9 +2079,10 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
                     &mut topic_map,
                 )?;
             }
-            _ => {
-                // Phase0 or unknown digest: base topics only.
-            }
+            // Phase0 or unknown digest: base topics only. No `_ =>` catch-all:
+            // every `Fork` variant is matched explicitly so a future fork is a
+            // compile error here rather than a silent topic-set regression.
+            Some(crate::types::Fork::Phase0) | None => {}
         }
 
         // ── Step 6: add listeners ─────────────────────────────────────────────
@@ -2276,9 +2282,12 @@ mod tests {
             // MockHost uses the zero digest for every fork; the explicit match
             // forces an update here if a future Fork variant is added.
             match fork {
-                Fork::Phase0 | Fork::Altair | Fork::Bellatrix | Fork::Capella | Fork::Deneb => {
-                    ForkDigest::from_array([0u8; 4])
-                }
+                Fork::Phase0
+                | Fork::Altair
+                | Fork::Bellatrix
+                | Fork::Capella
+                | Fork::Deneb
+                | Fork::Electra => ForkDigest::from_array([0u8; 4]),
             }
         }
         fn fork_from_context(&self, _ctx: &[u8; 4]) -> Option<crate::types::Fork> {

@@ -121,6 +121,71 @@ impl<const N: u64> SignedContributionAndProofView for crate::altair::SignedContr
     }
 }
 
+// ── ElectraSignedAggregateAndProofView ────────────────────────────────────────
+
+/// Read-only accessors for the electra `SignedAggregateAndProof<MAX_AGGREGATION_BITS,
+/// MAX_COMMITTEES_PER_SLOT>` (EIP-7549).
+///
+/// Replaces direct field access for generic gossip-validator code that cannot
+/// name the const-generic preset params. Implemented by the blanket impl below
+/// over all concrete electra `SignedAggregateAndProof<A, C>`.
+///
+/// Per `specs/electra/p2p-interface.md:225` and `specs/electra/validator.md`.
+pub trait ElectraSignedAggregateAndProofView {
+    /// `message.aggregate.data` (cloned; small, fixed-size container).
+    fn aggregate_data(&self) -> crate::phase0::AttestationData;
+    /// Indices of the set bits in `message.aggregate.committee_bits`, ascending.
+    fn committee_indices(&self) -> Vec<u64>;
+    /// `message.aggregate.aggregation_bits` as a `Vec<bool>` (one entry per bit).
+    fn aggregation_bits(&self) -> Vec<bool>;
+    /// `message.aggregate.signature` — the aggregate attestation signature.
+    fn aggregate_signature(&self) -> &BLSSignature;
+    /// `message.aggregator_index`.
+    fn aggregator_index(&self) -> ValidatorIndex;
+    /// `message.selection_proof`.
+    fn selection_proof(&self) -> &BLSSignature;
+    /// `signature` — the outer signed-wrapper signature.
+    fn outer_signature(&self) -> &BLSSignature;
+    /// `tree_hash_root(message)` — the `AggregateAndProof` signing-root input.
+    fn message_tree_hash_root(&self) -> Root;
+}
+
+impl<const A: u64, const C: u64> ElectraSignedAggregateAndProofView
+    for crate::electra::attestation::SignedAggregateAndProof<A, C>
+{
+    fn aggregate_data(&self) -> crate::phase0::AttestationData {
+        self.message.aggregate.data.clone()
+    }
+    fn committee_indices(&self) -> Vec<u64> {
+        self.message
+            .aggregate
+            .committee_bits
+            .iter()
+            .enumerate()
+            .filter_map(|(i, bit)| if bit { Some(i as u64) } else { None })
+            .collect()
+    }
+    fn aggregation_bits(&self) -> Vec<bool> {
+        self.message.aggregate.aggregation_bits.iter().collect()
+    }
+    fn aggregate_signature(&self) -> &BLSSignature {
+        &self.message.aggregate.signature
+    }
+    fn aggregator_index(&self) -> ValidatorIndex {
+        self.message.aggregator_index
+    }
+    fn selection_proof(&self) -> &BLSSignature {
+        &self.message.selection_proof
+    }
+    fn outer_signature(&self) -> &BLSSignature {
+        &self.signature
+    }
+    fn message_tree_hash_root(&self) -> Root {
+        use pharos_ssz::TreeHash as _;
+        self.message.tree_hash_root()
+    }
+}
+
 // ── BeaconBlockBodyView ───────────────────────────────────────────────────────
 
 /// Read-only accessors for `BeaconBlockBody` fields.
