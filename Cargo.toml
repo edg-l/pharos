@@ -118,6 +118,15 @@ opt-level = 3
 lto = "thin"
 debug = true
 
+# Optimized profile for the conformance walk (the slow `m0` suite). opt-level 3
+# from release, but NO fat LTO / codegen-units=1 — those slow the build a lot
+# and don't pay off for a one-shot run. Lives in its own target/conformance/
+# tree so it never fingerprint-thrashes against release builds.
+[profile.conformance]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 [profile.dev]
 opt-level = 2
 # line-tables-only: keeps file:line in panics/backtraces, drops variable/type

@@ -69,7 +69,7 @@ fetch-spec-tests: ## Download consensus-spec-tests fixtures to ~/.cache/pharos-s
 .PHONY: conformance
 conformance: ## Run the conformance suite and write docs/conformance.md. Captured to $(LOGS)/conformance.log.
 	@mkdir -p $(LOGS)
-	$(CARGO) run --release -p pharos-conformance -- --write 2>&1 | tee $(LOGS)/conformance.log
+	$(CARGO) run -p pharos-conformance --profile conformance -- --write 2>&1 | tee $(LOGS)/conformance.log
 
 ## ----- Dev targets --------------------------------------------------------
 
@@ -115,9 +115,9 @@ test-all: ## Workspace tests INCLUDING m0_acceptance (slow). Captured to $(LOGS)
 	$(CARGO) test --workspace 2>&1 | tee $(LOGS)/test-all.log
 
 .PHONY: test-conf
-test-conf: ## Just the m0_acceptance conformance walk. Captured to $(LOGS)/test-conf.log.
+test-conf: ## Full conformance walk in the optimized `conformance` profile; exits 1 on any failure. Captured to $(LOGS)/test-conf.log.
 	@mkdir -p $(LOGS)
-	$(CARGO) test -p pharos-conformance --test m0_acceptance 2>&1 | tee $(LOGS)/test-conf.log
+	$(CARGO) run -p pharos-conformance --profile conformance 2>&1 | tee $(LOGS)/test-conf.log
 
 .PHONY: test-quick
 test-quick: ## Library + bin unit tests only (no integration tests). Captured to $(LOGS)/test-quick.log.
@@ -167,13 +167,13 @@ clean: ## Clear the cargo target directory.
 ## ----- CI / pre-commit ----------------------------------------------------
 
 .PHONY: ci
-ci: fmt-check lint check test-all ## Full CI gate: fmt + clippy + check + ALL tests (slow).
+ci: fmt-check lint check test test-conf ## Full CI gate: fmt + clippy + check + fast tests + optimized conformance walk.
 
 .PHONY: pre-commit
 pre-commit: fmt lint test ## Pre-commit gate: fmt + clippy + fast workspace tests (skips m0_acceptance).
 
 .PHONY: pre-push
-pre-push: fmt-check lint test-all ## Pre-push gate: full workspace tests including m0_acceptance.
+pre-push: fmt-check lint test test-conf ## Pre-push gate: fmt + clippy + fast tests + optimized conformance walk (replaces the slow debug m0_acceptance).
 
 ## ----- Utility ------------------------------------------------------------
 
