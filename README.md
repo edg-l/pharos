@@ -35,10 +35,6 @@ storage engine, HTTP, serde) and for cryptographic primitives where the
 conformance suite validates I/O but not side-channel safety (BLS12-381 via
 `blst`, KZG via `c-kzg`).
 
-Explicitly **not** dependencies: `ethereum_ssz`, `tree_hash`,
-`ethereum_hashing`, `alloy*`, `lighthouse_network`, `milhouse`, `ssz_rs`,
-`superstruct`.
-
 ## Performance
 
 Performance is a first-class goal, designed in rather than bolted on:
