@@ -168,32 +168,42 @@ pub async fn run_proposer(
         }
     };
 
-    // Step 3 + 4: sign_beacon_block records the slashing DB entry BEFORE signing.
+    // Step 3 + 4: sign the block over its REAL hash_tree_root.
     // Per `D-commit-before-sign`: the slashing record is atomically committed by
     // `check_and_record_block_proposal` inside `sign_beacon_block` before the key
     // is used. If the check fails the error propagates and we skip.
     //
-    // We use the block JSON hash as the block_object for tree_hash_root so the
-    // signing root is deterministic from the block content. The real implementation
-    // would decode the fork-specific BeaconBlock and use its tree_hash_root.
-    let block_bytes = serde_json::to_vec(&block_json).unwrap_or_default();
-    let block_hash = pharos_utils::hash::hash(&block_bytes);
-    use pharos_ssz::TreeHash;
-    struct HashWrapper([u8; 32]);
-    impl TreeHash for HashWrapper {
-        const TREE_HASH_TYPE: pharos_ssz::TreeHashType = pharos_ssz::TreeHashType::Basic;
-        fn tree_hash_packed_encoding(&self) -> Vec<u8> {
-            self.0.to_vec()
+    // The BN returns `block_ssz` (the fork-enum `BeaconBlock` SSZ, `[disc] ++
+    // message_ssz`) so we decode the typed block and pass it to
+    // `sign_beacon_block`, which signs `compute_signing_root(block, DOMAIN_BEACON_PROPOSER)`.
+    // The BN re-verifies the proposer signature over the same root on import (and
+    // peers verify it over gossip), so a placeholder root would be rejected.
+    use pharos_ssz::Decode as _;
+    let block_ssz_hex = block_json
+        .get("block_ssz")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let block_ssz = match hex::decode(block_ssz_hex.strip_prefix("0x").unwrap_or(block_ssz_hex)) {
+        Ok(b) if !b.is_empty() => b,
+        _ => {
+            error!(
+                slot,
+                "produce response missing block_ssz; cannot sign block; skipping"
+            );
+            return;
         }
-        fn tree_hash_root(&self) -> pharos_utils::Hash256 {
-            pharos_utils::Hash256::from_array(self.0)
+    };
+    let beacon_block = match pharos_types::state::MainnetBeaconBlock::from_ssz_bytes(&block_ssz) {
+        Ok(b) => b,
+        Err(e) => {
+            error!(slot, ?e, "failed to decode produced block SSZ; skipping");
+            return;
         }
-    }
-    let block_wrapper = HashWrapper(block_hash.into_inner());
+    };
     let block_sig = match sign_beacon_block(
         &entry.secret_key,
         &entry.pubkey_hex,
-        &block_wrapper,
+        &beacon_block,
         slot,
         fork,
         slashing_db,
@@ -312,14 +322,18 @@ pub async fn run_attester(
     let validator_committee_index: u64 = duty.validator_committee_index.parse().unwrap_or(0);
     let committees_at_slot: u64 = duty.committees_at_slot.parse().unwrap_or(1);
 
-    // Build a minimal aggregation_bits bitvector: a single bit set.
-    // The actual aggregation_bits length is `committee_length`; for a single
-    // validator attestation, only their bit is set.
+    // Build the SSZ `Bitlist[committee_length]` aggregation_bits with only this
+    // validator's bit set. An SSZ Bitlist encodes its length via a SENTINEL bit at
+    // index `committee_length`; without it the decoder infers the wrong length
+    // (the highest data bit), which the STF rejects as "aggregation bits length
+    // mismatch". Total bytes = ceil((committee_length + 1) / 8).
     let bits_len = committee_length as usize;
-    let mut agg_bits = vec![0u8; bits_len.div_ceil(8)];
+    let mut agg_bits = vec![0u8; (bits_len + 1).div_ceil(8)];
     if validator_committee_index < committee_length {
         agg_bits[validator_committee_index as usize / 8] |= 1 << (validator_committee_index % 8);
     }
+    // Length sentinel bit at index `bits_len`.
+    agg_bits[bits_len / 8] |= 1 << (bits_len % 8);
 
     let attestation = json!([{
         "aggregation_bits": format!("0x{}", hex::encode(&agg_bits)),

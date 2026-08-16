@@ -854,12 +854,26 @@ async fn main() -> anyhow::Result<()> {
                         }
                     };
 
+                    // Fork-enum BeaconBlock SSZ (`[disc] ++ message_ssz`) for the VC to
+                    // decode and tree-hash so it signs the REAL proposer root. The
+                    // SignedBeaconBlock SSZ is `[offset(4)][sig(96)][message_ssz]`, so the
+                    // unsigned message bytes are `ssz_bytes[100..]`.
+                    let block_ssz_hex = if ssz_bytes.len() >= 100 {
+                        let mut fork_enum = Vec::with_capacity(1 + ssz_bytes.len() - 100);
+                        fork_enum.push(disc);
+                        fork_enum.extend_from_slice(&ssz_bytes[100..]);
+                        format!("0x{}", hex::encode(&fork_enum))
+                    } else {
+                        String::new()
+                    };
+
                     if let Ok(mut cache) = produce_cache.lock() {
                         cache.insert(slot.0, (ssz_bytes, disc));
                     }
 
                     // The handler reads `block_json.get("data").unwrap_or(&block_json)`.
-                    // Return {"data": <unsigned BeaconBlock message>} so the VC signs it.
+                    // Return {"data": <unsigned BeaconBlock message>} so the VC signs it,
+                    // plus `block_ssz` (the fork-enum SSZ) so the VC can compute the root.
                     let message_json = block_json_value
                         .json
                         .get("message")
@@ -867,6 +881,7 @@ async fn main() -> anyhow::Result<()> {
                         .unwrap_or(block_json_value.json);
                     let mut block_json = JsonValue::Object(JsonMap::new());
                     block_json["data"] = message_json;
+                    block_json["block_ssz"] = JsonValue::String(block_ssz_hex);
 
                     Ok((block_json, exec_value, pharos_utils::Uint256::ZERO))
                 },

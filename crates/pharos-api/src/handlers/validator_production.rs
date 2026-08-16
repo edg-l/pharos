@@ -157,13 +157,18 @@ pub async fn get_produce_block_v3<E: EthSpec>(
         let variant = fork_variant_at_slot(&cfg, slot, spe);
         let version = fork_variant_str(variant);
 
-        let response = serde_json::json!({
+        let mut response = serde_json::json!({
             "version": version,
             "execution_payload_blinded": false,
             "execution_payload_value": exec_value.to_string(),
             "consensus_block_value": consensus_value.to_string(),
             "data": block_json.get("data").unwrap_or(&block_json),
         });
+        // Pass through the fork-enum block SSZ (Pharos extension) so the VC can
+        // decode the block and sign its real hash_tree_root.
+        if let Some(b) = block_json.get("block_ssz") {
+            response["block_ssz"] = b.clone();
+        }
         Ok::<_, ApiError>((version, exec_value, consensus_value, response))
     })
     .await
