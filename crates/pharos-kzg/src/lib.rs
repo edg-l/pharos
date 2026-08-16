@@ -9,11 +9,11 @@
 //!
 //! This crate targets c-kzg **2.x** (resolved: 2.1.7 in development).  The
 //! API surface used:
-//! - `c_kzg::KzgSettings::{load_trusted_setup, parse_kzg_trusted_setup, blob_to_kzg_commitment, verify_blob_kzg_proof, verify_blob_kzg_proof_batch}`
-//! - `c_kzg::{Blob, Bytes48, BYTES_PER_BLOB, BYTES_PER_COMMITMENT, BYTES_PER_PROOF}`
+//! - `c_kzg::KzgSettings::{load_trusted_setup, parse_kzg_trusted_setup, blob_to_kzg_commitment, verify_blob_kzg_proof, verify_blob_kzg_proof_batch, compute_kzg_proof, compute_blob_kzg_proof, verify_kzg_proof}`
+//! - `c_kzg::{Blob, Bytes32, Bytes48, BYTES_PER_BLOB, BYTES_PER_COMMITMENT, BYTES_PER_PROOF}`
 //! - `c_kzg::ethereum_kzg_settings(precompute: u64) -> &'static KzgSettings`
 //!
-//! The `[u8; N]` → `Blob` / `Bytes48` conversion happens at the public boundary;
+//! The `[u8; N]` → `Blob` / `Bytes32` / `Bytes48` conversion happens at the public boundary;
 //! internal call sites use the c-kzg types directly.
 //!
 //! # Cell sampling (EIP-7594 PeerDAS)
@@ -27,11 +27,83 @@
 
 use std::path::Path;
 
-use c_kzg::{BYTES_PER_CELL, Blob, Bytes48, CELLS_PER_EXT_BLOB, Cell, KzgSettings};
+use c_kzg::{BYTES_PER_CELL, Blob, Bytes32, Bytes48, CELLS_PER_EXT_BLOB, Cell, KzgSettings};
 use sha2::{Digest, Sha256};
 
 // Re-export so dependents can use the raw c-kzg types if needed.
 pub use c_kzg;
+
+// ── BLS field element helpers ─────────────────────────────────────────────────
+
+/// BLS12-381 scalar field modulus.
+///
+/// `r = 52435875175126190479447740508185965837690552500527637822603658699938581184513`
+/// per EIP-4844 / `specs/deneb/polynomial-commitments.md`.
+///
+/// Used by `hash_to_bls_field` and the in-house challenge implementations.
+const BLS_MODULUS: &[u8; 32] = &[
+    0x73, 0xed, 0xa7, 0x53, 0x29, 0x9d, 0x7d, 0x48, 0x33, 0x39, 0xd8, 0x08, 0x09, 0xa1, 0xd8, 0x05,
+    0x53, 0xbd, 0xa4, 0x02, 0xff, 0xfe, 0x5b, 0xfe, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
+];
+
+/// `hash_to_bls_field(data) = SHA256(data) mod BLS_MODULUS` (big-endian).
+///
+/// Mirrors `specs/deneb/polynomial-commitments.md`:
+/// ```python
+/// def hash_to_bls_field(data: bytes) -> BLSFieldElement:
+///     hashed_data = hash(data)  # SHA256
+///     return BLSFieldElement(int.from_bytes(hashed_data, 'big') % BLS_MODULUS)
+/// ```
+///
+/// The result is a 32-byte big-endian encoding of the field element.
+pub(crate) fn hash_to_bls_field(data: &[u8]) -> [u8; 32] {
+    let hash: [u8; 32] = Sha256::digest(data).into();
+    // Interpret both as big-endian 256-bit integers; compute hash % BLS_MODULUS.
+    bls_field_mod_reduce(hash)
+}
+
+/// Reduce a 256-bit big-endian integer modulo `BLS_MODULUS`.
+///
+/// Uses schoolbook big-integer subtraction to avoid pulling in a bignum dep.
+/// `BLS_MODULUS < 2^255`, so the input is either already reduced or needs at
+/// most `floor(2^256 / BLS_MODULUS) ≈ 2.07` subtractions.  We loop until
+/// the value is less than the modulus.
+fn bls_field_mod_reduce(mut val: [u8; 32]) -> [u8; 32] {
+    while cmp_be_bytes(&val, BLS_MODULUS) >= 0 {
+        val = sub_be_bytes(val, *BLS_MODULUS);
+    }
+    val
+}
+
+/// Compare two 32-byte big-endian integers.  Returns positive / zero / negative.
+fn cmp_be_bytes(a: &[u8; 32], b: &[u8; 32]) -> i8 {
+    for (x, y) in a.iter().zip(b.iter()) {
+        if x > y {
+            return 1;
+        }
+        if x < y {
+            return -1;
+        }
+    }
+    0
+}
+
+/// Subtract two 32-byte big-endian integers: `a - b` (assumes `a >= b`).
+fn sub_be_bytes(a: [u8; 32], b: [u8; 32]) -> [u8; 32] {
+    let mut result = [0u8; 32];
+    let mut borrow: u16 = 0;
+    for i in (0..32).rev() {
+        let diff = (a[i] as i16) - (b[i] as i16) - (borrow as i16);
+        if diff < 0 {
+            result[i] = (diff + 256) as u8;
+            borrow = 1;
+        } else {
+            result[i] = diff as u8;
+            borrow = 0;
+        }
+    }
+    result
+}
 
 // ── Versioned-hash helper ─────────────────────────────────────────────────────
 
@@ -270,6 +342,174 @@ impl KzgVerifier {
             &ckzg_proofs,
         )?;
         Ok(valid)
+    }
+
+    // ── Deneb KZG proof helpers (EIP-4844) ────────────────────────────────────
+
+    /// Compute a KZG proof and evaluation for a blob at point `z`.
+    ///
+    /// `z` is a 32-byte big-endian BLS field element.  Returns `(proof, y)`
+    /// where `proof` is a 48-byte KZG proof and `y` is the 32-byte evaluation
+    /// of the polynomial at `z`.
+    ///
+    /// c-kzg 2.1.7 safe API: `KzgSettings::compute_kzg_proof(&self, blob: &Blob, z_bytes: &Bytes32) -> Result<(KZGProof, Bytes32), Error>`.
+    pub fn compute_kzg_proof(
+        &self,
+        blob: &[u8; 131072],
+        z: &[u8; 32],
+    ) -> Result<([u8; 48], [u8; 32]), KzgError> {
+        let ckzg_blob = Blob::from_bytes(blob.as_slice())?;
+        let z_bytes = Bytes32::from_bytes(z.as_slice())?;
+        let (proof, y) = self.settings.compute_kzg_proof(&ckzg_blob, &z_bytes)?;
+        Ok((proof.to_bytes().into_inner(), *y))
+    }
+
+    /// Compute a KZG proof for an entire blob, given the blob and its commitment.
+    ///
+    /// The evaluation point is derived internally via `compute_challenge(blob, commitment)`.
+    /// Returns a 48-byte proof.
+    ///
+    /// c-kzg 2.1.7 safe API: `KzgSettings::compute_blob_kzg_proof(&self, blob: &Blob, commitment_bytes: &Bytes48) -> Result<KZGProof, Error>`.
+    pub fn compute_blob_kzg_proof(
+        &self,
+        blob: &[u8; 131072],
+        commitment: &[u8; 48],
+    ) -> Result<[u8; 48], KzgError> {
+        let ckzg_blob = Blob::from_bytes(blob.as_slice())?;
+        let commitment_bytes = Bytes48::from_bytes(commitment.as_slice())?;
+        let proof = self
+            .settings
+            .compute_blob_kzg_proof(&ckzg_blob, &commitment_bytes)?;
+        Ok(proof.to_bytes().into_inner())
+    }
+
+    /// Verify a KZG proof `proof` that `p(z) = y` for a given commitment.
+    ///
+    /// `commitment`, `z`, `y`, and `proof` are raw byte arrays.  Returns `Ok(true)`
+    /// when the proof is valid.
+    ///
+    /// c-kzg 2.1.7 safe API: `KzgSettings::verify_kzg_proof(&self, commitment_bytes: &Bytes48, z_bytes: &Bytes32, y_bytes: &Bytes32, proof_bytes: &Bytes48) -> Result<bool, Error>`.
+    pub fn verify_kzg_proof(
+        &self,
+        commitment: &[u8; 48],
+        z: &[u8; 32],
+        y: &[u8; 32],
+        proof: &[u8; 48],
+    ) -> Result<bool, KzgError> {
+        let commitment_bytes = Bytes48::from_bytes(commitment.as_slice())?;
+        let z_bytes = Bytes32::from_bytes(z.as_slice())?;
+        let y_bytes = Bytes32::from_bytes(y.as_slice())?;
+        let proof_bytes = Bytes48::from_bytes(proof.as_slice())?;
+        let valid =
+            self.settings
+                .verify_kzg_proof(&commitment_bytes, &z_bytes, &y_bytes, &proof_bytes)?;
+        Ok(valid)
+    }
+
+    // ── Deneb Fiat-Shamir challenge (in-house, EIP-4844) ──────────────────────
+
+    /// Compute the Fiat-Shamir challenge for `(blob, commitment)`.
+    ///
+    /// This is the evaluation point used internally by `compute_blob_kzg_proof`
+    /// and `verify_blob_kzg_proof`.
+    ///
+    /// Per `specs/deneb/polynomial-commitments.md`:
+    /// ```python
+    /// degree_poly = int.to_bytes(FIELD_ELEMENTS_PER_BLOB, 16, 'big')  # 4096 as 16 bytes
+    /// data = FIAT_SHAMIR_PROTOCOL_DOMAIN + degree_poly + blob + commitment
+    /// return hash_to_bls_field(data)
+    /// ```
+    /// where `FIAT_SHAMIR_PROTOCOL_DOMAIN = b'FSBLOBVERIFY_V1_'` (16 bytes).
+    ///
+    /// The result is a 32-byte big-endian BLS field element.
+    pub fn compute_challenge(blob: &[u8; 131072], commitment: &[u8; 48]) -> [u8; 32] {
+        // FIAT_SHAMIR_PROTOCOL_DOMAIN = b'FSBLOBVERIFY_V1_' (16 bytes)
+        const DOMAIN: &[u8; 16] = b"FSBLOBVERIFY_V1_";
+        // FIELD_ELEMENTS_PER_BLOB = 4096, encoded as 16 big-endian bytes
+        const DEGREE: [u8; 16] = {
+            let n: u128 = 4096u128;
+            n.to_be_bytes()
+        };
+
+        let mut data = Vec::with_capacity(16 + 16 + 131072 + 48);
+        data.extend_from_slice(DOMAIN);
+        data.extend_from_slice(&DEGREE);
+        data.extend_from_slice(blob.as_slice());
+        data.extend_from_slice(commitment.as_slice());
+
+        hash_to_bls_field(&data)
+    }
+
+    // ── Fulu Fiat-Shamir challenge (in-house, EIP-7594) ───────────────────────
+
+    /// Compute the Fiat-Shamir challenge for `compute_verify_cell_kzg_proof_batch`.
+    ///
+    /// Per `specs/fulu/polynomial-commitments-sampling.md`:
+    /// ```python
+    /// hashinput = RANDOM_CHALLENGE_KZG_CELL_BATCH_DOMAIN
+    /// hashinput += int.to_bytes(FIELD_ELEMENTS_PER_BLOB, 8, 'big')    # 4096 as 8 bytes
+    /// hashinput += int.to_bytes(FIELD_ELEMENTS_PER_CELL, 8, 'big')    # 64 as 8 bytes
+    /// hashinput += int.to_bytes(len(commitments), 8, 'big')
+    /// hashinput += int.to_bytes(len(cell_indices), 8, 'big')
+    /// for commitment in commitments:
+    ///     hashinput += commitment                                       # 48 bytes each
+    /// for k, coset_evals in enumerate(cosets_evals):
+    ///     hashinput += int.to_bytes(commitment_indices[k], 8, 'big')
+    ///     hashinput += int.to_bytes(cell_indices[k], 8, 'big')
+    ///     for coset_eval in coset_evals:
+    ///         hashinput += bls_field_to_bytes(coset_eval)               # 32 bytes each
+    ///     hashinput += proofs[k]                                        # 48 bytes
+    /// return hash_to_bls_field(hashinput)
+    /// ```
+    ///
+    /// `RANDOM_CHALLENGE_KZG_CELL_BATCH_DOMAIN = b'RCKZGCBATCH__V1_'` (16 bytes).
+    /// `cosets_evals[k]` is a cell's 64 field elements, each 32 bytes big-endian
+    /// (i.e. the raw cell bytes split into 32-byte chunks — the cell is already in
+    /// evaluation form over its coset).
+    /// `FIELD_ELEMENTS_PER_CELL = 64`, `FIELD_ELEMENTS_PER_BLOB = 4096`.
+    ///
+    /// Returns a 32-byte big-endian BLS field element.
+    pub fn compute_verify_cell_kzg_proof_batch_challenge(
+        commitments: &[&[u8; 48]],
+        commitment_indices: &[u64],
+        cell_indices: &[u64],
+        cells: &[&[u8; 2048]],
+        proofs: &[&[u8; 48]],
+    ) -> [u8; 32] {
+        // RANDOM_CHALLENGE_KZG_CELL_BATCH_DOMAIN = b'RCKZGCBATCH__V1_' (16 bytes)
+        const DOMAIN: &[u8; 16] = b"RCKZGCBATCH__V1_";
+        const FIELD_ELEMENTS_PER_BLOB: u64 = 4096;
+        const FIELD_ELEMENTS_PER_CELL: u64 = 64;
+
+        let num_cells = cell_indices.len();
+        debug_assert_eq!(commitment_indices.len(), num_cells);
+        debug_assert_eq!(cells.len(), num_cells);
+        debug_assert_eq!(proofs.len(), num_cells);
+        let mut data: Vec<u8> = Vec::with_capacity(
+            16 + 8 + 8 + 8 + 8 + commitments.len() * 48 + num_cells * (8 + 8 + 64 * 32 + 48),
+        );
+
+        data.extend_from_slice(DOMAIN);
+        data.extend_from_slice(&FIELD_ELEMENTS_PER_BLOB.to_be_bytes());
+        data.extend_from_slice(&FIELD_ELEMENTS_PER_CELL.to_be_bytes());
+        data.extend_from_slice(&(commitments.len() as u64).to_be_bytes());
+        data.extend_from_slice(&(num_cells as u64).to_be_bytes());
+
+        for commitment in commitments {
+            data.extend_from_slice(commitment.as_slice());
+        }
+
+        for k in 0..num_cells {
+            data.extend_from_slice(&commitment_indices[k].to_be_bytes());
+            data.extend_from_slice(&cell_indices[k].to_be_bytes());
+            // Each cell is 2048 bytes = 64 field elements of 32 bytes each (big-endian).
+            // `bls_field_to_bytes(coset_eval)` = 32-byte big-endian encoding.
+            // The cell bytes ARE the evaluations in big-endian order, so we emit them directly.
+            data.extend_from_slice(cells[k].as_slice());
+            data.extend_from_slice(proofs[k].as_slice());
+        }
+
+        hash_to_bls_field(&data)
     }
 
     // ── Cell sampling (EIP-7594 PeerDAS) ──────────────────────────────────────
@@ -559,5 +799,137 @@ mod tests {
         assert_eq!(recovered_proofs.len(), 128);
         // The recovered full matrix equals the original `compute_cells` output.
         assert_eq!(recovered.as_array(), full.as_array());
+    }
+
+    // ── Tests for new deneb proof helpers ─────────────────────────────────────
+
+    /// `compute_kzg_proof` round-trip: the returned proof verifies via `verify_kzg_proof`.
+    #[test]
+    fn compute_kzg_proof_round_trip() {
+        let verifier = KzgVerifier::mainnet();
+        let blob = test_blob();
+        let commitment = verifier.blob_to_kzg_commitment(&blob).unwrap();
+        // Use z = 0x0000...0001 (a small field element well within range).
+        let mut z = [0u8; 32];
+        z[31] = 1;
+        let (proof, y) = verifier
+            .compute_kzg_proof(&blob, &z)
+            .expect("compute_kzg_proof");
+        let valid = verifier
+            .verify_kzg_proof(&commitment, &z, &y, &proof)
+            .expect("verify_kzg_proof");
+        assert!(
+            valid,
+            "compute_kzg_proof + verify_kzg_proof round-trip must verify"
+        );
+    }
+
+    /// `compute_kzg_proof` with an out-of-range `z` returns an error (not a panic).
+    #[test]
+    fn compute_kzg_proof_out_of_range_z_errors() {
+        let verifier = KzgVerifier::mainnet();
+        let blob = test_blob();
+        // BLS_MODULUS in big-endian bytes (the modulus itself is out of range).
+        let z_bad: [u8; 32] = *BLS_MODULUS;
+        let result = verifier.compute_kzg_proof(&blob, &z_bad);
+        assert!(result.is_err(), "out-of-range z must return Err");
+    }
+
+    /// `compute_blob_kzg_proof` round-trip: the returned proof verifies via
+    /// `verify_blob_kzg_proof`.
+    #[test]
+    fn compute_blob_kzg_proof_round_trip() {
+        let verifier = KzgVerifier::mainnet();
+        let blob = test_blob();
+        let commitment = verifier.blob_to_kzg_commitment(&blob).unwrap();
+        let proof = verifier
+            .compute_blob_kzg_proof(&blob, &commitment)
+            .expect("compute_blob_kzg_proof");
+        let valid = verifier
+            .verify_blob_kzg_proof(&blob, &commitment, &proof)
+            .expect("verify_blob_kzg_proof");
+        assert!(
+            valid,
+            "compute_blob_kzg_proof + verify_blob_kzg_proof round-trip must verify"
+        );
+    }
+
+    /// `compute_challenge` output is consistent with `compute_kzg_proof` evaluation point:
+    /// the proof computed at the challenge point verifies correctly.
+    #[test]
+    fn compute_challenge_consistent_with_blob_proof() {
+        let verifier = KzgVerifier::mainnet();
+        let blob = test_blob();
+        let commitment = verifier.blob_to_kzg_commitment(&blob).unwrap();
+        let z = KzgVerifier::compute_challenge(&blob, &commitment);
+        // The proof at z must verify with the y returned by compute_kzg_proof.
+        let (proof, y) = verifier
+            .compute_kzg_proof(&blob, &z)
+            .expect("compute_kzg_proof at challenge");
+        let valid = verifier
+            .verify_kzg_proof(&commitment, &z, &y, &proof)
+            .expect("verify_kzg_proof at challenge");
+        assert!(valid, "challenge-derived z proof must verify");
+    }
+
+    /// `compute_challenge` is deterministic (same inputs → same output).
+    #[test]
+    fn compute_challenge_deterministic() {
+        let blob = test_blob();
+        let verifier = KzgVerifier::mainnet();
+        let commitment = verifier.blob_to_kzg_commitment(&blob).unwrap();
+        let z1 = KzgVerifier::compute_challenge(&blob, &commitment);
+        let z2 = KzgVerifier::compute_challenge(&blob, &commitment);
+        assert_eq!(z1, z2);
+    }
+
+    /// `compute_challenge` output is a valid BLS field element (< BLS_MODULUS).
+    #[test]
+    fn compute_challenge_output_in_field() {
+        let blob = test_blob();
+        let verifier = KzgVerifier::mainnet();
+        let commitment = verifier.blob_to_kzg_commitment(&blob).unwrap();
+        let z = KzgVerifier::compute_challenge(&blob, &commitment);
+        // Must be strictly less than BLS_MODULUS.
+        assert!(
+            cmp_be_bytes(&z, BLS_MODULUS) < 0,
+            "compute_challenge output must be < BLS_MODULUS"
+        );
+    }
+
+    /// `compute_verify_cell_kzg_proof_batch_challenge` is deterministic.
+    #[test]
+    fn compute_cell_batch_challenge_deterministic() {
+        let verifier = KzgVerifier::mainnet();
+        let blob = test_blob();
+        let commitment = verifier.blob_to_kzg_commitment(&blob).unwrap();
+        let (cells, proofs) = verifier.compute_cells_and_kzg_proofs(&blob).unwrap();
+
+        let commitment_refs: Vec<&[u8; 48]> = vec![&commitment];
+        let commitment_indices: Vec<u64> = (0..128u64).collect();
+        let cell_indices: Vec<u64> = (0..128u64).collect();
+        let cell_refs: Vec<&[u8; 2048]> = cells.iter().collect();
+        let proof_refs: Vec<&[u8; 48]> = proofs.iter().collect();
+
+        let r1 = KzgVerifier::compute_verify_cell_kzg_proof_batch_challenge(
+            &commitment_refs,
+            &commitment_indices,
+            &cell_indices,
+            &cell_refs,
+            &proof_refs,
+        );
+        let r2 = KzgVerifier::compute_verify_cell_kzg_proof_batch_challenge(
+            &commitment_refs,
+            &commitment_indices,
+            &cell_indices,
+            &cell_refs,
+            &proof_refs,
+        );
+        assert_eq!(r1, r2, "challenge must be deterministic");
+        // Must be a valid BLS field element.
+        assert!(
+            cmp_be_bytes(&r1, BLS_MODULUS) < 0,
+            "cell batch challenge must be < BLS_MODULUS"
+        );
     }
 }

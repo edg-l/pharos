@@ -1,14 +1,11 @@
 //! KZG conformance runner for `general/fulu/kzg/` fixtures (EIP-7594 PeerDAS).
 //!
-//! Covers four sub-categories:
+//! Covers all five sub-categories:
 //! - `compute_cells`
 //! - `compute_cells_and_kzg_proofs`
+//! - `compute_verify_cell_kzg_proof_batch_challenge`
 //! - `recover_cells_and_kzg_proofs`
 //! - `verify_cell_kzg_proof_batch`
-//!
-//! A fifth sub-category — `compute_verify_cell_kzg_proof_batch_challenge` —
-//! is an internal Fiat-Shamir challenge helper with no public pharos-kzg
-//! wrapper; cases in that sub-category are counted as skips.
 //!
 //! All fixtures live under `<root>/general/fulu/kzg/<sub>/<suite>/<case>/data.yaml`.
 //! Each case has an `input` map and an `output`; `null` output means the
@@ -51,11 +48,9 @@ pub fn enumerate_fulu_kzg(root: &Path, row_ordinal: u32) -> Vec<CaseTask> {
     let sub_cats: &[&str] = &[
         "compute_cells",
         "compute_cells_and_kzg_proofs",
+        "compute_verify_cell_kzg_proof_batch_challenge",
         "recover_cells_and_kzg_proofs",
         "verify_cell_kzg_proof_batch",
-        // `compute_verify_cell_kzg_proof_batch_challenge` is enumerated last so
-        // its skips appear in the pool counts but never dispatch to a handler.
-        "compute_verify_cell_kzg_proof_batch_challenge",
     ];
 
     let mut tasks = Vec::new();
@@ -123,15 +118,20 @@ pub fn enumerate_fulu_kzg(root: &Path, row_ordinal: u32) -> Vec<CaseTask> {
                         "compute_cells_and_kzg_proofs" => {
                             run_compute_cells_and_kzg_proofs(&verifier_clone, &case_name, &val)
                         }
+                        "compute_verify_cell_kzg_proof_batch_challenge" => {
+                            run_compute_verify_cell_kzg_proof_batch_challenge(&case_name, &val)
+                        }
                         "recover_cells_and_kzg_proofs" => {
                             run_recover_cells_and_kzg_proofs(&verifier_clone, &case_name, &val)
                         }
                         "verify_cell_kzg_proof_batch" => {
                             run_verify_cell_kzg_proof_batch(&verifier_clone, &case_name, &val)
                         }
-                        // `compute_verify_cell_kzg_proof_batch_challenge` is a
-                        // Fiat-Shamir internal; no public pharos-kzg wrapper exists.
-                        _ => return CaseOutcome::Skip,
+                        unknown => {
+                            return CaseOutcome::Fail(format!(
+                                "{case_name}: unknown fulu/kzg subcat '{unknown}'"
+                            ));
+                        }
                     };
                     match result {
                         CaseResult::Pass => CaseOutcome::Pass,
@@ -176,11 +176,9 @@ pub fn run_fulu_kzg(root: &Path) -> FuluKzgResult {
     for sub_cat in &[
         "compute_cells",
         "compute_cells_and_kzg_proofs",
+        "compute_verify_cell_kzg_proof_batch_challenge",
         "recover_cells_and_kzg_proofs",
         "verify_cell_kzg_proof_batch",
-        // `compute_verify_cell_kzg_proof_batch_challenge` is a Fiat-Shamir internal;
-        // no public pharos-kzg wrapper exists.  Count all its cases as skips.
-        "compute_verify_cell_kzg_proof_batch_challenge",
     ] {
         let sub_dir = base.join(sub_cat);
         if !sub_dir.is_dir() {
@@ -241,15 +239,18 @@ pub fn run_fulu_kzg(root: &Path) -> FuluKzgResult {
                     "compute_cells_and_kzg_proofs" => {
                         run_compute_cells_and_kzg_proofs(&verifier, &case_name, &val)
                     }
+                    "compute_verify_cell_kzg_proof_batch_challenge" => {
+                        run_compute_verify_cell_kzg_proof_batch_challenge(&case_name, &val)
+                    }
                     "recover_cells_and_kzg_proofs" => {
                         run_recover_cells_and_kzg_proofs(&verifier, &case_name, &val)
                     }
                     "verify_cell_kzg_proof_batch" => {
                         run_verify_cell_kzg_proof_batch(&verifier, &case_name, &val)
                     }
-                    // Challenge helper: no pharos-kzg wrapper — skip.
-                    _ => {
-                        skip += 1;
+                    unknown => {
+                        fail += 1;
+                        failures.push(format!("{case_name}: unknown fulu/kzg subcat '{unknown}'"));
                         continue;
                     }
                 };
@@ -748,6 +749,208 @@ fn run_verify_cell_kzg_proof_batch(
                 CaseResult::Fail(format!("{case_name}: unexpected KZG error on valid input"))
             }
         }
+    }
+}
+
+// ── compute_verify_cell_kzg_proof_batch_challenge ─────────────────────────────
+
+/// Fixture format:
+/// ```yaml
+/// input:
+///   commitments: [hex48, ...]
+///   commitment_indices: [u64, ...]
+///   cell_indices: [u64, ...]
+///   cosets_evals: [[hex32, ...], ...]  # each inner list has 64 field elements
+///   proofs: [hex48, ...]
+/// output: hex32  # 32-byte BLS field element
+/// ```
+///
+/// Implemented in-house per `specs/fulu/polynomial-commitments-sampling.md`.
+fn run_compute_verify_cell_kzg_proof_batch_challenge(
+    case_name: &str,
+    val: &serde_yaml_ng::Value,
+) -> CaseResult {
+    let input = match val.get("input") {
+        Some(v) => v,
+        None => return CaseResult::Fail(format!("{case_name}: missing 'input'")),
+    };
+    let expected_output = val.get("output");
+    let expect_failure =
+        matches!(expected_output, Some(v) if v.is_null()) || expected_output.is_none();
+
+    // Parse commitments
+    let commitments_val = match input.get("commitments").and_then(|v| v.as_sequence()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.commitments")),
+    };
+    let commitments_owned: Result<Vec<[u8; 48]>, _> = commitments_val
+        .iter()
+        .map(|v| parse_hex_to_fixed::<48>(v.as_str().unwrap_or("")))
+        .collect();
+    let commitments_owned = match commitments_owned {
+        Ok(v) => v,
+        Err(e) => {
+            if expect_failure {
+                return CaseResult::Pass;
+            }
+            return CaseResult::Fail(format!("{case_name}: commitments hex parse failed: {e}"));
+        }
+    };
+
+    // Parse commitment_indices
+    let commitment_indices_val = match input
+        .get("commitment_indices")
+        .and_then(|v| v.as_sequence())
+    {
+        Some(s) => s,
+        None => {
+            return CaseResult::Fail(format!("{case_name}: missing input.commitment_indices"));
+        }
+    };
+    let commitment_indices: Result<Vec<u64>, _> = commitment_indices_val
+        .iter()
+        .map(|v| {
+            v.as_u64()
+                .ok_or_else(|| format!("{case_name}: commitment_index is not u64"))
+        })
+        .collect();
+    let commitment_indices = match commitment_indices {
+        Ok(v) => v,
+        Err(e) => {
+            if expect_failure {
+                return CaseResult::Pass;
+            }
+            return CaseResult::Fail(e);
+        }
+    };
+
+    // Parse cell_indices
+    let cell_indices_val = match input.get("cell_indices").and_then(|v| v.as_sequence()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.cell_indices")),
+    };
+    let cell_indices: Result<Vec<u64>, _> = cell_indices_val
+        .iter()
+        .map(|v| {
+            v.as_u64()
+                .ok_or_else(|| format!("{case_name}: cell_index is not u64"))
+        })
+        .collect();
+    let cell_indices = match cell_indices {
+        Ok(v) => v,
+        Err(e) => {
+            if expect_failure {
+                return CaseResult::Pass;
+            }
+            return CaseResult::Fail(e);
+        }
+    };
+
+    // Parse cosets_evals: list of lists of 32-byte field elements.
+    // Each inner list has FIELD_ELEMENTS_PER_CELL = 64 field elements.
+    // We reconstruct each "cell" as a 2048-byte array (64 × 32 bytes).
+    let cosets_evals_val = match input.get("cosets_evals").and_then(|v| v.as_sequence()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.cosets_evals")),
+    };
+    let mut cells_owned: Vec<[u8; 2048]> = Vec::with_capacity(cosets_evals_val.len());
+    for (i, coset_val) in cosets_evals_val.iter().enumerate() {
+        let evals = match coset_val.as_sequence() {
+            Some(s) => s,
+            None => {
+                return CaseResult::Fail(format!(
+                    "{case_name}: cosets_evals[{i}] is not a sequence"
+                ));
+            }
+        };
+        if evals.len() != 64 {
+            if expect_failure {
+                return CaseResult::Pass;
+            }
+            return CaseResult::Fail(format!(
+                "{case_name}: cosets_evals[{i}] has {} elements, expected 64",
+                evals.len()
+            ));
+        }
+        let mut cell = [0u8; 2048];
+        for (j, eval_val) in evals.iter().enumerate() {
+            let eval_hex = match eval_val.as_str() {
+                Some(s) => s,
+                None => {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: cosets_evals[{i}][{j}] is not a string"
+                    ));
+                }
+            };
+            let eval_bytes = match parse_hex_to_fixed::<32>(eval_hex) {
+                Ok(b) => b,
+                Err(e) => {
+                    if expect_failure {
+                        return CaseResult::Pass;
+                    }
+                    return CaseResult::Fail(format!(
+                        "{case_name}: cosets_evals[{i}][{j}] hex parse failed: {e}"
+                    ));
+                }
+            };
+            cell[j * 32..(j + 1) * 32].copy_from_slice(&eval_bytes);
+        }
+        cells_owned.push(cell);
+    }
+
+    // Parse proofs
+    let proofs_val = match input.get("proofs").and_then(|v| v.as_sequence()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.proofs")),
+    };
+    let proofs_owned: Result<Vec<[u8; 48]>, _> = proofs_val
+        .iter()
+        .map(|v| parse_hex_to_fixed::<48>(v.as_str().unwrap_or("")))
+        .collect();
+    let proofs_owned = match proofs_owned {
+        Ok(v) => v,
+        Err(e) => {
+            if expect_failure {
+                return CaseResult::Pass;
+            }
+            return CaseResult::Fail(format!("{case_name}: proofs hex parse failed: {e}"));
+        }
+    };
+
+    let commitment_refs: Vec<&[u8; 48]> = commitments_owned.iter().collect();
+    let cell_refs: Vec<&[u8; 2048]> = cells_owned.iter().collect();
+    let proof_refs: Vec<&[u8; 48]> = proofs_owned.iter().collect();
+
+    let challenge = KzgVerifier::compute_verify_cell_kzg_proof_batch_challenge(
+        &commitment_refs,
+        &commitment_indices,
+        &cell_indices,
+        &cell_refs,
+        &proof_refs,
+    );
+
+    if expect_failure {
+        return CaseResult::Fail(format!(
+            "{case_name}: expected failure but challenge computation succeeded"
+        ));
+    }
+
+    let expected_hex = match expected_output.and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing output string")),
+    };
+    let expected_bytes = match parse_hex_to_fixed::<32>(expected_hex) {
+        Ok(b) => b,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: bad expected hex: {e}")),
+    };
+
+    if challenge == expected_bytes {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!(
+            "{case_name}: challenge mismatch: got 0x{}, want {expected_hex}",
+            hex::encode(challenge)
+        ))
     }
 }
 
