@@ -323,7 +323,8 @@ mod tests {
                     for t2 in s2..s2 + 4 {
                         for distinct in [false, true] {
                             let d1 = make_att_data_distinct(s1, t1, 0x11);
-                            let d2 = make_att_data_distinct(s2, t2, if distinct { 0x22 } else { 0x11 });
+                            let d2 =
+                                make_att_data_distinct(s2, t2, if distinct { 0x22 } else { 0x11 });
 
                             let rec = AttestRecord {
                                 source_epoch: d1.source.epoch.0,
@@ -334,7 +335,12 @@ mod tests {
                             let new_root = d2.tree_hash_root().into_inner();
 
                             let slasher_slashable = !matches!(
-                                is_slashable_pair(&rec, d2.source.epoch.0, d2.target.epoch.0, new_root),
+                                is_slashable_pair(
+                                    &rec,
+                                    d2.source.epoch.0,
+                                    d2.target.epoch.0,
+                                    new_root
+                                ),
                                 SlashKind::None
                             );
                             let spec_slashable = is_slashable_attestation_data(&d1, &d2)

@@ -368,6 +368,14 @@ impl<S: PeerScorer> PeerManager<S> {
     pub fn target_peers(&self) -> usize {
         self.target_peers
     }
+
+    /// Persist the durable score table to `<dir>/peer_scores.ssz` (M11 Phase 14).
+    ///
+    /// Delegates to the scorer's `save_to_dir`; errors are logged inside the
+    /// scorer implementation.  Best-effort: shutdown must not block on disk I/O.
+    pub fn save_scores_to_dir(&self, dir: &std::path::Path) {
+        self.scorer.save_to_dir(dir);
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

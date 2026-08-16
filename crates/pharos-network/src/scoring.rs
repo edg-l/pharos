@@ -29,12 +29,35 @@
 //! the value, then reset `last_decay` to now. No `tick` method is added to the
 //! `PeerScorer` trait, so the swarm loop (Phase 11) carries no decay-driver
 //! dependency. The trait stays unchanged and `NoopScorer` keeps working.
+//!
+//! ## Persistence (M11 Phase 14)
+//!
+//! `RealScorer` can be serialized to / deserialized from a flat SSZ byte
+//! sequence so the durable `app`-component scores (long-term bans, handshake
+//! failures, subnet non-propagation penalties) survive restarts.  Volatile
+//! `gossip` and `req_resp` components are NOT persisted — they reset on
+//! restart, which is correct because gossip-mesh state is ephemeral.
+//!
+//! The on-disk format is a flat concatenation of fixed-size
+//! [`PeerScoreRecord`] structs, each 80 bytes.  No outer length prefix or
+//! framing is needed: a file of `len % 80 == 0` bytes is valid; anything
+//! else is treated as corrupt and silently ignored.
+//!
+//! The ADR for the format decision is `D-peer-score-persist-format`
+//! (see `docs/m11-phase0-findings.md` Task 0.6).
+//!
+//! File path: `<data-dir>/network/peer_scores.ssz`.
 
 use std::collections::HashMap;
+use std::io;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
 use libp2p::gossipsub::TopicHash;
+use pharos_ssz::{Decode, Encode};
+use pharos_utils::FixedBytes;
+use tracing::warn;
 
 use crate::types::DisconnectReason;
 
@@ -196,6 +219,21 @@ pub trait PeerScorer: Send + Sync + 'static {
 
     /// Clears dial-backoff state after a successful dial. Default no-op.
     fn record_dial_success(&mut self, _peer: PeerId) {}
+
+    /// Seed the scorer from a persisted score file in `dir` (M11 Phase 14).
+    ///
+    /// Called at startup before the network task begins.  The default no-op is
+    /// suitable for `NoopScorer` and tests; `RealScorer` overrides this to call
+    /// [`load_peer_scores`] and merge the durable `app` components into self.
+    fn seed_from_dir(&mut self, _dir: &Path) {}
+
+    /// Persist the durable score table to `<dir>/peer_scores.ssz` (M11 Phase 14).
+    ///
+    /// Called during graceful shutdown.  The default no-op is suitable for
+    /// `NoopScorer` and tests.  Errors are logged inside the implementation;
+    /// the call always returns (best-effort persistence — shutdown must not
+    /// block on disk I/O).
+    fn save_to_dir(&self, _dir: &Path) {}
 }
 
 /// A no-op scorer that returns 0.0 for all peers and never prunes.
@@ -555,6 +593,233 @@ impl PeerScorer for RealScorer {
     fn record_dial_success(&mut self, peer: PeerId) {
         RealScorer::record_dial_success(self, peer)
     }
+
+    /// Seed this scorer from the persisted score file in `dir`.
+    ///
+    /// Loads `<dir>/peer_scores.ssz` and merges the durable `app` components
+    /// into this scorer.  Peers already present are overwritten; absent file
+    /// is silently ignored (first start).  Corrupt file emits a WARN and is
+    /// ignored per `D-peer-score-persist-format` (M11 Phase 14).
+    fn seed_from_dir(&mut self, dir: &Path) {
+        let loaded = load_peer_scores(dir);
+        for (peer_id, state) in loaded.peers {
+            let now = Instant::now();
+            let entry = self.entry(peer_id, now);
+            entry.app = state.app;
+        }
+    }
+
+    fn save_to_dir(&self, dir: &Path) {
+        if let Err(e) = save_peer_scores(dir, self) {
+            warn!(
+                path = %dir.join("peer_scores.ssz").display(),
+                err = %e,
+                "failed to save peer scores on shutdown"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Persistence (M11 Phase 14)
+// ---------------------------------------------------------------------------
+
+/// File name for the persisted peer score table (relative to the network dir).
+const PEER_SCORES_FILENAME: &str = "peer_scores.ssz";
+
+/// Byte size of one serialized [`PeerScoreRecord`] on disk.
+///
+/// `FixedBytes<64>` = 64 bytes, `u64` = 8 bytes, `u64` = 8 bytes → 80 bytes.
+const RECORD_SIZE: usize = 80;
+
+/// Maximum PeerId byte length that fits in the 63-byte payload of a `peer_id`
+/// record field (first byte = length, remaining 63 bytes = content).
+const MAX_PEER_ID_PAYLOAD: usize = 63;
+
+/// A single durable peer score entry persisted across restarts.
+///
+/// Only the long-term `app`-component score is stored.  Volatile `gossip` and
+/// `req_resp` components reset on restart (gossip-mesh state is ephemeral).
+///
+/// ## Wire format (fixed 80 bytes, SSZ):
+/// - `peer_id_raw` (`FixedBytes<64>`): first byte = `len`, next `len` bytes =
+///   `PeerId::to_bytes()` output (multihash encoding), rest zero-padded. This
+///   stores the full multihash losslessly for Ed25519 (38 bytes) and secp256k1
+///   (39 bytes) peer IDs without truncation.
+/// - `app_score_bits` (`u64`): raw IEEE-754 bits of the `app` score component
+///   (`f64::to_bits` / `f64::from_bits`), since SSZ has no float type.
+/// - `ban_epoch` (`u64`): epoch of the last ban (0 = never banned).
+#[derive(Debug, Clone, PartialEq, pharos_ssz::Encode, pharos_ssz::Decode)]
+pub struct PeerScoreRecord {
+    /// PeerId multihash bytes: byte 0 = length, bytes 1..(1+length) = payload.
+    pub peer_id_raw: FixedBytes<64>,
+    /// Raw `f64` bits of the durable `app` score component.
+    pub app_score_bits: u64,
+    /// Epoch of the last explicit ban (0 = never).
+    pub ban_epoch: u64,
+}
+
+/// Encode a `PeerId` into the 64-byte fixed SSZ field.
+///
+/// First byte = length of the multihash payload; remaining bytes = the payload
+/// zero-padded to 63 bytes.  Panics in debug if `PeerId::to_bytes()` exceeds
+/// [`MAX_PEER_ID_PAYLOAD`] bytes (unreachable with current key types).
+fn peer_id_to_fixed(peer_id: PeerId) -> FixedBytes<64> {
+    let raw = peer_id.to_bytes();
+    debug_assert!(
+        raw.len() <= MAX_PEER_ID_PAYLOAD,
+        "PeerId multihash too long: {} bytes",
+        raw.len()
+    );
+    let mut buf = [0u8; 64];
+    buf[0] = raw.len() as u8;
+    let copy_len = raw.len().min(MAX_PEER_ID_PAYLOAD);
+    buf[1..1 + copy_len].copy_from_slice(&raw[..copy_len]);
+    FixedBytes::from_array(buf)
+}
+
+/// Decode a `PeerId` from the 64-byte fixed SSZ field.
+///
+/// Returns `None` if the embedded length is 0, exceeds the payload, or
+/// `PeerId::from_bytes` rejects the bytes (corrupt record — skip it).
+fn peer_id_from_fixed(fb: &FixedBytes<64>) -> Option<PeerId> {
+    let arr = fb.as_ref();
+    let len = arr[0] as usize;
+    if len == 0 || len > MAX_PEER_ID_PAYLOAD {
+        return None;
+    }
+    PeerId::from_bytes(&arr[1..1 + len]).ok()
+}
+
+impl RealScorer {
+    /// Serialize the durable score table to a flat SSZ byte sequence.
+    ///
+    /// Only the `app` component is persisted; `gossip` and `req_resp` are
+    /// ephemeral and reset to 0.0 on reload.  Peers with an `app` score of
+    /// exactly 0.0 are excluded (no penalty to carry forward).
+    ///
+    /// Returns a `Vec<u8>` that is a multiple of [`RECORD_SIZE`] bytes.
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for (peer_id, state) in &self.peers {
+            // Persist the raw app component without applying decay.
+            // Decay is lazy-on-read; persisting the accumulated value is correct
+            // because offline time has no semantic meaning for the score.
+            if state.app == 0.0 {
+                continue;
+            }
+            let record = PeerScoreRecord {
+                peer_id_raw: peer_id_to_fixed(*peer_id),
+                app_score_bits: state.app.to_bits(),
+                ban_epoch: 0,
+            };
+            record.ssz_append(&mut buf);
+        }
+        buf
+    }
+
+    /// Deserialize a durable score table from a flat SSZ byte sequence and
+    /// seed this scorer's `app` components.
+    ///
+    /// Records with invalid PeerId bytes are silently skipped.  The `gossip`
+    /// and `req_resp` components start at 0.0 (ephemeral, not persisted).
+    ///
+    /// Returns `Err` if `bytes.len()` is not a multiple of [`RECORD_SIZE`]
+    /// (corrupt file — caller should start fresh with a WARN).
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SszPersistError> {
+        if bytes.len() % RECORD_SIZE != 0 {
+            return Err(SszPersistError::BadLength {
+                len: bytes.len(),
+                record_size: RECORD_SIZE,
+            });
+        }
+        let now = Instant::now();
+        let mut scorer = RealScorer::new();
+        for chunk in bytes.chunks_exact(RECORD_SIZE) {
+            let record = PeerScoreRecord::from_ssz_bytes(chunk)
+                .map_err(|e| SszPersistError::SszDecode(format!("{e:?}")))?;
+            let app = f64::from_bits(record.app_score_bits);
+            if !app.is_finite() {
+                continue;
+            }
+            let peer_id = match peer_id_from_fixed(&record.peer_id_raw) {
+                Some(p) => p,
+                None => continue,
+            };
+            let state = scorer.entry(peer_id, now);
+            state.app = app;
+        }
+        Ok(scorer)
+    }
+}
+
+/// Error returned by [`RealScorer::from_bytes`].
+#[derive(Debug)]
+pub enum SszPersistError {
+    /// File length is not a multiple of the record size.
+    BadLength { len: usize, record_size: usize },
+    /// SSZ decode of a record failed.
+    SszDecode(String),
+}
+
+impl std::fmt::Display for SszPersistError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadLength { len, record_size } => write!(
+                f,
+                "peer score file length {len} is not a multiple of record size {record_size}"
+            ),
+            Self::SszDecode(msg) => write!(f, "SSZ decode error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for SszPersistError {}
+
+/// Load a [`RealScorer`] from `<dir>/peer_scores.ssz`.
+///
+/// Returns a fresh empty scorer if the file is absent (first start) or if
+/// the bytes are corrupt (a `WARN` is emitted in the latter case).  Never
+/// panics.
+///
+/// Per `D-peer-score-persist-format` (M11 Phase 14).
+pub fn load_peer_scores(dir: &Path) -> RealScorer {
+    let path = dir.join(PEER_SCORES_FILENAME);
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return RealScorer::new(),
+        Err(e) => {
+            warn!(path = %path.display(), err = %e, "failed to read peer score file; starting fresh");
+            return RealScorer::new();
+        }
+    };
+    match RealScorer::from_bytes(&bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(
+                path = %path.display(),
+                err = %e,
+                "peer score file is corrupt; starting fresh"
+            );
+            RealScorer::new()
+        }
+    }
+}
+
+/// Persist the [`RealScorer`] score table to `<dir>/peer_scores.ssz` atomically.
+///
+/// Writes via a `.tmp` sibling and renames so a crash mid-write never leaves a
+/// truncated file.  Creates the directory if absent.
+///
+/// Per `D-peer-score-persist-format` (M11 Phase 14).
+pub fn save_peer_scores(dir: &Path, scorer: &RealScorer) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let bytes = scorer.serialize();
+    let tmp = dir.join(format!("{PEER_SCORES_FILENAME}.tmp"));
+    let path = dir.join(PEER_SCORES_FILENAME);
+    std::fs::write(&tmp, &bytes)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -832,5 +1097,140 @@ mod tests {
         scorer.record_dial_failure_at(p, t1);
         let b = scorer.next_dial_allowed(&p).saturating_duration_since(t1);
         assert_eq!(b, DIAL_BACKOFF_BASE, "success resets the failure count");
+    }
+
+    // ── Phase 14: peer score persistence ──────────────────────────────────────
+
+    /// Build a scorer with N penalised peers, serialize, reload, and assert the
+    /// `app` components survive the round-trip.
+    #[test]
+    fn peer_scores_roundtrip() {
+        let mut scorer = RealScorer::new();
+        let t0 = Instant::now();
+
+        // Three peers with distinct durable penalties.
+        let p1 = peer(71);
+        let p2 = peer(72);
+        let p3 = peer(73);
+
+        scorer.record_at(
+            p1,
+            ScoreEvent::HandshakeFail {
+                kind: HandshakeFailKind::Timeout,
+            },
+            t0,
+        );
+        scorer.record_at(p2, ScoreEvent::SubnetNonPropagation { topic: topic() }, t0);
+        scorer.record_at(p3, ScoreEvent::BannedPeerConnected, t0);
+
+        let app1 = scorer.peers[&p1].app;
+        let app2 = scorer.peers[&p2].app;
+        let app3 = scorer.peers[&p3].app;
+        assert!(app1 < 0.0, "p1 must have a negative app score");
+        assert!(app2 < 0.0, "p2 must have a negative app score");
+        assert!(app3 < 0.0, "p3 must have a negative app score");
+
+        // Round-trip: serialize then reload.
+        let bytes = scorer.serialize();
+        assert_eq!(
+            bytes.len() % RECORD_SIZE,
+            0,
+            "serialized bytes must be a multiple of RECORD_SIZE"
+        );
+        assert!(
+            !bytes.is_empty(),
+            "non-zero app scores must produce a non-empty payload"
+        );
+
+        let reloaded = RealScorer::from_bytes(&bytes).expect("from_bytes must succeed");
+
+        // App components survive; gossip + req_resp reset to 0.
+        assert_eq!(
+            reloaded.peers[&p1].app, app1,
+            "p1 app score must survive round-trip"
+        );
+        assert_eq!(
+            reloaded.peers[&p2].app, app2,
+            "p2 app score must survive round-trip"
+        );
+        assert_eq!(
+            reloaded.peers[&p3].app, app3,
+            "p3 app score must survive round-trip"
+        );
+        assert_eq!(reloaded.peers[&p1].gossip, 0.0, "gossip must reset to 0");
+        assert_eq!(
+            reloaded.peers[&p1].req_resp, 0.0,
+            "req_resp must reset to 0"
+        );
+    }
+
+    /// A peer with no durable penalty (gossip-only events) does not appear in
+    /// the serialized table.
+    #[test]
+    fn peer_scores_skips_zero_app() {
+        let mut scorer = RealScorer::new();
+        let t0 = Instant::now();
+        let p = peer(74);
+        // GossipAccept only affects the gossip component, not app.
+        scorer.record_at(p, ScoreEvent::GossipAccept { topic: topic() }, t0);
+        let bytes = scorer.serialize();
+        assert!(bytes.is_empty(), "zero-app peer must not be persisted");
+    }
+
+    /// Corrupt bytes (length not a multiple of RECORD_SIZE) return an error,
+    /// and the `load_peer_scores` wrapper starts fresh with a WARN.
+    #[test]
+    fn corrupt_score_file_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Write corrupt bytes.
+        let corrupt = vec![0xFFu8; 13]; // 13 % 80 != 0
+        let path = dir.path().join(PEER_SCORES_FILENAME);
+        std::fs::write(&path, &corrupt).expect("write corrupt file");
+
+        // from_bytes should return an error.
+        assert!(
+            RealScorer::from_bytes(&corrupt).is_err(),
+            "corrupt bytes must return an error"
+        );
+
+        // load_peer_scores must not panic and must return an empty scorer.
+        let scorer = load_peer_scores(dir.path());
+        assert!(
+            scorer.peers.is_empty(),
+            "corrupt file must produce an empty scorer"
+        );
+    }
+
+    /// Absent file returns an empty scorer (first-start default).
+    #[test]
+    fn peer_scores_absent_returns_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let scorer = load_peer_scores(dir.path());
+        assert!(scorer.peers.is_empty());
+    }
+
+    /// save_peer_scores + load_peer_scores round-trip through the filesystem.
+    #[test]
+    fn peer_scores_filesystem_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut scorer = RealScorer::new();
+        let t0 = Instant::now();
+        let p = peer(80);
+        scorer.record_at(
+            p,
+            ScoreEvent::HandshakeFail {
+                kind: HandshakeFailKind::ForkDigestMismatch,
+            },
+            t0,
+        );
+        let expected_app = scorer.peers[&p].app;
+
+        save_peer_scores(dir.path(), &scorer).expect("save_peer_scores");
+        let reloaded = load_peer_scores(dir.path());
+        assert_eq!(
+            reloaded.peers[&p].app, expected_app,
+            "app score must survive filesystem round-trip"
+        );
     }
 }

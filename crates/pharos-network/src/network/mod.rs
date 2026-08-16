@@ -409,6 +409,14 @@ pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvide
         Vec<u8>,
         gossipsub::Message,
     )>,
+    /// Network directory for persistence (`peer_scores.ssz`, `enr_seq`).
+    ///
+    /// `None` when persistence is disabled (no `--data-dir` in tests).
+    /// Stored here so [`Self::shutdown_goodbye`] can call
+    /// [`save_peer_scores`] during graceful shutdown.
+    ///
+    /// Per `D-peer-score-persist-format` (M11 Phase 14).
+    network_dir: Option<std::path::PathBuf>,
     _phantom: PhantomData<E>,
 }
 
@@ -1711,6 +1719,7 @@ impl<
     /// bounded drain so a slow peer cannot hold up the shutdown indefinitely.
     ///
     /// Steps:
+    /// 0. Save peer scores to disk (M11 Phase 14 hook, `D-peer-score-persist-format`).
     /// 1. Collect connected peers.
     /// 2. Pre-register `DisconnectReason::Goodbye(GOODBYE_CLIENT_SHUTDOWN)` for each,
     ///    then send `RpcRequest::Goodbye(1)` fire-and-forget.
@@ -1719,6 +1728,13 @@ impl<
     ///
     /// Spec cite: `p2p-interface.md:1383-1385` (ClientShutdown = 1).
     async fn shutdown_goodbye(&mut self) {
+        // M11 Phase 14: persist the durable peer score table before disconnecting
+        // so bad-actor penalties survive restarts.  Errors are logged inside
+        // `save_to_dir`; the call is best-effort and never blocks shutdown.
+        if let Some(ref dir) = self.network_dir {
+            self.peer_manager.save_scores_to_dir(dir);
+        }
+
         let peers: Vec<PeerId> = self.peer_manager.connected_peers().collect();
         if peers.is_empty() {
             return;
@@ -2113,7 +2129,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
     /// 6. Add TCP listener; optionally add QUIC listener.
     /// 7. Wire mpsc channels and oneshot shutdown signal.
     pub async fn build(
-        self,
+        mut self,
     ) -> Result<(Network<E, H, S>, NetworkHandle<E>, DiscoveryHandle), NetworkError> {
         // ── Step 1: bridge libp2p keypair → discv5 CombinedKey ───────────────
         //
@@ -2143,6 +2159,15 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
         let fork_digest = self.host.current_fork_digest();
         // Clone bootnodes so the Network struct can dial them directly at startup.
         let bootnodes_for_network = self.bootnodes.clone();
+        // Clone the network_dir so both DiscoveryService and Network can store
+        // their own copy. The Network copy is used by shutdown_goodbye to save
+        // peer scores (`D-peer-score-persist-format`, M11 Phase 14).
+        let network_dir_for_network = self.network_dir.clone();
+        // M11 Phase 14: seed the scorer with durable app-component scores from
+        // the persisted file so bad-actor peers stay penalised across restarts.
+        if let Some(ref dir) = network_dir_for_network {
+            self.scorer.seed_from_dir(dir);
+        }
         let discovery = DiscoveryService::start(DiscoveryConfig {
             listen_addr: self.discv5_addr,
             tcp_port: self.tcp_listen_port,
@@ -2381,6 +2406,9 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
             bootnodes: bootnodes_for_network,
             pending_dials: HashMap::new(),
             gossip_tasks: tokio::task::JoinSet::new(),
+            // M11 Phase 14: store the network dir so shutdown_goodbye can save
+            // peer scores before the task exits.
+            network_dir: network_dir_for_network,
             _phantom: PhantomData,
         };
 
