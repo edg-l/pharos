@@ -11,9 +11,11 @@ use crate::phase0::operations::SignedBeaconBlockHeader;
 /// Inclusion proof depth for `blob_kzg_commitments[index]` in the beacon block body.
 ///
 /// Per `specs/deneb/p2p-interface.md` and the `deneb/merkle_proof` fixtures.
-/// The generalised index of `blob_kzg_commitments[i]` in the block body is
-/// `2 * MAX_BLOB_COMMITMENTS_PER_BLOCK + i` (= `8192 + i` for mainnet where
-/// `MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096`), at depth 17.
+/// `blob_kzg_commitments` is field 11 of the 16-leaf `BeaconBlockBody`; the
+/// generalised index of element `i` is `54 * 4096 + i = 221184 + i` (the list
+/// data subtree sits under the length mix-in). The positional index fed to
+/// `is_valid_merkle_branch` at depth 17 is `221184 + i - 2^17 = 90112 + i`
+/// (= `11 * 8192 + i`). See `pharos_stf::deneb::verify_blob_sidecar_inclusion_proof`.
 pub const KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: usize = 17;
 
 // ── BlobIdentifier ────────────────────────────────────────────────────────────

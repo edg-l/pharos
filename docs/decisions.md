@@ -3331,3 +3331,120 @@ devnet) fails with `extra bytes: N remaining`. Live nodes use
 as the finalized checkpoint, so checkpoint-sync covers the genesis case.
 Fork-aware cold-start decode (dispatch on the runtime-config fork schedule) is
 deferred to M11.
+
+## M10-DA decisions
+
+Data-availability substrate for Deneb: KZG crate, blob SSZ types, blob gossip
+and req-resp, blob storage, and the `is_data_available` import gate. This is the
+DA SUBSTRATE only; the full Deneb STF, Engine API V3, and EIP-7044/7045/7514
+are the M10-Deneb follow-on. Plan: `docs/m10-da-plan.md`. Live Deneb devnet
+acceptance (Lighthouse + ethrex, `DENEB_FORK_EPOCH=1`) is deferred to M10-Deneb.
+
+### D-kzg-crate — KZG lives in its own `pharos-kzg` crate over `c-kzg`
+
+**Status**: Accepted. **Date**: 2026-06-07.
+
+`pharos-kzg` is a thin, focused wrapper over `c_kzg::KzgSettings` exposing
+`KzgVerifier` (verify_blob_kzg_proof_batch, verify_blob_kzg_proof,
+blob_to_kzg_commitment) and `KzgError`. Separating it from `pharos-engine` (which
+handles JSON-RPC) avoids a circular-dep risk (the node needs KZG both in the
+storage gate and in gossip validation, neither of which touches the Engine API).
+Separating it from `pharos-types` keeps the blob SSZ types dep-free from
+cryptographic primitives, matching the crate philosophy. The crate is validated
+directly by the KZG conformance runner (`deneb/kzg/blob_to_kzg_commitment`,
+`verify_blob_kzg_proof`, `verify_blob_kzg_proof_batch` — all three sub-categories
+pass with `fail=0`).
+
+### D-da-checker-trait — fork-generic `trait DataAvailabilityChecker<E>`
+
+**Status**: Accepted. **Date**: 2026-06-07. (W6 resolved.)
+
+`DataAvailabilityChecker<E>` takes `(block_root: Root, kzg_commitments: &[KZGCommitment])`
+and returns `DataAvailabilityVerdict { Available, NotAvailable, Irrelevant }`.
+The caller (import path) extracts commitments from the Deneb block body once; the
+trait impl does no fork-dispatch internally. This signature is the Fulu/PeerDAS
+seam: the Fulu impl can replace `BlobAvailabilityChecker` with a PeerDAS
+`DataColumnAvailabilityChecker` without touching the import path. Placed in
+`pharos-node/src/data_availability.rs` (needs store + KZG; lives with the node,
+not in `pharos-fork-choice`). Pre-Deneb blocks return `Irrelevant`; the import
+path passes through immediately.
+
+### D-blob-hold-reuses-reinject — DA-pending blocks reuse `reinject_tx`
+
+**Status**: Accepted. **Date**: 2026-06-07. (W10 partially; see below.)
+
+When `import_block` returns `DataNotAvailable`, the ingestion loop parks the block
+in `BlobAwaitingBlocks` (keyed by `block_root`). When the blob ingestion loop
+(`run_blob_ingestion_loop`) completes the set for that root, it re-injects the
+block via the existing `reinject_tx` channel (the same `ReinjectBlock` type used
+for future-block hold). No new channel or delivery mechanism is introduced.
+`MAX_BLOB_AWAIT_HOLD` (a `Duration`) provides a time-based eviction (one
+`tokio::spawn` timer per parked entry) to bound memory. Dedup on re-arrival
+(second sidecar for the same `(root, index)` is discarded once the set is
+already complete). Mirrors the `hold_future_block` pattern (M5-follow).
+
+### D-blob-store-cf-keyed-by-root-index — blob-sidecars CF keyed `block_root || index_be`
+
+**Status**: Accepted. **Date**: 2026-06-07.
+
+`CF_BLOB_SIDECARS` (`"blob-sidecars"`) stores SSZ-encoded `BlobSidecar` values
+under a 40-byte key: `block_root` (32 B) `||` blob index (8 B big-endian u64).
+This layout enables (a) point-read for a single `(root, index)` pair (O(1));
+(b) prefix-scan over all blobs for a root (used by `get_blob_sidecars_by_root`
+and req-resp `BlobSidecarsByRoot`); (c) `prune_blob_sidecars_below_slot`, which
+scans the CF, SSZ-decodes each sidecar to read its
+`signed_block_header.message.slot` (a full decode rather than a fragile byte
+offset, since pruning is a cold head-watch path), and deletes keys below the
+threshold atomically in a `WriteBatch`. The `slot_to_block_root` index is
+never pruned (cold regen and `BlobSidecarsByRange` both need it), matching the
+M-Storage invariant.
+
+### D-sidecar-substrate-generic-naming — substrate types use spec-exact names without fork prefix
+
+**Status**: Accepted. **Date**: 2026-06-07.
+
+`BlobSidecar`, `BlobIdentifier`, `BlobSidecarsByRangeRequest`, `BlobSidecarsByRootRequest`
+are placed in `pharos-types/src/deneb/` and named exactly as in the spec (no
+`DenebBlobSidecar` prefix). This matches the established pattern for capella
+(`WithdrawalCredential`, `BlsToExecutionChange`) — fork-scoped module, spec-exact
+name. The `deneb::` module prefix provides the needed disambiguation at use sites.
+The DA substrate code (storage, gossip, req-resp) is written once and is
+forward-compatible: the same `BlobSidecar` type is used by the M10-Deneb STF.
+
+### D-kzg-trusted-setup-source — embedded setup via `c_kzg::ethereum_kzg_settings`
+
+**Status**: Accepted. **Date**: 2026-06-07. (R2 resolved.)
+
+`KzgVerifier::mainnet()` calls `c_kzg::ethereum_kzg_settings(precompute=0)`,
+which returns the canonical Ethereum mainnet trusted setup embedded in the
+`c-kzg` crate itself (same source as Lighthouse/Prysm/Teku). `precompute=0`
+disables precomputed tables, which are not needed for verification workloads
+(proving is not in scope). For non-mainnet setups (devnets, tests),
+`KzgVerifier::from_trusted_setup_str` and `from_trusted_setup_file` accept the
+standard format produced by `gen_testnet.sh`. This avoids vendoring an
+18-MB trusted-setup JSON in the pharos repository.
+
+### D-da-block-not-in-forkchoice-until-available — DA gate runs before `state_transition`
+
+**Status**: Accepted. **Date**: 2026-06-07. (RI-1 / RI-2 resolved.)
+
+Per `fork-choice.md on_block`: `is_data_available` must precede `state_transition`.
+`import_block` calls `da_checker.is_data_available` inside `spawn_blocking` BEFORE
+the `state_transition` call, so a `DataNotAvailable` result causes an early return
+with `ImportError::DataNotAvailable` before any fork-choice write has occurred.
+The block is thus never in the fork-choice store while its blobs are missing —
+the invariant is structural, not guarded by a flag. This satisfies the spec's
+"a block MUST be considered unavailable until all its blobs are available" rule
+and prevents an optimistic-import attack where a proposer withholds blobs to split
+the network.
+
+### D-schema-v4-migration — schema 3 → 4 adds `blob-sidecars` CF; resync on mismatch
+
+**Status**: Accepted. **Date**: 2026-06-07. (R7 resolved.)
+
+`SCHEMA_VERSION` increments from 3 to 4. Opening a v3 database returns
+`StorageError::SchemaMismatch` immediately, prompting a resync (same policy as
+the v2 → v3 bump in M-Storage). No in-place migration: blob sidecars from before
+M10-DA were never stored (the column family did not exist), so there is no data to
+migrate. The v4 CF set is the v3 set (20 CFs) plus `CF_BLOB_SIDECARS`, registered
+in `all_cfs()` and opened in `RocksStore::open`.
