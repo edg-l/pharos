@@ -160,6 +160,16 @@ pub trait BeaconBlockBodyView {
     fn num_blob_kzg_commitments(&self) -> usize {
         0
     }
+
+    /// Return the `blob_kzg_commitments` slice for Deneb+ block bodies.
+    ///
+    /// Pre-Deneb bodies return an empty slice. Overridden in the Deneb body impl
+    /// and in the fork-enum body `state.rs`. Used by the DA gate in `import_block`
+    /// to extract commitments ONCE before passing to `DataAvailabilityChecker`
+    /// (per W6: caller extracts, trait impl receives `&[KZGCommitment]`).
+    fn blob_kzg_commitments_slice(&self) -> &[crate::deneb::KZGCommitment] {
+        &[]
+    }
 }
 
 // ── BeaconBlockView ───────────────────────────────────────────────────────────

@@ -5,10 +5,12 @@
 
 pub mod api_event_adapter;
 pub mod backfill;
+pub mod blob_ingestion;
 pub mod blob_prune;
 pub mod block_ingestion;
 pub mod block_production;
 pub mod checkpoint_sync;
+pub mod data_availability;
 pub mod engine_driver;
 pub mod engine_keepalive;
 pub mod fork_migration;

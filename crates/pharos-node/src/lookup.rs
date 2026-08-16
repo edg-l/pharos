@@ -36,6 +36,7 @@ use crate::block_ingestion::{
     ReinjectBlock, decode_block_by_topic, encode_signed_block_as_gossip_bytes, extract_block_root,
     extract_parent_root, hold_future_block,
 };
+use crate::data_availability::NoopDataAvailabilityChecker;
 use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2};
 use crate::host_impl::HostImpl;
 use crate::import::ImportError;
@@ -390,7 +391,12 @@ where
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
 {
-    match crate::import::import_block::<E, EE, PP>(
+    // TODO(M10-Deneb): lookup-sync uses NoopDataAvailabilityChecker because it does
+    // not yet co-fetch BlobSidecarsByRoot alongside the block. Recent Deneb blocks
+    // fetched by root therefore bypass the DA gate. Before Deneb is live this path
+    // must co-fetch sidecars and use the real BlobAvailabilityChecker (see fork-choice.md on_block).
+    let noop_da = Arc::new(NoopDataAvailabilityChecker);
+    match crate::import::import_block::<E, EE, PP, NoopDataAvailabilityChecker>(
         signed_block,
         fc_store,
         execution_engine,
@@ -399,6 +405,7 @@ where
         true,
         cfg,
         &host.store_arc(),
+        &noop_da,
     )
     .await
     {

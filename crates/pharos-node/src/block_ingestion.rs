@@ -33,6 +33,7 @@ use pharos_types::views::{
 };
 use pharos_types::{EthSpec, phase0::primitives::Root};
 
+use crate::data_availability::{BlobAwaitingBlocks, DataAvailabilityChecker};
 use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2};
 use crate::host_impl::HostImpl;
 use crate::lookup::LookupRequest;
@@ -137,7 +138,7 @@ const MAX_FUTURE_BLOCK_HOLD: std::time::Duration = std::time::Duration::from_sec
 ///
 /// The loop exits when `event_rx` is closed (i.e. the network task shut down).
 #[allow(clippy::too_many_arguments)]
-pub async fn run_block_ingestion_loop<E, EE>(
+pub async fn run_block_ingestion_loop<E, EE, DA>(
     mut event_rx: mpsc::Receiver<NetworkEvent>,
     mut reinject_rx: mpsc::Receiver<ReinjectBlock>,
     host: Arc<HostImpl<E>>,
@@ -146,8 +147,14 @@ pub async fn run_block_ingestion_loop<E, EE>(
     pow_provider: Arc<EnginePowBlockProvider>,
     egress: IngestionEgress<E>,
     validate_result: bool,
+    da_checker: Arc<DA>,
+    blob_awaiting: Arc<BlobAwaitingBlocks>,
+    // Forward channel for `GossipBlobSidecar` events to the blob ingestion loop.
+    // `None` in pre-Deneb configurations; blob events are silently dropped.
+    blob_event_tx: Option<mpsc::Sender<NetworkEvent>>,
 ) -> Result<(), IngestionError>
 where
+    DA: DataAvailabilityChecker<E> + 'static,
     E: EthSpec,
     E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + Clone,
     E::BeaconBlock: pharos_types::views::BeaconBlockView + pharos_ssz::TreeHash + Clone,
@@ -202,6 +209,15 @@ where
         let (topic, data) = tokio::select! {
             ev = event_rx.recv() => {
                 let Some(event) = ev else { break }; // network task closed → exit
+                // Forward blob sidecar events to the blob ingestion loop.
+                if let NetworkEvent::GossipBlobSidecar { .. } = &event {
+                    if let Some(ref tx) = blob_event_tx {
+                        if tx.try_send(event).is_err() {
+                            warn!("blob_ingestion: blob_event channel full; dropping GossipBlobSidecar (awaiting block may be parked until timeout)");
+                        }
+                    }
+                    continue;
+                }
                 // Forward unknown-parent gossip blocks to the lookup loop.
                 if let NetworkEvent::UnknownParentBlock { topic, peer, data } = event {
                     let _ = egress
@@ -231,9 +247,9 @@ where
                 None => continue,
             };
 
-        // (c)-(h) Core import: pre-state fetch → STF → on_block → payload push → HeadChange.
+        // (c)-(h) Core import: pre-state fetch → DA gate → STF → on_block → payload push → HeadChange.
         let parent_root = extract_parent_root::<E>(&signed_block);
-        let outcome = match crate::import::import_block::<E, EE, EnginePowBlockProvider>(
+        let outcome = match crate::import::import_block::<E, EE, EnginePowBlockProvider, DA>(
             &signed_block,
             &fc_store,
             &execution_engine,
@@ -242,6 +258,7 @@ where
             validate_result,
             &cfg,
             &host.store_arc(),
+            &da_checker,
         )
         .await
         {
@@ -249,6 +266,14 @@ where
             Err(crate::import::ImportError::MissingParentState) => {
                 debug!(%parent_root, "block_ingestion: missing parent; deferring to backfill");
                 egress.notify_backfill.notify_one();
+                continue;
+            }
+            // DA not yet satisfied: park in BlobAwaitingBlocks.
+            // When blobs arrive (blob_ingestion loop) and complete the set,
+            // the block is re-injected via reinject_tx.
+            Err(crate::import::ImportError::DataNotAvailable) => {
+                let block_root = crate::block_ingestion::extract_block_root::<E>(&signed_block);
+                blob_awaiting.park(block_root, (topic, data), egress.reinject_tx.clone());
                 continue;
             }
             // Future block: per fork-choice.md its consideration "must be delayed

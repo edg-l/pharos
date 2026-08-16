@@ -25,9 +25,11 @@ use tokio::sync::{mpsc, watch};
 use tracing::info;
 
 use pharos_node::ExecutionEngineHandle;
+use pharos_node::blob_ingestion::run_blob_ingestion_loop;
 use pharos_node::blob_prune::run_blob_prune_loop;
 use pharos_node::block_ingestion::{IngestionEgress, ReinjectBlock, run_block_ingestion_loop};
 use pharos_node::checkpoint_sync::{apply_anchor, fetch_checkpoint};
+use pharos_node::data_availability::{BlobAvailabilityChecker, BlobAwaitingBlocks};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::engine_keepalive::{hex_to_u256, run_transition_config_keepalive, u256_to_hex};
 use pharos_node::fork_migration::run_fork_migration_loop;
@@ -1001,7 +1003,15 @@ async fn main() -> anyhow::Result<()> {
                 let cmd_c = pub_cmd.clone();
                 let gossip_bytes = ssz_bytes;
                 tokio::spawn(async move {
-                    match import_block::<MainnetEthSpec, NodeEEHandle, PowProvider>(
+                    // Locally proposed block: blobs are available by construction.
+                    use pharos_node::data_availability::NoopDataAvailabilityChecker;
+                    let noop_da = Arc::new(NoopDataAvailabilityChecker);
+                    match import_block::<
+                        MainnetEthSpec,
+                        NodeEEHandle,
+                        PowProvider,
+                        NoopDataAvailabilityChecker,
+                    >(
                         &signed_block,
                         &fc_c,
                         &ee_c,
@@ -1010,6 +1020,7 @@ async fn main() -> anyhow::Result<()> {
                         true,
                         &cfg_c,
                         &store_c,
+                        &noop_da,
                     )
                     .await
                     {
@@ -1212,6 +1223,18 @@ async fn main() -> anyhow::Result<()> {
         // blocks until they are in the past").
         let (reinject_tx, reinject_rx) = mpsc::channel::<ReinjectBlock>(64);
 
+        // DA checker + blob-awaiting registry.
+        let kzg_verifier = Arc::new(pharos_kzg::KzgVerifier::mainnet());
+        let da_checker = Arc::new(BlobAvailabilityChecker::<MainnetEthSpec>::new(
+            Arc::clone(&store_arc),
+            Arc::clone(&kzg_verifier),
+        ));
+        let blob_awaiting = Arc::new(BlobAwaitingBlocks::new());
+
+        // Blob-sidecar forwarding channel (block ingestion loop demuxes blob events).
+        let (blob_event_tx, blob_event_rx) =
+            mpsc::channel::<pharos_network::network::NetworkEvent>(256);
+
         // Take the network event receiver and spawn the block-ingestion loop.
         let event_rx = handle.take_event_receiver();
         {
@@ -1229,8 +1252,14 @@ async fn main() -> anyhow::Result<()> {
                 lookup_tx: lookup_tx.clone(),
                 reinject_tx: reinject_tx.clone(),
             };
+            let da_checker_clone = Arc::clone(&da_checker);
+            let blob_awaiting_clone = Arc::clone(&blob_awaiting);
             tokio::spawn(async move {
-                if let Err(e) = run_block_ingestion_loop::<MainnetEthSpec, ExecutionEngineHandle>(
+                if let Err(e) = run_block_ingestion_loop::<
+                    MainnetEthSpec,
+                    ExecutionEngineHandle,
+                    BlobAvailabilityChecker<MainnetEthSpec>,
+                >(
                     event_rx,
                     reinject_rx,
                     h,
@@ -1239,6 +1268,9 @@ async fn main() -> anyhow::Result<()> {
                     pow_clone,
                     ingestion_egress,
                     true, // validate_result: enforce BLS signatures and state roots
+                    da_checker_clone,
+                    blob_awaiting_clone,
+                    Some(blob_event_tx),
                 )
                 .await
                 {
@@ -1247,6 +1279,21 @@ async fn main() -> anyhow::Result<()> {
             });
         }
         info!("block ingestion loop started");
+
+        // Spawn blob-sidecar ingestion loop.
+        {
+            let blob_store = Arc::clone(&store_arc);
+            let blob_awaiting_blob = Arc::clone(&blob_awaiting);
+            tokio::spawn(async move {
+                run_blob_ingestion_loop::<MainnetEthSpec>(
+                    blob_event_rx,
+                    blob_store,
+                    blob_awaiting_blob,
+                )
+                .await;
+            });
+        }
+        info!("blob ingestion loop started");
 
         // Spawn forward backfill loop.
         {

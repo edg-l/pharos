@@ -165,6 +165,10 @@ impl<
     fn num_blob_kzg_commitments(&self) -> usize {
         self.blob_kzg_commitments.len()
     }
+
+    fn blob_kzg_commitments_slice(&self) -> &[crate::deneb::KZGCommitment] {
+        self.blob_kzg_commitments.as_slice()
+    }
 }
 
 // ── Preset-specific type aliases ──────────────────────────────────────────────

@@ -15,7 +15,7 @@ use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
 
 use pharos_network::host::{
-    BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
+    BlobProvider, BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
 };
 use pharos_network::scoring::NoopScorer;
 use pharos_network::types::{Fork, SubnetId};
@@ -210,6 +210,19 @@ impl GossipValidator<E> for BenchHost {
         _sidecar: &pharos_types::deneb::BlobSidecar,
     ) -> GossipVerdict {
         GossipVerdict::Accept
+    }
+}
+
+impl BlobProvider<E> for BenchHost {
+    fn blobs_by_range(
+        &self,
+        _start_slot: Slot,
+        _count: u64,
+    ) -> Vec<pharos_types::deneb::BlobSidecar> {
+        Vec::new()
+    }
+    fn blobs_by_root(&self, _ids: &[(Root, u64)]) -> Vec<pharos_types::deneb::BlobSidecar> {
+        Vec::new()
     }
 }
 

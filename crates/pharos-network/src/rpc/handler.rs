@@ -8,16 +8,17 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use libp2p::PeerId;
-use pharos_ssz::SszList;
+use pharos_ssz::{SszList, SszSequence as _};
 use pharos_types::EthSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::{ErrorMessage, MetaData as Phase0MetaData, Status};
 
-use crate::host::{Host, LightClientProvider};
+use crate::host::{BlobProvider, Host, LightClientProvider};
 use crate::peer::manager::PeerManager;
 use crate::rpc::min_epochs::compute_min_epochs_for_block_requests;
 use crate::rpc::types::{
-    MAX_REQUEST_BLOCKS, MAX_REQUEST_LIGHT_CLIENT_UPDATES, MetaDataResponse, RpcRequest, RpcResponse,
+    MAX_REQUEST_BLOB_SIDECARS, MAX_REQUEST_BLOCKS, MAX_REQUEST_LIGHT_CLIENT_UPDATES,
+    MetaDataResponse, RpcRequest, RpcResponse,
 };
 use crate::scoring::{HandshakeFailKind, PeerScorer, ScoreEvent};
 use crate::types::DisconnectReason;
@@ -40,7 +41,7 @@ pub async fn handle_request<E, H, S>(
 ) -> RpcResponse<E>
 where
     E: EthSpec,
-    H: Host<E> + LightClientProvider<E>,
+    H: Host<E> + LightClientProvider<E> + BlobProvider<E>,
     S: PeerScorer,
 {
     match req {
@@ -166,19 +167,27 @@ where
 
         // Blob sidecar req-resp methods per `specs/deneb/p2p-interface.md:816-968`.
         //
-        // Blob storage (Phase 4) is not yet implemented; respond with
-        // ResourceUnavailable (code 3) so the peer can try another source.
-        // The `BlobProvider<E>` host trait (Task 3.6) will replace these stubs
-        // when Phase 5 wires the availability store.
-        RpcRequest::BlobSidecarsByRange(_) => RpcResponse::Error {
-            code: 3, // ResourceUnavailable
-            message: make_error_message("blob sidecars not yet available"),
-        },
+        // Serve what we have; silently omit sidecars outside the blob serve range
+        // (pruner already removed them). `blobs_by_range` clamps to
+        // `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` epochs from current slot.
+        // Count is clamped to `MAX_REQUEST_BLOB_SIDECARS` to bound response size.
+        RpcRequest::BlobSidecarsByRange(req) => {
+            use pharos_types::phase0::primitives::Slot;
+            let count = req.count.min(MAX_REQUEST_BLOB_SIDECARS);
+            let sidecars = host.blobs_by_range(Slot(req.start_slot), count);
+            RpcResponse::BlobSidecars(sidecars)
+        }
 
-        RpcRequest::BlobSidecarsByRoot(_) => RpcResponse::Error {
-            code: 3, // ResourceUnavailable
-            message: make_error_message("blob sidecars not yet available"),
-        },
+        RpcRequest::BlobSidecarsByRoot(req) => {
+            // Build `(block_root, index)` lookup list from `BlobIdentifier`s.
+            let ids: Vec<_> = req
+                .blob_ids
+                .iter()
+                .map(|id| (id.block_root, id.index))
+                .collect();
+            let sidecars = host.blobs_by_root(&ids);
+            RpcResponse::BlobSidecars(sidecars)
+        }
     }
 }
 
@@ -446,6 +455,22 @@ mod tests {
             &self,
         ) -> Option<<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate> {
             None
+        }
+    }
+
+    impl BlobProvider<MainnetEthSpec> for MockHost {
+        fn blobs_by_range(
+            &self,
+            _start_slot: pharos_types::phase0::primitives::Slot,
+            _count: u64,
+        ) -> Vec<pharos_types::deneb::BlobSidecar> {
+            Vec::new()
+        }
+        fn blobs_by_root(
+            &self,
+            _ids: &[(pharos_types::phase0::primitives::Root, u64)],
+        ) -> Vec<pharos_types::deneb::BlobSidecar> {
+            Vec::new()
         }
     }
 

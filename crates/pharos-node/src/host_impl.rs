@@ -40,8 +40,8 @@ use tokio::sync::{mpsc, watch};
 use tracing::warn;
 
 use pharos_network::host::{
-    BlockProvider, ForkContext, GOSSIP_REASON_PARENT_UNSEEN, GossipValidator, GossipVerdict,
-    LightClientProvider,
+    BlobProvider, BlockProvider, ForkContext, GOSSIP_REASON_PARENT_UNSEEN, GossipValidator,
+    GossipVerdict, LightClientProvider,
 };
 use pharos_network::types::{Fork, SubnetId};
 use pharos_ssz::{Bitvector, TreeHash};
@@ -2763,6 +2763,107 @@ impl<E: EthSpec> LightClientProvider<E> for HostImpl<E> {
                 None
             }
         }
+    }
+}
+
+// ── BlobProvider ──────────────────────────────────────────────────────────────
+
+/// `BlobProvider<E>` for `HostImpl<E>`.
+///
+/// Serves blob sidecars from storage for `BlobSidecarsByRange` and
+/// `BlobSidecarsByRoot` req-resp requests.
+///
+/// # Serve range clamping (OQ1 / W8)
+///
+/// Per `specs/deneb/p2p-interface.md`, nodes SHOULD NOT serve blobs older
+/// than `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` epochs from the current epoch.
+/// `blobs_by_range` computes the serve-range floor slot and returns an empty
+/// vec for requests entirely outside the window; `blobs_by_root` returns
+/// whatever is in the store (point lookups are always in-range if present).
+///
+/// This implementation does NOT backfill blobs (OQ1 default).
+impl<E: EthSpec> BlobProvider<E> for HostImpl<E> {
+    /// Retrieve blob sidecars for canonical slots `[start_slot, start_slot + count)`.
+    ///
+    /// Walks `slot_to_block_root` to get the canonical block root for each slot,
+    /// then fetches all stored sidecars for that root.  Slots outside the
+    /// `blob_serve_range` are silently skipped (sidecars may have been pruned).
+    ///
+    /// Returns an empty vec when no sidecars are available for any requested slot.
+    fn blobs_by_range(
+        &self,
+        start_slot: pharos_types::phase0::primitives::Slot,
+        count: u64,
+    ) -> Vec<pharos_types::deneb::BlobSidecar> {
+        use pharos_fork_choice::get_current_slot;
+
+        // Compute current slot to bound the serve range.
+        let current_slot = {
+            let fc = self.fork_choice.read();
+            get_current_slot::<E>(&fc)
+        };
+
+        // blob_serve_range: slots within MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS epochs.
+        let serve_range_epochs = E::MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS;
+        let slots_per_epoch = E::SLOTS_PER_EPOCH;
+        let serve_range_slots = serve_range_epochs * slots_per_epoch;
+        let serve_floor = current_slot.0.saturating_sub(serve_range_slots);
+
+        let end_slot = start_slot.0.saturating_add(count);
+        let mut result = Vec::new();
+
+        for slot in start_slot.0..end_slot {
+            // Skip slots outside the blob serve range.
+            if slot < serve_floor {
+                continue;
+            }
+
+            // Look up the canonical block root at this slot.
+            let block_root = match self
+                .store
+                .block_root_at_slot(pharos_types::phase0::primitives::Slot(slot))
+            {
+                Ok(Some(r)) => r,
+                Ok(None) => continue, // missed slot or before anchor
+                Err(e) => {
+                    warn!(%e, slot, "blobs_by_range: block_root_at_slot error; skipping slot");
+                    continue;
+                }
+            };
+
+            // Fetch all sidecars for this block root.
+            match <RocksStore as StoreTrait<E>>::get_blob_sidecars_by_root(&self.store, &block_root)
+            {
+                Ok(sidecars) => result.extend(sidecars),
+                Err(e) => {
+                    warn!(%e, slot, %block_root, "blobs_by_range: get_blob_sidecars_by_root error; skipping slot");
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Retrieve blob sidecars by `(block_root, blob_index)` pairs.
+    ///
+    /// For each pair, looks up the sidecar from storage; unknown pairs are
+    /// silently omitted.  No serve-range clamping for point lookups (the pruner
+    /// already removed expired entries from the store).
+    fn blobs_by_root(
+        &self,
+        ids: &[(pharos_types::phase0::primitives::Root, u64)],
+    ) -> Vec<pharos_types::deneb::BlobSidecar> {
+        let mut result = Vec::with_capacity(ids.len());
+        for (block_root, index) in ids {
+            match <RocksStore as StoreTrait<E>>::get_blob_sidecar(&self.store, block_root, *index) {
+                Ok(Some(sidecar)) => result.push(sidecar),
+                Ok(None) => {} // not found; omit silently per spec
+                Err(e) => {
+                    warn!(%e, %block_root, index, "blobs_by_root: get_blob_sidecar error; omitting");
+                }
+            }
+        }
+        result
     }
 }
 

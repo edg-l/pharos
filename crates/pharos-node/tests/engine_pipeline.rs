@@ -545,7 +545,12 @@ async fn engine_pipeline_drives_bellatrix_chain() {
             reinject_tx: tokio::sync::mpsc::channel(1).0,
         };
         tokio::spawn(async move {
-            if let Err(e) = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
+            use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
+            if let Err(e) = run_block_ingestion_loop::<
+                MinimalEthSpec,
+                NullExecutionEngine,
+                NoopDataAvailabilityChecker,
+            >(
                 event_rx,
                 tokio::sync::mpsc::channel(1).1,
                 host_clone,
@@ -554,6 +559,9 @@ async fn engine_pipeline_drives_bellatrix_chain() {
                 pow_provider,
                 ingestion_egress,
                 false, // validate_result: false — skip BLS and state-root checks
+                Arc::new(NoopDataAvailabilityChecker),
+                Arc::new(BlobAwaitingBlocks::new()),
+                None,
             )
             .await
             {

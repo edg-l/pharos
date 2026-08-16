@@ -25,8 +25,11 @@ use pharos_stf::{
 };
 use pharos_storage::{BlockTransition, RocksStore, StateSummary, StorageError, Store as DbStore};
 use pharos_types::config::RuntimeConfig;
+use pharos_types::deneb::KZGCommitment;
 use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _, ForkVariant};
 use pharos_types::{EthSpec, PayloadStatus, phase0::primitives::Root};
+
+use crate::data_availability::{DataAvailabilityChecker, DataAvailabilityVerdict};
 
 use crate::engine_driver::{
     HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2, compute_finalized_block_hash,
@@ -67,6 +70,15 @@ pub enum ImportError {
     #[error("fork-choice head {root} not in block store (invariant violation)")]
     HeadMissing { root: Root },
 
+    /// One or more blob sidecars required by a Deneb block are not yet available
+    /// in the local store.  The block must be parked in `BlobAwaitingBlocks`
+    /// until all sidecars arrive (per `D-da-block-not-in-forkchoice-until-available`).
+    ///
+    /// The block is NOT inserted into fork-choice when this error is returned
+    /// (the gate fires before `state_transition` and `on_block`).
+    #[error("blob sidecars not yet available for block (data not available)")]
+    DataNotAvailable,
+
     /// Execution block rejected: not yet an optimistic-import candidate and EL
     /// validation is unavailable (SYNCING).  Caller should retry or defer.
     ///
@@ -101,6 +113,34 @@ pub struct ImportOutcome<E: EthSpec> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Extract `blob_kzg_commitments` from a fork-enum `SignedBeaconBlock`.
+///
+/// Called ONCE at the call site (per W6) before the DA gate so the
+/// `DataAvailabilityChecker` impl receives a plain `&[KZGCommitment]` and does
+/// no fork-dispatch.  Pre-Deneb blocks return an empty `Vec` (DA is Irrelevant).
+///
+/// Uses `BeaconBlockBodyView::blob_kzg_commitments_slice()` — a default-empty
+/// method on the trait; the Deneb body overrides it to return the real slice.
+pub(crate) fn extract_blob_kzg_commitments<E: EthSpec>(
+    signed_block: &E::SignedBeaconBlock,
+) -> Vec<KZGCommitment>
+where
+    E::DenebSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::DenebBeaconBlock: pharos_types::views::BeaconBlockView,
+    <E::DenebBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
+        pharos_types::views::BeaconBlockBodyView,
+{
+    use pharos_types::views::{
+        BeaconBlockBodyView as _, BeaconBlockView as _, SignedBeaconBlockView as _,
+    };
+    if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
+        inner.message().body().blob_kzg_commitments_slice().to_vec()
+    } else {
+        Vec::new()
+    }
+}
 
 /// Returns `true` if the signed block carries an active execution payload
 /// (non-zero `block_hash`), matching the semantics of `block_is_execution_enabled`.
@@ -188,9 +228,16 @@ pub fn signed_block_state_root<E: EthSpec>(
 
 /// Core block-import sequence.
 ///
-/// Executes: pre-state fetch → STF (spawn_blocking) → on_block (spawn_blocking)
-/// → payload_tx push (try_send, drop-on-full) → head computation
-/// → persist worker (spawn_blocking, after write lock released).
+/// Executes: pre-state fetch → DA gate (spawn_blocking, RI-1) → STF
+/// (same spawn_blocking) → on_block (spawn_blocking) → payload_tx push
+/// (try_send, drop-on-full) → head computation → persist worker
+/// (spawn_blocking, after write lock released).
+///
+/// **DA gate ordering (RI-1)**: `da_checker.is_data_available` runs INSIDE
+/// the STF `spawn_blocking`, BEFORE `state_transition`.  This satisfies the
+/// `fork-choice.md on_block` requirement that `is_data_available` precedes
+/// `state_transition`.  A `DataNotAvailable` result causes an early return;
+/// no fork-choice write has occurred (per `D-da-block-not-in-forkchoice-until-available`).
 ///
 /// **Does NOT** perform light-client snapshot dispatch or LC gossip publish.
 /// Those steps require `AltairDispatchBounds` / `BellatrixDispatchBounds` and
@@ -202,8 +249,11 @@ pub fn signed_block_state_root<E: EthSpec>(
 /// `store` is a concrete `&Arc<RocksStore>` (not a generic `S: Store<E>`) so no
 /// new where-bound explodes across call sites; `RocksStore` is the only `Store`
 /// impl wired in the binary (per `D-persist-in-import-core`).
+///
+/// `da_checker` is the DA gate; pass `&NoopDataAvailabilityChecker` in backfill
+/// (historical blocks do not carry sidecars) and in pre-Deneb contexts.
 #[allow(clippy::too_many_arguments)]
-pub async fn import_block<E, EE, PP>(
+pub async fn import_block<E, EE, PP, DA>(
     signed_block: &E::SignedBeaconBlock,
     fc_store: &Arc<RwLock<FcStore<E>>>,
     execution_engine: &Arc<EE>,
@@ -212,8 +262,10 @@ pub async fn import_block<E, EE, PP>(
     validate_result: bool,
     cfg: &RuntimeConfig,
     store: &Arc<RocksStore>,
+    da_checker: &Arc<DA>,
 ) -> Result<ImportOutcome<E>, ImportError>
 where
+    DA: DataAvailabilityChecker<E> + 'static,
     E: EthSpec,
     E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + Clone,
     E::BeaconBlock: pharos_types::views::BeaconBlockView + pharos_ssz::TreeHash + Clone,
@@ -250,6 +302,11 @@ where
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
+    E::DenebSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
+    <E::DenebSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
+        pharos_types::views::BeaconBlockView,
+    <<E::DenebSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message as pharos_types::views::BeaconBlockView>::Body:
+        pharos_types::views::BeaconBlockBodyView,
     EE: ExecutionEngine + 'static,
     PP: PowBlockProvider + Send + Sync + 'static,
 {
@@ -265,11 +322,41 @@ where
         }
     };
 
-    // (b) Run state transition in spawn_blocking (CPU-bound; M3a invariant).
+    // (a.5) Extract blob KZG commitments from the block body ONCE (per W6).
+    //
+    // Pre-Deneb blocks return an empty Vec (DA is Irrelevant for them).
+    // Deneb blocks return the commitments from `blob_kzg_commitments`.
+    // This extraction happens at the call site so `da_checker` receives a plain
+    // `&[KZGCommitment]` and does no fork-dispatch (Fulu PeerDAS seam).
+    let kzg_commitments = extract_blob_kzg_commitments::<E>(signed_block);
+
+    // (b) Run DA gate + state transition in spawn_blocking (both CPU/IO-bound; RI-1 + W7).
+    //
+    // DA gate is MERGED INTO the STF spawn_blocking: RocksDB reads and KZG verification
+    // are blocking operations; running them in the same worker as the STF avoids an
+    // extra `await` and keeps the critical path tight (W7).
+    //
+    // Gate ordering (RI-1): DA check fires BEFORE `state_transition`.  If the check
+    // returns `NotAvailable`, this spawn returns `Err(ImportError::DataNotAvailable)`
+    // without touching fork-choice (no `on_block` call, no state write).  The block
+    // is NOT in fork-choice until DA is satisfied
+    // (per `D-da-block-not-in-forkchoice-until-available`).
     let signed_block_clone = signed_block.clone();
     let ee = Arc::clone(execution_engine);
     let cfg_clone = cfg.clone();
-    let stf_result = tokio::task::spawn_blocking(move || {
+    let da_checker_clone = Arc::clone(da_checker);
+    let block_root_for_da = extract_block_root::<E>(signed_block);
+    let stf_result: Result<_, ImportError> = tokio::task::spawn_blocking(move || {
+        // Step (a.5) inner: DA gate — BEFORE state_transition (RI-1).
+        let verdict = da_checker_clone.is_data_available(block_root_for_da, &kzg_commitments);
+        match verdict {
+            DataAvailabilityVerdict::Available | DataAvailabilityVerdict::Irrelevant => {}
+            DataAvailabilityVerdict::NotAvailable => {
+                return Err(ImportError::DataNotAvailable);
+            }
+        }
+
+        // DA gate passed (or Irrelevant for pre-Deneb). Run the STF.
         state_transition::<E, EE>(
             pre_state,
             &signed_block_clone,
@@ -277,10 +364,11 @@ where
             validate_result,
             &cfg_clone,
         )
+        .map_err(ImportError::StateTransition)
     })
     .await?;
 
-    let (post_state, payload_status) = stf_result.map_err(ImportError::StateTransition)?;
+    let (post_state, payload_status) = stf_result?;
 
     // (c) Optimistic-candidate gate — AFTER the STF so the real EL verdict is known.
     //
@@ -328,8 +416,8 @@ where
     // Also used by the persist worker below (after on_block has moved post_state).
     let post_state_for_return = post_state.clone();
 
-    // (d) Compute block_root before moving signed_block into the spawn.
-    let block_root: Root = extract_block_root::<E>(signed_block);
+    // (d) block_root was already computed above for the DA gate; reuse it.
+    let block_root: Root = block_root_for_da;
 
     // (e) Call on_block in spawn_blocking (may do blocking PoW lookup; M3a invariant).
     let now = SystemTime::now()
@@ -625,6 +713,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+    use crate::data_availability::NoopDataAvailabilityChecker;
     use crate::engine_driver::NewPayloadRequest as EngineNewPayloadRequest;
 
     // ── Terminal hash used in both tests ──────────────────────────────────────
@@ -1033,18 +1122,23 @@ mod tests {
             mpsc::channel::<EngineNewPayloadRequest<MinimalEthSpec>>(16);
         let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
 
-        let result =
-            import_block::<MinimalEthSpec, SyncingEE, pharos_fork_choice::NoopPowBlockProvider>(
-                &block,
-                &fc_store,
-                &Arc::new(SyncingEE),
-                &pow_provider,
-                &payload_tx,
-                false, // validate_result: false — no BLS in test blocks
-                &runtime_cfg,
-                &rocks_store,
-            )
-            .await;
+        let result = import_block::<
+            MinimalEthSpec,
+            SyncingEE,
+            pharos_fork_choice::NoopPowBlockProvider,
+            NoopDataAvailabilityChecker,
+        >(
+            &block,
+            &fc_store,
+            &Arc::new(SyncingEE),
+            &pow_provider,
+            &payload_tx,
+            false, // validate_result: false — no BLS in test blocks
+            &runtime_cfg,
+            &rocks_store,
+            &Arc::new(NoopDataAvailabilityChecker),
+        )
+        .await;
 
         match result {
             Err(ImportError::NotOptimisticCandidate {
@@ -1090,18 +1184,23 @@ mod tests {
             mpsc::channel::<EngineNewPayloadRequest<MinimalEthSpec>>(16);
         let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
 
-        let result =
-            import_block::<MinimalEthSpec, ValidEE, pharos_fork_choice::NoopPowBlockProvider>(
-                &block,
-                &fc_store,
-                &Arc::new(ValidEE),
-                &pow_provider,
-                &payload_tx,
-                false, // validate_result: false
-                &runtime_cfg,
-                &rocks_store,
-            )
-            .await;
+        let result = import_block::<
+            MinimalEthSpec,
+            ValidEE,
+            pharos_fork_choice::NoopPowBlockProvider,
+            NoopDataAvailabilityChecker,
+        >(
+            &block,
+            &fc_store,
+            &Arc::new(ValidEE),
+            &pow_provider,
+            &payload_tx,
+            false, // validate_result: false
+            &runtime_cfg,
+            &rocks_store,
+            &Arc::new(NoopDataAvailabilityChecker),
+        )
+        .await;
 
         assert!(
             result.is_ok(),
@@ -1255,18 +1354,23 @@ mod tests {
         );
 
         let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
-        let result =
-            import_block::<MinimalEthSpec, SyncingEE, pharos_fork_choice::NoopPowBlockProvider>(
-                &block,
-                &fc_store,
-                &Arc::new(SyncingEE),
-                &pow_provider,
-                &payload_tx,
-                false,
-                &runtime_cfg,
-                &rocks_store,
-            )
-            .await;
+        let result = import_block::<
+            MinimalEthSpec,
+            SyncingEE,
+            pharos_fork_choice::NoopPowBlockProvider,
+            NoopDataAvailabilityChecker,
+        >(
+            &block,
+            &fc_store,
+            &Arc::new(SyncingEE),
+            &pow_provider,
+            &payload_tx,
+            false,
+            &runtime_cfg,
+            &rocks_store,
+            &Arc::new(NoopDataAvailabilityChecker),
+        )
+        .await;
 
         // (a) Import must succeed despite the dropped send.
         assert!(
@@ -1339,18 +1443,23 @@ mod tests {
 
         // ── Phase A: import with SYNCING EL ──────────────────────────────────
 
-        let result =
-            import_block::<MinimalEthSpec, SyncingEE, pharos_fork_choice::NoopPowBlockProvider>(
-                &block,
-                &fc_store,
-                &Arc::new(SyncingEE),
-                &pow_provider,
-                &payload_tx,
-                false,
-                &runtime_cfg,
-                &rocks_store,
-            )
-            .await;
+        let result = import_block::<
+            MinimalEthSpec,
+            SyncingEE,
+            pharos_fork_choice::NoopPowBlockProvider,
+            NoopDataAvailabilityChecker,
+        >(
+            &block,
+            &fc_store,
+            &Arc::new(SyncingEE),
+            &pow_provider,
+            &payload_tx,
+            false,
+            &runtime_cfg,
+            &rocks_store,
+            &Arc::new(NoopDataAvailabilityChecker),
+        )
+        .await;
 
         // (a) Import must succeed.
         assert!(

@@ -49,7 +49,9 @@ use crate::gossip::{
     dispatch_gossip_message, subscribe_altair_extra_topics, subscribe_base_topics,
 };
 use crate::handle::NetworkHandle;
-use crate::host::{GOSSIP_REASON_PARENT_UNSEEN, GossipVerdict, Host, LightClientProvider};
+use crate::host::{
+    BlobProvider, GOSSIP_REASON_PARENT_UNSEEN, GossipVerdict, Host, LightClientProvider,
+};
 use crate::peer::manager::PeerManager;
 use crate::rpc::handler::handle_request;
 use crate::rpc::types::{RpcRequest, RpcResponse};
@@ -266,7 +268,8 @@ const DIAL_PENDING_TTL: Duration = Duration::from_secs(30);
 /// Constructed via `NetworkBuilder::build`.  Call `run()` to drive the
 /// event loop.  Shut down by sending `NetworkCommand::Shutdown` via the
 /// `NetworkHandle` or by dropping the handle's `shutdown_tx`.
-pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> {
+pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerScorer>
+{
     swarm: Swarm<PharosBehaviour<E>>,
     discovery: DiscoveryService,
     peer_manager: PeerManager<S>,
@@ -347,8 +350,11 @@ pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScore
     _phantom: PhantomData<E>,
 }
 
-impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S: PeerScorer>
-    Network<E, H, S>
+impl<
+    E: EthSpec,
+    H: Host<E> + LightClientProvider<E> + BlobProvider<E> + Send + Sync + 'static,
+    S: PeerScorer,
+> Network<E, H, S>
 {
     /// Attempt an outbound dial to `peer_id` at `addr`, deduplicating concurrent dials.
     ///
@@ -1706,7 +1712,7 @@ pub struct NetworkBuilder<E, H, S> {
     _phantom: PhantomData<E>,
 }
 
-impl<E: EthSpec, H: Host<E> + LightClientProvider<E>>
+impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>>
     NetworkBuilder<E, H, crate::scoring::NoopScorer>
 {
     /// Create a new builder wrapping `host` with default settings.
@@ -1730,7 +1736,9 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>>
     }
 }
 
-impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuilder<E, H, S> {
+impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerScorer>
+    NetworkBuilder<E, H, S>
+{
     /// Override the TCP listen port (default: 9000).
     pub fn tcp_listen_port(mut self, port: u16) -> Self {
         self.tcp_listen_port = port;
@@ -1785,7 +1793,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
     /// Substitute a peer scorer, changing the `S` type parameter.
     pub fn scorer<T: PeerScorer>(self, scorer: T) -> NetworkBuilder<E, H, T>
     where
-        H: Host<E> + LightClientProvider<E>,
+        H: Host<E> + LightClientProvider<E> + BlobProvider<E>,
     {
         NetworkBuilder {
             host: self.host,
@@ -2121,8 +2129,11 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
 // `tests/` (which are separate crates) can access them.  The `test_` prefix
 // and `#[doc(hidden)]` make the intent clear: these are NOT production API.
 
-impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S: PeerScorer>
-    Network<E, H, S>
+impl<
+    E: EthSpec,
+    H: Host<E> + LightClientProvider<E> + BlobProvider<E> + Send + Sync + 'static,
+    S: PeerScorer,
+> Network<E, H, S>
 {
     /// Returns `true` if `peer_id` is in the peer table and has a known
     /// `last_status` (i.e. completed the Status handshake).
@@ -2359,6 +2370,23 @@ mod tests {
             _sidecar: &pharos_types::deneb::BlobSidecar,
         ) -> GossipVerdict {
             unreachable!()
+        }
+    }
+
+    impl BlobProvider<MainnetEthSpec> for MockHost {
+        fn blobs_by_range(
+            &self,
+            _start_slot: pharos_types::phase0::primitives::Slot,
+            _count: u64,
+        ) -> Vec<pharos_types::deneb::BlobSidecar> {
+            vec![]
+        }
+
+        fn blobs_by_root(
+            &self,
+            _ids: &[(pharos_types::phase0::primitives::Root, u64)],
+        ) -> Vec<pharos_types::deneb::BlobSidecar> {
+            vec![]
         }
     }
 

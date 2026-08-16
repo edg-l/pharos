@@ -29,6 +29,7 @@ use pharos_types::views::BeaconBlockView as _;
 use pharos_types::{EthSpec, phase0::primitives::Slot};
 
 use crate::block_ingestion::{extract_block_root, extract_parent_root};
+use crate::data_availability::NoopDataAvailabilityChecker;
 use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2};
 use crate::host_impl::HostImpl;
 use crate::lookup::LookupRequest;
@@ -288,6 +289,10 @@ where
             }
         }
 
+        // Allocate once per chunk, not per block: historical blocks are finalized
+        // and we do not retrieve their sidecars, so DA is always irrelevant for backfill.
+        let noop_da = Arc::new(NoopDataAvailabilityChecker);
+
         for signed in blocks {
             // Check shutdown inside the per-block loop so we don't hold the
             // lock for many blocks before yielding.
@@ -299,87 +304,96 @@ where
             let parent_root = extract_parent_root::<E>(&signed);
 
             // Core import: pre-state fetch → STF → on_block → payload push → HeadChange.
-            let outcome = match crate::import::import_block::<E, EE, PP>(
-                &signed,
-                &fc_store,
-                &execution_engine,
-                &pow_provider,
-                &payload_tx,
-                true,
-                &cfg,
-                &host.store_arc(),
-            )
-            .await
-            {
-                Ok(o) => o,
-                Err(crate::import::ImportError::MissingParentState) => {
-                    debug!(
-                        %parent_root,
-                        "backfill: missing parent state; aborting chunk"
-                    );
-                    break;
-                }
-                Err(crate::import::ImportError::Join(e)) => {
-                    return Err(BackfillError::Join(e));
-                }
-                Err(crate::import::ImportError::StateTransition(e)) => {
-                    let block_root = extract_block_root::<E>(&signed);
-                    warn!(%block_root, error = %e, "backfill: state_transition failed; backing off and retrying");
-                    if *shutdown_rx.borrow() {
-                        return Ok(());
+            let outcome =
+                match crate::import::import_block::<E, EE, PP, NoopDataAvailabilityChecker>(
+                    &signed,
+                    &fc_store,
+                    &execution_engine,
+                    &pow_provider,
+                    &payload_tx,
+                    true,
+                    &cfg,
+                    &host.store_arc(),
+                    &noop_da,
+                )
+                .await
+                {
+                    Ok(o) => o,
+                    Err(crate::import::ImportError::MissingParentState) => {
+                        debug!(
+                            %parent_root,
+                            "backfill: missing parent state; aborting chunk"
+                        );
+                        break;
                     }
-                    tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
-                    break;
-                }
-                Err(crate::import::ImportError::ForkChoice(e)) => {
-                    let block_root = extract_block_root::<E>(&signed);
-                    warn!(%block_root, error = %e, "backfill: on_block rejected; backing off and retrying");
-                    if *shutdown_rx.borrow() {
-                        return Ok(());
+                    Err(crate::import::ImportError::Join(e)) => {
+                        return Err(BackfillError::Join(e));
                     }
-                    tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
-                    break;
-                }
-                Err(crate::import::ImportError::Storage(e)) => {
-                    return Err(BackfillError::Storage(e));
-                }
-                Err(crate::import::ImportError::HeadMissing { root }) => {
-                    warn!(%root, "backfill: fork-choice head not in store; backing off and retrying");
-                    if *shutdown_rx.borrow() {
-                        return Ok(());
+                    Err(crate::import::ImportError::StateTransition(e)) => {
+                        let block_root = extract_block_root::<E>(&signed);
+                        warn!(%block_root, error = %e, "backfill: state_transition failed; backing off and retrying");
+                        if *shutdown_rx.borrow() {
+                            return Ok(());
+                        }
+                        tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
+                        break;
                     }
-                    tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
-                    break;
-                }
-                Err(crate::import::ImportError::NotOptimisticCandidate {
-                    block_slot,
-                    current_slot,
-                }) => {
-                    // An execution block near the tip whose parent is not yet an
-                    // execution block.  Wait proportionally to how many slots remain
-                    // until the block ages past SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY,
-                    // so we do not busy-loop (5 s retries for ~26 min) on a
-                    // merge-transition block within SAFE_SLOTS of the wall clock.
-                    let slots_until_safe = (block_slot
-                        + pharos_fork_choice::SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY)
-                        .saturating_sub(current_slot);
-                    let wait = std::cmp::max(
-                        BACKFILL_RETRY_DELAY,
-                        Duration::from_secs(slots_until_safe.saturating_mul(seconds_per_slot)),
-                    );
-                    warn!(
+                    Err(crate::import::ImportError::ForkChoice(e)) => {
+                        let block_root = extract_block_root::<E>(&signed);
+                        warn!(%block_root, error = %e, "backfill: on_block rejected; backing off and retrying");
+                        if *shutdown_rx.borrow() {
+                            return Ok(());
+                        }
+                        tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
+                        break;
+                    }
+                    Err(crate::import::ImportError::Storage(e)) => {
+                        return Err(BackfillError::Storage(e));
+                    }
+                    Err(crate::import::ImportError::HeadMissing { root }) => {
+                        warn!(%root, "backfill: fork-choice head not in store; backing off and retrying");
+                        if *shutdown_rx.borrow() {
+                            return Ok(());
+                        }
+                        tokio::time::sleep(BACKFILL_RETRY_DELAY).await;
+                        break;
+                    }
+                    Err(crate::import::ImportError::NotOptimisticCandidate {
                         block_slot,
                         current_slot,
-                        wait_secs = wait.as_secs(),
-                        "backfill: not an optimistic candidate; waiting for clock to advance past SAFE_SLOTS"
-                    );
-                    if *shutdown_rx.borrow() {
-                        return Ok(());
+                    }) => {
+                        // An execution block near the tip whose parent is not yet an
+                        // execution block.  Wait proportionally to how many slots remain
+                        // until the block ages past SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY,
+                        // so we do not busy-loop (5 s retries for ~26 min) on a
+                        // merge-transition block within SAFE_SLOTS of the wall clock.
+                        let slots_until_safe = (block_slot
+                            + pharos_fork_choice::SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY)
+                            .saturating_sub(current_slot);
+                        let wait = std::cmp::max(
+                            BACKFILL_RETRY_DELAY,
+                            Duration::from_secs(slots_until_safe.saturating_mul(seconds_per_slot)),
+                        );
+                        warn!(
+                            block_slot,
+                            current_slot,
+                            wait_secs = wait.as_secs(),
+                            "backfill: not an optimistic candidate; waiting for clock to advance past SAFE_SLOTS"
+                        );
+                        if *shutdown_rx.borrow() {
+                            return Ok(());
+                        }
+                        tokio::time::sleep(wait).await;
+                        break;
                     }
-                    tokio::time::sleep(wait).await;
-                    break;
-                }
-            };
+                    // NoopDataAvailabilityChecker always returns Irrelevant, so
+                    // DataNotAvailable is unreachable on the backfill path.
+                    Err(crate::import::ImportError::DataNotAvailable) => {
+                        unreachable!(
+                            "backfill uses NoopDataAvailabilityChecker: DataNotAvailable is impossible"
+                        )
+                    }
+                };
 
             host.on_head_change(outcome.head_change.clone());
             let _ = head_tx.send(Some(outcome.head_change));

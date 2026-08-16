@@ -13,8 +13,8 @@ use libp2p::{Multiaddr, PeerId};
 pub use pharos_network::NetworkEvent;
 use pharos_network::discovery::enr::Enr;
 use pharos_network::host::{
-    BlockProvider, ForkContext, GOSSIP_REASON_PARENT_UNSEEN, GossipValidator, GossipVerdict,
-    LightClientProvider,
+    BlobProvider, BlockProvider, ForkContext, GOSSIP_REASON_PARENT_UNSEEN, GossipValidator,
+    GossipVerdict, LightClientProvider,
 };
 use pharos_network::scoring::{PeerScorer, ScoreEvent};
 use pharos_network::types::{Fork, SubnetId};
@@ -437,6 +437,19 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
         _sidecar: &pharos_types::deneb::BlobSidecar,
     ) -> GossipVerdict {
         GossipVerdict::Accept
+    }
+}
+
+impl BlobProvider<MainnetEthSpec> for TestHost {
+    fn blobs_by_range(
+        &self,
+        _start_slot: Slot,
+        _count: u64,
+    ) -> Vec<pharos_types::deneb::BlobSidecar> {
+        Vec::new()
+    }
+    fn blobs_by_root(&self, _ids: &[(Root, u64)]) -> Vec<pharos_types::deneb::BlobSidecar> {
+        Vec::new()
     }
 }
 

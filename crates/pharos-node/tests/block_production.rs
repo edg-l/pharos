@@ -567,7 +567,12 @@ async fn produce_block_state_root_consistent_capella() {
     let host_for_digest = Arc::clone(&host);
 
     let join = tokio::spawn(async move {
-        let _ = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
+        use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
+        let _ = run_block_ingestion_loop::<
+            MinimalEthSpec,
+            NullExecutionEngine,
+            NoopDataAvailabilityChecker,
+        >(
             event_rx,
             reinject_rx,
             host,
@@ -576,6 +581,9 @@ async fn produce_block_state_root_consistent_capella() {
             pow_provider,
             egress,
             false, // validate_result: false — skip BLS and state-root checks
+            Arc::new(NoopDataAvailabilityChecker),
+            Arc::new(BlobAwaitingBlocks::new()),
+            None,
         )
         .await;
     });
@@ -1000,7 +1008,12 @@ async fn produce_block_signed_reimports_validated_capella() {
     let host_for_digest = Arc::clone(&host);
 
     let join = tokio::spawn(async move {
-        let _ = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
+        use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
+        let _ = run_block_ingestion_loop::<
+            MinimalEthSpec,
+            NullExecutionEngine,
+            NoopDataAvailabilityChecker,
+        >(
             event_rx,
             reinject_rx,
             host,
@@ -1009,6 +1022,9 @@ async fn produce_block_signed_reimports_validated_capella() {
             pow_provider,
             egress,
             true, // validate_result: TRUE — full BLS + state-root re-verification
+            Arc::new(NoopDataAvailabilityChecker),
+            Arc::new(BlobAwaitingBlocks::new()),
+            None,
         )
         .await;
     });

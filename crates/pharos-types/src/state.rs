@@ -1151,6 +1151,20 @@ impl<
             BeaconBlockBody::Deneb(b) => b.execution_block_hash(),
         }
     }
+
+    fn num_blob_kzg_commitments(&self) -> usize {
+        match self {
+            BeaconBlockBody::Deneb(b) => b.num_blob_kzg_commitments(),
+            _ => 0,
+        }
+    }
+
+    fn blob_kzg_commitments_slice(&self) -> &[crate::deneb::KZGCommitment] {
+        match self {
+            BeaconBlockBody::Deneb(b) => b.blob_kzg_commitments_slice(),
+            _ => &[],
+        }
+    }
 }
 
 impl<

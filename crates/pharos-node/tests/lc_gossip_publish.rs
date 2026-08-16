@@ -315,7 +315,12 @@ async fn snapshots_written_after_altair_block() {
     let host_clone = Arc::clone(&host);
     let exec_engine = Arc::new(NullExecutionEngine);
     tokio::spawn(async move {
-        let _ = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
+        use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
+        let _ = run_block_ingestion_loop::<
+            MinimalEthSpec,
+            NullExecutionEngine,
+            NoopDataAvailabilityChecker,
+        >(
             event_rx,
             tokio::sync::mpsc::channel(1).1,
             host_clone,
@@ -324,6 +329,9 @@ async fn snapshots_written_after_altair_block() {
             pow_provider,
             egress,
             false,
+            Arc::new(NoopDataAvailabilityChecker),
+            Arc::new(BlobAwaitingBlocks::new()),
+            None,
         )
         .await;
     });
@@ -401,7 +409,12 @@ async fn publish_called_after_head_change() {
     let host_clone = Arc::clone(&host);
     let exec_engine = Arc::new(NullExecutionEngine);
     tokio::spawn(async move {
-        let _ = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
+        use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
+        let _ = run_block_ingestion_loop::<
+            MinimalEthSpec,
+            NullExecutionEngine,
+            NoopDataAvailabilityChecker,
+        >(
             event_rx,
             tokio::sync::mpsc::channel(1).1,
             host_clone,
@@ -410,6 +423,9 @@ async fn publish_called_after_head_change() {
             pow_provider,
             egress,
             false,
+            Arc::new(NoopDataAvailabilityChecker),
+            Arc::new(BlobAwaitingBlocks::new()),
+            None,
         )
         .await;
     });
@@ -658,7 +674,12 @@ async fn no_publish_for_phase0_block() {
     let host_clone = Arc::clone(&host);
     let exec_engine = Arc::new(NullExecutionEngine);
     tokio::spawn(async move {
-        let _ = run_block_ingestion_loop::<MinimalEthSpec, NullExecutionEngine>(
+        use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
+        let _ = run_block_ingestion_loop::<
+            MinimalEthSpec,
+            NullExecutionEngine,
+            NoopDataAvailabilityChecker,
+        >(
             event_rx,
             tokio::sync::mpsc::channel(1).1,
             host_clone,
@@ -667,6 +688,9 @@ async fn no_publish_for_phase0_block() {
             pow_provider,
             egress,
             false,
+            Arc::new(NoopDataAvailabilityChecker),
+            Arc::new(BlobAwaitingBlocks::new()),
+            None,
         )
         .await;
     });
