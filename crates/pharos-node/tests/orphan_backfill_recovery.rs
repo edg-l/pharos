@@ -74,6 +74,7 @@ type MinForkSignedBlock = ForkSignedBeaconBlock<
     32,
     4,
     16,
+    4096,
 >;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -91,7 +92,23 @@ fn test_pubkey() -> BLSPubkey {
 /// Build a minimal Bellatrix genesis state + anchor block at slot 0.
 fn build_genesis() -> (
     ForkMinState,
-    ForkBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32, 4, 16>,
+    ForkBeaconBlock<
+        16,
+        2,
+        128,
+        16,
+        16,
+        2048,
+        33,
+        32,
+        1_073_741_824,
+        1_048_576,
+        256,
+        32,
+        4,
+        16,
+        4096,
+    >,
 ) {
     use pharos_types::altair::MinimalSyncCommittee;
 
@@ -238,6 +255,8 @@ async fn orphan_defers_and_backfill_heals() {
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
+        deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+        deneb_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(

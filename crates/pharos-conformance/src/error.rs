@@ -26,4 +26,6 @@ pub enum ConformanceError {
     },
     #[error("unsupported handler {0}")]
     UnsupportedHandler(String),
+    #[error("malformed fixture: {0}")]
+    MalformedFixture(String),
 }

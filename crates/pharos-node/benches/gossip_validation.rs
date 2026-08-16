@@ -192,6 +192,8 @@ fn make_bench_host(
         bellatrix_fork_epoch: Epoch(u64::MAX),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
+        deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+        deneb_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root: gvr,
     };
     let runtime_cfg = Arc::new(RuntimeConfig {
@@ -373,6 +375,8 @@ fn bench_lc_finality_update(c: &mut Criterion) {
             bellatrix_fork_epoch: Epoch(u64::MAX),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: gvr,
         };
         let runtime_cfg = Arc::new(RuntimeConfig::default());

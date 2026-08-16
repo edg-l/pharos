@@ -425,6 +425,8 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
+        deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+        deneb_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let mut host = HostImpl::<MinimalEthSpec>::new(

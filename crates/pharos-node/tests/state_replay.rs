@@ -65,6 +65,7 @@ type MinForkSignedBlock = ForkSignedBeaconBlock<
     32,
     4,
     16,
+    4096,
 >;
 type MinForkState = ForkMinState;
 
@@ -90,7 +91,23 @@ fn test_sign(msg: &[u8]) -> BLSSignature {
 
 fn build_genesis_for_test() -> (
     MinForkState,
-    ForkBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32, 4, 16>,
+    ForkBeaconBlock<
+        16,
+        2,
+        128,
+        16,
+        16,
+        2048,
+        33,
+        32,
+        1_073_741_824,
+        1_048_576,
+        256,
+        32,
+        4,
+        16,
+        4096,
+    >,
 ) {
     use pharos_types::phase0::operations::BeaconBlockHeader;
 
@@ -382,6 +399,8 @@ async fn state_regen_replay_matches_inline() {
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
+        deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+        deneb_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root: gvr,
     };
     let runtime_cfg = Arc::new(pharos_types::config::RuntimeConfig {

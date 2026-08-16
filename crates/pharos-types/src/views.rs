@@ -54,6 +54,7 @@ pub enum ForkVariant {
     Altair,
     Bellatrix,
     Capella,
+    Deneb,
 }
 
 // ── SignedContributionAndProofView ────────────────────────────────────────────

@@ -63,11 +63,12 @@ pub async fn run_fork_migration_loop<E: EthSpec>(
     fork_schedule: Arc<ForkSchedule>,
     genesis_time_secs: u64,
 ) {
-    // If altair, bellatrix, and capella are all FAR_FUTURE_EPOCH, no migrations
+    // If altair, bellatrix, capella, and deneb are all FAR_FUTURE_EPOCH, no migrations
     // will ever occur; exit immediately to avoid a useless spinning loop.
     if fork_schedule.altair_fork_epoch == Epoch(u64::MAX)
         && fork_schedule.bellatrix_fork_epoch == Epoch(u64::MAX)
         && fork_schedule.capella_fork_epoch == Epoch(u64::MAX)
+        && fork_schedule.deneb_fork_epoch == Epoch(u64::MAX)
     {
         return;
     }
@@ -214,8 +215,10 @@ fn topics_for_version<E: EthSpec>(
         altair_gossip_topics::<E>(digest)
     } else if version == fork_schedule.bellatrix_fork_version {
         bellatrix_gossip_topics::<E>(digest)
+    } else if version == fork_schedule.capella_fork_version {
+        capella_gossip_topics::<E>(digest)
     } else {
-        // Capella (and any future fork): bellatrix topic shape + bls_to_execution_change.
+        // Deneb and any future fork: same topic shape as Capella (no new gossip topics in Deneb).
         capella_gossip_topics::<E>(digest)
     }
 }
@@ -431,6 +434,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(20),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: Root::default(),
         }
     }

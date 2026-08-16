@@ -393,6 +393,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -407,6 +410,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -423,6 +429,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -437,6 +446,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -453,6 +465,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -467,6 +482,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -483,6 +501,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -497,6 +518,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -513,6 +537,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -528,6 +555,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -542,6 +572,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -561,6 +594,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -579,6 +615,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -593,6 +632,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -609,6 +651,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -623,6 +668,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -639,6 +687,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -653,6 +704,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -669,6 +723,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -683,6 +740,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -702,6 +762,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -720,6 +783,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -734,6 +800,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -750,6 +819,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -764,6 +836,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -780,6 +855,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -795,6 +873,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -809,6 +890,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }
@@ -829,6 +913,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
+            }
         }
     }
 
@@ -847,6 +934,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("phase0 STF called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("phase0 STF called on Deneb BeaconState")
             }
         }
     }

@@ -70,6 +70,7 @@ fn fork_version_for_variant(
         ForkVariant::Altair => cfg.altair_fork_version,
         ForkVariant::Bellatrix => cfg.bellatrix_fork_version,
         ForkVariant::Capella => cfg.capella_fork_version,
+        ForkVariant::Deneb => cfg.deneb_fork_version,
     }
 }
 

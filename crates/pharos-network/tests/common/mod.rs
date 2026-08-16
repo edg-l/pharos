@@ -195,8 +195,8 @@ impl ForkContext for TestHost {
             Fork::Phase0 => self.fork_digest,
             Fork::Altair => self.altair_fork_digest.unwrap_or(self.fork_digest),
             Fork::Bellatrix => self.bellatrix_fork_digest.unwrap_or(self.fork_digest),
-            // Tests don't have a capella digest; fall back to bellatrix if available.
-            Fork::Capella => self.bellatrix_fork_digest.unwrap_or(self.fork_digest),
+            // Tests don't have a capella or deneb digest; fall back to bellatrix if available.
+            Fork::Capella | Fork::Deneb => self.bellatrix_fork_digest.unwrap_or(self.fork_digest),
         }
     }
 
@@ -298,6 +298,7 @@ impl BlockProvider<MainnetEthSpec> for TestHost {
                     SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
                     SignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
                     SignedBeaconBlock::Capella(inner) => inner.message.slot.0,
+                    SignedBeaconBlock::Deneb(inner) => inner.message.slot.0,
                 };
                 s >= start_slot.0 && s < start_slot.0 + count
             })
@@ -308,6 +309,7 @@ impl BlockProvider<MainnetEthSpec> for TestHost {
             SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
             SignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
             SignedBeaconBlock::Capella(inner) => inner.message.slot.0,
+            SignedBeaconBlock::Deneb(inner) => inner.message.slot.0,
         });
         results
     }
@@ -335,6 +337,7 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
             SignedBeaconBlock::Altair(inner) => inner.message.slot.0,
             SignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
             SignedBeaconBlock::Capella(inner) => inner.message.slot.0,
+            SignedBeaconBlock::Deneb(inner) => inner.message.slot.0,
         };
         if let Some(ignore_slot) = self.ignore_parent_unseen_for_slot {
             if slot == ignore_slot {
@@ -347,6 +350,7 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
                 SignedBeaconBlock::Altair(inner) => inner.message.proposer_index.0,
                 SignedBeaconBlock::Bellatrix(inner) => inner.message.proposer_index.0,
                 SignedBeaconBlock::Capella(inner) => inner.message.proposer_index.0,
+                SignedBeaconBlock::Deneb(inner) => inner.message.proposer_index.0,
             };
             if proposer_index == reject_idx {
                 return GossipVerdict::Reject(format!(

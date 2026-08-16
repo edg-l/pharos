@@ -13,6 +13,7 @@
 pub mod altair;
 pub mod bellatrix;
 pub mod capella;
+pub mod deneb;
 pub mod error;
 pub mod phase0;
 
@@ -94,6 +95,8 @@ pub struct ForkEpochs {
     pub bellatrix: u64,
     /// Epoch at which Bellatrix upgrades to Capella (`CAPELLA_FORK_EPOCH`).
     pub capella: u64,
+    /// Epoch at which Capella upgrades to Deneb (`DENEB_FORK_EPOCH`).
+    pub deneb: u64,
 }
 
 impl ForkEpochs {
@@ -106,10 +109,11 @@ impl ForkEpochs {
             altair: u64::MAX,
             bellatrix: u64::MAX,
             capella: u64::MAX,
+            deneb: u64::MAX,
         }
     }
 
-    /// Construct from a `RuntimeConfig`, reading the three fork epoch fields.
+    /// Construct from a `RuntimeConfig`, reading the four fork epoch fields.
     ///
     /// Used by the live `state_transition` entry point so it can fire irregular
     /// fork upgrades when the state crosses a fork boundary on the way to the
@@ -119,6 +123,7 @@ impl ForkEpochs {
             altair: cfg.altair_fork_epoch,
             bellatrix: cfg.bellatrix_fork_epoch,
             capella: cfg.capella_fork_epoch,
+            deneb: cfg.deneb_fork_epoch,
         }
     }
 }
@@ -514,6 +519,10 @@ where
             wrapped.invalidate_root_cache();
             return Ok((wrapped, payload_status));
         }
+        ForkVariant::Deneb => {
+            // Deneb STF not yet implemented (M10-Deneb follow-on).
+            unimplemented!("Deneb state transition not yet implemented")
+        }
     }
     // STF mutated `state` (phase0 + altair arms operate on `&mut state`); reset
     // the cached top-level root so the next `cached_tree_hash_root` call
@@ -680,6 +689,10 @@ where
             wrapped.invalidate_root_cache();
             Ok(wrapped)
         }
+        ForkVariant::Deneb => {
+            // Deneb block production not yet implemented (M10-Deneb follow-on).
+            unimplemented!("Deneb block production not yet implemented")
+        }
     }
 }
 
@@ -722,6 +735,10 @@ where
             inner.process_jaf_capella()?;
             *state = E::capella_into_state(inner);
             Ok(())
+        }
+        ForkVariant::Deneb => {
+            // Deneb epoch processing not yet implemented (M10-Deneb follow-on).
+            unimplemented!("Deneb justification and finalization not yet implemented")
         }
     }
 }
@@ -806,7 +823,8 @@ where
             ForkVariant::Phase0 => boundary_slot_if(fork_epochs.altair, current_slot),
             ForkVariant::Altair => boundary_slot_if(fork_epochs.bellatrix, current_slot),
             ForkVariant::Bellatrix => boundary_slot_if(fork_epochs.capella, current_slot),
-            ForkVariant::Capella => None,
+            ForkVariant::Capella => boundary_slot_if(fork_epochs.deneb, current_slot),
+            ForkVariant::Deneb => None,
         };
 
         let step_target = next_boundary.unwrap_or(target_slot);
@@ -831,6 +849,10 @@ where
                     E::into_capella_state(state.clone()).expect("fork_variant is Capella");
                 inner.process_slots_capella(step_target)?;
                 *state = E::capella_into_state(inner);
+            }
+            ForkVariant::Deneb => {
+                // Deneb process_slots not yet implemented; unreachable in current code paths.
+                unreachable!("process_slots_fork called on Deneb state (not yet implemented)")
             }
         }
 
@@ -858,7 +880,11 @@ where
                         *state = E::capella_into_state(upgraded);
                     }
                     ForkVariant::Capella => {
-                        // Capella is the last supported fork; no successor boundary.
+                        // Deneb upgrade not yet implemented; loop terminates at Capella→Deneb boundary.
+                        break;
+                    }
+                    ForkVariant::Deneb => {
+                        // Deneb is the last supported fork; no successor boundary.
                         break;
                     }
                 }
@@ -1476,6 +1502,7 @@ mod fork_upgrade_tests {
             altair: u64::MAX,
             bellatrix: u64::MAX,
             capella: capella_epoch,
+            deneb: u64::MAX,
         };
 
         // Advance to one slot past the boundary — triggers the upgrade.
@@ -1564,6 +1591,7 @@ mod fork_upgrade_tests {
             altair: 0,
             bellatrix: bellatrix_epoch,
             capella: capella_epoch,
+            deneb: u64::MAX,
         };
 
         // One slot into the capella epoch: crosses bellatrix (slot spe) and
@@ -1621,6 +1649,7 @@ mod fork_upgrade_tests {
             altair: u64::MAX,
             bellatrix: u64::MAX,
             capella: capella_epoch,
+            deneb: u64::MAX,
         };
 
         // Pre-state: bellatrix at slot 7 (last slot of epoch 0), with one active

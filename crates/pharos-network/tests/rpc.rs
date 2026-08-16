@@ -202,6 +202,7 @@ async fn blocks_by_range_request() {
                     MainnetSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
                     MainnetSignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
                     MainnetSignedBeaconBlock::Capella(inner) => inner.message.slot.0,
+                    MainnetSignedBeaconBlock::Deneb(inner) => inner.message.slot.0,
                 };
                 assert_eq!(slot, 10 + i as u64, "block {i} slot mismatch");
             }
@@ -256,6 +257,7 @@ async fn blocks_by_root_request() {
                     MainnetSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
                     MainnetSignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
                     MainnetSignedBeaconBlock::Capella(inner) => inner.message.slot.0,
+                    MainnetSignedBeaconBlock::Deneb(inner) => inner.message.slot.0,
                 })
                 .collect();
             assert!(slots.contains(&100), "slot 100 block missing");

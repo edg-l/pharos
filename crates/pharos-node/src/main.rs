@@ -585,6 +585,10 @@ async fn main() -> anyhow::Result<()> {
             runtime_cfg.capella_fork_version,
         ),
         capella_fork_epoch: pharos_utils::Epoch(runtime_cfg.capella_fork_epoch),
+        deneb_fork_version: pharos_types::phase0::primitives::Version::from_array(
+            runtime_cfg.deneb_fork_version,
+        ),
+        deneb_fork_epoch: pharos_utils::Epoch(runtime_cfg.deneb_fork_epoch),
         genesis_validators_root,
     });
 
@@ -851,6 +855,9 @@ async fn main() -> anyhow::Result<()> {
                             let json = pharos_api::dto::block::capella_signed_block_to_api(inner)
                                 .map_err(|e| ApiError::Internal(format!("DTO: {e}")))?;
                             (ssz, 3u8, json)
+                        }
+                        pharos_types::state::SignedBeaconBlock::Deneb(_) => {
+                            unreachable!("Deneb block production not yet implemented")
                         }
                     };
 

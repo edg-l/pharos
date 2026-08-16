@@ -1300,4 +1300,362 @@ fn dispatch_capella_minimal(
     }
 }
 
+// ── Deneb ssz_static runners ──────────────────────────────────────────────────
+
+/// Run all deneb ssz_static tests for the mainnet preset.
+pub fn run_ssz_static_deneb_mainnet(root: &Path) -> StaticResult {
+    run_deneb_ssz_static_preset(&root.join("mainnet"), "mainnet")
+}
+
+/// Run all deneb ssz_static tests for the minimal preset.
+pub fn run_ssz_static_deneb_minimal(root: &Path) -> StaticResult {
+    run_deneb_ssz_static_preset(&root.join("minimal"), "minimal")
+}
+
+fn run_deneb_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResult {
+    let base = preset_dir.join("deneb/ssz_static");
+    if !base.is_dir() {
+        return StaticResult {
+            pass: 0,
+            fail: 0,
+            skip: 0,
+            failures: vec![],
+        };
+    }
+
+    let type_dirs = read_dir_sorted(&base).unwrap_or_default();
+
+    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
+    for type_dir in type_dirs {
+        let type_name = dir_name(&type_dir);
+        let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
+        for suite_dir in suite_dirs {
+            let suite_name = dir_name(&suite_dir);
+            let case_dirs = read_dir_sorted(&suite_dir).unwrap_or_default();
+            for case_dir in case_dirs {
+                let case_name = dir_name(&case_dir);
+                let case_label =
+                    format!("{preset_name}/deneb/ssz_static/{type_name}/{suite_name}/{case_name}");
+                all_cases.push((type_name.clone(), case_dir, case_label));
+            }
+        }
+    }
+
+    let results: Vec<(bool, Option<String>)> = all_cases
+        .into_par_iter()
+        .map(|(type_name, case_dir, case_label)| {
+            let result = run_deneb_static_case(preset_name, &type_name, &case_dir, &case_label);
+            match result {
+                Ok(true) => (true, None),
+                Ok(false) => (false, None),
+                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
+            }
+        })
+        .collect();
+
+    let mut pass = 0u64;
+    let mut fail = 0u64;
+    let mut skip = 0u64;
+    let mut failures = Vec::new();
+    for (passed, err) in results {
+        match (passed, err) {
+            (true, _) => pass += 1,
+            (false, None) => skip += 1,
+            (false, Some(msg)) => {
+                fail += 1;
+                failures.push(msg);
+            }
+        }
+    }
+
+    StaticResult {
+        pass,
+        fail,
+        skip,
+        failures,
+    }
+}
+
+fn run_deneb_static_case(
+    preset: &str,
+    type_name: &str,
+    case_dir: &Path,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    let ssz_snappy = case_dir.join("serialized.ssz_snappy");
+    if !ssz_snappy.exists() {
+        return Ok(false);
+    }
+    let roots_yaml = case_dir.join("roots.yaml");
+    if !roots_yaml.exists() {
+        return Ok(false);
+    }
+
+    let compressed = std::fs::read(&ssz_snappy)?;
+    let ssz_bytes = decompress_raw(&compressed)?;
+    let expected_root = read_root_from_file(&roots_yaml)?;
+
+    dispatch_deneb(preset, type_name, &ssz_bytes, &expected_root, case_label)
+}
+
+fn dispatch_deneb(
+    preset: &str,
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    match preset {
+        "mainnet" => dispatch_deneb_mainnet(type_name, ssz_bytes, expected_root, case_label),
+        "minimal" => dispatch_deneb_minimal(type_name, ssz_bytes, expected_root, case_label),
+        _ => Ok(false),
+    }
+}
+
+fn dispatch_deneb_mainnet(
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    use pharos_types::deneb::{
+        BlobIdentifier, BlobSidecar, MainnetBeaconBlock as DenebMainnetBeaconBlock,
+        MainnetBeaconBlockBody as DenebMainnetBeaconBlockBody,
+        MainnetBeaconState as DenebMainnetBeaconState,
+        MainnetExecutionPayload as DenebMainnetExecutionPayload,
+        MainnetExecutionPayloadHeader as DenebMainnetExecutionPayloadHeader,
+        MainnetSignedBeaconBlock as DenebMainnetSignedBeaconBlock,
+    };
+    use pharos_types::phase0::AggregateAndProof;
+    use pharos_types::phase0::SignedAggregateAndProof;
+
+    match type_name {
+        // Phase0-inherited preset-independent types
+        "Fork" => check::<Fork>(ssz_bytes, expected_root, case_label),
+        "ForkData" => check::<ForkData>(ssz_bytes, expected_root, case_label),
+        "Checkpoint" => check::<Checkpoint>(ssz_bytes, expected_root, case_label),
+        "Validator" => check::<Validator>(ssz_bytes, expected_root, case_label),
+        "AttestationData" => check::<AttestationData>(ssz_bytes, expected_root, case_label),
+        "Eth1Data" => check::<Eth1Data>(ssz_bytes, expected_root, case_label),
+        "DepositMessage" => check::<DepositMessage>(ssz_bytes, expected_root, case_label),
+        "DepositData" => check::<DepositData>(ssz_bytes, expected_root, case_label),
+        "BeaconBlockHeader" => check::<BeaconBlockHeader>(ssz_bytes, expected_root, case_label),
+        "SigningData" => check::<SigningData>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlockHeader" => {
+            check::<SignedBeaconBlockHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "ProposerSlashing" => check::<ProposerSlashing>(ssz_bytes, expected_root, case_label),
+        "VoluntaryExit" => check::<VoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "SignedVoluntaryExit" => check::<SignedVoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "Eth1Block" => check::<Eth1Block>(ssz_bytes, expected_root, case_label),
+        // Phase0-inherited preset-specific types (mainnet)
+        "HistoricalBatch" => check::<MainnetHistoricalBatch>(ssz_bytes, expected_root, case_label),
+        "IndexedAttestation" => {
+            check::<MainnetIndexedAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "PendingAttestation" => {
+            check::<MainnetPendingAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "AttesterSlashing" => {
+            check::<MainnetAttesterSlashing>(ssz_bytes, expected_root, case_label)
+        }
+        "Attestation" => check::<MainnetAttestation>(ssz_bytes, expected_root, case_label),
+        "Deposit" => check::<MainnetDeposit>(ssz_bytes, expected_root, case_label),
+        "AggregateAndProof" => {
+            check::<AggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedAggregateAndProof" => {
+            check::<SignedAggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        // Altair-inherited types (mainnet, SYNC_COMMITTEE_SIZE=512)
+        "SyncAggregate" => {
+            check::<pharos_types::altair::SyncAggregate<512>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommittee" => {
+            check::<pharos_types::altair::SyncCommittee<512>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommitteeMessage" => check::<pharos_types::altair::SyncCommitteeMessage>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SyncAggregatorSelectionData" => {
+            check::<pharos_types::altair::SyncAggregatorSelectionData>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        "SyncCommitteeContribution" => {
+            check::<pharos_types::altair::SyncCommitteeContribution<128>>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        "ContributionAndProof" => check::<pharos_types::altair::ContributionAndProof<128>>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SignedContributionAndProof" => check::<
+            pharos_types::altair::SignedContributionAndProof<128>,
+        >(ssz_bytes, expected_root, case_label),
+        // Capella-inherited types (mainnet)
+        "Withdrawal" => check::<Withdrawal>(ssz_bytes, expected_root, case_label),
+        "BLSToExecutionChange" => {
+            check::<BLSToExecutionChange>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedBLSToExecutionChange" => {
+            check::<SignedBLSToExecutionChange>(ssz_bytes, expected_root, case_label)
+        }
+        "HistoricalSummary" => check::<HistoricalSummary>(ssz_bytes, expected_root, case_label),
+        // Deneb-new types (mainnet)
+        "BlobIdentifier" => check::<BlobIdentifier>(ssz_bytes, expected_root, case_label),
+        "BlobSidecar" => check::<BlobSidecar>(ssz_bytes, expected_root, case_label),
+        "ExecutionPayload" => {
+            check::<DenebMainnetExecutionPayload>(ssz_bytes, expected_root, case_label)
+        }
+        "ExecutionPayloadHeader" => {
+            check::<DenebMainnetExecutionPayloadHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlockBody" => {
+            check::<DenebMainnetBeaconBlockBody>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlock" => check::<DenebMainnetBeaconBlock>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlock" => {
+            check::<DenebMainnetSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconState" => check::<DenebMainnetBeaconState>(ssz_bytes, expected_root, case_label),
+        _ => {
+            eprintln!("skipping mainnet/deneb/ssz_static/{type_name}: not in dispatch table");
+            Ok(false)
+        }
+    }
+}
+
+fn dispatch_deneb_minimal(
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    use pharos_types::deneb::{
+        BlobIdentifier, BlobSidecar, MinimalBeaconBlock as DenebMinimalBeaconBlock,
+        MinimalBeaconBlockBody as DenebMinimalBeaconBlockBody,
+        MinimalBeaconState as DenebMinimalBeaconState,
+        MinimalExecutionPayload as DenebMinimalExecutionPayload,
+        MinimalExecutionPayloadHeader as DenebMinimalExecutionPayloadHeader,
+        MinimalSignedBeaconBlock as DenebMinimalSignedBeaconBlock,
+    };
+    use pharos_types::phase0::AggregateAndProof;
+    use pharos_types::phase0::SignedAggregateAndProof;
+
+    match type_name {
+        // Phase0-inherited preset-independent types
+        "Fork" => check::<Fork>(ssz_bytes, expected_root, case_label),
+        "ForkData" => check::<ForkData>(ssz_bytes, expected_root, case_label),
+        "Checkpoint" => check::<Checkpoint>(ssz_bytes, expected_root, case_label),
+        "Validator" => check::<Validator>(ssz_bytes, expected_root, case_label),
+        "AttestationData" => check::<AttestationData>(ssz_bytes, expected_root, case_label),
+        "Eth1Data" => check::<Eth1Data>(ssz_bytes, expected_root, case_label),
+        "DepositMessage" => check::<DepositMessage>(ssz_bytes, expected_root, case_label),
+        "DepositData" => check::<DepositData>(ssz_bytes, expected_root, case_label),
+        "BeaconBlockHeader" => check::<BeaconBlockHeader>(ssz_bytes, expected_root, case_label),
+        "SigningData" => check::<SigningData>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlockHeader" => {
+            check::<SignedBeaconBlockHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "ProposerSlashing" => check::<ProposerSlashing>(ssz_bytes, expected_root, case_label),
+        "VoluntaryExit" => check::<VoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "SignedVoluntaryExit" => check::<SignedVoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "Eth1Block" => check::<Eth1Block>(ssz_bytes, expected_root, case_label),
+        // Phase0-inherited preset-specific types (minimal)
+        "HistoricalBatch" => check::<MinimalHistoricalBatch>(ssz_bytes, expected_root, case_label),
+        "IndexedAttestation" => {
+            check::<MinimalIndexedAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "PendingAttestation" => {
+            check::<MinimalPendingAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "AttesterSlashing" => {
+            check::<MinimalAttesterSlashing>(ssz_bytes, expected_root, case_label)
+        }
+        "Attestation" => check::<MinimalAttestation>(ssz_bytes, expected_root, case_label),
+        "Deposit" => check::<MinimalDeposit>(ssz_bytes, expected_root, case_label),
+        "AggregateAndProof" => {
+            check::<AggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedAggregateAndProof" => {
+            check::<SignedAggregateAndProof<2048>>(ssz_bytes, expected_root, case_label)
+        }
+        // Altair-inherited types (minimal, SYNC_COMMITTEE_SIZE=32)
+        "SyncAggregate" => {
+            check::<pharos_types::altair::SyncAggregate<32>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommittee" => {
+            check::<pharos_types::altair::SyncCommittee<32>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommitteeMessage" => check::<pharos_types::altair::SyncCommitteeMessage>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SyncAggregatorSelectionData" => {
+            check::<pharos_types::altair::SyncAggregatorSelectionData>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        "SyncCommitteeContribution" => check::<pharos_types::altair::SyncCommitteeContribution<8>>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "ContributionAndProof" => check::<pharos_types::altair::ContributionAndProof<8>>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SignedContributionAndProof" => {
+            check::<pharos_types::altair::SignedContributionAndProof<8>>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        // Capella-inherited types (minimal)
+        "Withdrawal" => check::<Withdrawal>(ssz_bytes, expected_root, case_label),
+        "BLSToExecutionChange" => {
+            check::<BLSToExecutionChange>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedBLSToExecutionChange" => {
+            check::<SignedBLSToExecutionChange>(ssz_bytes, expected_root, case_label)
+        }
+        "HistoricalSummary" => check::<HistoricalSummary>(ssz_bytes, expected_root, case_label),
+        // Deneb-new types (minimal)
+        "BlobIdentifier" => check::<BlobIdentifier>(ssz_bytes, expected_root, case_label),
+        "BlobSidecar" => check::<BlobSidecar>(ssz_bytes, expected_root, case_label),
+        "ExecutionPayload" => {
+            check::<DenebMinimalExecutionPayload>(ssz_bytes, expected_root, case_label)
+        }
+        "ExecutionPayloadHeader" => {
+            check::<DenebMinimalExecutionPayloadHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlockBody" => {
+            check::<DenebMinimalBeaconBlockBody>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlock" => check::<DenebMinimalBeaconBlock>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlock" => {
+            check::<DenebMinimalSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconState" => check::<DenebMinimalBeaconState>(ssz_bytes, expected_root, case_label),
+        _ => {
+            eprintln!("skipping minimal/deneb/ssz_static/{type_name}: not in dispatch table");
+            Ok(false)
+        }
+    }
+}
+
 // Helpers `read_dir_sorted` and `dir_name` are shared via the `fs_util` module.

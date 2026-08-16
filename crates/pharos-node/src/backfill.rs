@@ -467,6 +467,7 @@ mod tests {
         32,
         4,
         16,
+        4096,
     >;
     type MinForkState = ForkMinState;
 
@@ -500,7 +501,23 @@ mod tests {
 
     fn build_genesis_for_test() -> (
         MinForkState,
-        ForkBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32, 4, 16>,
+        ForkBeaconBlock<
+            16,
+            2,
+            128,
+            16,
+            16,
+            2048,
+            33,
+            32,
+            1_073_741_824,
+            1_048_576,
+            256,
+            32,
+            4,
+            16,
+            4096,
+        >,
     ) {
         use pharos_types::phase0::{Fork, operations::BeaconBlockHeader};
 
@@ -792,6 +809,7 @@ mod tests {
             32,
             4,
             16,
+            4096,
         >,
     ) -> TestBackfillHarness {
         let anchor_root: Root = anchor_block.tree_hash_root();
@@ -832,6 +850,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(0),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root,
         };
         let host = Arc::new(HostImpl::<MinimalEthSpec>::new(

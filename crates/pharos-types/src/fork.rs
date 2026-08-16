@@ -47,8 +47,8 @@ pub const DOMAIN_BLS_TO_EXECUTION_CHANGE: [u8; 4] = [0x0A, 0x00, 0x00, 0x00];
 /// Lives in `pharos-types::fork` so both crates can depend on it without a
 /// back-edge through the node crate.
 ///
-/// Four-fork shape (Phase 0 → Altair → Bellatrix → Capella). Accessors use a
-/// `[(epoch, version)]` lookup table sorted ascending by activation epoch.
+/// Five-fork shape (Phase 0 → Altair → Bellatrix → Capella → Deneb). Accessors
+/// use a `[(epoch, version)]` lookup table sorted ascending by activation epoch.
 /// `FAR_FUTURE_EPOCH` (`Epoch(u64::MAX)`) deactivates a fork.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForkSchedule {
@@ -72,6 +72,12 @@ pub struct ForkSchedule {
     ///
     /// `Epoch(u64::MAX)` (`FAR_FUTURE_EPOCH`) keeps Bellatrix active (no Capella).
     pub capella_fork_epoch: Epoch,
+    /// Deneb fork version.
+    pub deneb_fork_version: Version,
+    /// Epoch at which the Deneb fork activates.
+    ///
+    /// `Epoch(u64::MAX)` (`FAR_FUTURE_EPOCH`) keeps Capella active (no Deneb).
+    pub deneb_fork_epoch: Epoch,
     /// Genesis validators root used in fork-digest computation.
     pub genesis_validators_root: Root,
 }
@@ -82,7 +88,7 @@ impl ForkSchedule {
     ///
     /// Used by `fork_at_epoch`, `current_fork_version`, `next_fork_version`,
     /// and `next_fork_epoch` to avoid per-fork `if` chains.
-    fn fork_table(&self) -> [(Epoch, Version, Version, Epoch); 3] {
+    fn fork_table(&self) -> [(Epoch, Version, Version, Epoch); 4] {
         [
             (
                 self.altair_fork_epoch,
@@ -101,6 +107,12 @@ impl ForkSchedule {
                 self.bellatrix_fork_version,
                 self.capella_fork_version,
                 self.capella_fork_epoch,
+            ),
+            (
+                self.deneb_fork_epoch,
+                self.capella_fork_version,
+                self.deneb_fork_version,
+                self.deneb_fork_epoch,
             ),
         ]
     }
@@ -145,7 +157,7 @@ impl ForkSchedule {
             }
         }
         // Already at or past the last known fork.
-        self.capella_fork_version
+        self.deneb_fork_version
     }
 
     /// The epoch at which the next fork after `epoch` activates.
@@ -175,6 +187,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
             genesis_validators_root: Root::default(),
         }
     }
@@ -188,6 +202,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(20),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
             genesis_validators_root: Root::default(),
         }
     }
@@ -201,6 +217,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(20),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(30),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
             genesis_validators_root: Root::default(),
         }
     }
@@ -395,6 +413,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(MainnetEthSpec::BELLATRIX_FORK_EPOCH),
             capella_fork_version: Version::from_array(MainnetEthSpec::CAPELLA_FORK_VERSION),
             capella_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH for test
+            deneb_fork_version: Version::from_array(MainnetEthSpec::DENEB_FORK_VERSION),
+            deneb_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH for test
             genesis_validators_root: Root::default(),
         };
         // At epoch 144_896, Bellatrix is active.

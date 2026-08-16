@@ -31,6 +31,8 @@ pub enum Fork {
     Bellatrix,
     /// Capella fork.
     Capella,
+    /// Deneb fork.
+    Deneb,
 }
 
 // ── SubnetId ──────────────────────────────────────────────────────────────────

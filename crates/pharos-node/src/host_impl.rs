@@ -649,6 +649,7 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
             Fork::Altair => sched.altair_fork_version,
             Fork::Bellatrix => sched.bellatrix_fork_version,
             Fork::Capella => sched.capella_fork_version,
+            Fork::Deneb => sched.deneb_fork_version,
         };
         compute_fork_digest(version, &self.fork_context.genesis_validators_root)
     }
@@ -675,6 +676,10 @@ impl<E: EthSpec> ForkContext for HostImpl<E> {
         let capella_digest = compute_fork_digest(sched.capella_fork_version, gvr);
         if *ctx == capella_digest.into_inner() {
             return Some(Fork::Capella);
+        }
+        let deneb_digest = compute_fork_digest(sched.deneb_fork_version, gvr);
+        if *ctx == deneb_digest.into_inner() {
+            return Some(Fork::Deneb);
         }
         None
     }
@@ -2566,6 +2571,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(u64::MAX),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: gvr,
         };
         let runtime_cfg = Arc::new(RuntimeConfig::default());
@@ -2605,6 +2612,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(0),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: gvr,
         };
         let runtime_cfg = Arc::new(RuntimeConfig::default());
@@ -3118,6 +3127,7 @@ mod tests {
         32,
         4,
         16,
+        4096,
     >;
 
     fn block_test_sk() -> BlstSecretKey {
@@ -3246,6 +3256,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(u64::MAX),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: gvr,
         };
         let runtime_cfg = Arc::new(RuntimeConfig {
@@ -3957,6 +3969,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(u64::MAX),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: gvr,
         };
         let runtime_cfg = att_runtime_cfg(att_slot);
@@ -5275,6 +5289,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(u64::MAX),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: gvr,
         };
         let runtime_cfg = Arc::new(RuntimeConfig {
@@ -6184,6 +6200,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(u64::MAX),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(0), // active at genesis
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: gvr,
         };
         let runtime_cfg = Arc::new(RuntimeConfig {
@@ -6506,6 +6524,8 @@ mod tests {
             bellatrix_fork_epoch: Epoch(u64::MAX),
             capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
             capella_fork_epoch: Epoch(u64::MAX),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(u64::MAX),
             genesis_validators_root: gvr,
         };
         let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000;

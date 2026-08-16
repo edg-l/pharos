@@ -65,6 +65,7 @@ type MinForkSignedBlock = ForkSignedBeaconBlock<
     32,
     4,
     16,
+    4096,
 >;
 type MinForkState = ForkMinState;
 
@@ -90,7 +91,23 @@ fn test_sign(msg: &[u8]) -> BLSSignature {
 
 fn build_genesis_for_test() -> (
     MinForkState,
-    ForkBeaconBlock<16, 2, 128, 16, 16, 2048, 33, 32, 1_073_741_824, 1_048_576, 256, 32, 4, 16>,
+    ForkBeaconBlock<
+        16,
+        2,
+        128,
+        16,
+        16,
+        2048,
+        33,
+        32,
+        1_073_741_824,
+        1_048_576,
+        256,
+        32,
+        4,
+        16,
+        4096,
+    >,
 ) {
     use pharos_types::phase0::operations::BeaconBlockHeader;
 
@@ -377,6 +394,8 @@ async fn live_block_persistence_asserts() {
         bellatrix_fork_epoch: Epoch(0),
         capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
         capella_fork_epoch: Epoch(u64::MAX),
+        deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+        deneb_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root: gvr,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
@@ -497,6 +516,7 @@ async fn live_block_persistence_asserts() {
             MinForkSignedBlock::Phase0(inner) => inner.message.tree_hash_root(),
             MinForkSignedBlock::Altair(inner) => inner.message.tree_hash_root(),
             MinForkSignedBlock::Capella(inner) => inner.message.tree_hash_root(),
+            MinForkSignedBlock::Deneb(inner) => inner.message.tree_hash_root(),
         };
         assert_eq!(
             stored_root, *expected_root,

@@ -437,6 +437,10 @@ where
         host.fork_digest_for(NetworkFork::Phase0)
     } else if E::unwrap_altair_signed_block(signed).is_some() {
         host.fork_digest_for(NetworkFork::Altair)
+    } else if E::unwrap_deneb_signed_block(signed).is_some() {
+        // Must precede Capella and Bellatrix: a Deneb block tagged with the wrong
+        // digest would be decoded with the wrong schema by peers.
+        host.fork_digest_for(NetworkFork::Deneb)
     } else if E::unwrap_capella_signed_block(signed).is_some() {
         // Must precede the Bellatrix fallback: a Capella block tagged with the
         // Bellatrix digest would be decoded with the wrong schema by peers and

@@ -1930,7 +1930,10 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
         // Determine the active fork from the digest; subscribe altair extras if ≥ altair.
         let active_fork = self.host.fork_from_context(&fork_digest.into_inner());
         match active_fork {
-            Some(crate::types::Fork::Altair) | Some(crate::types::Fork::Bellatrix) => {
+            Some(crate::types::Fork::Altair)
+            | Some(crate::types::Fork::Bellatrix)
+            | Some(crate::types::Fork::Capella)
+            | Some(crate::types::Fork::Deneb) => {
                 subscribe_altair_extra_topics::<E>(
                     &mut swarm.behaviour_mut().gossipsub,
                     fork_digest,
@@ -2135,7 +2138,7 @@ mod tests {
             // MockHost uses the zero digest for every fork; the explicit match
             // forces an update here if a future Fork variant is added.
             match fork {
-                Fork::Phase0 | Fork::Altair | Fork::Bellatrix | Fork::Capella => {
+                Fork::Phase0 | Fork::Altair | Fork::Bellatrix | Fork::Capella | Fork::Deneb => {
                     ForkDigest::from_array([0u8; 4])
                 }
             }

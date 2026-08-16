@@ -222,6 +222,14 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     }
                     // Dispatch SSZ decode based on the chunk's fork (context bytes).
                     let block = match chunk_fork {
+                        Some(Fork::Deneb) => {
+                            let inner = read_ssz_snappy_payload::<_, E::DenebSignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::deneb_into_signed_block(inner)
+                        }
                         Some(Fork::Capella) => {
                             let inner = read_ssz_snappy_payload::<_, E::CapellaSignedBeaconBlock>(
                                 io,

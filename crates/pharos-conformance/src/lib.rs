@@ -20,6 +20,7 @@ pub mod fork_choice;
 pub mod genesis;
 pub mod kzg;
 pub mod light_client;
+pub mod merkle_proof;
 pub mod operations;
 pub mod optimistic;
 pub mod random;
@@ -1537,6 +1538,51 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("capella", "ssz_static", "minimal"));
     }
 
+    // ── deneb/ssz_static ─────────────────────────────────────────────────────
+    if filter.matches("deneb", "ssz_static", "mainnet") {
+        let result = ssz_static::run_ssz_static_deneb_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "ssz_static",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "ssz_static", "mainnet"));
+    }
+
+    if filter.matches("deneb", "ssz_static", "minimal") {
+        let result = ssz_static::run_ssz_static_deneb_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "ssz_static",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "ssz_static", "minimal"));
+    }
+
     // ── capella/operations ────────────────────────────────────────────────────
     if filter.matches("capella", "operations", "mainnet") {
         let result = operations::run_operations_capella_mainnet(&root);
@@ -1990,6 +2036,51 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
         report.rows.push(Row::placeholder("deneb", "kzg", "-"));
     }
 
+    // ── deneb/merkle_proof ────────────────────────────────────────────────────
+    if filter.matches("deneb", "merkle_proof", "mainnet") {
+        let result = merkle_proof::run_merkle_proof_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "merkle_proof",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "merkle_proof", "mainnet"));
+    }
+
+    if filter.matches("deneb", "merkle_proof", "minimal") {
+        let result = merkle_proof::run_merkle_proof_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "merkle_proof",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "merkle_proof", "minimal"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -2096,6 +2187,12 @@ fn fill_future_placeholders(report: &mut Report) {
         ("sync", "optimistic", "minimal"),
         // deneb/kzg
         ("deneb", "kzg", "-"),
+        // deneb/ssz_static
+        ("deneb", "ssz_static", "mainnet"),
+        ("deneb", "ssz_static", "minimal"),
+        // deneb/merkle_proof
+        ("deneb", "merkle_proof", "mainnet"),
+        ("deneb", "merkle_proof", "minimal"),
     ]
     .iter()
     .copied()
@@ -2204,8 +2301,13 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("engine", "yaml", "-"),
         // deneb/kzg conformance (general/deneb/kzg fixtures, preset-agnostic)
         ("deneb", "kzg", "-"),
+        // deneb/ssz_static
+        ("deneb", "ssz_static", "mainnet"),
+        ("deneb", "ssz_static", "minimal"),
+        // deneb/merkle_proof
+        ("deneb", "merkle_proof", "mainnet"),
+        ("deneb", "merkle_proof", "minimal"),
         // future forks (placeholders)
-        ("deneb", "ssz_static", "-"),
         ("electra", "ssz_static", "-"),
         ("fulu", "ssz_static", "-"),
     ]

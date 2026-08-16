@@ -77,6 +77,7 @@ fn populate_store(
             MinimalSignedBeaconBlock::Altair(inner) => inner.message.slot,
             MinimalSignedBeaconBlock::Bellatrix(inner) => inner.message.slot,
             MinimalSignedBeaconBlock::Capella(inner) => inner.message.slot,
+            MinimalSignedBeaconBlock::Deneb(inner) => inner.message.slot,
         };
         let mut transition = BlockTransition::<MinimalEthSpec>::new();
         transition.block = Some((*root, block.clone()));
@@ -170,6 +171,7 @@ async fn persisted_blocks_survive_restart() {
             MinimalSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
             MinimalSignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
             MinimalSignedBeaconBlock::Capella(inner) => inner.message.slot.0,
+            MinimalSignedBeaconBlock::Deneb(inner) => inner.message.slot.0,
         };
         assert_eq!(
             slot,
@@ -222,6 +224,7 @@ async fn persisted_blocks_survive_restart() {
             MinimalSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
             MinimalSignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
             MinimalSignedBeaconBlock::Capella(inner) => inner.message.slot.0,
+            MinimalSignedBeaconBlock::Deneb(inner) => inner.message.slot.0,
         };
         assert_eq!(
             slot,

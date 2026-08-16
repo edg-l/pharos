@@ -145,6 +145,13 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
     let bellatrix_fork_epoch = extract_u64(&config_map, "BELLATRIX_FORK_EPOCH")?;
     let capella_fork_version = extract_version(&config_map, "CAPELLA_FORK_VERSION")?;
     let capella_fork_epoch = extract_u64(&config_map, "CAPELLA_FORK_EPOCH")?;
+    let deneb_fork_version = extract_version(&config_map, "DENEB_FORK_VERSION")?;
+    let deneb_fork_epoch = extract_u64(&config_map, "DENEB_FORK_EPOCH")?;
+    // MAX_BLOBS_PER_BLOCK: present in some configs, default to 6 if absent.
+    let max_blobs_per_block = config_map
+        .get("MAX_BLOBS_PER_BLOCK")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(6);
     let deposit_chain_id = extract_u64(&config_map, "DEPOSIT_CHAIN_ID")?;
     let deposit_contract_address = extract_address20(&config_map, "DEPOSIT_CONTRACT_ADDRESS")?;
     let terminal_total_difficulty = extract_uint256(&config_map, "TERMINAL_TOTAL_DIFFICULTY")?;
@@ -213,6 +220,9 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         bellatrix_fork_epoch,
         capella_fork_version,
         capella_fork_epoch,
+        deneb_fork_version,
+        deneb_fork_epoch,
+        max_blobs_per_block,
         terminal_total_difficulty,
         terminal_block_hash,
         terminal_block_hash_activation_epoch,

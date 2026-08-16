@@ -173,6 +173,15 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
             // digest per `specs/altair/p2p-interface.md` and
             // `specs/bellatrix/p2p-interface.md`.
             match host.fork_from_context(&topic.fork_digest.into_inner()) {
+                Some(crate::types::Fork::Deneb) => {
+                    match E::DenebSignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
+                        Ok(inner) => {
+                            let block = E::deneb_into_signed_block(inner);
+                            host.validate_beacon_block(&block)
+                        }
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
+                }
                 Some(crate::types::Fork::Altair) => {
                     match E::AltairSignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
                         Ok(inner) => {
@@ -254,11 +263,12 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
             }
         }
         GossipTopicKind::LightClientFinalityUpdate => {
-            // Dispatch by fork-digest: capella LC objects have a different SSZ
-            // layout (execution header + branch). Per
-            // `specs/capella/light-client/p2p-interface.md`.
+            // Dispatch by fork-digest: capella and later (deneb) LC objects have the
+            // capella SSZ layout (execution header + branch). Per
+            // `specs/capella/light-client/p2p-interface.md` and
+            // `specs/deneb/light-client/p2p-interface.md` (Deneb inherits Capella LC).
             match host.fork_from_context(&topic.fork_digest.into_inner()) {
-                Some(crate::types::Fork::Capella) => {
+                Some(crate::types::Fork::Capella) | Some(crate::types::Fork::Deneb) => {
                     match E::CapellaLightClientFinalityUpdate::from_ssz_bytes(ssz_bytes) {
                         Ok(msg) => host.validate_capella_light_client_finality_update(&msg),
                         Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
@@ -272,7 +282,7 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
         }
         GossipTopicKind::LightClientOptimisticUpdate => {
             match host.fork_from_context(&topic.fork_digest.into_inner()) {
-                Some(crate::types::Fork::Capella) => {
+                Some(crate::types::Fork::Capella) | Some(crate::types::Fork::Deneb) => {
                     match E::CapellaLightClientOptimisticUpdate::from_ssz_bytes(ssz_bytes) {
                         Ok(msg) => host.validate_capella_light_client_optimistic_update(&msg),
                         Err(_) => GossipVerdict::Reject("ssz decode".to_string()),

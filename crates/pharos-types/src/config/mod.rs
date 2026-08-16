@@ -81,6 +81,16 @@ pub struct RuntimeConfig {
     pub capella_fork_version: [u8; 4],
     /// `CAPELLA_FORK_EPOCH` from `configs/{mainnet,minimal}.yaml`.
     pub capella_fork_epoch: u64,
+    // -- Deneb fork schedule --
+    /// `DENEB_FORK_VERSION` from `configs/{mainnet,minimal}.yaml`.
+    pub deneb_fork_version: [u8; 4],
+    /// `DENEB_FORK_EPOCH` from `configs/{mainnet,minimal}.yaml`.
+    pub deneb_fork_epoch: u64,
+    /// `MAX_BLOBS_PER_BLOCK` (runtime limit, may differ from `MAX_BLOB_COMMITMENTS_PER_BLOCK`).
+    ///
+    /// This is the EL-side maximum that the CL enforces when building/validating blocks.
+    /// Mainnet default: 6. Can be overridden via the runtime config YAML.
+    pub max_blobs_per_block: u64,
     /// `TERMINAL_TOTAL_DIFFICULTY` from `configs/{mainnet,minimal}.yaml`.
     ///
     /// `Uint256` because the mainnet value (`58750000000000000000000`) and especially

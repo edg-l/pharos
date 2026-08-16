@@ -398,6 +398,43 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Mainnet: `0x03000000`. Minimal: `0x03000001`.
     const CAPELLA_FORK_VERSION: [u8; 4];
 
+    // ── Deneb preset constants ─────────────────────────────────────────────────
+
+    /// `DENEB_FORK_VERSION` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
+    ///
+    /// Mainnet: `0x04000000`. Minimal: `0x04000001`.
+    const DENEB_FORK_VERSION: [u8; 4];
+
+    /// `MAX_BLOB_COMMITMENTS_PER_BLOCK` from `presets/{mainnet,minimal}/deneb.yaml`.
+    ///
+    /// Both presets: `4096`.
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64;
+
+    /// `FIELD_ELEMENTS_PER_BLOB` from `presets/{mainnet,minimal}/deneb.yaml`.
+    ///
+    /// Both presets: `4096`.
+    const FIELD_ELEMENTS_PER_BLOB: u64;
+
+    /// `KZG_COMMITMENT_INCLUSION_PROOF_DEPTH` from `presets/{mainnet,minimal}/deneb.yaml`.
+    ///
+    /// Both presets: `17`.
+    const KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: u64;
+
+    /// `BLOB_SIDECAR_SUBNET_COUNT` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
+    ///
+    /// Both presets: `6`.
+    const BLOB_SIDECAR_SUBNET_COUNT: u64;
+
+    /// `MAX_REQUEST_BLOCKS_DENEB` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
+    ///
+    /// Both presets: `128`.
+    const MAX_REQUEST_BLOCKS_DENEB: u64;
+
+    /// `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
+    ///
+    /// Both presets: `4096`.
+    const MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS: u64;
+
     // -- Altair participation flag weights --
     // Source: `specs/altair/beacon-chain.md:84-89,105`
     // These are non-configurable spec constants, uniform across all presets.
@@ -1094,6 +1131,110 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         + Send
         + Sync
         + 'static;
+
+    // ── Deneb associated types ─────────────────────────────────────────────────
+
+    /// Deneb inner `BeaconState` (unwrapped; used by deneb STF entry).
+    type DenebBeaconState: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconStateView;
+
+    /// Deneb inner `BeaconBlock` (unwrapped).
+    type DenebBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockView;
+
+    /// Deneb inner `SignedBeaconBlock` (unwrapped).
+    type DenebSignedBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::SignedBeaconBlockView<Message = Self::DenebBeaconBlock>;
+
+    /// Deneb inner `BeaconBlockBody` (unwrapped).
+    type DenebBeaconBlockBody: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockBodyView;
+
+    /// Deneb `ExecutionPayload` for this preset.
+    type DenebExecutionPayload: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Deneb `ExecutionPayloadHeader` for this preset.
+    type DenebExecutionPayloadHeader: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Unwrap a fork-enum `BeaconState` to the inner deneb variant.
+    fn unwrap_deneb_state(s: &Self::BeaconState) -> Option<&Self::DenebBeaconState>;
+
+    /// Wrap a concrete deneb `BeaconState` into the fork-enum `BeaconState`.
+    fn deneb_into_state(s: Self::DenebBeaconState) -> Self::BeaconState;
+
+    /// Unwrap a fork-enum `BeaconBlock` to the inner deneb variant.
+    fn unwrap_deneb_block(s: &Self::BeaconBlock) -> Option<&Self::DenebBeaconBlock>;
+
+    /// Wrap a concrete deneb `BeaconBlock` into the fork-enum `BeaconBlock`.
+    fn deneb_into_block(s: Self::DenebBeaconBlock) -> Self::BeaconBlock;
+
+    /// Unwrap a fork-enum `SignedBeaconBlock` to the inner deneb variant.
+    fn unwrap_deneb_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::DenebSignedBeaconBlock>;
+
+    /// Wrap a concrete deneb `SignedBeaconBlock` into the fork-enum `SignedBeaconBlock`.
+    fn deneb_into_signed_block(s: Self::DenebSignedBeaconBlock) -> Self::SignedBeaconBlock;
 }
 
 // ── MainnetEthSpec ─────────────────────────────────────────────────────────────
@@ -1130,6 +1271,7 @@ macro_rules! impl_fork_dispatch {
                 S::Altair(b) => B::Altair(b.message.clone()),
                 S::Bellatrix(b) => B::Bellatrix(b.message.clone()),
                 S::Capella(b) => B::Capella(b.message.clone()),
+                S::Deneb(b) => B::Deneb(b.message.clone()),
             }
         }
 
@@ -1141,6 +1283,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Altair(_) => None,
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Deneb(_) => None,
             }
         }
 
@@ -1152,6 +1295,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Deneb(_) => None,
             }
         }
 
@@ -1161,6 +1305,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Phase0(_) => None,
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
+                crate::state::$state::Deneb(_) => None,
             }
         }
 
@@ -1170,6 +1315,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
+                crate::state::$state::Deneb(_) => None,
             }
         }
 
@@ -1179,6 +1325,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Phase0(_) => None,
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
+                crate::state::$state::Deneb(_) => None,
             }
         }
 
@@ -1188,6 +1335,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Phase0(_) => None,
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Capella(_) => None,
+                crate::state::$state::Deneb(_) => None,
             }
         }
 
@@ -1211,6 +1359,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
                 crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Deneb(_) => None,
             }
         }
 
@@ -1220,6 +1369,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Phase0(_) => None,
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Capella(_) => None,
+                crate::state::$state::Deneb(_) => None,
             }
         }
 
@@ -1243,6 +1393,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Altair(_) => None,
                 crate::state::$block::Bellatrix(_) => None,
                 crate::state::$block::Capella(_) => None,
+                crate::state::$block::Deneb(_) => None,
             }
         }
 
@@ -1252,6 +1403,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Phase0(_) => None,
                 crate::state::$block::Bellatrix(_) => None,
                 crate::state::$block::Capella(_) => None,
+                crate::state::$block::Deneb(_) => None,
             }
         }
 
@@ -1261,6 +1413,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Phase0(_) => None,
                 crate::state::$block::Altair(_) => None,
                 crate::state::$block::Capella(_) => None,
+                crate::state::$block::Deneb(_) => None,
             }
         }
 
@@ -1287,6 +1440,7 @@ macro_rules! impl_fork_dispatch {
             match block {
                 crate::state::$block::Bellatrix(b) => Some(b.body.execution_payload.block_hash),
                 crate::state::$block::Capella(b) => Some(b.body.execution_payload.block_hash),
+                crate::state::$block::Deneb(b) => Some(b.body.execution_payload.block_hash),
                 crate::state::$block::Phase0(_) => None,
                 crate::state::$block::Altair(_) => None,
             }
@@ -1298,6 +1452,7 @@ macro_rules! impl_fork_dispatch {
             match block {
                 crate::state::$block::Bellatrix(b) => Some(b.body.execution_payload.parent_hash),
                 crate::state::$block::Capella(b) => Some(b.body.execution_payload.parent_hash),
+                crate::state::$block::Deneb(b) => Some(b.body.execution_payload.parent_hash),
                 crate::state::$block::Phase0(_) => None,
                 crate::state::$block::Altair(_) => None,
             }
@@ -1311,6 +1466,7 @@ macro_rules! impl_fork_dispatch {
                     Some(b.message.body.execution_payload.clone())
                 }
                 crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Deneb(_) => None,
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
             }
@@ -1322,6 +1478,7 @@ macro_rules! impl_fork_dispatch {
             match signed {
                 crate::state::$signed::Capella(b) => Some(b.message.body.execution_payload.clone()),
                 crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Deneb(_) => None,
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
             }
@@ -1333,6 +1490,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Altair(b) => b.message.slot,
                 crate::state::$signed::Bellatrix(b) => b.message.slot,
                 crate::state::$signed::Capella(b) => b.message.slot,
+                crate::state::$signed::Deneb(b) => b.message.slot,
             }
         }
 
@@ -1356,6 +1514,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
                 crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Deneb(_) => None,
             }
         }
 
@@ -1365,6 +1524,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Phase0(_) => None,
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Deneb(_) => None,
             }
         }
 
@@ -1374,6 +1534,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Phase0(_) => None,
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Deneb(_) => None,
             }
         }
 
@@ -1383,7 +1544,52 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Phase0(_) => None,
                 crate::state::$block::Altair(_) => None,
                 crate::state::$block::Bellatrix(_) => None,
+                crate::state::$block::Deneb(_) => None,
             }
+        }
+
+        fn unwrap_deneb_state(s: &Self::BeaconState) -> Option<&Self::DenebBeaconState> {
+            match s {
+                crate::state::$state::Deneb(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Capella(_) => None,
+            }
+        }
+
+        fn deneb_into_state(s: Self::DenebBeaconState) -> Self::BeaconState {
+            crate::state::$state::Deneb(s)
+        }
+
+        fn unwrap_deneb_block(s: &Self::BeaconBlock) -> Option<&Self::DenebBeaconBlock> {
+            match s {
+                crate::state::$block::Deneb(inner) => Some(inner),
+                crate::state::$block::Phase0(_) => None,
+                crate::state::$block::Altair(_) => None,
+                crate::state::$block::Bellatrix(_) => None,
+                crate::state::$block::Capella(_) => None,
+            }
+        }
+
+        fn deneb_into_block(s: Self::DenebBeaconBlock) -> Self::BeaconBlock {
+            crate::state::$block::Deneb(s)
+        }
+
+        fn unwrap_deneb_signed_block(
+            s: &Self::SignedBeaconBlock,
+        ) -> Option<&Self::DenebSignedBeaconBlock> {
+            match s {
+                crate::state::$signed::Deneb(inner) => Some(inner),
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
+                crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Capella(_) => None,
+            }
+        }
+
+        fn deneb_into_signed_block(s: Self::DenebSignedBeaconBlock) -> Self::SignedBeaconBlock {
+            crate::state::$signed::Deneb(s)
         }
     };
 }
@@ -1586,6 +1792,23 @@ impl EthSpec for MainnetEthSpec {
     /// `CAPELLA_FORK_VERSION` from `configs/mainnet.yaml`.
     const CAPELLA_FORK_VERSION: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
 
+    // ── Deneb preset constants ────────────────────────────────────────────────
+
+    /// `DENEB_FORK_VERSION` from `configs/mainnet.yaml`.
+    const DENEB_FORK_VERSION: [u8; 4] = [0x04, 0x00, 0x00, 0x00];
+    /// `MAX_BLOB_COMMITMENTS_PER_BLOCK` from `presets/mainnet/deneb.yaml`.
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64 = 4096;
+    /// `FIELD_ELEMENTS_PER_BLOB` from `presets/mainnet/deneb.yaml`.
+    const FIELD_ELEMENTS_PER_BLOB: u64 = 4096;
+    /// `KZG_COMMITMENT_INCLUSION_PROOF_DEPTH` from `presets/mainnet/deneb.yaml`.
+    const KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: u64 = 17;
+    /// `BLOB_SIDECAR_SUBNET_COUNT` from `configs/mainnet.yaml`.
+    const BLOB_SIDECAR_SUBNET_COUNT: u64 = 6;
+    /// `MAX_REQUEST_BLOCKS_DENEB` from `configs/mainnet.yaml`.
+    const MAX_REQUEST_BLOCKS_DENEB: u64 = 128;
+    /// `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` from `configs/mainnet.yaml`.
+    const MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS: u64 = 4096;
+
     fn name() -> &'static str {
         "mainnet"
     }
@@ -1614,6 +1837,9 @@ impl EthSpec for MainnetEthSpec {
             bellatrix_fork_epoch: Self::BELLATRIX_FORK_EPOCH,
             capella_fork_version: Self::CAPELLA_FORK_VERSION,
             capella_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (mainnet real epoch loaded from config at runtime)
+            deneb_fork_version: Self::DENEB_FORK_VERSION,
+            deneb_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (mainnet real epoch loaded from config at runtime)
+            max_blobs_per_block: 6, // mainnet default (configs/mainnet.yaml: MAX_BLOBS_PER_BLOCK_EL)
             // configs/mainnet.yaml: TERMINAL_TOTAL_DIFFICULTY: 58750000000000000000000
             terminal_total_difficulty: pharos_utils::Uint256::from_str("58750000000000000000000")
                 .expect("valid TTD literal"),
@@ -1665,6 +1891,7 @@ impl EthSpec for MainnetEthSpec {
         32,            // MAX_EXTRA_DATA_BYTES
         16,            // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet capella)
         16,            // MAX_BLS_TO_EXECUTION_CHANGES
+        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
     >;
     type Phase0BeaconBlock = crate::phase0::MainnetBeaconBlock;
     type AltairBeaconBlock = crate::altair::MainnetBeaconBlock;
@@ -1684,6 +1911,7 @@ impl EthSpec for MainnetEthSpec {
         32,            // MAX_EXTRA_DATA_BYTES
         16,            // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet capella)
         16,            // MAX_BLS_TO_EXECUTION_CHANGES
+        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
     >;
     type Phase0SignedBeaconBlock = crate::phase0::MainnetSignedBeaconBlock;
     type AltairSignedBeaconBlock = crate::altair::MainnetSignedBeaconBlock;
@@ -1703,6 +1931,7 @@ impl EthSpec for MainnetEthSpec {
         32,            // MAX_EXTRA_DATA_BYTES
         16,            // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet capella)
         16,            // MAX_BLS_TO_EXECUTION_CHANGES
+        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
     >;
     type Phase0BeaconBlockBody = crate::phase0::MainnetBeaconBlockBody;
     type AltairBeaconBlockBody = crate::altair::MainnetBeaconBlockBody;
@@ -1740,6 +1969,15 @@ impl EthSpec for MainnetEthSpec {
     type CapellaLightClientFinalityUpdate = crate::capella::MainnetLightClientFinalityUpdate;
     /// Mainnet capella `LightClientOptimisticUpdate`.
     type CapellaLightClientOptimisticUpdate = crate::capella::MainnetLightClientOptimisticUpdate;
+
+    // ── Deneb associated types ────────────────────────────────────────────────
+
+    type DenebBeaconState = crate::deneb::MainnetBeaconState;
+    type DenebBeaconBlock = crate::deneb::MainnetBeaconBlock;
+    type DenebSignedBeaconBlock = crate::deneb::MainnetSignedBeaconBlock;
+    type DenebBeaconBlockBody = crate::deneb::MainnetBeaconBlockBody;
+    type DenebExecutionPayload = crate::deneb::MainnetExecutionPayload;
+    type DenebExecutionPayloadHeader = crate::deneb::MainnetExecutionPayloadHeader;
 }
 
 // ── MinimalEthSpec ─────────────────────────────────────────────────────────────
@@ -1954,6 +2192,23 @@ impl EthSpec for MinimalEthSpec {
     /// `CAPELLA_FORK_VERSION` from `configs/minimal.yaml`.
     const CAPELLA_FORK_VERSION: [u8; 4] = [0x03, 0x00, 0x00, 0x01];
 
+    // ── Deneb preset constants ────────────────────────────────────────────────
+
+    /// `DENEB_FORK_VERSION` from `configs/minimal.yaml`.
+    const DENEB_FORK_VERSION: [u8; 4] = [0x04, 0x00, 0x00, 0x01];
+    /// `MAX_BLOB_COMMITMENTS_PER_BLOCK` from `presets/minimal/deneb.yaml`.
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64 = 4096;
+    /// `FIELD_ELEMENTS_PER_BLOB` from `presets/minimal/deneb.yaml`.
+    const FIELD_ELEMENTS_PER_BLOB: u64 = 4096;
+    /// `KZG_COMMITMENT_INCLUSION_PROOF_DEPTH` from `presets/minimal/deneb.yaml`.
+    const KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: u64 = 17;
+    /// `BLOB_SIDECAR_SUBNET_COUNT` from `configs/minimal.yaml`.
+    const BLOB_SIDECAR_SUBNET_COUNT: u64 = 6;
+    /// `MAX_REQUEST_BLOCKS_DENEB` from `configs/minimal.yaml`.
+    const MAX_REQUEST_BLOCKS_DENEB: u64 = 128;
+    /// `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` from `configs/minimal.yaml`.
+    const MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS: u64 = 4096;
+
     fn name() -> &'static str {
         "minimal"
     }
@@ -1982,6 +2237,9 @@ impl EthSpec for MinimalEthSpec {
             bellatrix_fork_epoch: Self::BELLATRIX_FORK_EPOCH,
             capella_fork_version: Self::CAPELLA_FORK_VERSION,
             capella_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (minimal real epoch loaded from config at runtime)
+            deneb_fork_version: Self::DENEB_FORK_VERSION,
+            deneb_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH
+            max_blobs_per_block: 6,     // minimal default
             // configs/minimal.yaml: large TTD to prevent accidental merge on test networks
             terminal_total_difficulty: pharos_utils::Uint256::from_str(
                 "115792089237316195423570985008687907853269984665640564039457584007913129638912",
@@ -2035,6 +2293,7 @@ impl EthSpec for MinimalEthSpec {
         32,            // MAX_EXTRA_DATA_BYTES
         4,             // MAX_WITHDRAWALS_PER_PAYLOAD (minimal capella)
         16,            // MAX_BLS_TO_EXECUTION_CHANGES
+        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
     >;
     type Phase0BeaconBlock = crate::phase0::MinimalBeaconBlock;
     type AltairBeaconBlock = crate::altair::MinimalBeaconBlock;
@@ -2054,6 +2313,7 @@ impl EthSpec for MinimalEthSpec {
         32,            // MAX_EXTRA_DATA_BYTES
         4,             // MAX_WITHDRAWALS_PER_PAYLOAD (minimal capella)
         16,            // MAX_BLS_TO_EXECUTION_CHANGES
+        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
     >;
     type Phase0SignedBeaconBlock = crate::phase0::MinimalSignedBeaconBlock;
     type AltairSignedBeaconBlock = crate::altair::MinimalSignedBeaconBlock;
@@ -2073,6 +2333,7 @@ impl EthSpec for MinimalEthSpec {
         32,            // MAX_EXTRA_DATA_BYTES
         4,             // MAX_WITHDRAWALS_PER_PAYLOAD (minimal capella)
         16,            // MAX_BLS_TO_EXECUTION_CHANGES
+        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
     >;
     type Phase0BeaconBlockBody = crate::phase0::MinimalBeaconBlockBody;
     type AltairBeaconBlockBody = crate::altair::MinimalBeaconBlockBody;
@@ -2110,4 +2371,13 @@ impl EthSpec for MinimalEthSpec {
     type CapellaLightClientFinalityUpdate = crate::capella::MinimalLightClientFinalityUpdate;
     /// Minimal capella `LightClientOptimisticUpdate`.
     type CapellaLightClientOptimisticUpdate = crate::capella::MinimalLightClientOptimisticUpdate;
+
+    // ── Deneb associated types ────────────────────────────────────────────────
+
+    type DenebBeaconState = crate::deneb::MinimalBeaconState;
+    type DenebBeaconBlock = crate::deneb::MinimalBeaconBlock;
+    type DenebSignedBeaconBlock = crate::deneb::MinimalSignedBeaconBlock;
+    type DenebBeaconBlockBody = crate::deneb::MinimalBeaconBlockBody;
+    type DenebExecutionPayload = crate::deneb::MinimalExecutionPayload;
+    type DenebExecutionPayloadHeader = crate::deneb::MinimalExecutionPayloadHeader;
 }

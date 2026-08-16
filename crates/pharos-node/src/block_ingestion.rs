@@ -574,6 +574,10 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
                 store,
             );
         }
+        ForkVariant::Deneb => {
+            // Deneb inherits Capella LC type; Deneb STF not yet fully implemented.
+            // LC snapshot writes are a no-op until the Deneb STF lands.
+        }
     }
 }
 
@@ -589,6 +593,7 @@ where
     E::AltairSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::BellatrixSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::CapellaSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
+    E::DenebSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     <E::Phase0SignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_types::views::BeaconBlockView,
     <E::AltairSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
@@ -596,6 +601,8 @@ where
     <E::BellatrixSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_types::views::BeaconBlockView,
     <E::CapellaSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
+        pharos_types::views::BeaconBlockView,
+    <E::DenebSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_types::views::BeaconBlockView,
 {
     if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
@@ -606,8 +613,10 @@ where
         inner.message().parent_root()
     } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
         inner.message().parent_root()
+    } else if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
+        inner.message().parent_root()
     } else {
-        Root::default()
+        unreachable!("unknown fork variant in SignedBeaconBlock")
     }
 }
 
@@ -635,8 +644,19 @@ where
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::CapellaSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebSignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
 {
     match host.fork_from_context(&topic.fork_digest.into_inner()) {
+        Some(pharos_network::types::Fork::Deneb) => {
+            match E::DenebSignedBeaconBlock::from_ssz_bytes(data) {
+                Ok(inner) => Some(E::deneb_into_signed_block(inner)),
+                Err(e) => {
+                    warn!(error = ?e, "block_ingestion: deneb SSZ decode failed; dropping");
+                    None
+                }
+            }
+        }
         Some(pharos_network::types::Fork::Capella) => {
             match E::CapellaSignedBeaconBlock::from_ssz_bytes(data) {
                 Ok(inner) => Some(E::capella_into_signed_block(inner)),
@@ -684,6 +704,7 @@ where
     E::AltairSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::BellatrixSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::CapellaSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
+    E::DenebSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     <E::Phase0SignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
     <E::AltairSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
@@ -691,6 +712,8 @@ where
     <E::BellatrixSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
     <E::CapellaSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
+        pharos_ssz::TreeHash,
+    <E::DenebSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
 {
     use pharos_ssz::TreeHash as _;
@@ -702,8 +725,10 @@ where
         inner.message().tree_hash_root()
     } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
         inner.message().tree_hash_root()
+    } else if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
+        inner.message().tree_hash_root()
     } else {
-        Root::default()
+        unreachable!("unknown fork variant in SignedBeaconBlock")
     }
 }
 
@@ -722,6 +747,7 @@ where
     E::AltairSignedBeaconBlock: pharos_ssz::Encode,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Encode,
     E::CapellaSignedBeaconBlock: pharos_ssz::Encode,
+    E::DenebSignedBeaconBlock: pharos_ssz::Encode,
 {
     use pharos_ssz::Encode as _;
     if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
@@ -732,9 +758,10 @@ where
         inner.as_ssz_bytes()
     } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
         inner.as_ssz_bytes()
+    } else if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
+        inner.as_ssz_bytes()
     } else {
-        // Unreachable for any valid EthSpec implementation.
-        Vec::new()
+        unreachable!("unknown fork variant in SignedBeaconBlock")
     }
 }
 

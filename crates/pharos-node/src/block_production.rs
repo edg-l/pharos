@@ -928,6 +928,11 @@ where
                  checkpoint-synced nodes always past Phase0"
             )
         }
+
+        // Deneb block production not yet implemented (M10-Deneb follow-on).
+        ForkVariant::Deneb => {
+            unreachable!("Deneb block production not yet implemented")
+        }
     }
 }
 

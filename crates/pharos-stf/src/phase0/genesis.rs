@@ -342,6 +342,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis query called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis query called on Deneb BeaconState")
+            }
         }
     }
 
@@ -356,6 +359,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis mutation called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis mutation called on Deneb BeaconState")
             }
         }
     }
@@ -372,6 +378,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis query called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis query called on Deneb BeaconState")
+            }
         }
     }
 
@@ -386,6 +395,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis query called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis query called on Deneb BeaconState")
             }
         }
     }
@@ -402,6 +414,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis query called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis query called on Deneb BeaconState")
+            }
         }
     }
 
@@ -416,6 +431,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis mutation called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis mutation called on Deneb BeaconState")
             }
         }
     }
@@ -432,6 +450,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis mutation called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis mutation called on Deneb BeaconState")
+            }
         }
     }
 
@@ -446,6 +467,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis mutation called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis mutation called on Deneb BeaconState")
             }
         }
     }
@@ -462,6 +486,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis mutation called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis mutation called on Deneb BeaconState")
+            }
         }
     }
 
@@ -477,6 +504,9 @@ where
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis query called on Capella BeaconState")
             }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis query called on Deneb BeaconState")
+            }
         }
     }
 
@@ -491,6 +521,9 @@ where
             }
             ForkBeaconState::Capella(_) => {
                 unreachable!("genesis mutation called on Capella BeaconState")
+            }
+            ForkBeaconState::Deneb(_) => {
+                unreachable!("genesis mutation called on Deneb BeaconState")
             }
         }
     }

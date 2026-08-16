@@ -125,6 +125,12 @@ fn signed_block_is_execution_enabled<E: EthSpec>(b: &E::SignedBeaconBlock) -> bo
             .body()
             .execution_block_hash()
             .is_some_and(|h| h != [0u8; 32])
+    } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
+        inner
+            .message()
+            .body()
+            .execution_block_hash()
+            .is_some_and(|h| h != [0u8; 32])
     } else {
         false
     }
@@ -132,9 +138,8 @@ fn signed_block_is_execution_enabled<E: EthSpec>(b: &E::SignedBeaconBlock) -> bo
 
 /// Return the `slot` field of any fork variant of `SignedBeaconBlock`.
 ///
-/// Covers phase0 / altair / bellatrix / capella in one place so callers do not
-/// duplicate the four-arm match.  The wildcard arm is unreachable because `E`
-/// has exactly these four variants in the current schema.
+/// Covers phase0 / altair / bellatrix / capella / deneb in one place so
+/// callers do not duplicate the five-arm match.
 pub fn signed_block_slot<E: EthSpec>(
     b: &E::SignedBeaconBlock,
 ) -> pharos_types::phase0::primitives::Slot {
@@ -147,6 +152,33 @@ pub fn signed_block_slot<E: EthSpec>(
         inner.message().slot()
     } else if let Some(inner) = E::unwrap_capella_signed_block(b) {
         inner.message().slot()
+    } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
+        inner.message().slot()
+    } else {
+        unreachable!("unknown fork variant in SignedBeaconBlock")
+    }
+}
+
+/// STF-verified `state_root` of a fork-enum `SignedBeaconBlock`.
+///
+/// Mirrors [`signed_block_slot`]: no single trait-dispatch accessor covers all
+/// variants, so each fork is unwrapped here in ONE place. Adding a new fork
+/// requires extending this arm — keeping the per-fork unwrap out of `import_block`
+/// so a call site can never silently miss a variant.
+pub fn signed_block_state_root<E: EthSpec>(
+    b: &E::SignedBeaconBlock,
+) -> pharos_types::phase0::primitives::Root {
+    use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
+    if let Some(inner) = E::unwrap_phase0_signed_block(b) {
+        inner.message().state_root()
+    } else if let Some(inner) = E::unwrap_altair_signed_block(b) {
+        inner.message().state_root()
+    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(b) {
+        inner.message().state_root()
+    } else if let Some(inner) = E::unwrap_capella_signed_block(b) {
+        inner.message().state_root()
+    } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
+        inner.message().state_root()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")
     }
@@ -423,23 +455,10 @@ where
         let block_parent_root = parent_root; // already computed above via extract_parent_root
         // Derive slot and state_root from the block.  `state_root` is the
         // STF-verified field (cheaper than re-merkleizing the post-state).
-        // `signed_block_slot` covers all forks in one place; `state_root` still
-        // needs a per-fork unwrap since no single-accessor covers all variants.
+        // Both go through fork-exhaustive helpers so a call site can never miss
+        // a variant (no single trait-dispatch accessor covers all forks).
         let block_slot = signed_block_slot::<E>(signed_block);
-        let block_state_root = {
-            use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
-            if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
-                inner.message().state_root()
-            } else if let Some(inner) = E::unwrap_altair_signed_block(signed_block) {
-                inner.message().state_root()
-            } else if let Some(inner) = E::unwrap_bellatrix_signed_block(signed_block) {
-                inner.message().state_root()
-            } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
-                inner.message().state_root()
-            } else {
-                unreachable!("unknown fork variant in SignedBeaconBlock")
-            }
-        };
+        let block_state_root = signed_block_state_root::<E>(signed_block);
 
         let persist_result = tokio::task::spawn_blocking(move || {
             // Pre-seed `payload_statuses[block_root] = NotValidated` for execution
@@ -727,6 +746,7 @@ mod tests {
             32,
             4,
             16,
+            4096,
         >,
     ) {
         let anchor_body = MinimalBeaconBlockBody::default();
@@ -806,6 +826,7 @@ mod tests {
             32,
             4,
             16,
+            4096,
         > = ForkSignedBeaconBlock::Bellatrix(MinimalSignedBeaconBlock {
             message: anchor_block_inner,
             signature: BLSSignature::from_array([0u8; 96]),
@@ -841,6 +862,7 @@ mod tests {
         32,
         4,
         16,
+        4096,
     > {
         use pharos_stf::state_transition;
 
@@ -891,6 +913,7 @@ mod tests {
             32,
             4,
             16,
+            4096,
         > = ForkSignedBeaconBlock::Bellatrix(MinimalSignedBeaconBlock {
             message: draft,
             signature: BLSSignature::from_array([0u8; 96]),

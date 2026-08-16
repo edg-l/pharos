@@ -134,6 +134,7 @@ async fn context_bytes_codec() {
                 MainnetSignedBeaconBlock::Altair(inner) => inner.message.slot.0,
                 MainnetSignedBeaconBlock::Bellatrix(inner) => inner.message.slot.0,
                 MainnetSignedBeaconBlock::Capella(inner) => inner.message.slot.0,
+                MainnetSignedBeaconBlock::Deneb(inner) => inner.message.slot.0,
             });
 
             // Slot 10 must be Phase0.
