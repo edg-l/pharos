@@ -4609,3 +4609,63 @@ Fulu light-client snapshot writes (`pharos-stf/src/fulu/light_client.rs`, dispat
 the ingestion loop) use the STF-verified `block.state_root` for the LC header, not a
 recomputed root over a projected state (the M4c `D-bellatrix-lc-header-uses-state-root`
 invariant carried forward). Fulu LC containers reuse the electra shape.
+
+## M13-Fulu live-acceptance decisions
+
+Found while driving the live Electra→Fulu devnet acceptance (lighthouse v8.1.3 +
+ethrex v13, electra genesis → fulu@epoch1, 6s slots, fulu digest `0x4ce02029`). All
+Accepted, date 2026-06-25. Verified live: pharos stays peered (`connected=1`, 0 bans),
+follows head past the fulu crossing (`head==wall±1`, head `version=fulu` at slot 60),
+0 panics. These are the M13 analogue of the per-milestone live-only bug
+(M5-follow/M6-Capella/M9/M10/M12).
+
+### D-fulu-metadata-cgc-nonzero — MetaDataV3 must advertise a valid (non-zero) custody_group_count
+
+`HostImpl` had no `Host::custody_group_count()` override, so the Fulu MetaDataV3 served
+on the wire carried the trait default of `0`. EIP-7594 requires `cgc` in
+`1..=NUMBER_OF_CUSTODY_GROUPS`; a `0` is out-of-range. Lighthouse rejects it
+(`"Invalid custody group count in metadata: out of range"`), sends `Goodbye(Fault)`, and
+bans the peer at `-100`; every subsequent re-dial is then refused
+(`"Connection to peer rejected: peer has a bad score"`), which surfaced downstream as the
+permanent `backfill: no peers available` stall. Fix: create the shared `Arc<CustodyState>`
+(seeded at `CUSTODY_REQUIREMENT = 4`) before `HostImpl::new` and wire it in via
+`HostImpl::wire_custody` (mirroring `wire_engine`); `custody_group_count()` and
+`custody_columns()` now both read the live sticky-high count through `effective_cgc()`
+(never `0`), the single source of truth shared with the custody-adjustment loop and the
+ENR `cgc`. The diagnostic key was lighthouse `--debug-level debug`.
+
+### D-no-libp2p-ping — drop the libp2p `/ipfs/ping/1.0.0` behaviour
+
+eth2 peers do not implement libp2p's standard ping protocol; they use the consensus-layer
+RPC `Ping` method (`specs/phase0/p2p-interface.md`). Pharos previously included
+`ping::Behaviour`, which produced a `Failure::Unsupported` event against every eth2 peer
+(the misleading `Ping Err(Unsupported)` symptom that masked the real custody-ban issue).
+Verified against `libp2p-ping 0.47`: an `Unsupported` failure moves the handler to
+`State::Inactive`/`Poll::Pending` and the `Behaviour` never calls `close_connection`, so
+it never managed keep-alive — it was pure log noise. Removed the behaviour, its
+`PharosBehaviourEvent::Ping` variant, and the swarm-construction wiring. Liveness is
+driven solely by the RPC `Ping` tick (`Network::tick_ping`, every 15 s).
+
+### D-redial-bootnodes-on-deficit — re-dial configured bootnodes when below target peers
+
+On small/static devnets discv5 FINDNODE routinely returns `discovered=0`, so the only
+path to a peer is the startup bootnode dial. When that single connection dropped, the node
+was permanently peerless. The startup dial loop was extracted into
+`Network::dial_bootnodes()` and is now also invoked from the discovery tick whenever
+`peer_count() < target_peers()`. `dial_peer` already dedups against connected/pending
+peers and honours dial backoff (a clean `ConnectionClosed` records no dial failure and no
+ban, so `next_dial_allowed` stays `now`), making the re-dial a safe no-op once connected
+and an immediate recovery when the peer is lost. Robustness improvement independent of the
+cgc ban above.
+
+### D-fulu-api-fork-tag-from-enum-variant — fulu blocks tag as `fulu`, not the reused electra type
+
+`fulu::SignedBeaconBlock` is a re-export of `electra::SignedBeaconBlock`, so the shared
+`BlockApiSerializer` impl tags the DTO `ForkVariant::Electra`. The Beacon API read path
+(`block_by_root_for_api`) reached the fulu block via the authoritative outer enum variant
+(`unwrap_fulu_signed_block`) but then returned the electra tag, so
+`/eth/v2/beacon/blocks/{id}` reported `version=electra` (and `Eth-Consensus-Version:
+electra`) for a fulu block. Fix: override `for_api.variant = ForkVariant::Fulu` at the fulu
+dispatch arm (the DTO body is structurally identical to electra, so only the tag is
+wrong). Also added the missing fulu arm to `fork_variant_at_slot` (LC envelope versioning).
+Verified live: head block at the fulu epoch reports `version=fulu`.
