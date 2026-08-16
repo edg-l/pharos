@@ -312,6 +312,7 @@ where
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
+    E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
     E::DenebSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     <E::DenebSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_types::views::BeaconBlockView,
@@ -338,7 +339,12 @@ where
     // Deneb blocks return the commitments from `blob_kzg_commitments`.
     // This extraction happens at the call site so `da_checker` receives a plain
     // `&[KZGCommitment]` and does no fork-dispatch (Fulu PeerDAS seam).
+    //
+    // `kzg_commitments_for_closure` is moved into the spawn_blocking closure (DA gate +
+    // EL fallback).  `kzg_commitments` (re-bound below) is kept outside for the
+    // payload push that follows the closure.
     let kzg_commitments = extract_blob_kzg_commitments::<E>(signed_block);
+    let kzg_commitments_for_closure = kzg_commitments.clone();
 
     // (b) Run DA gate + state transition in spawn_blocking (both CPU/IO-bound; RI-1 + W7).
     //
@@ -356,6 +362,7 @@ where
     let cfg_clone = cfg.clone();
     let da_checker_clone = Arc::clone(da_checker);
     let block_root_for_da = extract_block_root::<E>(signed_block);
+    let store_for_da = Arc::clone(store);
     // (a.6) Duplicate import guard: if the block root is already in the
     // fork-choice store, reject immediately without touching the STF.
     // This prevents re-processing blocks that lookup-sync or backfill may
@@ -369,12 +376,85 @@ where
         }
     }
     let stf_result: Result<_, ImportError> = tokio::task::spawn_blocking(move || {
+        let kzg_commitments = kzg_commitments_for_closure;
         // Step (a.5) inner: DA gate — BEFORE state_transition (RI-1).
         let verdict = da_checker_clone.is_data_available(block_root_for_da, &kzg_commitments);
         match verdict {
             DataAvailabilityVerdict::Available | DataAvailabilityVerdict::Irrelevant => {}
             DataAvailabilityVerdict::NotAvailable => {
-                return Err(ImportError::DataNotAvailable);
+                // DA-gate fallback (D-getblobsv1-da-fallback): if the local EL
+                // already has the blobs in its blob pool (e.g. from mempool), fetch
+                // them via engine_getBlobsV1, persist to the store, and proceed
+                // without parking the block.  This allows blocks from self-produced
+                // or recently-broadcast transactions to import immediately without
+                // waiting on gossip sidecars.
+                //
+                // Versioned hashes are computed from `kzg_commitments`.
+                use pharos_kzg::kzg_commitment_to_versioned_hash;
+                use pharos_ssz::SszVector;
+                use pharos_types::deneb::BlobSidecar;
+                use pharos_utils::FixedBytes;
+                let versioned_hashes: Vec<[u8; 32]> = kzg_commitments
+                    .iter()
+                    .map(|c| kzg_commitment_to_versioned_hash(&c.into_inner()))
+                    .collect();
+                let el_blobs = ee.get_blobs_v1(&versioned_hashes);
+                // Only proceed if the EL returned a non-empty answer with ALL blobs present.
+                let el_satisfied = !el_blobs.is_empty()
+                    && el_blobs.len() == kzg_commitments.len()
+                    && el_blobs.iter().all(Option::is_some);
+                if el_satisfied {
+                    // Persist the EL-supplied blobs so the DA checker will find
+                    // them and the re-imported block can pass.  We persist with
+                    // index = position in the versioned-hash list.
+                    for (index, (blob_and_proof, commitment)) in
+                        el_blobs.into_iter().zip(kzg_commitments.iter()).enumerate()
+                    {
+                        if let Some((blob_bytes, proof_bytes)) = blob_and_proof {
+                            // Build a minimal BlobSidecar sufficient for storage.
+                            // signed_block_header and inclusion proof left as zero-defaults;
+                            // the store key is block_root + index, not the header.
+                            let blob_vec: Vec<u8> = if blob_bytes.len() == 131072 {
+                                blob_bytes
+                            } else {
+                                continue;
+                            };
+                            let Ok(blob) = SszVector::from_vec(blob_vec) else {
+                                continue;
+                            };
+                            let proof_arr: [u8; 48] = if proof_bytes.len() == 48 {
+                                let mut arr = [0u8; 48];
+                                arr.copy_from_slice(&proof_bytes);
+                                arr
+                            } else {
+                                continue;
+                            };
+                            let sidecar = BlobSidecar {
+                                index: index as u64,
+                                blob,
+                                kzg_commitment: *commitment,
+                                kzg_proof: FixedBytes::from_array(proof_arr),
+                                ..BlobSidecar::default()
+                            };
+                            let _ = <RocksStore as DbStore<E>>::put_blob_sidecar(
+                                &store_for_da,
+                                block_root_for_da,
+                                index as u64,
+                                &sidecar,
+                            );
+                        }
+                    }
+                    // Re-check DA after persisting. If all blobs are now present and
+                    // KZG-verified, proceed; otherwise fall through to NotAvailable.
+                    let verdict2 =
+                        da_checker_clone.is_data_available(block_root_for_da, &kzg_commitments);
+                    if verdict2 == DataAvailabilityVerdict::NotAvailable {
+                        return Err(ImportError::DataNotAvailable);
+                    }
+                    // DA satisfied via EL fallback — proceed to STF below.
+                } else {
+                    return Err(ImportError::DataNotAvailable);
+                }
             }
         }
 
@@ -479,9 +559,37 @@ where
     // The fork-choice WRITE guard is now dropped (on_block_result consumed it).
 
     // (f) For execution-layer blocks, push the execution payload to the engine driver.
+    // Deneb blocks use engine_newPayloadV3 (with blob gas + versioned hashes);
     // Capella blocks use engine_newPayloadV2 (with withdrawals); Bellatrix uses V1.
     // Per `D-engine-v2-dispatch` (docs/decisions.md M6-Capella section).
-    if let Some(capella_payload) = E::get_capella_execution_payload(signed_block) {
+    if let Some(deneb_payload) = E::get_deneb_execution_payload(signed_block) {
+        // Deneb block: V3 wire format (includes blobGasUsed, excessBlobGas).
+        // Derive versioned hashes from the blob KZG commitments (already extracted for DA gate).
+        use pharos_engine::{ExecutionPayloadV3, NewPayloadWire};
+        use pharos_kzg::kzg_commitment_to_versioned_hash;
+        let vh_hex: Vec<String> = kzg_commitments
+            .iter()
+            .map(|c| {
+                let h = kzg_commitment_to_versioned_hash(&c.into_inner());
+                crate::engine_driver::hash_to_hex(pharos_utils::Hash256::from_array(h))
+            })
+            .collect();
+        // parent_beacon_block_root = block.parent_root (the CL parent, NOT the EL parent).
+        let pbbr_hex = crate::engine_driver::hash_to_hex(parent_root);
+        let wire: ExecutionPayloadV3 = deneb_payload.into();
+        let req = NewPayloadRequest {
+            block_root,
+            payload: NewPayloadWire::V3 {
+                payload: wire,
+                versioned_hashes: vh_hex,
+                parent_beacon_block_root: pbbr_hex,
+            },
+            _marker: std::marker::PhantomData,
+        };
+        if payload_tx.try_send(req).is_err() {
+            warn!(%block_root, "import_block: payload_tx full or closed; dropping newPayloadV3");
+        }
+    } else if let Some(capella_payload) = E::get_capella_execution_payload(signed_block) {
         // Capella block: V2 wire format (includes withdrawals).
         use pharos_engine::NewPayloadWire;
         let req = NewPayloadRequest {

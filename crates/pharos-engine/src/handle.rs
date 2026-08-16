@@ -33,9 +33,10 @@ use crate::client::{
 };
 use crate::error::EngineError;
 use crate::types::{
-    ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1, ForkchoiceUpdatedV1Response,
-    GetPayloadV2Response, PayloadAttributesV1, PayloadAttributesV2, PayloadIdV1, PayloadStatusV1,
-    SyncingStatus, TransitionConfigurationV1,
+    BlobAndProofV1, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
+    ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response, PayloadAttributesV1,
+    PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, PayloadStatusV1, SyncingStatus,
+    TransitionConfigurationV1,
 };
 
 /// Capacity of the EngineHandle → actor request channel.
@@ -57,7 +58,10 @@ pub enum EngineRequest {
     /// `engine_newPayload*` — fork-discriminated via `NewPayloadWire`.
     NewPayload {
         version: NewPayloadVersion,
-        payload: NewPayloadWire,
+        // Boxed: `NewPayloadWire::V3` carries a full `ExecutionPayloadV3`, which
+        // would otherwise make this the dominant `EngineRequest` variant
+        // (clippy::large_enum_variant). Boxing keeps the channelled enum small.
+        payload: Box<NewPayloadWire>,
         reply: oneshot::Sender<Result<PayloadStatusV1, EngineError>>,
     },
     /// `engine_forkchoiceUpdatedV1` — Bellatrix (no payload attributes on follow path).
@@ -83,6 +87,23 @@ pub enum EngineRequest {
     GetPayloadV2 {
         id: PayloadIdV1,
         reply: oneshot::Sender<Result<GetPayloadV2Response, EngineError>>,
+    },
+    /// `engine_forkchoiceUpdatedV3` — Deneb (optional V3 payload attributes).
+    ForkchoiceUpdatedV3 {
+        state: ForkchoiceStateV1,
+        attrs: Option<PayloadAttributesV3>,
+        reply: oneshot::Sender<Result<ForkchoiceUpdatedV1Response, EngineError>>,
+    },
+    /// `engine_getPayloadV3` — Deneb block production.
+    /// Returns `{executionPayload, blockValue, blobsBundle, shouldOverrideBuilder}`.
+    GetPayloadV3 {
+        id: PayloadIdV1,
+        reply: oneshot::Sender<Result<GetPayloadV3Response, EngineError>>,
+    },
+    /// `engine_getBlobsV1` — retrieve blobs from the local EL blob pool.
+    GetBlobsV1 {
+        versioned_hashes: Vec<String>,
+        reply: oneshot::Sender<Result<Vec<Option<BlobAndProofV1>>, EngineError>>,
     },
     GetBlockByHash {
         hash: String,
@@ -168,7 +189,7 @@ impl EngineHandle {
     ) -> Result<PayloadStatusV1, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::NewPayload {
             version: NewPayloadVersion::V1,
-            payload: NewPayloadWire::V1(payload),
+            payload: Box::new(NewPayloadWire::V1(payload)),
             reply,
         })
     }
@@ -180,7 +201,7 @@ impl EngineHandle {
     ) -> Result<PayloadStatusV1, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::NewPayload {
             version: NewPayloadVersion::V2,
-            payload: NewPayloadWire::V2(payload),
+            payload: Box::new(NewPayloadWire::V2(payload)),
             reply,
         })
     }
@@ -193,7 +214,7 @@ impl EngineHandle {
     ) -> Result<PayloadStatusV1, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::NewPayload {
             version,
-            payload,
+            payload: Box::new(payload),
             reply,
         })
     }
@@ -243,6 +264,44 @@ impl EngineHandle {
         id: PayloadIdV1,
     ) -> Result<GetPayloadV2Response, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::GetPayloadV2 { id, reply })
+    }
+
+    /// Sync `engine_forkchoiceUpdatedV3` — Deneb (optional V3 payload attributes).
+    pub fn forkchoice_updated_v3_blocking(
+        &self,
+        state: ForkchoiceStateV1,
+        attrs: Option<PayloadAttributesV3>,
+    ) -> Result<ForkchoiceUpdatedV1Response, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::ForkchoiceUpdatedV3 {
+            state,
+            attrs,
+            reply,
+        })
+    }
+
+    /// Sync `engine_getPayloadV3` — Deneb block production.
+    ///
+    /// Returns `{executionPayload, blockValue, blobsBundle, shouldOverrideBuilder}`
+    /// per cancun.md.
+    pub fn get_payload_v3_blocking(
+        &self,
+        id: PayloadIdV1,
+    ) -> Result<GetPayloadV3Response, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetPayloadV3 { id, reply })
+    }
+
+    /// Sync `engine_getBlobsV1` — retrieve blobs from the local EL blob pool.
+    ///
+    /// Returns a `Vec<Option<BlobAndProofV1>>` preserving the request order.
+    /// Missing blobs are represented as `None` per cancun.md.
+    pub fn get_blobs_v1_blocking(
+        &self,
+        versioned_hashes: Vec<String>,
+    ) -> Result<Vec<Option<BlobAndProofV1>>, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetBlobsV1 {
+            versioned_hashes,
+            reply,
+        })
     }
 
     /// Sync `eth_chainId`.
@@ -390,7 +449,7 @@ async fn dispatch(client: &EngineClient, req: EngineRequest) {
             payload,
             reply,
         } => {
-            let _ = reply.send(client.new_payload(version, payload).await);
+            let _ = reply.send(client.new_payload(version, *payload).await);
         }
         EngineRequest::ForkchoiceUpdated {
             version,
@@ -412,6 +471,22 @@ async fn dispatch(client: &EngineClient, req: EngineRequest) {
         }
         EngineRequest::GetPayloadV2 { id, reply } => {
             let _ = reply.send(client.get_payload_v2(id).await);
+        }
+        EngineRequest::ForkchoiceUpdatedV3 {
+            state,
+            attrs,
+            reply,
+        } => {
+            let _ = reply.send(client.forkchoice_updated_v3(state, attrs).await);
+        }
+        EngineRequest::GetPayloadV3 { id, reply } => {
+            let _ = reply.send(client.get_payload_v3(id).await);
+        }
+        EngineRequest::GetBlobsV1 {
+            versioned_hashes,
+            reply,
+        } => {
+            let _ = reply.send(client.get_blobs_v1(versioned_hashes).await);
         }
         EngineRequest::GetBlockByHash { hash, reply } => {
             let _ = reply.send(client.get_block_by_hash(&hash).await);

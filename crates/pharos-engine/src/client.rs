@@ -18,66 +18,90 @@ use serde_json::{Value, json};
 use crate::error::EngineError;
 use crate::jwt::{JwtSecret, sign_token};
 use crate::types::{
-    BlockHeader, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
-    ForkchoiceUpdatedV1Response, GetPayloadV2Response, PayloadAttributesV1, PayloadAttributesV2,
-    PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
+    BlobAndProofV1, BlockHeader, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
+    ForkchoiceStateV1, ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response,
+    PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, PayloadStatusV1,
+    SyncingStatus, TransitionConfigurationV1,
 };
 
 const ENGINE_RPC_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Engine API methods advertised by pharos in `engine_exchangeCapabilities`.
 ///
-/// Includes all V1 (Bellatrix/Paris) and V2 (Capella/Shanghai) methods.
-/// V3+ (Deneb) will be added in M7.
+/// Includes V1 (Bellatrix/Paris), V2 (Capella/Shanghai), and V3 (Deneb/Cancun) methods.
 pub const DEFAULT_ENGINE_CAPABILITIES: &[&str] = &[
     "engine_newPayloadV1",
     "engine_newPayloadV2",
+    "engine_newPayloadV3",
     "engine_forkchoiceUpdatedV1",
     "engine_forkchoiceUpdatedV2",
+    "engine_forkchoiceUpdatedV3",
     "engine_getPayloadV1",
     "engine_getPayloadV2",
+    "engine_getPayloadV3",
+    "engine_getBlobsV1",
     "engine_exchangeCapabilities",
     "engine_exchangeTransitionConfigurationV1",
 ];
 
 // ── Version enums ────────────────────────────────────────────────────────────
 
-/// Version selector for `engine_newPayload*`. Bellatrix uses V1; Capella uses V2.
-/// Deneb adds V3 (M7), Electra adds V4 (M8).
+/// Version selector for `engine_newPayload*`. Bellatrix uses V1; Capella uses V2; Deneb uses V3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NewPayloadVersion {
     V1,
     /// Capella / Shanghai: `engine_newPayloadV2` with `ExecutionPayloadV2` (+ withdrawals).
     V2,
+    /// Deneb / Cancun: `engine_newPayloadV3` with `ExecutionPayloadV3` + versioned hashes
+    /// + parent beacon block root.
+    V3,
 }
 
-/// Version selector for `engine_forkchoiceUpdated*`. Bellatrix uses V1; Capella uses V2.
-/// Deneb adds V3 (M7), Electra adds V4 (M8).
+/// Version selector for `engine_forkchoiceUpdated*`. Bellatrix uses V1; Capella uses V2;
+/// Deneb uses V3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForkchoiceUpdatedVersion {
     V1,
     /// Capella / Shanghai: `engine_forkchoiceUpdatedV2` with optional `PayloadAttributesV2`.
     V2,
+    /// Deneb / Cancun: `engine_forkchoiceUpdatedV3` with optional `PayloadAttributesV3`.
+    V3,
 }
 
-/// Version selector for `engine_getPayload*`. Bellatrix uses V1; Capella uses V2.
-/// Deneb adds V3, Electra adds V4.
+/// Version selector for `engine_getPayload*`. Bellatrix uses V1; Capella uses V2;
+/// Deneb uses V3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GetPayloadVersion {
     V1,
     /// Capella / Shanghai: `engine_getPayloadV2` returning `{executionPayload, blockValue}`.
     V2,
+    /// Deneb / Cancun: `engine_getPayloadV3` returning `{executionPayload, blockValue, blobsBundle, shouldOverrideBuilder}`.
+    V3,
 }
 
 // ── NewPayloadWire ────────────────────────────────────────────────────────────
 
 /// Fork-discriminated execution payload for `engine_newPayload*` dispatch.
 ///
-/// V1 carries a Bellatrix payload; V2 carries a Capella payload with withdrawals.
+/// V1 carries a Bellatrix payload; V2 carries a Capella payload with withdrawals;
+/// V3 carries a Deneb payload with blob gas fields, versioned hashes, and parent
+/// beacon block root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewPayloadWire {
     V1(ExecutionPayloadV1),
     V2(ExecutionPayloadV2),
+    /// Deneb / Cancun: payload + `expectedBlobVersionedHashes` + `parentBeaconBlockRoot`.
+    ///
+    /// Per `execution-apis/src/engine/cancun.md` newPayloadV3:
+    /// params[0] = executionPayload, params[1] = expectedBlobVersionedHashes,
+    /// params[2] = parentBeaconBlockRoot.
+    V3 {
+        payload: ExecutionPayloadV3,
+        /// `expectedBlobVersionedHashes`: array of 32-byte hex DATA strings.
+        versioned_hashes: Vec<String>,
+        /// `parentBeaconBlockRoot`: 32-byte hex DATA string.
+        parent_beacon_block_root: String,
+    },
 }
 
 // ── EngineClient ─────────────────────────────────────────────────────────────
@@ -193,10 +217,27 @@ impl EngineClient {
         self.rpc_call("engine_newPayloadV2", [payload]).await
     }
 
+    /// `engine_newPayloadV3` — Deneb execution payload (with blob gas fields).
+    ///
+    /// Per `execution-apis/src/engine/cancun.md`:
+    /// params: (executionPayload, expectedBlobVersionedHashes, parentBeaconBlockRoot)
+    pub async fn new_payload_v3(
+        &self,
+        payload: ExecutionPayloadV3,
+        versioned_hashes: Vec<String>,
+        parent_beacon_block_root: String,
+    ) -> Result<PayloadStatusV1, EngineError> {
+        self.rpc_call(
+            "engine_newPayloadV3",
+            serde_json::json!([payload, versioned_hashes, parent_beacon_block_root]),
+        )
+        .await
+    }
+
     /// `engine_newPayload*` dispatch per version.
     ///
-    /// V1: Bellatrix; V2: Capella (withdrawals). Panics if the version/payload
-    /// combination is invalid (caller is responsible for picking the right variant).
+    /// V1: Bellatrix; V2: Capella (withdrawals); V3: Deneb (blob gas + versioned hashes).
+    /// Returns an error if the version/payload combination is invalid.
     pub async fn new_payload(
         &self,
         v: NewPayloadVersion,
@@ -205,6 +246,17 @@ impl EngineClient {
         match (v, payload) {
             (NewPayloadVersion::V1, NewPayloadWire::V1(p)) => self.new_payload_v1(p).await,
             (NewPayloadVersion::V2, NewPayloadWire::V2(p)) => self.new_payload_v2(p).await,
+            (
+                NewPayloadVersion::V3,
+                NewPayloadWire::V3 {
+                    payload: p,
+                    versioned_hashes,
+                    parent_beacon_block_root,
+                },
+            ) => {
+                self.new_payload_v3(p, versioned_hashes, parent_beacon_block_root)
+                    .await
+            }
             _ => Err(EngineError::UnexpectedResponse(
                 "new_payload: version/payload mismatch".into(),
             )),
@@ -231,7 +283,22 @@ impl EngineClient {
             .await
     }
 
+    /// `engine_forkchoiceUpdatedV3` — Deneb forkchoice update (optional V3 payload attributes).
+    pub async fn forkchoice_updated_v3(
+        &self,
+        state: ForkchoiceStateV1,
+        attrs: Option<PayloadAttributesV3>,
+    ) -> Result<ForkchoiceUpdatedV1Response, EngineError> {
+        self.rpc_call("engine_forkchoiceUpdatedV3", (state, attrs))
+            .await
+    }
+
     /// `engine_forkchoiceUpdated*` dispatch per version.
+    ///
+    /// For the follow-only path (no payload attributes), all versions behave
+    /// identically when attrs = null. Callers wanting attributes MUST use the
+    /// version-specific method (`forkchoice_updated_v2`, `forkchoice_updated_v3`)
+    /// because each version has a different `PayloadAttributes` type.
     pub async fn forkchoice_updated(
         &self,
         v: ForkchoiceUpdatedVersion,
@@ -253,6 +320,17 @@ impl EngineClient {
                 );
                 self.forkchoice_updated_v2(state, None).await
             }
+            ForkchoiceUpdatedVersion::V3 => {
+                // V3 requires `PayloadAttributesV3`; a caller wanting attributes MUST
+                // use `forkchoice_updated_v3` directly. The follow-only path passes
+                // `None` here.
+                debug_assert!(
+                    attrs.is_none(),
+                    "forkchoice_updated(V3, .., Some(attrs)) drops V1 attrs; \
+                     call forkchoice_updated_v3 with PayloadAttributesV3 instead"
+                );
+                self.forkchoice_updated_v3(state, None).await
+            }
         }
     }
 
@@ -272,6 +350,39 @@ impl EngineClient {
         self.rpc_call("engine_getPayloadV2", [id]).await
     }
 
+    /// `engine_getPayloadV3` — Deneb block production.
+    ///
+    /// Returns `{executionPayload, blockValue, blobsBundle, shouldOverrideBuilder}`
+    /// per `execution-apis/src/engine/cancun.md`.
+    pub async fn get_payload_v3(
+        &self,
+        id: PayloadIdV1,
+    ) -> Result<GetPayloadV3Response, EngineError> {
+        self.rpc_call("engine_getPayloadV3", [id]).await
+    }
+
+    /// `engine_getBlobsV1` — retrieve blobs from the local EL blob pool.
+    ///
+    /// Per `execution-apis/src/engine/cancun.md`:
+    /// - Responses are in the same order as the input versioned hashes.
+    /// - Missing blobs are represented as `null` (→ `None` in the result).
+    /// - The EL MUST support at least 128 versioned hashes; it returns
+    ///   `-38004: Too large request` for larger inputs.
+    ///
+    /// Returns a `Vec<Option<BlobAndProofV1>>` preserving the request order.
+    pub async fn get_blobs_v1(
+        &self,
+        versioned_hashes: Vec<String>,
+    ) -> Result<Vec<Option<BlobAndProofV1>>, EngineError> {
+        if versioned_hashes.len() > 128 {
+            return Err(EngineError::JsonRpc {
+                code: -38004,
+                message: "too large request: more than 128 versioned hashes".into(),
+            });
+        }
+        self.rpc_call("engine_getBlobsV1", [versioned_hashes]).await
+    }
+
     /// `engine_getPayload*` dispatch per version (V1 single-payload interface).
     pub async fn get_payload(
         &self,
@@ -285,6 +396,13 @@ impl EngineClient {
                 // wanting the V2 path must use `get_payload_v2` directly.
                 Err(EngineError::UnexpectedResponse(
                     "get_payload(V2): use get_payload_v2 directly for the V2 envelope".into(),
+                ))
+            }
+            GetPayloadVersion::V3 => {
+                // V3 returns a {executionPayload, blockValue, blobsBundle, ...} envelope;
+                // callers wanting the V3 path must use `get_payload_v3` directly.
+                Err(EngineError::UnexpectedResponse(
+                    "get_payload(V3): use get_payload_v3 directly for the V3 envelope".into(),
                 ))
             }
         }

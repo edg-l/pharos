@@ -2771,6 +2771,28 @@ impl<E: EthSpec> LightClientProvider<E> for HostImpl<E> {
             }
         }
     }
+
+    /// Return the latest stored Deneb `LightClientFinalityUpdate`, if any.
+    fn light_client_finality_update_deneb(&self) -> Option<E::DenebLightClientFinalityUpdate> {
+        match <RocksStore as StoreTrait<E>>::get_light_client_finality_update_deneb(&self.store) {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(%e, "light_client_finality_update_deneb: storage error");
+                None
+            }
+        }
+    }
+
+    /// Return the latest stored Deneb `LightClientOptimisticUpdate`, if any.
+    fn light_client_optimistic_update_deneb(&self) -> Option<E::DenebLightClientOptimisticUpdate> {
+        match <RocksStore as StoreTrait<E>>::get_light_client_optimistic_update_deneb(&self.store) {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(%e, "light_client_optimistic_update_deneb: storage error");
+                None
+            }
+        }
+    }
 }
 
 // ── BlobProvider ──────────────────────────────────────────────────────────────

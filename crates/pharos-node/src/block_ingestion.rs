@@ -203,6 +203,7 @@ where
         pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
+    E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
     EE: ExecutionEngine + 'static,
 {
     // Use the node's loaded runtime config (carries the real fork epochs) so
@@ -339,16 +340,51 @@ where
         // (i) Publish LC finality + optimistic updates (Tasks 2.4 + 2.5).
         // Gate: only when the head block is post-Altair.
         //
-        // For Capella blocks, read from the capella-specific LC CFs and publish
-        // under the capella fork-digest per `specs/capella/light-client/p2p-interface.md`.
-        // For Altair/Bellatrix blocks, use the altair LC CFs and the current fork-digest.
+        // For each fork, read from the fork-specific LC CFs and publish under
+        // the current fork-digest. Deneb uses deneb LC CFs; Capella uses capella
+        // CFs; Altair/Bellatrix use altair CFs.
         //
         // The broadcast is *delayed* to the spec's gossip window so it is not
         // rejected as TooEarly by peers (D-lc-publish-due-time).
         let has_lc_snapshots = outcome.fork_variant != ForkVariant::Phase0;
         if has_lc_snapshots {
             let digest = host.current_fork_digest();
-            if outcome.fork_variant == ForkVariant::Capella {
+            if outcome.fork_variant == ForkVariant::Deneb {
+                // Deneb LC: read from deneb CFs and publish with deneb digest.
+                use pharos_network::host::LightClientProvider as _;
+                if let Some(fu) = host.light_client_finality_update_deneb() {
+                    let wait = host.lc_publish_wait(fu.finality_signature_slot());
+                    let net = egress.network.clone();
+                    tokio::spawn(async move {
+                        if !wait.is_zero() {
+                            tokio::time::sleep(wait).await;
+                        }
+                        let topic = GossipTopic {
+                            fork_digest: digest,
+                            kind: GossipTopicKind::LightClientFinalityUpdate,
+                        };
+                        if let Err(e) = net.publish(topic, &fu).await {
+                            warn!(error = %e, "deneb lc finality update publish failed");
+                        }
+                    });
+                }
+                if let Some(ou) = host.light_client_optimistic_update_deneb() {
+                    let wait = host.lc_publish_wait(ou.optimistic_signature_slot());
+                    let net = egress.network.clone();
+                    tokio::spawn(async move {
+                        if !wait.is_zero() {
+                            tokio::time::sleep(wait).await;
+                        }
+                        let topic = GossipTopic {
+                            fork_digest: digest,
+                            kind: GossipTopicKind::LightClientOptimisticUpdate,
+                        };
+                        if let Err(e) = net.publish(topic, &ou).await {
+                            warn!(error = %e, "deneb lc optimistic update publish failed");
+                        }
+                    });
+                }
+            } else if outcome.fork_variant == ForkVariant::Capella {
                 // Capella LC: read from capella CFs and publish with capella digest.
                 use pharos_network::host::LightClientProvider as _;
                 if let Some(fu) = host.light_client_finality_update_capella() {

@@ -631,6 +631,16 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         signed: &Self::SignedBeaconBlock,
     ) -> Option<Self::CapellaExecutionPayload>;
 
+    /// Extract a clone of the Deneb `ExecutionPayload` from a fork-enum `SignedBeaconBlock`.
+    ///
+    /// Returns `Some(payload)` for Deneb blocks; `None` for all earlier forks.
+    ///
+    /// Used by the block-ingestion loop to push the wire-format Deneb payload
+    /// (with blob gas fields) to the engine driver via `engine_newPayloadV3`.
+    fn get_deneb_execution_payload(
+        signed: &Self::SignedBeaconBlock,
+    ) -> Option<Self::DenebExecutionPayload>;
+
     /// Extract the slot from a fork-enum `SignedBeaconBlock` without knowing the fork.
     ///
     /// The fork-enum `SignedBeaconBlockView::message()` is intentionally unimplemented
@@ -1538,6 +1548,18 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Capella(b) => Some(b.message.body.execution_payload.clone()),
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
+            }
+        }
+
+        fn get_deneb_execution_payload(
+            signed: &Self::SignedBeaconBlock,
+        ) -> Option<Self::DenebExecutionPayload> {
+            match signed {
+                crate::state::$signed::Deneb(b) => Some(b.message.body.execution_payload.clone()),
+                crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
             }

@@ -456,6 +456,18 @@ mod tests {
         ) -> Option<<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate> {
             None
         }
+
+        fn light_client_finality_update_deneb(
+            &self,
+        ) -> Option<<MainnetEthSpec as EthSpec>::DenebLightClientFinalityUpdate> {
+            None
+        }
+
+        fn light_client_optimistic_update_deneb(
+            &self,
+        ) -> Option<<MainnetEthSpec as EthSpec>::DenebLightClientOptimisticUpdate> {
+            None
+        }
     }
 
     impl BlobProvider<MainnetEthSpec> for MockHost {

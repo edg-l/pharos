@@ -211,6 +211,7 @@ where
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
+    E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
 {
     // Loaded runtime config from the store: carries the real fork epochs so the
     // STF can trigger live fork upgrades across a boundary (see block_ingestion).
@@ -400,6 +401,7 @@ where
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
+    E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
 {
     // TODO(M10-Deneb): lookup-sync uses NoopDataAvailabilityChecker because it does
     // not yet co-fetch BlobSidecarsByRoot alongside the block. Recent Deneb blocks
@@ -544,6 +546,7 @@ async fn fetch_and_walk<E, P, EE, PP>(
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
+    E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
 {
     let mut current_target = target_root;
     let mut depth = MAX_LOOKUP_DEPTH;
@@ -735,6 +738,7 @@ async fn drain_and_replay<E, EE, PP>(
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
+    E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
 {
     let mut stack: Vec<Root> = vec![root];
 

@@ -284,6 +284,16 @@ pub trait LightClientProvider<E: EthSpec>: Send + Sync + 'static {
     fn light_client_optimistic_update_capella(
         &self,
     ) -> Option<E::CapellaLightClientOptimisticUpdate>;
+
+    /// Return the latest Deneb `LightClientFinalityUpdate`, if any.
+    ///
+    /// Per `specs/deneb/light-client/p2p-interface.md`.
+    fn light_client_finality_update_deneb(&self) -> Option<E::DenebLightClientFinalityUpdate>;
+
+    /// Return the latest Deneb `LightClientOptimisticUpdate`, if any.
+    ///
+    /// Per `specs/deneb/light-client/p2p-interface.md`.
+    fn light_client_optimistic_update_deneb(&self) -> Option<E::DenebLightClientOptimisticUpdate>;
 }
 
 // Arc<T> blanket impl for LightClientProvider.
@@ -323,6 +333,14 @@ where
         &self,
     ) -> Option<E::CapellaLightClientOptimisticUpdate> {
         (**self).light_client_optimistic_update_capella()
+    }
+
+    fn light_client_finality_update_deneb(&self) -> Option<E::DenebLightClientFinalityUpdate> {
+        (**self).light_client_finality_update_deneb()
+    }
+
+    fn light_client_optimistic_update_deneb(&self) -> Option<E::DenebLightClientOptimisticUpdate> {
+        (**self).light_client_optimistic_update_deneb()
     }
 }
 

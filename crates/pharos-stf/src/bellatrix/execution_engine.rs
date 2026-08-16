@@ -179,6 +179,22 @@ pub trait ExecutionEngine: Send + Sync + 'static {
         })
     }
 
+    /// Retrieve blob data from the local EL blob pool for the given versioned hashes.
+    ///
+    /// Returns `None` for each missing blob (preserves request order).  Used as a
+    /// DA-gate fallback when gossip sidecars have not arrived yet: if the EL already
+    /// has the blobs (from mempool) the import can proceed without parking.
+    ///
+    /// Default: returns an empty vec (no fallback — block will be parked as usual).
+    /// The production `ExecutionEngineHandle` in `pharos-node` overrides this to call
+    /// `engine_getBlobsV1` (`D-getblobsv1-da-fallback`).
+    ///
+    /// `versioned_hashes` are 32-byte versioned hash values
+    /// (`VERSIONED_HASH_VERSION_KZG || sha256(commitment)[1:]`).
+    fn get_blobs_v1(&self, _versioned_hashes: &[[u8; 32]]) -> Vec<Option<(Vec<u8>, Vec<u8>)>> {
+        vec![]
+    }
+
     /// `verify_and_notify_new_payload` per `specs/bellatrix/beacon-chain.md:337-357`.
     ///
     /// Default implementation mirrors the Python spec:

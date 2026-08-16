@@ -21,8 +21,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::post;
 use pharos_engine::{
-    EngineClient, ExecutionPayloadV2, GetPayloadVersion, JwtSecret, NewPayloadVersion,
-    NewPayloadWire, TransitionConfigurationV1,
+    EngineClient, ExecutionPayloadV2, ExecutionPayloadV3, GetPayloadVersion, JwtSecret,
+    NewPayloadVersion, NewPayloadWire, PayloadAttributesV3, TransitionConfigurationV1,
 };
 use reqwest::Url;
 use serde_json::Value;
@@ -218,23 +218,31 @@ fn run_method_examples(method: &YamlMethod, result: &mut CategoryResult) {
     // V2 methods in scope for M6 (Capella / Shanghai).
     const V2_IN_SCOPE: &[&str] = &["engine_newPayloadV2", "engine_forkchoiceUpdatedV2"];
 
-    // V3+ methods not yet in scope (Deneb+).
-    const V3_PLUS: &[&str] = &[
+    // V3 methods in scope for M10-Deneb (Cancun).
+    const V3_IN_SCOPE: &[&str] = &[
         "engine_newPayloadV3",
         "engine_forkchoiceUpdatedV3",
         "engine_getPayloadV3",
     ];
 
+    // V4+ methods not yet in scope (Prague+).
+    const V4_PLUS: &[&str] = &[
+        "engine_newPayloadV4",
+        "engine_forkchoiceUpdatedV4",
+        "engine_getPayloadV4",
+    ];
+
     let is_v1 = name.ends_with("V1");
     let is_v2_in_scope = V2_IN_SCOPE.contains(&name.as_str());
+    let is_v3_in_scope = V3_IN_SCOPE.contains(&name.as_str());
     let is_unversioned = UNVERSIONED.contains(&name.as_str());
-    let is_deferred = DEFERRED_V1.contains(&name.as_str()) || V3_PLUS.contains(&name.as_str());
+    let is_deferred = DEFERRED_V1.contains(&name.as_str()) || V4_PLUS.contains(&name.as_str());
 
     for ex in &method.examples {
         let label = format!("{name}/{}", ex.name);
 
         // Skip deferred/out-of-scope methods.
-        if is_deferred || (!is_v1 && !is_v2_in_scope && !is_unversioned) {
+        if is_deferred || (!is_v1 && !is_v2_in_scope && !is_v3_in_scope && !is_unversioned) {
             result.skip += 1;
             result.skip_reasons.insert(
                 label,
@@ -349,7 +357,17 @@ fn run_single_example(method_name: &str, ex: &YamlExample) -> Result<(), String>
         // Assert the params sent by EngineClient match the YAML example params.
         // Structural comparison on serde_json::Value handles key-order differences.
         let got_params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
-        if got_params != ex.params_json {
+        // getPayload* take a single payload-id param. The upstream example value
+        // is QUANTITY-trimmed (odd-length hex) which cannot round-trip byte-exact
+        // through the 8-byte `PayloadIdV1` DATA type, so compare it semantically.
+        let params_match = if method_name.starts_with("engine_getPayload") {
+            let got_id = params_to_payload_id(got_params.as_array().and_then(|a| a.first()));
+            let want_id = params_to_payload_id(ex.params_json.as_array().and_then(|a| a.first()));
+            got_id == want_id
+        } else {
+            got_params == ex.params_json
+        };
+        if !params_match {
             return Err(format!(
                 "params mismatch for {method_name}:\n  want: {}\n   got: {}",
                 serde_json::to_string(&ex.params_json).unwrap_or_default(),
@@ -498,6 +516,58 @@ async fn dispatch_engine_call(
             sorted.sort();
             serde_json::to_value(sorted).map_err(|e| e.to_string())
         }
+        "engine_newPayloadV3" => {
+            let payload = params_to_execution_payload_v3(_params.get(0));
+            // params[1]: expectedBlobVersionedHashes — array of hex hash strings.
+            let versioned_hashes: Vec<String> = _params
+                .get(1)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            // params[2]: parentBeaconBlockRoot — hex hash string.
+            let parent_beacon_block_root = _params
+                .get(2)
+                .and_then(Value::as_str)
+                .unwrap_or("0x0000000000000000000000000000000000000000000000000000000000000000")
+                .to_string();
+            let status = client
+                .new_payload(
+                    NewPayloadVersion::V3,
+                    NewPayloadWire::V3 {
+                        payload,
+                        versioned_hashes,
+                        parent_beacon_block_root,
+                    },
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(status).map_err(|e| e.to_string())
+        }
+        "engine_forkchoiceUpdatedV3" => {
+            let state = params_to_forkchoice_state(_params.get(0));
+            let attrs = _params.get(1).and_then(|v| {
+                if v.is_null() {
+                    None
+                } else {
+                    params_to_payload_attrs_v3(v).ok()
+                }
+            });
+            let fcu_response = client
+                .forkchoice_updated_v3(state, attrs)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(fcu_response).map_err(|e| e.to_string())
+        }
+        "engine_getPayloadV3" => {
+            let id = params_to_payload_id(_params.get(0));
+            let response = client.get_payload_v3(id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
         "engine_exchangeTransitionConfigurationV1" => {
             let config = params_to_transition_config(_params.get(0));
             let transition_config = client
@@ -638,17 +708,81 @@ fn params_to_payload_attrs_v2(v: &Value) -> Result<pharos_engine::PayloadAttribu
     serde_json::from_value(v.clone()).map_err(|e| e.to_string())
 }
 
-fn params_to_payload_id(v: Option<&Value>) -> pharos_engine::PayloadIdV1 {
-    let s = v
-        .and_then(Value::as_str)
-        .unwrap_or("\"0x0000000000000000\"");
-    // PayloadIdV1 deserialises from a JSON string like "\"0x...\"".
-    let json_str = if s.starts_with('"') {
-        s.to_string()
-    } else {
-        format!("\"{s}\"")
+fn params_to_execution_payload_v3(v: Option<&Value>) -> ExecutionPayloadV3 {
+    use pharos_engine::WithdrawalV1;
+    let v = match v {
+        Some(v) => v,
+        None => {
+            return ExecutionPayloadV3 {
+                parent_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                fee_recipient: "0x0000000000000000000000000000000000000000".into(),
+                state_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                receipts_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                logs_bloom: "0x00".into(),
+                prev_randao: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                block_number: "0x0".into(),
+                gas_limit: "0x0".into(),
+                gas_used: "0x0".into(),
+                timestamp: "0x0".into(),
+                extra_data: "0x".into(),
+                base_fee_per_gas: "0x0".into(),
+                block_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                transactions: vec![],
+                withdrawals: vec![],
+                blob_gas_used: "0x0".into(),
+                excess_blob_gas: "0x0".into(),
+            };
+        }
     };
-    serde_json::from_str(&json_str).unwrap_or(pharos_engine::PayloadIdV1([0u8; 8]))
+    serde_json::from_value(v.clone()).unwrap_or_else(|_| ExecutionPayloadV3 {
+        parent_hash: str_field(v, "parentHash"),
+        fee_recipient: str_field(v, "feeRecipient"),
+        state_root: str_field(v, "stateRoot"),
+        receipts_root: str_field(v, "receiptsRoot"),
+        logs_bloom: str_field(v, "logsBloom"),
+        prev_randao: str_field(v, "prevRandao"),
+        block_number: str_field(v, "blockNumber"),
+        gas_limit: str_field(v, "gasLimit"),
+        gas_used: str_field(v, "gasUsed"),
+        timestamp: str_field(v, "timestamp"),
+        extra_data: str_field(v, "extraData"),
+        base_fee_per_gas: str_field(v, "baseFeePerGas"),
+        block_hash: str_field(v, "blockHash"),
+        transactions: v
+            .get("transactions")
+            .and_then(|t| serde_json::from_value::<Vec<String>>(t.clone()).ok())
+            .unwrap_or_default(),
+        withdrawals: v
+            .get("withdrawals")
+            .and_then(|w| serde_json::from_value::<Vec<WithdrawalV1>>(w.clone()).ok())
+            .unwrap_or_default(),
+        blob_gas_used: str_field(v, "blobGasUsed"),
+        excess_blob_gas: str_field(v, "excessBlobGas"),
+    })
+}
+
+fn params_to_payload_attrs_v3(v: &Value) -> Result<PayloadAttributesV3, String> {
+    serde_json::from_value(v.clone()).map_err(|e| e.to_string())
+}
+
+fn params_to_payload_id(v: Option<&Value>) -> pharos_engine::PayloadIdV1 {
+    let s = v.and_then(Value::as_str).unwrap_or("0x0000000000000000");
+    // Upstream execution-apis examples write payload ids QUANTITY-style (leading
+    // zeros trimmed, sometimes odd length, e.g. `0x0000000038fa5dd`), but
+    // `PayloadIdV1` is a fixed 8-byte DATA value. Strip quotes/`0x`, left-pad to
+    // 16 hex chars, then decode — robust to the malformed-but-canonical example.
+    let hex = s.trim_matches('"').trim_start_matches("0x");
+    let padded = format!("{hex:0>16}");
+    let mut bytes = [0u8; 8];
+    for (i, b) in bytes.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&padded[i * 2..i * 2 + 2], 16).unwrap_or(0);
+    }
+    pharos_engine::PayloadIdV1(bytes)
 }
 
 fn params_to_transition_config(v: Option<&Value>) -> TransitionConfigurationV1 {

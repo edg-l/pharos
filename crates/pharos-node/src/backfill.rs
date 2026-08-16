@@ -179,6 +179,7 @@ where
         pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
+    E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
 {
     // Loaded runtime config from the store: carries the real fork epochs so the
     // STF can trigger live fork upgrades across a boundary (see block_ingestion).

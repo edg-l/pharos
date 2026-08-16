@@ -20,8 +20,9 @@ pub use error::EngineError;
 pub use handle::{EngineHandle, EngineRequest, run_engine_actor, spawn_engine_actor};
 pub use jwt::{JwtSecret, load_jwt_secret};
 pub use types::{
-    BlockHeader, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
-    ForkchoiceUpdatedV1Response, GetPayloadV2Response, PayloadAttributesV1, PayloadAttributesV2,
+    BlobAndProofV1, BlobsBundleV1, BlockHeader, ExecutionPayloadV1, ExecutionPayloadV2,
+    ExecutionPayloadV3, ForkchoiceStateV1, ForkchoiceUpdatedV1Response, GetPayloadV2Response,
+    GetPayloadV3Response, PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3,
     PayloadIdV1, PayloadStatusStatus, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
     WithdrawalV1,
 };

@@ -520,6 +520,334 @@ fn hex_quantity_uint256(n: &pharos_utils::Uint256) -> String {
     }
 }
 
+// ── ExecutionPayloadV3 ────────────────────────────────────────────────────────
+
+/// `ExecutionPayloadV3` per `execution-apis/src/engine/cancun.md` (Deneb).
+///
+/// Extends `ExecutionPayloadV2` with `blobGasUsed` and `excessBlobGas`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionPayloadV3 {
+    pub parent_hash: String,
+    pub fee_recipient: String,
+    pub state_root: String,
+    pub receipts_root: String,
+    pub logs_bloom: String,
+    pub prev_randao: String,
+    pub block_number: String,
+    pub gas_limit: String,
+    pub gas_used: String,
+    pub timestamp: String,
+    pub extra_data: String,
+    pub base_fee_per_gas: String,
+    pub block_hash: String,
+    pub transactions: Vec<String>,
+    pub withdrawals: Vec<WithdrawalV1>,
+    /// `blobGasUsed: QUANTITY`, 64 Bits — [New in Deneb].
+    pub blob_gas_used: String,
+    /// `excessBlobGas: QUANTITY`, 64 Bits — [New in Deneb].
+    pub excess_blob_gas: String,
+}
+
+// ── BlobsBundleV1 ─────────────────────────────────────────────────────────────
+
+/// `BlobsBundleV1` per `execution-apis/src/engine/cancun.md`.
+///
+/// Returned by `engine_getPayloadV3` alongside the execution payload.
+/// All three arrays MUST be the same length.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobsBundleV1 {
+    /// KZG commitments, 48 bytes each (hex DATA).
+    pub commitments: Vec<String>,
+    /// KZG proofs, 48 bytes each (hex DATA).
+    pub proofs: Vec<String>,
+    /// Blob data, 131072 bytes each (hex DATA).
+    pub blobs: Vec<String>,
+}
+
+// ── BlobAndProofV1 ────────────────────────────────────────────────────────────
+
+/// `BlobAndProofV1` per `execution-apis/src/engine/cancun.md`.
+///
+/// One element of the response from `engine_getBlobsV1`. An absent blob in the
+/// pool is represented as a JSON `null` entry; callers handle that via
+/// `Option<BlobAndProofV1>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobAndProofV1 {
+    /// `blob`: 131072 bytes (DATA).
+    pub blob: String,
+    /// `proof`: KZGProof, 48 bytes (DATA).
+    pub proof: String,
+}
+
+// ── PayloadAttributesV3 ───────────────────────────────────────────────────────
+
+/// `PayloadAttributesV3` per `execution-apis/src/engine/cancun.md` (Deneb).
+///
+/// Extends `PayloadAttributesV2` with `parentBeaconBlockRoot`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PayloadAttributesV3 {
+    pub timestamp: String,
+    pub prev_randao: String,
+    pub suggested_fee_recipient: String,
+    pub withdrawals: Vec<WithdrawalV1>,
+    /// `parentBeaconBlockRoot: DATA`, 32 Bytes — Root of the parent beacon block.
+    pub parent_beacon_block_root: String,
+}
+
+// ── GetPayloadV3Response ──────────────────────────────────────────────────────
+
+/// Response to `engine_getPayloadV3` per `execution-apis/src/engine/cancun.md`.
+///
+/// Returns execution payload + block value + blobs bundle + builder override hint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPayloadV3Response {
+    pub execution_payload: ExecutionPayloadV3,
+    pub block_value: String,
+    pub blobs_bundle: BlobsBundleV1,
+    pub should_override_builder: bool,
+}
+
+// ── From<deneb::ExecutionPayload> for ExecutionPayloadV3 ──────────────────────
+
+/// Convert a Deneb SSZ `ExecutionPayload` to the Engine API `ExecutionPayloadV3`
+/// wire format.
+///
+/// Extends the Capella conversion with `blobGasUsed` and `excessBlobGas`.
+impl<
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+>
+    From<
+        pharos_types::deneb::ExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+        >,
+    > for ExecutionPayloadV3
+{
+    fn from(
+        p: pharos_types::deneb::ExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+        >,
+    ) -> Self {
+        let withdrawals = p
+            .withdrawals
+            .as_slice()
+            .iter()
+            .map(|w| WithdrawalV1 {
+                index: hex_quantity_u64(w.index),
+                validator_index: hex_quantity_u64(w.validator_index.0),
+                address: hex_data(w.address.as_slice()),
+                amount: hex_quantity_u64(w.amount.0),
+            })
+            .collect();
+        ExecutionPayloadV3 {
+            parent_hash: hex_data(p.parent_hash.as_slice()),
+            fee_recipient: hex_data(p.fee_recipient.as_slice()),
+            state_root: hex_data(p.state_root.as_slice()),
+            receipts_root: hex_data(p.receipts_root.as_slice()),
+            logs_bloom: hex_data(p.logs_bloom.as_slice()),
+            prev_randao: hex_data(p.prev_randao.as_slice()),
+            block_number: hex_quantity_u64(p.block_number),
+            gas_limit: hex_quantity_u64(p.gas_limit),
+            gas_used: hex_quantity_u64(p.gas_used),
+            timestamp: hex_quantity_u64(p.timestamp),
+            extra_data: hex_data(p.extra_data.as_slice()),
+            base_fee_per_gas: hex_quantity_uint256(&p.base_fee_per_gas),
+            block_hash: hex_data(p.block_hash.as_slice()),
+            transactions: p
+                .transactions
+                .as_slice()
+                .iter()
+                .map(|tx| hex_data(tx.as_slice()))
+                .collect(),
+            withdrawals,
+            blob_gas_used: hex_quantity_u64(p.blob_gas_used),
+            excess_blob_gas: hex_quantity_u64(p.excess_blob_gas),
+        }
+    }
+}
+
+// ── TryFrom<ExecutionPayloadV3> for deneb::ExecutionPayload (mainnet) ─────────
+
+/// Convert `ExecutionPayloadV3` wire type to the mainnet Deneb in-house
+/// `ExecutionPayload` (MAX_WITHDRAWALS_PER_PAYLOAD = 16).
+impl TryFrom<ExecutionPayloadV3>
+    for pharos_types::deneb::ExecutionPayload<1_073_741_824, 1_048_576, 256, 32, 16>
+{
+    type Error = crate::error::EngineError;
+
+    fn try_from(p: ExecutionPayloadV3) -> Result<Self, Self::Error> {
+        use pharos_ssz::{SszList, SszVector};
+        use pharos_types::capella::execution_payload::Withdrawal;
+        use pharos_types::phase0::primitives::{Gwei, ValidatorIndex};
+
+        if p.transactions.len() as u64 > 1_048_576 {
+            return Err(crate::error::EngineError::UnexpectedResponse(format!(
+                "transactions count {} exceeds MAX_TRANSACTIONS_PER_PAYLOAD 1048576",
+                p.transactions.len()
+            )));
+        }
+        if p.withdrawals.len() as u64 > 16 {
+            return Err(crate::error::EngineError::UnexpectedResponse(format!(
+                "withdrawals count {} exceeds MAX_WITHDRAWALS_PER_PAYLOAD 16",
+                p.withdrawals.len()
+            )));
+        }
+        let txs: Vec<SszList<u8, 1_073_741_824>> = p
+            .transactions
+            .iter()
+            .map(|h| decode_hex_bytes_into_sszlist(h))
+            .collect::<Result<_, _>>()?;
+        let transactions = SszList::from_items(txs).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("transactions overflow".into())
+        })?;
+        let withdrawals_vec: Vec<Withdrawal> = p
+            .withdrawals
+            .iter()
+            .map(|w| {
+                Ok(Withdrawal {
+                    index: parse_hex_u64(&w.index)?,
+                    validator_index: ValidatorIndex(parse_hex_u64(&w.validator_index)?),
+                    address:
+                        pharos_types::bellatrix::execution_payload::ExecutionAddress::from_array(
+                            parse_hex_fixed::<20>(&w.address)?,
+                        ),
+                    amount: Gwei(parse_hex_u64(&w.amount)?),
+                })
+            })
+            .collect::<Result<_, crate::error::EngineError>>()?;
+        let withdrawals = SszList::from_items(withdrawals_vec).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("withdrawals overflow".into())
+        })?;
+        let extra_data = decode_hex_bytes_into_sszlist(&p.extra_data)?;
+        let logs_bloom_bytes = parse_hex_fixed::<256>(&p.logs_bloom)?;
+        let logs_bloom = SszVector::from_items(logs_bloom_bytes).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("logs_bloom size mismatch".into())
+        })?;
+        Ok(pharos_types::deneb::ExecutionPayload {
+            parent_hash: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.parent_hash)?),
+            fee_recipient: pharos_types::bellatrix::execution_payload::ExecutionAddress::from_array(
+                parse_hex_fixed::<20>(&p.fee_recipient)?,
+            ),
+            state_root: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.state_root)?),
+            receipts_root: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(
+                &p.receipts_root,
+            )?),
+            logs_bloom,
+            prev_randao: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.prev_randao)?),
+            block_number: parse_hex_u64(&p.block_number)?,
+            gas_limit: parse_hex_u64(&p.gas_limit)?,
+            gas_used: parse_hex_u64(&p.gas_used)?,
+            timestamp: parse_hex_u64(&p.timestamp)?,
+            extra_data,
+            base_fee_per_gas: parse_hex_uint256(&p.base_fee_per_gas)?,
+            block_hash: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.block_hash)?),
+            transactions,
+            withdrawals,
+            blob_gas_used: parse_hex_u64(&p.blob_gas_used)?,
+            excess_blob_gas: parse_hex_u64(&p.excess_blob_gas)?,
+        })
+    }
+}
+
+// ── TryFrom<ExecutionPayloadV3> for deneb::ExecutionPayload (minimal) ─────────
+
+/// Convert `ExecutionPayloadV3` wire type to the minimal Deneb in-house
+/// `ExecutionPayload` (MAX_WITHDRAWALS_PER_PAYLOAD = 4).
+impl TryFrom<ExecutionPayloadV3>
+    for pharos_types::deneb::ExecutionPayload<1_073_741_824, 1_048_576, 256, 32, 4>
+{
+    type Error = crate::error::EngineError;
+
+    fn try_from(p: ExecutionPayloadV3) -> Result<Self, Self::Error> {
+        use pharos_ssz::{SszList, SszVector};
+        use pharos_types::capella::execution_payload::Withdrawal;
+        use pharos_types::phase0::primitives::{Gwei, ValidatorIndex};
+
+        if p.transactions.len() as u64 > 1_048_576 {
+            return Err(crate::error::EngineError::UnexpectedResponse(format!(
+                "transactions count {} exceeds MAX_TRANSACTIONS_PER_PAYLOAD 1048576",
+                p.transactions.len()
+            )));
+        }
+        if p.withdrawals.len() as u64 > 4 {
+            return Err(crate::error::EngineError::UnexpectedResponse(format!(
+                "withdrawals count {} exceeds MAX_WITHDRAWALS_PER_PAYLOAD 4",
+                p.withdrawals.len()
+            )));
+        }
+        let txs: Vec<SszList<u8, 1_073_741_824>> = p
+            .transactions
+            .iter()
+            .map(|h| decode_hex_bytes_into_sszlist(h))
+            .collect::<Result<_, _>>()?;
+        let transactions = SszList::from_items(txs).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("transactions overflow".into())
+        })?;
+        let withdrawals_vec: Vec<Withdrawal> = p
+            .withdrawals
+            .iter()
+            .map(|w| {
+                Ok(Withdrawal {
+                    index: parse_hex_u64(&w.index)?,
+                    validator_index: ValidatorIndex(parse_hex_u64(&w.validator_index)?),
+                    address:
+                        pharos_types::bellatrix::execution_payload::ExecutionAddress::from_array(
+                            parse_hex_fixed::<20>(&w.address)?,
+                        ),
+                    amount: Gwei(parse_hex_u64(&w.amount)?),
+                })
+            })
+            .collect::<Result<_, crate::error::EngineError>>()?;
+        let withdrawals = SszList::from_items(withdrawals_vec).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("withdrawals overflow".into())
+        })?;
+        let extra_data = decode_hex_bytes_into_sszlist(&p.extra_data)?;
+        let logs_bloom_bytes = parse_hex_fixed::<256>(&p.logs_bloom)?;
+        let logs_bloom = SszVector::from_items(logs_bloom_bytes).map_err(|_| {
+            crate::error::EngineError::UnexpectedResponse("logs_bloom size mismatch".into())
+        })?;
+        Ok(pharos_types::deneb::ExecutionPayload {
+            parent_hash: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.parent_hash)?),
+            fee_recipient: pharos_types::bellatrix::execution_payload::ExecutionAddress::from_array(
+                parse_hex_fixed::<20>(&p.fee_recipient)?,
+            ),
+            state_root: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.state_root)?),
+            receipts_root: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(
+                &p.receipts_root,
+            )?),
+            logs_bloom,
+            prev_randao: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.prev_randao)?),
+            block_number: parse_hex_u64(&p.block_number)?,
+            gas_limit: parse_hex_u64(&p.gas_limit)?,
+            gas_used: parse_hex_u64(&p.gas_used)?,
+            timestamp: parse_hex_u64(&p.timestamp)?,
+            extra_data,
+            base_fee_per_gas: parse_hex_uint256(&p.base_fee_per_gas)?,
+            block_hash: pharos_utils::Hash256::from_array(parse_hex_fixed::<32>(&p.block_hash)?),
+            transactions,
+            withdrawals,
+            blob_gas_used: parse_hex_u64(&p.blob_gas_used)?,
+            excess_blob_gas: parse_hex_u64(&p.excess_blob_gas)?,
+        })
+    }
+}
+
 // ── GetPayloadV2Response ──────────────────────────────────────────────────────
 
 /// Response to `engine_getPayloadV2` per `execution-apis/src/engine/shanghai.md`.

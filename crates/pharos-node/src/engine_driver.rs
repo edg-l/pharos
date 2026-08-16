@@ -19,8 +19,8 @@ use tracing::{error, info, warn};
 use pharos_engine::{
     EngineError, EngineHandle, ForkchoiceUpdatedVersion, NewPayloadVersion, NewPayloadWire,
     types::{
-        ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1, PayloadAttributesV1,
-        PayloadAttributesV2, PayloadIdV1, WithdrawalV1,
+        ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceStateV1,
+        PayloadAttributesV1, PayloadAttributesV2, PayloadIdV1, WithdrawalV1,
     },
 };
 use pharos_fork_choice::{
@@ -33,8 +33,10 @@ use pharos_stf::{
     phase0::accessors::{get_current_epoch, get_randao_mix},
 };
 use pharos_types::{
-    BeaconStateView, EthSpec, PayloadStatus, config::RuntimeConfig, phase0::primitives::Root,
-    views::BeaconBlockView,
+    BeaconStateView, EthSpec, PayloadStatus,
+    config::RuntimeConfig,
+    phase0::primitives::Root,
+    views::{BeaconBlockView, ForkVariant},
 };
 use pharos_utils::Hash256;
 
@@ -106,6 +108,74 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
         let wire: ExecutionPayloadV2 = payload.clone().into();
         self.new_payload_wire(NewPayloadWire::V2(wire))
     }
+
+    /// Override the default: call `engine_newPayloadV3` with the full deneb payload
+    /// (including `blobGasUsed`, `excessBlobGas`), the versioned hashes derived from
+    /// `blob_kzg_commitments`, and the `parentBeaconBlockRoot`.
+    ///
+    /// Per `execution-apis/src/engine/cancun.md` engine_newPayloadV3.
+    fn notify_new_payload_deneb<
+        const MAX_BYTES_PER_TRANSACTION: u64,
+        const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+        const BYTES_PER_LOGS_BLOOM: u64,
+        const MAX_EXTRA_DATA_BYTES: u64,
+        const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    >(
+        &self,
+        payload: &pharos_types::deneb::ExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+        >,
+        versioned_hashes: &[[u8; 32]],
+        parent_beacon_block_root: pharos_types::phase0::primitives::Root,
+    ) -> pharos_stf::PayloadVerificationStatus {
+        let wire: ExecutionPayloadV3 = payload.clone().into();
+        // Convert versioned hashes to hex DATA strings.
+        let vh_hex: Vec<String> = versioned_hashes
+            .iter()
+            .map(|h| bytes_to_data_hex(h))
+            .collect();
+        let pbbr_hex = bytes_to_data_hex(parent_beacon_block_root.as_slice());
+        self.new_payload_wire(NewPayloadWire::V3 {
+            payload: wire,
+            versioned_hashes: vh_hex,
+            parent_beacon_block_root: pbbr_hex,
+        })
+    }
+
+    /// Override the default: call `engine_getBlobsV1` on the local EL blob pool.
+    ///
+    /// Returns one `Option<(blob_bytes, proof_bytes)>` per versioned hash.  `None`
+    /// means the EL does not have that blob (not yet in mempool or already pruned).
+    /// Any engine transport/JSON-RPC error results in an empty vec (no fallback).
+    ///
+    /// Per `D-getblobsv1-da-fallback` (M10-Deneb Phase 3).
+    fn get_blobs_v1(&self, versioned_hashes: &[[u8; 32]]) -> Vec<Option<(Vec<u8>, Vec<u8>)>> {
+        let vh_hex: Vec<String> = versioned_hashes
+            .iter()
+            .map(|h| bytes_to_data_hex(h))
+            .collect();
+        match self.engine.get_blobs_v1_blocking(vh_hex) {
+            Ok(blobs) => blobs
+                .into_iter()
+                .map(|opt| {
+                    opt.map(|b| {
+                        // Decode hex-encoded blob and proof bytes.
+                        let blob = hex_data_to_bytes(&b.blob).unwrap_or_default();
+                        let proof = hex_data_to_bytes(&b.proof).unwrap_or_default();
+                        (blob, proof)
+                    })
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "get_blobs_v1: engine error; skipping EL fallback");
+                vec![]
+            }
+        }
+    }
 }
 
 impl ExecutionEngineHandle {
@@ -131,6 +201,7 @@ impl ExecutionEngineHandle {
         let version = match &wire {
             NewPayloadWire::V1(_) => NewPayloadVersion::V1,
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
+            NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
         };
         match self.engine.new_payload_blocking(version, wire) {
             Ok(status) => {
@@ -225,6 +296,20 @@ pub trait PayloadToWireV2 {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Decode a `0x`-prefixed hex DATA string to raw bytes.
+///
+/// Returns `None` on any parse error.
+fn hex_data_to_bytes(s: &str) -> Option<Vec<u8>> {
+    let hex = s.strip_prefix("0x")?;
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect()
+}
 
 /// Encode a byte slice as `0x`-prefixed lowercase hex (DATA encoding).
 fn bytes_to_data_hex(bytes: &[u8]) -> String {
@@ -701,24 +786,35 @@ pub async fn run_engine_driver_loop<E: EthSpec, P: PowBlockProvider + Send + Syn
                     finalized_block_hash: change.finalized_block_hash.clone(),
                 };
 
-                // Select engine_forkchoiceUpdatedV1 (Bellatrix) or V2 (Capella+)
+                // Select engine_forkchoiceUpdatedV1 (Bellatrix), V2 (Capella), or V3 (Deneb+)
                 // based on the head block's fork.
                 //
-                // For the follow-only path (no payload attributes), FCU V1 and V2
-                // behave identically when attrs = null. We dispatch V2 when the
-                // head block is a Capella block (E::unwrap_capella_block returns Some).
+                // For the follow-only path (no payload attributes), all FCU versions
+                // behave identically when attrs = null. We dispatch the highest version
+                // matching the head block's fork.
                 //
                 // Per `D-engine-v2-dispatch`: dispatch V2 when head is Capella.
+                // Deneb uses V3 per cancun.md `engine_forkchoiceUpdatedV3`.
                 let fcu_version = {
                     let store = store.read();
-                    if let Some(block) = store.blocks.get(&change.head_root) {
-                        if E::unwrap_capella_block(block).is_some() {
-                            ForkchoiceUpdatedVersion::V2
-                        } else {
-                            ForkchoiceUpdatedVersion::V1
-                        }
-                    } else {
-                        ForkchoiceUpdatedVersion::V1
+                    // Exhaustive fork match (no `unwrap_<fork>` chains): adding a
+                    // new fork forces a compile error here rather than silently
+                    // dispatching the wrong FCU version. Derived from the head
+                    // state's fork (== the head block's fork; the block view has
+                    // no fork discriminant).
+                    match store
+                        .block_states
+                        .get(&change.head_root)
+                        .map(|s| s.fork_variant())
+                    {
+                        Some(ForkVariant::Deneb) => ForkchoiceUpdatedVersion::V3,
+                        Some(ForkVariant::Capella) => ForkchoiceUpdatedVersion::V2,
+                        Some(
+                            ForkVariant::Phase0
+                            | ForkVariant::Altair
+                            | ForkVariant::Bellatrix,
+                        ) => ForkchoiceUpdatedVersion::V1,
+                        None => ForkchoiceUpdatedVersion::V1,
                     }
                 };
 
@@ -726,9 +822,11 @@ pub async fn run_engine_driver_loop<E: EthSpec, P: PowBlockProvider + Send + Syn
                 let state_clone = state.clone();
                 let fcu_result = tokio::task::spawn_blocking(move || {
                     match fcu_version {
+                        ForkchoiceUpdatedVersion::V3 => engine_clone
+                            .forkchoice_updated_v3_blocking(state_clone, None),
                         ForkchoiceUpdatedVersion::V2 => engine_clone
                             .forkchoice_updated_v2_blocking(state_clone, None),
-                        _ => engine_clone.forkchoice_updated_blocking(
+                        ForkchoiceUpdatedVersion::V1 => engine_clone.forkchoice_updated_blocking(
                             ForkchoiceUpdatedVersion::V1,
                             state_clone,
                             None,
@@ -775,7 +873,7 @@ pub async fn run_engine_driver_loop<E: EthSpec, P: PowBlockProvider + Send + Syn
                                 );
                             }
                             PayloadStatusStatus::Valid => {
-                                // Do not overwrite the status set by engine_newPayloadV1.
+                                // Do not overwrite the status set by engine_newPayloadV1/V2/V3.
                                 // `newPayload` is the authoritative source for block-level
                                 // payload validity; FCU Valid merely means the EL accepted
                                 // the forkchoice state (which may include a block already
@@ -807,6 +905,7 @@ pub async fn run_engine_driver_loop<E: EthSpec, P: PowBlockProvider + Send + Syn
                 let version = match &payload_wire {
                     NewPayloadWire::V1(_) => NewPayloadVersion::V1,
                     NewPayloadWire::V2(_) => NewPayloadVersion::V2,
+                    NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
                 };
                 let np_result = tokio::task::spawn_blocking(move || {
                     engine_clone.new_payload_blocking(version, payload_wire)
@@ -1129,6 +1228,7 @@ mod tests {
         let version = match &wire {
             NewPayloadWire::V1(_) => NewPayloadVersion::V1,
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
+            NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
         };
         assert_eq!(version, NewPayloadVersion::V1);
     }
@@ -1158,6 +1258,7 @@ mod tests {
         let version = match &wire {
             NewPayloadWire::V1(_) => NewPayloadVersion::V1,
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
+            NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
         };
         assert_eq!(version, NewPayloadVersion::V2);
     }
