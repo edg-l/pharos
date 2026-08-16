@@ -57,14 +57,52 @@ use crate::peer::manager::PeerManager;
 use crate::rpc::handler::handle_request;
 use crate::rpc::types::{RpcRequest, RpcResponse};
 use crate::scoring::{HandshakeFailKind, PeerScorer, RpcErrorKind, RpcMethod, ScoreEvent};
-use crate::topics::{GossipTopic, GossipTopicKind, topic_kind_name};
+use crate::topics::{GossipTopic, GossipTopicKind, is_subnet_topic, topic_kind_name};
 use crate::types::{
     ConnectionDirection, GOODBYE_CLIENT_SHUTDOWN, GOODBYE_FAULT_ERROR, GOODBYE_IRRELEVANT_NETWORK,
     PeerState,
 };
-use pharos_utils::metrics::{METRIC_GOSSIP_MSG_TOTAL, METRIC_RPC_LATENCY_SECONDS};
+use pharos_utils::metrics::{
+    METRIC_GOSSIP_MSG_TOTAL, METRIC_PEER_SCORE, METRIC_RPC_LATENCY_SECONDS,
+};
 
 use behaviour::{PharosBehaviour, PharosBehaviourEvent};
+
+// ── Scoring enforcement constants (M11 Phase 11) ──────────────────────────────
+
+/// How long a peer banned for crossing the scorer ban threshold stays blocked
+/// from reconnecting. Mirrors the gossipsub-v1.1 graylist-recovery horizon.
+const SCORE_BAN_DURATION: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Upper bound of each peer-score gauge bucket (M11 Phase 11 task 4). Scores at
+/// or below a bound fall in that bucket; scores above the last bound fall in the
+/// overflow bucket (`ALL_SCORE_BUCKET_LABELS` last entry).
+const SCORE_BUCKETS: [f64; 4] = [
+    crate::scoring::BAN_THRESHOLD,        // <= -100 : ban region
+    crate::scoring::DISCONNECT_THRESHOLD, // <= -50  : disconnect region
+    0.0,                                  // <= 0    : negative-but-tolerated
+    50.0,                                 // <= 50   : healthy
+];
+
+/// Gauge bucket labels, one per `SCORE_BUCKETS` bound plus a trailing overflow
+/// bucket for scores above the last bound.
+const ALL_SCORE_BUCKET_LABELS: [&str; SCORE_BUCKETS.len() + 1] =
+    ["banned", "disconnect", "negative", "healthy", "excellent"];
+
+/// Index of the bucket a `score` falls into, for `ALL_SCORE_BUCKET_LABELS`.
+fn score_bucket_index(score: f64) -> usize {
+    for (idx, &bound) in SCORE_BUCKETS.iter().enumerate() {
+        if score <= bound {
+            return idx;
+        }
+    }
+    SCORE_BUCKETS.len()
+}
+
+/// Bucket label a `score` falls into (M11 Phase 11 task 4 gauge label).
+fn score_bucket_label(score: f64) -> &'static str {
+    ALL_SCORE_BUCKET_LABELS[score_bucket_index(score)]
+}
 
 // ── Commands and Events ───────────────────────────────────────────────────────
 
@@ -407,6 +445,13 @@ impl<
             tracing::debug!(%peer_id, "dial suppressed: peer_manager state precludes re-dial");
             return false;
         }
+        // Exponential dial backoff (M11 Phase 11 task 3): a peer that has
+        // repeatedly failed to dial is held off until its backoff window
+        // elapses. `NoopScorer` returns `now`, so this never suppresses.
+        if self.peer_manager.next_dial_allowed(&peer_id) > Instant::now() {
+            tracing::debug!(%peer_id, "dial suppressed: dial backoff window not yet elapsed");
+            return false;
+        }
         self.pending_dials.insert(peer_id, Instant::now());
         match self.swarm.dial(addr.clone()) {
             Ok(()) => true,
@@ -620,9 +665,12 @@ impl<
                                 _ => {}
                             }
 
-                            // Record score event for the peer.
+                            // Record score event for the peer, then update the
+                            // peer-score gauge for its new bucket (M11 Phase 11
+                            // task 4: gauge updated on each score change).
                             self.peer_manager
                                 .record_event(propagation_source, score_event);
+                            self.emit_peer_score_gauge(&propagation_source);
                         }
                         Err(join_err) => {
                             if join_err.is_panic() {
@@ -799,6 +847,20 @@ impl<
             }
             gossipsub::Event::Unsubscribed { peer_id, topic } => {
                 if let Ok(parsed) = GossipTopic::from_topic_hash(&topic, &self.topic_map) {
+                    // Leaving a per-subnet mesh (attestation / sync-committee /
+                    // blob) is a subnet-non-propagation signal: the peer is no
+                    // longer serving a subnet we expect coverage on (M11 Phase 0
+                    // mapping table). Penalise via the scorer before forwarding
+                    // the event.
+                    if is_subnet_topic(&parsed.kind) {
+                        self.peer_manager.record_event(
+                            peer_id,
+                            ScoreEvent::UnsubscribedFromExpectedSubnet {
+                                topic: topic.clone(),
+                            },
+                        );
+                        self.emit_peer_score_gauge(&peer_id);
+                    }
                     self.emit_event(NetworkEvent::PeerUnsubscribed {
                         peer: peer_id,
                         topic: parsed,
@@ -811,8 +873,22 @@ impl<
             gossipsub::Event::GossipsubNotSupported { peer_id } => {
                 tracing::debug!(%peer_id, "gossipsub not supported");
             }
-            gossipsub::Event::SlowPeer { peer_id, .. } => {
-                tracing::debug!(%peer_id, "slow peer");
+            gossipsub::Event::SlowPeer {
+                peer_id,
+                failed_messages,
+            } => {
+                // gossipsub reports the peer cannot keep up with message
+                // delivery. Penalise proportionally to the total failed-message
+                // count (M11 Phase 0 mapping table → ScoreEvent::SlowPeer).
+                let failed = failed_messages.total();
+                tracing::debug!(%peer_id, failed, "slow peer");
+                self.peer_manager.record_event(
+                    peer_id,
+                    ScoreEvent::SlowPeer {
+                        failed_messages: failed,
+                    },
+                );
+                self.emit_peer_score_gauge(&peer_id);
             }
         }
     }
@@ -1414,6 +1490,10 @@ impl<
 
             let addrs = vec![endpoint.get_remote_address().clone()];
             self.peer_manager.on_connected(peer_id, dir, addrs);
+            // A successful connection clears any accumulated dial backoff so a
+            // peer that recovers is dialled at the base interval next time
+            // (M11 Phase 11 task 3).
+            self.peer_manager.record_dial_success(peer_id);
 
             if endpoint.is_dialer() {
                 self.peer_manager.on_handshaking(peer_id);
@@ -1520,28 +1600,83 @@ impl<
         }
     }
 
-    /// Prune peers that the scorer considers lowest-quality.
+    /// Prune peers that the scorer considers lowest-quality, and enforce the
+    /// scorer's ban/disconnect threshold decisions (M11 Phase 11 task 3).
     ///
-    /// Calls `peer_manager.should_prune()` and for each returned `PeerId`
-    /// sends `Goodbye(3)` (Fault/error) then disconnects from the swarm.
-    /// With `NoopScorer` this is always a no-op.
+    /// Three enforcement sources, in order:
+    /// 1. Peers at or below the **ban threshold** are banned (removed +
+    ///    blocked from reconnecting for the ban window) and disconnected.
+    /// 2. Peers at or below the **disconnect threshold** (but above ban) are
+    ///    disconnected with `Goodbye(3)` (Fault/Error) but not banned.
+    /// 3. Excess peers above `target_peers` are pruned by
+    ///    `peer_manager.should_prune()` (lowest-scoring first).
+    ///
+    /// With `NoopScorer` every threshold check returns `false` and
+    /// `should_prune()` is empty, so this stays a no-op.
     pub fn tick_score_prune(&mut self) {
         self.peer_manager.sweep_expired_bans();
+
+        // Snapshot connected peers so we can consult the scorer thresholds
+        // without holding an iterator borrow across the mutating actions.
+        let connected: Vec<PeerId> = self.peer_manager.connected_peers().collect();
+        for peer_id in &connected {
+            if self.peer_manager.scorer_wants_ban(peer_id) {
+                // Ban: remove + block reconnects for the ban window, then
+                // disconnect with Goodbye(3 = Fault/Error). The phase0 Goodbye
+                // table has no dedicated "banned" code; Fault/Error is the
+                // closest fit (specs/phase0/p2p-interface.md:1393).
+                self.peer_manager
+                    .note_disconnect_reason(*peer_id, crate::types::DisconnectReason::ScorerLow);
+                self.peer_manager.on_disconnecting(*peer_id);
+                self.send_rpc_request(
+                    peer_id,
+                    crate::rpc::types::RpcRequest::Goodbye(GOODBYE_FAULT_ERROR),
+                );
+                self.peer_manager.ban(*peer_id, SCORE_BAN_DURATION);
+                self.swarm.disconnect_peer_id(*peer_id).ok();
+            } else if self.peer_manager.scorer_wants_disconnect(peer_id) {
+                self.disconnect_with_goodbye(*peer_id, GOODBYE_FAULT_ERROR);
+            }
+        }
+
+        // Prune any remaining excess (lowest-scoring first) to reach target.
         let to_prune = self.peer_manager.should_prune();
         for peer_id in to_prune {
-            // Pre-register reason before disconnect so ConnectionClosed carries
-            // Goodbye(3 = Fault/Error). Spec: specs/phase0/p2p-interface.md:1395.
-            self.peer_manager.note_disconnect_reason(
-                peer_id,
-                crate::types::DisconnectReason::Goodbye(GOODBYE_FAULT_ERROR),
-            );
-            self.peer_manager.on_disconnecting(peer_id);
-            // Goodbye is fire-and-forget; send directly without tracking.
-            self.send_rpc_request(
-                &peer_id,
-                crate::rpc::types::RpcRequest::Goodbye(GOODBYE_FAULT_ERROR),
-            );
-            self.swarm.disconnect_peer_id(peer_id).ok();
+            self.disconnect_with_goodbye(peer_id, GOODBYE_FAULT_ERROR);
+        }
+        self.emit_all_peer_score_gauges();
+    }
+
+    /// Pre-register `Goodbye(reason)`, send it fire-and-forget, and force the
+    /// swarm-level disconnect. Shared by the disconnect-threshold and prune
+    /// paths in [`tick_score_prune`].
+    fn disconnect_with_goodbye(&mut self, peer_id: PeerId, reason: u64) {
+        self.peer_manager
+            .note_disconnect_reason(peer_id, crate::types::DisconnectReason::Goodbye(reason));
+        self.peer_manager.on_disconnecting(peer_id);
+        self.send_rpc_request(&peer_id, crate::rpc::types::RpcRequest::Goodbye(reason));
+        self.swarm.disconnect_peer_id(peer_id).ok();
+    }
+
+    /// Update the peer-score gauge for a single peer's current bucket
+    /// (M11 Phase 11 task 4). The gauge is labelled by score bucket so the
+    /// Prometheus surface shows the distribution of peer quality.
+    fn emit_peer_score_gauge(&self, peer_id: &PeerId) {
+        let score = self.peer_manager.score(peer_id);
+        metrics::gauge!(METRIC_PEER_SCORE, "bucket" => score_bucket_label(score)).set(score);
+    }
+
+    /// Recompute the per-bucket peer-score gauges across all connected peers.
+    ///
+    /// Sets each bucket gauge to the count of connected peers whose score falls
+    /// in that bucket, so the Prometheus surface reflects the live distribution.
+    fn emit_all_peer_score_gauges(&self) {
+        let mut counts: [usize; SCORE_BUCKETS.len() + 1] = [0; SCORE_BUCKETS.len() + 1];
+        for score in self.peer_manager.connected_peer_scores() {
+            counts[score_bucket_index(score)] += 1;
+        }
+        for (idx, &label) in ALL_SCORE_BUCKET_LABELS.iter().enumerate() {
+            metrics::gauge!(METRIC_PEER_SCORE, "bucket" => label).set(counts[idx] as f64);
         }
     }
 
@@ -1730,7 +1865,7 @@ impl<
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Map an `RpcRequest` variant to its `RpcMethod` for scoring.
-fn rpc_method_from_request(req: &RpcRequest) -> RpcMethod {
+pub(crate) fn rpc_method_from_request(req: &RpcRequest) -> RpcMethod {
     match req {
         RpcRequest::Status(_) => RpcMethod::Status,
         RpcRequest::Goodbye(_) => RpcMethod::Goodbye,
@@ -2263,6 +2398,64 @@ impl<
     pub fn test_pending_dials_contains(&self, p: &PeerId) -> bool {
         self.pending_dials.contains_key(p)
     }
+
+    /// Register a peer as `Connected` in the peer manager (M11 Phase 11 e2e
+    /// test seam). Mirrors what `on_swarm_connection_established` does for the
+    /// peer-table side so score-driven prune/gauge logic has a live peer set.
+    #[doc(hidden)]
+    pub fn test_register_connected_peer(&mut self, peer_id: PeerId) {
+        self.peer_manager
+            .on_connected(peer_id, ConnectionDirection::Inbound, Vec::new());
+        self.peer_manager.on_handshake_complete(peer_id);
+    }
+
+    /// Drive the real `on_gossip_event` mapping for a synthetic gossipsub event
+    /// (M11 Phase 11 e2e test seam). Used to feed `SlowPeer` / `Unsubscribed`.
+    #[doc(hidden)]
+    pub async fn test_on_gossip_event(&mut self, event: gossipsub::Event) {
+        self.on_gossip_event(event).await;
+    }
+
+    /// Current scorer score for `peer_id` (M11 Phase 11 e2e test seam).
+    #[doc(hidden)]
+    pub fn test_peer_score(&self, peer_id: &PeerId) -> f64 {
+        self.peer_manager.score(peer_id)
+    }
+
+    /// Lowest-scoring peers per the scorer (M11 Phase 11 e2e test seam).
+    #[doc(hidden)]
+    pub fn test_worst_peers(&self, count: usize) -> Vec<PeerId> {
+        self.peer_manager.should_prune_n(count)
+    }
+
+    /// Drive the real per-method inbound rate-limit gate + penalty exactly as
+    /// `handle_request` does (M11 Phase 11 e2e test seam). Returns `true` when
+    /// the request is allowed; on rejection it records `RateLimitExceeded`,
+    /// matching the wired handler path.
+    #[doc(hidden)]
+    pub fn test_rate_limit_request(&mut self, peer_id: PeerId, method: RpcMethod) -> bool {
+        if self.peer_manager.allow_request(peer_id, method) {
+            true
+        } else {
+            self.peer_manager
+                .record_event(peer_id, ScoreEvent::RateLimitExceeded { method });
+            self.emit_peer_score_gauge(&peer_id);
+            false
+        }
+    }
+
+    /// Drive the real score-prune enforcement tick (M11 Phase 11 e2e test seam).
+    #[doc(hidden)]
+    pub fn test_tick_score_prune(&mut self) {
+        self.tick_score_prune();
+    }
+
+    /// `true` if the peer manager currently holds an active ban for `peer_id`
+    /// (M11 Phase 11 e2e test seam).
+    #[doc(hidden)]
+    pub fn test_peer_is_banned(&self, peer_id: &PeerId) -> bool {
+        self.peer_manager.is_banned(peer_id)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -2528,5 +2721,33 @@ mod tests {
 
         let result = task.await.expect("network task panicked");
         assert!(result.is_ok(), "Network::run returned an error: {result:?}");
+    }
+
+    /// M11 Phase 11: only per-subnet topics are scored for subnet coverage; the
+    /// `Unsubscribed` arm penalises a peer that leaves one of them.
+    #[test]
+    fn subnet_topics_are_scored_for_coverage() {
+        use crate::topics::{GossipTopicKind, is_subnet_topic};
+        assert!(is_subnet_topic(&GossipTopicKind::BeaconAttestation(3)));
+        assert!(is_subnet_topic(&GossipTopicKind::SyncCommittee(1)));
+        assert!(is_subnet_topic(&GossipTopicKind::BlobSidecar(0)));
+        assert!(!is_subnet_topic(&GossipTopicKind::BeaconBlock));
+        assert!(!is_subnet_topic(&GossipTopicKind::BeaconAggregateAndProof));
+        assert!(!is_subnet_topic(&GossipTopicKind::VoluntaryExit));
+    }
+
+    /// M11 Phase 11 task 4: the peer-score gauge bucket label tracks the score
+    /// region (ban / disconnect / negative / healthy / excellent).
+    #[test]
+    fn score_bucket_labels_partition_the_range() {
+        assert_eq!(super::score_bucket_label(-200.0), "banned");
+        assert_eq!(super::score_bucket_label(-100.0), "banned");
+        assert_eq!(super::score_bucket_label(-75.0), "disconnect");
+        assert_eq!(super::score_bucket_label(-50.0), "disconnect");
+        assert_eq!(super::score_bucket_label(-1.0), "negative");
+        assert_eq!(super::score_bucket_label(0.0), "negative");
+        assert_eq!(super::score_bucket_label(25.0), "healthy");
+        assert_eq!(super::score_bucket_label(50.0), "healthy");
+        assert_eq!(super::score_bucket_label(100.0), "excellent");
     }
 }

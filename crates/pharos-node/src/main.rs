@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use pharos_engine::{EngineClient, spawn_engine_actor};
 use pharos_fork_choice::{get_forkchoice_store, on_tick};
 use pharos_network::discovery::subnets::compute_subscribed_subnets;
-use pharos_network::{NetworkBuilder, NoopScorer};
+use pharos_network::{NetworkBuilder, NoopScorer, RealScorer};
 use pharos_ssz::{Bitvector, Decode, TreeHash};
 use pharos_storage::{RocksStore, RocksStoreConfig};
 use pharos_types::phase0::MainnetBeaconState as Phase0MainnetBeaconState;
@@ -791,6 +791,10 @@ async fn main() -> anyhow::Result<()> {
         .tcp_listen_port(tcp_port)
         .discv5_addr(discv5_addr)
         .bootnodes(bootnodes)
+        // M11 Phase 11: replace the M2 NoopScorer with the real peer scorer so
+        // the swarm loop feeds live gossip/req-resp/dial signals into scoring
+        // and acts on disconnect/ban/rate-limit/backoff decisions.
+        .scorer(RealScorer::new())
         .spawn()
         .await
         .context("failed to start network")?;

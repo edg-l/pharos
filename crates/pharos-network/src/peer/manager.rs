@@ -249,6 +249,50 @@ impl<S: PeerScorer> PeerManager<S> {
         self.scorer.record(peer_id, event);
     }
 
+    /// Current score for `peer_id` (higher is better). 0.0 for unknown peers.
+    pub fn score(&self, peer_id: &PeerId) -> f64 {
+        self.scorer.score(peer_id)
+    }
+
+    /// Snapshot of every connected peer's current score, for the peer-score
+    /// gauge (M11 Phase 11 task 4).
+    pub fn connected_peer_scores(&self) -> Vec<f64> {
+        self.peers
+            .values()
+            .map(|info| self.scorer.score(&info.peer_id))
+            .collect()
+    }
+
+    /// True if the scorer considers `peer_id` a ban candidate
+    /// (score ≤ ban threshold). Always `false` for `NoopScorer`.
+    pub fn scorer_wants_ban(&self, peer_id: &PeerId) -> bool {
+        self.scorer.is_banned(peer_id)
+    }
+
+    /// True if the scorer wants `peer_id` disconnected (score ≤ disconnect
+    /// threshold). Always `false` for `NoopScorer`.
+    pub fn scorer_wants_disconnect(&self, peer_id: &PeerId) -> bool {
+        self.scorer.should_disconnect(peer_id)
+    }
+
+    /// Gate an inbound req-resp request on the peer's per-method token bucket
+    /// (M11 Phase 11 task 2). Returns `false` when the bucket is exhausted; the
+    /// caller should reject the request and record a `RateLimitExceeded` event.
+    pub fn allow_request(&mut self, peer_id: PeerId, method: crate::scoring::RpcMethod) -> bool {
+        self.scorer.allow_request(peer_id, method)
+    }
+
+    /// Earliest `Instant` at which a (re)dial of `peer_id` is permitted by the
+    /// scorer's exponential dial backoff (M11 Phase 11 task 3).
+    pub fn next_dial_allowed(&self, peer_id: &PeerId) -> Instant {
+        self.scorer.next_dial_allowed(peer_id)
+    }
+
+    /// Record a successful dial, clearing the scorer's dial backoff for the peer.
+    pub fn record_dial_success(&mut self, peer_id: PeerId) {
+        self.scorer.record_dial_success(peer_id);
+    }
+
     // ── Pruning ───────────────────────────────────────────────────────────────
 
     /// Return the `PeerId`s that should be pruned to reach `target_peers`.
@@ -258,6 +302,12 @@ impl<S: PeerScorer> PeerManager<S> {
     pub fn should_prune(&self) -> Vec<PeerId> {
         let excess = self.peers.len().saturating_sub(self.target_peers);
         self.scorer.worst_peers(excess)
+    }
+
+    /// The `n` lowest-scoring peers per the scorer, independent of the
+    /// `target_peers` excess calculation (M11 Phase 11 test/inspection seam).
+    pub fn should_prune_n(&self, n: usize) -> Vec<PeerId> {
+        self.scorer.worst_peers(n)
     }
 
     // ── Ban list ──────────────────────────────────────────────────────────────
@@ -291,14 +341,16 @@ impl<S: PeerScorer> PeerManager<S> {
 
     /// Record a failed outbound dial attempt in the bounded LRU cache.
     ///
-    /// When `peer` is `Some`, the failure is attributed to a known `PeerId` and
-    /// the cache entry is updated. When `peer` is `None` (dial failed before
+    /// When `peer` is `Some`, the failure is attributed to a known `PeerId`, the
+    /// LRU cache entry is updated, and the scorer's exponential dial backoff is
+    /// advanced (M11 Phase 11 task 3). When `peer` is `None` (dial failed before
     /// identity was established), the call is a no-op — there is no key to store.
     /// The cache capacity is 256 entries; the least-recently-used entry is
-    /// evicted when full. M11 will replace this with backoff-aware accounting.
+    /// evicted when full.
     pub fn note_dial_failure(&mut self, peer: Option<PeerId>) {
         if let Some(pid) = peer {
             self.recently_failed_dials.put(pid, Instant::now());
+            self.scorer.record_dial_failure(pid);
         }
     }
 

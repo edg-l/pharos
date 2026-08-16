@@ -14,13 +14,14 @@ use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::{ErrorMessage, MetaData as Phase0MetaData, Status};
 
 use crate::host::{BlobProvider, Host, LightClientProvider};
+use crate::network::rpc_method_from_request;
 use crate::peer::manager::PeerManager;
 use crate::rpc::min_epochs::compute_min_epochs_for_block_requests;
 use crate::rpc::types::{
     MAX_REQUEST_BLOCKS, MAX_REQUEST_LIGHT_CLIENT_UPDATES, MetaDataResponse, RpcRequest,
     RpcResponse, compute_max_request_blob_sidecars,
 };
-use crate::scoring::{HandshakeFailKind, PeerScorer, ScoreEvent};
+use crate::scoring::{HandshakeFailKind, PeerScorer, RpcMethod, ScoreEvent};
 use crate::types::{DisconnectReason, Fork};
 
 /// Handle an inbound `RpcRequest` and produce an `RpcResponse`.
@@ -46,6 +47,21 @@ where
 {
     let method = req.method_name();
     let _span = tracing::info_span!("rpc_handle", %peer, method).entered();
+
+    // Per-peer/per-method inbound rate limiting (M11 Phase 11 task 2). Goodbye
+    // is a teardown control message and is never gated. Over-limit requests are
+    // rejected with a ResourceUnavailable error and the peer is penalised via
+    // `ScoreEvent::RateLimitExceeded`, so a flooding peer scores itself down
+    // toward the disconnect/ban thresholds enforced by `tick_score_prune`.
+    let rpc_method = rpc_method_from_request(&req);
+    if rpc_method != RpcMethod::Goodbye && !peer_manager.allow_request(peer, rpc_method) {
+        peer_manager.record_event(peer, ScoreEvent::RateLimitExceeded { method: rpc_method });
+        tracing::debug!(%peer, ?rpc_method, "inbound request rate-limited");
+        return RpcResponse::Error {
+            code: 3, // ResourceUnavailable (rate limited)
+            message: make_error_message("rate limited"),
+        };
+    }
 
     match req {
         RpcRequest::Status(incoming) => {

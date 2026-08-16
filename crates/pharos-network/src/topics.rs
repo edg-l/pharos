@@ -216,6 +216,19 @@ pub(crate) fn topic_kind_name(kind: &GossipTopicKind) -> String {
     }
 }
 
+/// True for the per-subnet gossip topics whose mesh membership we score for
+/// coverage (M11 Phase 11): per-subnet attestation, sync-committee, and blob
+/// sidecar topics. Global topics (beacon block, aggregate, exits, LC updates)
+/// are not subnet-scoped and return `false`.
+pub(crate) fn is_subnet_topic(kind: &GossipTopicKind) -> bool {
+    matches!(
+        kind,
+        GossipTopicKind::BeaconAttestation(_)
+            | GossipTopicKind::SyncCommittee(_)
+            | GossipTopicKind::BlobSidecar(_)
+    )
+}
+
 /// Parse a topic kind from its wire-format name string.
 ///
 /// Returns `None` for unknown names.

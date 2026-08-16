@@ -156,6 +156,46 @@ pub trait PeerScorer: Send + Sync + 'static {
 
     /// Returns the `count` lowest-scoring peer IDs.
     fn worst_peers(&self, count: usize) -> Vec<PeerId>;
+
+    /// True if the peer's current score is at or below the ban threshold.
+    ///
+    /// The default returns `false` (a no-op scorer never bans). `RealScorer`
+    /// overrides this to compare against [`BAN_THRESHOLD`] (M11 Phase 11).
+    fn is_banned(&self, _peer: &PeerId) -> bool {
+        false
+    }
+
+    /// True if the peer's current score is at or below the disconnect threshold
+    /// (but not necessarily a ban candidate).
+    ///
+    /// The default returns `false`. `RealScorer` overrides this to compare
+    /// against [`DISCONNECT_THRESHOLD`] (M11 Phase 11).
+    fn should_disconnect(&self, _peer: &PeerId) -> bool {
+        false
+    }
+
+    /// Per-peer/per-method req-resp rate limiting (M11 Phase 11 task 2).
+    ///
+    /// Consumes one token from the peer's bucket for `method`; returns `false`
+    /// when the bucket is empty (the caller should reject / penalise the
+    /// request). The default always allows (a no-op scorer imposes no limit).
+    fn allow_request(&mut self, _peer: PeerId, _method: RpcMethod) -> bool {
+        true
+    }
+
+    /// The earliest [`Instant`] at which a (re)dial of this peer is allowed
+    /// (M11 Phase 11 task 3 dial backoff). The default returns [`Instant::now`]
+    /// (dial always allowed).
+    fn next_dial_allowed(&self, _peer: &PeerId) -> Instant {
+        Instant::now()
+    }
+
+    /// Records a failed dial attempt, advancing exponential backoff. The
+    /// default is a no-op (a no-op scorer tracks no backoff).
+    fn record_dial_failure(&mut self, _peer: PeerId) {}
+
+    /// Clears dial-backoff state after a successful dial. Default no-op.
+    fn record_dial_success(&mut self, _peer: PeerId) {}
 }
 
 /// A no-op scorer that returns 0.0 for all peers and never prunes.
@@ -490,6 +530,30 @@ impl PeerScorer for RealScorer {
             .collect();
         scored.sort_by(|a, b| a.1.total_cmp(&b.1));
         scored.into_iter().take(count).map(|(p, _)| p).collect()
+    }
+
+    fn is_banned(&self, peer: &PeerId) -> bool {
+        RealScorer::is_banned(self, peer)
+    }
+
+    fn should_disconnect(&self, peer: &PeerId) -> bool {
+        RealScorer::should_disconnect(self, peer)
+    }
+
+    fn allow_request(&mut self, peer: PeerId, method: RpcMethod) -> bool {
+        RealScorer::allow_request(self, peer, method)
+    }
+
+    fn next_dial_allowed(&self, peer: &PeerId) -> Instant {
+        RealScorer::next_dial_allowed(self, peer)
+    }
+
+    fn record_dial_failure(&mut self, peer: PeerId) {
+        RealScorer::record_dial_failure(self, peer)
+    }
+
+    fn record_dial_success(&mut self, peer: PeerId) {
+        RealScorer::record_dial_success(self, peer)
     }
 }
 
