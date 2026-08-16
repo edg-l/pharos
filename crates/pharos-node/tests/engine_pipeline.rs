@@ -221,6 +221,11 @@ fn build_genesis() -> (
         4,
         16,
         4096,
+        8192,
+        4,
+        8192,
+        16,
+        2,
     >,
 ) {
     let (state_inner, signed_block_inner) = build_anchor_bellatrix(Slot(0), 0);
@@ -515,6 +520,8 @@ async fn engine_pipeline_drives_bellatrix_chain() {
         capella_fork_epoch: Epoch(u64::MAX),
         deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
         deneb_fork_epoch: Epoch(u64::MAX),
+        electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
+        electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(

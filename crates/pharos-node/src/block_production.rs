@@ -1427,6 +1427,9 @@ where
                 blob_sidecars,
             ))
         }
+
+        // Electra STF is not yet implemented; block production returns an error.
+        ForkVariant::Electra => Err(ProduceError::WrongFork),
     }
 }
 

@@ -435,6 +435,97 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Both presets: `4096`.
     const MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS: u64;
 
+    // ── Electra preset constants ───────────────────────────────────────────────
+
+    /// `ELECTRA_FORK_VERSION` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
+    ///
+    /// Mainnet: `0x05000000`. Minimal: `0x05000001`.
+    const ELECTRA_FORK_VERSION: [u8; 4];
+
+    /// `ELECTRA_FORK_EPOCH` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
+    ///
+    /// Mainnet: `364032`. Minimal: `u64::MAX` (FAR_FUTURE_EPOCH).
+    const ELECTRA_FORK_EPOCH: u64;
+
+    /// `MAX_ATTESTER_SLASHINGS_ELECTRA` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `1`.
+    const MAX_ATTESTER_SLASHINGS_ELECTRA: u64;
+
+    /// `MAX_ATTESTATIONS_ELECTRA` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `8`.
+    const MAX_ATTESTATIONS_ELECTRA: u64;
+
+    /// `MAX_DEPOSIT_REQUESTS_PER_PAYLOAD` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `8192` (`2**13`).
+    const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64;
+
+    /// `MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `16` (`2**4`).
+    const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64;
+
+    /// `MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `2`.
+    const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64;
+
+    /// `MAX_PENDING_DEPOSITS_LIMIT` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `134217728` (`2**27`).
+    const MAX_PENDING_DEPOSITS_LIMIT: u64;
+
+    /// `MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Mainnet: `134217728` (`2**27`). Minimal: `64`.
+    const MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64;
+
+    /// `MAX_PENDING_CONSOLIDATIONS_LIMIT` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Mainnet: `262144` (`2**18`). Minimal: `64`.
+    const MAX_PENDING_CONSOLIDATIONS_LIMIT: u64;
+
+    /// `MAX_EFFECTIVE_BALANCE_ELECTRA` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `2048000000000` (`MAX_EFFECTIVE_BALANCE * 64`).
+    const MAX_EFFECTIVE_BALANCE_ELECTRA: u64;
+
+    /// `MIN_ACTIVATION_BALANCE` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `32000000000` (same as `MAX_EFFECTIVE_BALANCE`).
+    const MIN_ACTIVATION_BALANCE: u64;
+
+    /// `MAX_BLOBS_PER_BLOCK_ELECTRA` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
+    ///
+    /// Both presets default: `9` (EIP-7691).
+    const MAX_BLOBS_PER_BLOCK_ELECTRA: u64;
+
+    /// `MAX_AGGREGATION_BITS_ELECTRA` = `MAX_VALIDATORS_PER_COMMITTEE * MAX_COMMITTEES_PER_SLOT`.
+    ///
+    /// Pre-computed literal (B2/B3): cannot use compound expressions in const-generic positions.
+    /// Mainnet: `2048 * 64 = 131072`. Minimal: `2048 * 4 = 8192`.
+    const MAX_AGGREGATION_BITS_ELECTRA: u64;
+
+    // -- Electra misc constants (R8) --
+
+    /// `UNSET_DEPOSIT_REQUESTS_START_INDEX` — sentinel value for uninitialised
+    /// `deposit_requests_start_index` in `BeaconState`.
+    ///
+    /// `u64::MAX` (`2**64 - 1`). Per `specs/electra/beacon-chain.md`.
+    const UNSET_DEPOSIT_REQUESTS_START_INDEX: u64 = u64::MAX;
+
+    /// `FULL_EXIT_REQUEST_AMOUNT` — special amount that signals a full withdrawal request.
+    ///
+    /// `0`. Per `specs/electra/beacon-chain.md`.
+    const FULL_EXIT_REQUEST_AMOUNT: u64 = 0;
+
+    /// `COMPOUNDING_WITHDRAWAL_PREFIX` — credential prefix byte for compounding validators.
+    ///
+    /// `0x02`. Per `specs/electra/beacon-chain.md`.
+    const COMPOUNDING_WITHDRAWAL_PREFIX: u64 = 0x02;
+
     // -- Altair participation flag weights --
     // Source: `specs/altair/beacon-chain.md:84-89,105`
     // These are non-configurable spec constants, uniform across all presets.
@@ -1304,6 +1395,141 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
 
     /// Wrap a concrete deneb `SignedBeaconBlock` into the fork-enum `SignedBeaconBlock`.
     fn deneb_into_signed_block(s: Self::DenebSignedBeaconBlock) -> Self::SignedBeaconBlock;
+
+    // ── Electra assoc types ────────────────────────────────────────────────────
+
+    /// Electra inner `BeaconState` (unwrapped; used by electra STF entry).
+    type ElectraBeaconState: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconStateView;
+
+    /// Electra inner `BeaconBlock` (unwrapped).
+    type ElectraBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockView;
+
+    /// Electra inner `SignedBeaconBlock` (unwrapped).
+    type ElectraSignedBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::SignedBeaconBlockView<Message = Self::ElectraBeaconBlock>;
+
+    /// Electra inner `BeaconBlockBody` (unwrapped).
+    type ElectraBeaconBlockBody: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockBodyView;
+
+    /// Electra `LightClientBootstrap` for this preset.
+    type ElectraLightClientBootstrap: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Electra `LightClientUpdate` for this preset.
+    type ElectraLightClientUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Electra `LightClientFinalityUpdate` for this preset.
+    type ElectraLightClientFinalityUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + crate::views::LightClientFinalityUpdateView
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Electra `LightClientOptimisticUpdate` for this preset.
+    type ElectraLightClientOptimisticUpdate: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + crate::views::LightClientOptimisticUpdateView
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Unwrap a fork-enum `BeaconState` to the inner electra variant.
+    fn unwrap_electra_state(s: &Self::BeaconState) -> Option<&Self::ElectraBeaconState>;
+
+    /// Unwrap a fork-enum `BeaconState` to the inner electra variant (by value).
+    fn into_electra_state(s: Self::BeaconState) -> Option<Self::ElectraBeaconState>;
+
+    /// Wrap a concrete electra `BeaconState` into the fork-enum `BeaconState`.
+    fn electra_into_state(s: Self::ElectraBeaconState) -> Self::BeaconState;
+
+    /// Unwrap a fork-enum `BeaconBlock` to the inner electra variant.
+    fn unwrap_electra_block(s: &Self::BeaconBlock) -> Option<&Self::ElectraBeaconBlock>;
+
+    /// Wrap a concrete electra `BeaconBlock` into the fork-enum `BeaconBlock`.
+    fn electra_into_block(s: Self::ElectraBeaconBlock) -> Self::BeaconBlock;
+
+    /// Unwrap a fork-enum `SignedBeaconBlock` to the inner electra variant.
+    fn unwrap_electra_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::ElectraSignedBeaconBlock>;
+
+    /// Wrap a concrete electra `SignedBeaconBlock` into the fork-enum `SignedBeaconBlock`.
+    fn electra_into_signed_block(s: Self::ElectraSignedBeaconBlock) -> Self::SignedBeaconBlock;
 }
 
 // ── MainnetEthSpec ─────────────────────────────────────────────────────────────
@@ -1341,6 +1567,7 @@ macro_rules! impl_fork_dispatch {
                 S::Bellatrix(b) => B::Bellatrix(b.message.clone()),
                 S::Capella(b) => B::Capella(b.message.clone()),
                 S::Deneb(b) => B::Deneb(b.message.clone()),
+                S::Electra(b) => B::Electra(b.message.clone()),
             }
         }
 
@@ -1353,6 +1580,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Electra(_) => None,
             }
         }
 
@@ -1365,6 +1593,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Electra(_) => None,
             }
         }
 
@@ -1375,6 +1604,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Electra(_) => None,
             }
         }
 
@@ -1385,6 +1615,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Electra(_) => None,
             }
         }
 
@@ -1395,6 +1626,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Electra(_) => None,
             }
         }
 
@@ -1405,6 +1637,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Electra(_) => None,
             }
         }
 
@@ -1429,6 +1662,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Altair(_) => None,
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Electra(_) => None,
             }
         }
 
@@ -1439,6 +1673,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Electra(_) => None,
             }
         }
 
@@ -1463,6 +1698,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Bellatrix(_) => None,
                 crate::state::$block::Capella(_) => None,
                 crate::state::$block::Deneb(_) => None,
+                crate::state::$block::Electra(_) => None,
             }
         }
 
@@ -1473,6 +1709,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Bellatrix(_) => None,
                 crate::state::$block::Capella(_) => None,
                 crate::state::$block::Deneb(_) => None,
+                crate::state::$block::Electra(_) => None,
             }
         }
 
@@ -1483,6 +1720,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Altair(_) => None,
                 crate::state::$block::Capella(_) => None,
                 crate::state::$block::Deneb(_) => None,
+                crate::state::$block::Electra(_) => None,
             }
         }
 
@@ -1510,6 +1748,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Bellatrix(b) => Some(b.body.execution_payload.block_hash),
                 crate::state::$block::Capella(b) => Some(b.body.execution_payload.block_hash),
                 crate::state::$block::Deneb(b) => Some(b.body.execution_payload.block_hash),
+                crate::state::$block::Electra(b) => Some(b.body.execution_payload.block_hash),
                 crate::state::$block::Phase0(_) => None,
                 crate::state::$block::Altair(_) => None,
             }
@@ -1522,6 +1761,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Bellatrix(b) => Some(b.body.execution_payload.parent_hash),
                 crate::state::$block::Capella(b) => Some(b.body.execution_payload.parent_hash),
                 crate::state::$block::Deneb(b) => Some(b.body.execution_payload.parent_hash),
+                crate::state::$block::Electra(b) => Some(b.body.execution_payload.parent_hash),
                 crate::state::$block::Phase0(_) => None,
                 crate::state::$block::Altair(_) => None,
             }
@@ -1536,6 +1776,7 @@ macro_rules! impl_fork_dispatch {
                 }
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Electra(_) => None,
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
             }
@@ -1548,6 +1789,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Capella(b) => Some(b.message.body.execution_payload.clone()),
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Electra(_) => None,
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
             }
@@ -1560,6 +1802,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Deneb(b) => Some(b.message.body.execution_payload.clone()),
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Electra(_) => None,
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
             }
@@ -1572,6 +1815,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Bellatrix(b) => b.message.slot,
                 crate::state::$signed::Capella(b) => b.message.slot,
                 crate::state::$signed::Deneb(b) => b.message.slot,
+                crate::state::$signed::Electra(b) => b.message.slot,
             }
         }
 
@@ -1596,6 +1840,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Altair(_) => None,
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Electra(_) => None,
             }
         }
 
@@ -1606,6 +1851,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Electra(_) => None,
             }
         }
 
@@ -1616,6 +1862,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Electra(_) => None,
             }
         }
 
@@ -1626,6 +1873,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Altair(_) => None,
                 crate::state::$block::Bellatrix(_) => None,
                 crate::state::$block::Deneb(_) => None,
+                crate::state::$block::Electra(_) => None,
             }
         }
 
@@ -1636,6 +1884,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
+                crate::state::$state::Electra(_) => None,
             }
         }
 
@@ -1646,6 +1895,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Altair(_) => None,
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
+                crate::state::$state::Electra(_) => None,
             }
         }
 
@@ -1660,6 +1910,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Altair(_) => None,
                 crate::state::$block::Bellatrix(_) => None,
                 crate::state::$block::Capella(_) => None,
+                crate::state::$block::Electra(_) => None,
             }
         }
 
@@ -1676,11 +1927,70 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Altair(_) => None,
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Electra(_) => None,
             }
         }
 
         fn deneb_into_signed_block(s: Self::DenebSignedBeaconBlock) -> Self::SignedBeaconBlock {
             crate::state::$signed::Deneb(s)
+        }
+
+        fn unwrap_electra_state(s: &Self::BeaconState) -> Option<&Self::ElectraBeaconState> {
+            match s {
+                crate::state::$state::Electra(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Capella(_) => None,
+                crate::state::$state::Deneb(_) => None,
+            }
+        }
+
+        fn into_electra_state(s: Self::BeaconState) -> Option<Self::ElectraBeaconState> {
+            match s {
+                crate::state::$state::Electra(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Capella(_) => None,
+                crate::state::$state::Deneb(_) => None,
+            }
+        }
+
+        fn electra_into_state(s: Self::ElectraBeaconState) -> Self::BeaconState {
+            crate::state::$state::Electra(s)
+        }
+
+        fn unwrap_electra_block(s: &Self::BeaconBlock) -> Option<&Self::ElectraBeaconBlock> {
+            match s {
+                crate::state::$block::Electra(inner) => Some(inner),
+                crate::state::$block::Phase0(_) => None,
+                crate::state::$block::Altair(_) => None,
+                crate::state::$block::Bellatrix(_) => None,
+                crate::state::$block::Capella(_) => None,
+                crate::state::$block::Deneb(_) => None,
+            }
+        }
+
+        fn electra_into_block(s: Self::ElectraBeaconBlock) -> Self::BeaconBlock {
+            crate::state::$block::Electra(s)
+        }
+
+        fn unwrap_electra_signed_block(
+            s: &Self::SignedBeaconBlock,
+        ) -> Option<&Self::ElectraSignedBeaconBlock> {
+            match s {
+                crate::state::$signed::Electra(inner) => Some(inner),
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
+                crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Deneb(_) => None,
+            }
+        }
+
+        fn electra_into_signed_block(s: Self::ElectraSignedBeaconBlock) -> Self::SignedBeaconBlock {
+            crate::state::$signed::Electra(s)
         }
     };
 }
@@ -1900,6 +2210,37 @@ impl EthSpec for MainnetEthSpec {
     /// `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` from `configs/mainnet.yaml`.
     const MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS: u64 = 4096;
 
+    // ── Electra preset constants ──────────────────────────────────────────────
+
+    /// `ELECTRA_FORK_VERSION` from `configs/mainnet.yaml`.
+    const ELECTRA_FORK_VERSION: [u8; 4] = [0x05, 0x00, 0x00, 0x00];
+    /// `ELECTRA_FORK_EPOCH` from `configs/mainnet.yaml` (364032).
+    const ELECTRA_FORK_EPOCH: u64 = 364_032;
+    /// `MAX_ATTESTER_SLASHINGS_ELECTRA` from `presets/mainnet/electra.yaml`.
+    const MAX_ATTESTER_SLASHINGS_ELECTRA: u64 = 1;
+    /// `MAX_ATTESTATIONS_ELECTRA` from `presets/mainnet/electra.yaml`.
+    const MAX_ATTESTATIONS_ELECTRA: u64 = 8;
+    /// `MAX_DEPOSIT_REQUESTS_PER_PAYLOAD` from `presets/mainnet/electra.yaml` (2^13 = 8192).
+    const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64 = 8192;
+    /// `MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD` from `presets/mainnet/electra.yaml` (16).
+    const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64 = 16;
+    /// `MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD` from `presets/mainnet/electra.yaml` (2).
+    const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64 = 2;
+    /// `MAX_PENDING_DEPOSITS_LIMIT` from `presets/mainnet/electra.yaml` (2^27).
+    const MAX_PENDING_DEPOSITS_LIMIT: u64 = 134_217_728;
+    /// `MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT` from `presets/mainnet/electra.yaml` (2^27).
+    const MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64 = 134_217_728;
+    /// `MAX_PENDING_CONSOLIDATIONS_LIMIT` from `presets/mainnet/electra.yaml` (2^18 = 262144).
+    const MAX_PENDING_CONSOLIDATIONS_LIMIT: u64 = 262_144;
+    /// `MAX_EFFECTIVE_BALANCE_ELECTRA` = MAX_EFFECTIVE_BALANCE * 64 = 2048000000000.
+    const MAX_EFFECTIVE_BALANCE_ELECTRA: u64 = 2_048_000_000_000;
+    /// `MIN_ACTIVATION_BALANCE` = 32000000000 (same as pre-electra MAX_EFFECTIVE_BALANCE).
+    const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
+    /// `MAX_BLOBS_PER_BLOCK_ELECTRA` from `configs/mainnet.yaml` (EIP-7691, default 9).
+    const MAX_BLOBS_PER_BLOCK_ELECTRA: u64 = 9;
+    /// `MAX_AGGREGATION_BITS_ELECTRA` = MAX_VALIDATORS_PER_COMMITTEE * MAX_COMMITTEES_PER_SLOT = 2048 * 64 = 131072.
+    const MAX_AGGREGATION_BITS_ELECTRA: u64 = 131_072;
+
     fn name() -> &'static str {
         "mainnet"
     }
@@ -1930,7 +2271,10 @@ impl EthSpec for MainnetEthSpec {
             capella_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (mainnet real epoch loaded from config at runtime)
             deneb_fork_version: Self::DENEB_FORK_VERSION,
             deneb_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (mainnet real epoch loaded from config at runtime)
+            electra_fork_version: Self::ELECTRA_FORK_VERSION,
+            electra_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (mainnet real epoch loaded from config at runtime)
             max_blobs_per_block: 6, // mainnet default (configs/mainnet.yaml: MAX_BLOBS_PER_BLOCK_EL)
+            max_blobs_per_block_electra: Self::MAX_BLOBS_PER_BLOCK_ELECTRA,
             max_per_epoch_activation_churn_limit: 8, // configs/mainnet.yaml: MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT
             // configs/mainnet.yaml: TERMINAL_TOTAL_DIFFICULTY: 58750000000000000000000
             terminal_total_difficulty: pharos_utils::Uint256::from_str("58750000000000000000000")
@@ -1968,63 +2312,15 @@ impl EthSpec for MainnetEthSpec {
     type Phase0BeaconState = crate::phase0::MainnetBeaconState;
     type AltairBeaconState = crate::altair::MainnetBeaconState;
 
-    type BeaconBlock = crate::state::BeaconBlock<
-        16,            // MAX_PROPOSER_SLASHINGS
-        2,             // MAX_ATTESTER_SLASHINGS
-        128,           // MAX_ATTESTATIONS
-        16,            // MAX_DEPOSITS
-        16,            // MAX_VOLUNTARY_EXITS
-        2048,          // MAX_VALIDATORS_PER_COMMITTEE
-        33,            // DEPOSIT_PROOF_LENGTH
-        512,           // SYNC_COMMITTEE_SIZE
-        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
-        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
-        256,           // BYTES_PER_LOGS_BLOOM
-        32,            // MAX_EXTRA_DATA_BYTES
-        16,            // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet capella)
-        16,            // MAX_BLS_TO_EXECUTION_CHANGES
-        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
-    >;
+    type BeaconBlock = crate::state::MainnetBeaconBlock;
     type Phase0BeaconBlock = crate::phase0::MainnetBeaconBlock;
     type AltairBeaconBlock = crate::altair::MainnetBeaconBlock;
 
-    type SignedBeaconBlock = crate::state::SignedBeaconBlock<
-        16,            // MAX_PROPOSER_SLASHINGS
-        2,             // MAX_ATTESTER_SLASHINGS
-        128,           // MAX_ATTESTATIONS
-        16,            // MAX_DEPOSITS
-        16,            // MAX_VOLUNTARY_EXITS
-        2048,          // MAX_VALIDATORS_PER_COMMITTEE
-        33,            // DEPOSIT_PROOF_LENGTH
-        512,           // SYNC_COMMITTEE_SIZE
-        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
-        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
-        256,           // BYTES_PER_LOGS_BLOOM
-        32,            // MAX_EXTRA_DATA_BYTES
-        16,            // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet capella)
-        16,            // MAX_BLS_TO_EXECUTION_CHANGES
-        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
-    >;
+    type SignedBeaconBlock = crate::state::MainnetSignedBeaconBlock;
     type Phase0SignedBeaconBlock = crate::phase0::MainnetSignedBeaconBlock;
     type AltairSignedBeaconBlock = crate::altair::MainnetSignedBeaconBlock;
 
-    type BeaconBlockBody = crate::state::BeaconBlockBody<
-        16,            // MAX_PROPOSER_SLASHINGS
-        2,             // MAX_ATTESTER_SLASHINGS
-        128,           // MAX_ATTESTATIONS
-        16,            // MAX_DEPOSITS
-        16,            // MAX_VOLUNTARY_EXITS
-        2048,          // MAX_VALIDATORS_PER_COMMITTEE
-        33,            // DEPOSIT_PROOF_LENGTH
-        512,           // SYNC_COMMITTEE_SIZE
-        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
-        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
-        256,           // BYTES_PER_LOGS_BLOOM
-        32,            // MAX_EXTRA_DATA_BYTES
-        16,            // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet capella)
-        16,            // MAX_BLS_TO_EXECUTION_CHANGES
-        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
-    >;
+    type BeaconBlockBody = crate::state::MainnetBeaconBlockBody;
     type Phase0BeaconBlockBody = crate::phase0::MainnetBeaconBlockBody;
     type AltairBeaconBlockBody = crate::altair::MainnetBeaconBlockBody;
     type BellatrixBeaconState = crate::bellatrix::MainnetBeaconState;
@@ -2080,6 +2376,23 @@ impl EthSpec for MainnetEthSpec {
     type DenebBeaconBlockBody = crate::deneb::MainnetBeaconBlockBody;
     type DenebExecutionPayload = crate::deneb::MainnetExecutionPayload;
     type DenebExecutionPayloadHeader = crate::deneb::MainnetExecutionPayloadHeader;
+
+    // ── Electra associated types ──────────────────────────────────────────────
+
+    type ElectraBeaconState = crate::electra::MainnetBeaconState;
+    type ElectraBeaconBlock = crate::electra::MainnetBeaconBlock;
+    type ElectraSignedBeaconBlock = crate::electra::MainnetSignedBeaconBlock;
+    type ElectraBeaconBlockBody = crate::electra::MainnetBeaconBlockBody;
+    /// Mainnet electra `LightClientBootstrap` (re-exported from deneb).
+    type ElectraLightClientBootstrap = crate::electra::light_client::MainnetLightClientBootstrap;
+    /// Mainnet electra `LightClientUpdate`.
+    type ElectraLightClientUpdate = crate::electra::light_client::MainnetLightClientUpdate;
+    /// Mainnet electra `LightClientFinalityUpdate`.
+    type ElectraLightClientFinalityUpdate =
+        crate::electra::light_client::MainnetLightClientFinalityUpdate;
+    /// Mainnet electra `LightClientOptimisticUpdate`.
+    type ElectraLightClientOptimisticUpdate =
+        crate::electra::light_client::MainnetLightClientOptimisticUpdate;
 }
 
 // ── MinimalEthSpec ─────────────────────────────────────────────────────────────
@@ -2311,6 +2624,37 @@ impl EthSpec for MinimalEthSpec {
     /// `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` from `configs/minimal.yaml`.
     const MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS: u64 = 4096;
 
+    // ── Electra preset constants ──────────────────────────────────────────────
+
+    /// `ELECTRA_FORK_VERSION` from `configs/minimal.yaml`.
+    const ELECTRA_FORK_VERSION: [u8; 4] = [0x05, 0x00, 0x00, 0x01];
+    /// `ELECTRA_FORK_EPOCH` from `configs/minimal.yaml` (FAR_FUTURE_EPOCH).
+    const ELECTRA_FORK_EPOCH: u64 = u64::MAX;
+    /// `MAX_ATTESTER_SLASHINGS_ELECTRA` from `presets/minimal/electra.yaml`.
+    const MAX_ATTESTER_SLASHINGS_ELECTRA: u64 = 1;
+    /// `MAX_ATTESTATIONS_ELECTRA` from `presets/minimal/electra.yaml`.
+    const MAX_ATTESTATIONS_ELECTRA: u64 = 8;
+    /// `MAX_DEPOSIT_REQUESTS_PER_PAYLOAD` from `presets/minimal/electra.yaml` (8192).
+    const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64 = 8192;
+    /// `MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD` from `presets/minimal/electra.yaml` (16).
+    const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64 = 16;
+    /// `MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD` from `presets/minimal/electra.yaml` (2).
+    const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64 = 2;
+    /// `MAX_PENDING_DEPOSITS_LIMIT` from `presets/minimal/electra.yaml` (2^27).
+    const MAX_PENDING_DEPOSITS_LIMIT: u64 = 134_217_728;
+    /// `MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT` from `presets/minimal/electra.yaml` (64).
+    const MAX_PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64 = 64;
+    /// `MAX_PENDING_CONSOLIDATIONS_LIMIT` from `presets/minimal/electra.yaml` (64).
+    const MAX_PENDING_CONSOLIDATIONS_LIMIT: u64 = 64;
+    /// `MAX_EFFECTIVE_BALANCE_ELECTRA` = MAX_EFFECTIVE_BALANCE * 64 = 2048000000000.
+    const MAX_EFFECTIVE_BALANCE_ELECTRA: u64 = 2_048_000_000_000;
+    /// `MIN_ACTIVATION_BALANCE` = 32000000000.
+    const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
+    /// `MAX_BLOBS_PER_BLOCK_ELECTRA` (EIP-7691, default 9).
+    const MAX_BLOBS_PER_BLOCK_ELECTRA: u64 = 9;
+    /// `MAX_AGGREGATION_BITS_ELECTRA` = MAX_VALIDATORS_PER_COMMITTEE * MAX_COMMITTEES_PER_SLOT = 2048 * 4 = 8192.
+    const MAX_AGGREGATION_BITS_ELECTRA: u64 = 8_192;
+
     fn name() -> &'static str {
         "minimal"
     }
@@ -2340,8 +2684,11 @@ impl EthSpec for MinimalEthSpec {
             capella_fork_version: Self::CAPELLA_FORK_VERSION,
             capella_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (minimal real epoch loaded from config at runtime)
             deneb_fork_version: Self::DENEB_FORK_VERSION,
-            deneb_fork_epoch: u64::MAX,              // FAR_FUTURE_EPOCH
-            max_blobs_per_block: 6,                  // minimal default
+            deneb_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH
+            electra_fork_version: Self::ELECTRA_FORK_VERSION,
+            electra_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH
+            max_blobs_per_block: 6,       // minimal default
+            max_blobs_per_block_electra: Self::MAX_BLOBS_PER_BLOCK_ELECTRA,
             max_per_epoch_activation_churn_limit: 4, // configs/minimal.yaml: MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT
             // configs/minimal.yaml: large TTD to prevent accidental merge on test networks
             terminal_total_difficulty: pharos_utils::Uint256::from_str(
@@ -2381,63 +2728,15 @@ impl EthSpec for MinimalEthSpec {
     type Phase0BeaconState = crate::phase0::MinimalBeaconState;
     type AltairBeaconState = crate::altair::MinimalBeaconState;
 
-    type BeaconBlock = crate::state::BeaconBlock<
-        16,            // MAX_PROPOSER_SLASHINGS
-        2,             // MAX_ATTESTER_SLASHINGS
-        128,           // MAX_ATTESTATIONS
-        16,            // MAX_DEPOSITS
-        16,            // MAX_VOLUNTARY_EXITS
-        2048,          // MAX_VALIDATORS_PER_COMMITTEE
-        33,            // DEPOSIT_PROOF_LENGTH
-        32,            // SYNC_COMMITTEE_SIZE
-        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
-        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
-        256,           // BYTES_PER_LOGS_BLOOM
-        32,            // MAX_EXTRA_DATA_BYTES
-        4,             // MAX_WITHDRAWALS_PER_PAYLOAD (minimal capella)
-        16,            // MAX_BLS_TO_EXECUTION_CHANGES
-        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
-    >;
+    type BeaconBlock = crate::state::MinimalBeaconBlock;
     type Phase0BeaconBlock = crate::phase0::MinimalBeaconBlock;
     type AltairBeaconBlock = crate::altair::MinimalBeaconBlock;
 
-    type SignedBeaconBlock = crate::state::SignedBeaconBlock<
-        16,            // MAX_PROPOSER_SLASHINGS
-        2,             // MAX_ATTESTER_SLASHINGS
-        128,           // MAX_ATTESTATIONS
-        16,            // MAX_DEPOSITS
-        16,            // MAX_VOLUNTARY_EXITS
-        2048,          // MAX_VALIDATORS_PER_COMMITTEE
-        33,            // DEPOSIT_PROOF_LENGTH
-        32,            // SYNC_COMMITTEE_SIZE
-        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
-        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
-        256,           // BYTES_PER_LOGS_BLOOM
-        32,            // MAX_EXTRA_DATA_BYTES
-        4,             // MAX_WITHDRAWALS_PER_PAYLOAD (minimal capella)
-        16,            // MAX_BLS_TO_EXECUTION_CHANGES
-        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
-    >;
+    type SignedBeaconBlock = crate::state::MinimalSignedBeaconBlock;
     type Phase0SignedBeaconBlock = crate::phase0::MinimalSignedBeaconBlock;
     type AltairSignedBeaconBlock = crate::altair::MinimalSignedBeaconBlock;
 
-    type BeaconBlockBody = crate::state::BeaconBlockBody<
-        16,            // MAX_PROPOSER_SLASHINGS
-        2,             // MAX_ATTESTER_SLASHINGS
-        128,           // MAX_ATTESTATIONS
-        16,            // MAX_DEPOSITS
-        16,            // MAX_VOLUNTARY_EXITS
-        2048,          // MAX_VALIDATORS_PER_COMMITTEE
-        33,            // DEPOSIT_PROOF_LENGTH
-        32,            // SYNC_COMMITTEE_SIZE
-        1_073_741_824, // MAX_BYTES_PER_TRANSACTION
-        1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
-        256,           // BYTES_PER_LOGS_BLOOM
-        32,            // MAX_EXTRA_DATA_BYTES
-        4,             // MAX_WITHDRAWALS_PER_PAYLOAD (minimal capella)
-        16,            // MAX_BLS_TO_EXECUTION_CHANGES
-        4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK (deneb)
-    >;
+    type BeaconBlockBody = crate::state::MinimalBeaconBlockBody;
     type Phase0BeaconBlockBody = crate::phase0::MinimalBeaconBlockBody;
     type AltairBeaconBlockBody = crate::altair::MinimalBeaconBlockBody;
     type BellatrixBeaconState = crate::bellatrix::MinimalBeaconState;
@@ -2493,4 +2792,21 @@ impl EthSpec for MinimalEthSpec {
     type DenebBeaconBlockBody = crate::deneb::MinimalBeaconBlockBody;
     type DenebExecutionPayload = crate::deneb::MinimalExecutionPayload;
     type DenebExecutionPayloadHeader = crate::deneb::MinimalExecutionPayloadHeader;
+
+    // ── Electra associated types ──────────────────────────────────────────────
+
+    type ElectraBeaconState = crate::electra::MinimalBeaconState;
+    type ElectraBeaconBlock = crate::electra::MinimalBeaconBlock;
+    type ElectraSignedBeaconBlock = crate::electra::MinimalSignedBeaconBlock;
+    type ElectraBeaconBlockBody = crate::electra::MinimalBeaconBlockBody;
+    /// Minimal electra `LightClientBootstrap` (re-exported from deneb).
+    type ElectraLightClientBootstrap = crate::electra::light_client::MinimalLightClientBootstrap;
+    /// Minimal electra `LightClientUpdate`.
+    type ElectraLightClientUpdate = crate::electra::light_client::MinimalLightClientUpdate;
+    /// Minimal electra `LightClientFinalityUpdate`.
+    type ElectraLightClientFinalityUpdate =
+        crate::electra::light_client::MinimalLightClientFinalityUpdate;
+    /// Minimal electra `LightClientOptimisticUpdate`.
+    type ElectraLightClientOptimisticUpdate =
+        crate::electra::light_client::MinimalLightClientOptimisticUpdate;
 }

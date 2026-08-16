@@ -152,6 +152,21 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         .get("MAX_BLOBS_PER_BLOCK")
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(6);
+    // Electra fork fields: optional (may not be present in pre-Electra configs).
+    let electra_fork_version = if config_map.contains_key("ELECTRA_FORK_VERSION") {
+        extract_version(&config_map, "ELECTRA_FORK_VERSION")?
+    } else {
+        [0x05, 0x00, 0x00, 0x00]
+    };
+    let electra_fork_epoch = config_map
+        .get("ELECTRA_FORK_EPOCH")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(u64::MAX);
+    // MAX_BLOBS_PER_BLOCK_ELECTRA (EIP-7691): default 9.
+    let max_blobs_per_block_electra = config_map
+        .get("MAX_BLOBS_PER_BLOCK_ELECTRA")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(9);
     // MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT (EIP-7514): present in Deneb+ configs, default 8.
     let max_per_epoch_activation_churn_limit = config_map
         .get("MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT")
@@ -227,7 +242,10 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         capella_fork_epoch,
         deneb_fork_version,
         deneb_fork_epoch,
+        electra_fork_version,
+        electra_fork_epoch,
         max_blobs_per_block,
+        max_blobs_per_block_electra,
         max_per_epoch_activation_churn_limit,
         terminal_total_difficulty,
         terminal_block_hash,

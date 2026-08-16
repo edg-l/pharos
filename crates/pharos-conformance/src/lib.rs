@@ -2488,6 +2488,51 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("deneb", "light_client", "minimal"));
     }
 
+    // ── electra/ssz_static ────────────────────────────────────────────────────
+    if filter.matches("electra", "ssz_static", "mainnet") {
+        let result = ssz_static::run_ssz_static_electra_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "electra",
+            "ssz_static",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("electra", "ssz_static", "mainnet"));
+    }
+
+    if filter.matches("electra", "ssz_static", "minimal") {
+        let result = ssz_static::run_ssz_static_electra_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "electra",
+            "ssz_static",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("electra", "ssz_static", "minimal"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -2619,6 +2664,9 @@ fn fill_future_placeholders(report: &mut Report) {
         ("deneb", "fork_choice", "minimal"),
         ("deneb", "light_client", "mainnet"),
         ("deneb", "light_client", "minimal"),
+        // electra/ssz_static
+        ("electra", "ssz_static", "mainnet"),
+        ("electra", "ssz_static", "minimal"),
     ]
     .iter()
     .copied()
@@ -2753,8 +2801,10 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         // deneb light_client
         ("deneb", "light_client", "mainnet"),
         ("deneb", "light_client", "minimal"),
+        // electra/ssz_static
+        ("electra", "ssz_static", "mainnet"),
+        ("electra", "ssz_static", "minimal"),
         // future forks (placeholders)
-        ("electra", "ssz_static", "-"),
         ("fulu", "ssz_static", "-"),
     ]
 }

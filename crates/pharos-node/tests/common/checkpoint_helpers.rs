@@ -47,6 +47,11 @@ pub type MinForkSignedBlock = ForkSignedBeaconBlock<
     4,
     16,
     4096,
+    8192,
+    4,
+    8192,
+    16,
+    2,
 >;
 
 /// `TERMINAL_BLOCK_HASH` bytes used in the checkpoint-sync fixture chain.

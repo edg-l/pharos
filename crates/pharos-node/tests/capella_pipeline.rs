@@ -79,6 +79,11 @@ type MinForkSignedBlock = ForkSignedBeaconBlock<
     4,
     16,
     4096,
+    8192,
+    4,
+    8192,
+    16,
+    2,
 >;
 
 // ── Fixture constants ─────────────────────────────────────────────────────────
@@ -537,6 +542,8 @@ async fn capella_pipeline_drives_v2_engine_calls() {
         capella_fork_epoch: UtilsEpoch(0),
         deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
         deneb_fork_epoch: UtilsEpoch(u64::MAX),
+        electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
+        electra_fork_epoch: UtilsEpoch(u64::MAX),
         genesis_validators_root,
     };
 

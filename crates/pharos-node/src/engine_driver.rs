@@ -867,7 +867,9 @@ pub async fn run_engine_driver_loop<E: EthSpec, P: PowBlockProvider + Send + Syn
                         .get(&change.head_root)
                         .map(|s| s.fork_variant())
                     {
-                        Some(ForkVariant::Deneb) => ForkchoiceUpdatedVersion::V3,
+                        Some(ForkVariant::Electra) | Some(ForkVariant::Deneb) => {
+                            ForkchoiceUpdatedVersion::V3
+                        }
                         Some(ForkVariant::Capella) => ForkchoiceUpdatedVersion::V2,
                         Some(
                             ForkVariant::Phase0

@@ -151,6 +151,8 @@ async fn lookup_depth_exhaustion_fires_notify_backfill() {
         capella_fork_epoch: Epoch(u64::MAX),
         deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
         deneb_fork_epoch: Epoch(u64::MAX),
+        electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
+        electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(

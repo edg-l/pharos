@@ -681,6 +681,9 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
                 store,
             );
         }
+        ForkVariant::Electra => {
+            // Electra STF not yet implemented; no LC snapshot dispatch.
+        }
     }
 }
 

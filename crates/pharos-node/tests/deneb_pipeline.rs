@@ -117,6 +117,11 @@ type MinForkSignedBlock = ForkSignedBeaconBlock<
     4,
     16,
     4096,
+    8192,
+    4,
+    8192,
+    16,
+    2,
 >;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -597,6 +602,8 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
         capella_fork_epoch: UtilsEpoch(0),
         deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x01]),
         deneb_fork_epoch: UtilsEpoch(DENEB_FORK_EPOCH),
+        electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x01]),
+        electra_fork_epoch: UtilsEpoch(u64::MAX),
         genesis_validators_root,
     };
 

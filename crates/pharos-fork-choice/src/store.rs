@@ -222,6 +222,7 @@ impl<E: EthSpec> Store<E> {
             bellatrix: self.bellatrix_fork_epoch,
             capella: self.capella_fork_epoch,
             deneb: self.runtime_cfg.deneb_fork_epoch,
+            electra: self.runtime_cfg.electra_fork_epoch,
         }
     }
 }

@@ -162,6 +162,8 @@ async fn lookup_replay_fetches_and_replays_chain() {
         capella_fork_epoch: Epoch(u64::MAX),
         deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
         deneb_fork_epoch: Epoch(u64::MAX),
+        electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
+        electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
@@ -376,6 +378,8 @@ async fn lookup_direct_import_holds_future_block() {
         capella_fork_epoch: Epoch(u64::MAX),
         deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
         deneb_fork_epoch: Epoch(u64::MAX),
+        electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
+        electra_fork_epoch: Epoch(u64::MAX),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalEthSpec>::new(

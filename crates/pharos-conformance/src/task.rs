@@ -53,10 +53,7 @@ pub struct FoldOutput {
 ///
 /// The `table` slice is used only to look up footnote text; ordinals match the
 /// index position in `row_table()` (0-based index → row_ordinal).
-pub fn fold(
-    mut outcomes: Vec<(u32, u32, CaseOutcome)>,
-    table: &[RowSpec],
-) -> FoldOutput {
+pub fn fold(mut outcomes: Vec<(u32, u32, CaseOutcome)>, table: &[RowSpec]) -> FoldOutput {
     // Sort by (row_ordinal, case_ordinal) for deterministic output.
     outcomes.sort_by_key(|(r, c, _)| (*r, *c));
 
@@ -242,16 +239,16 @@ mod tests {
             .filter(|(_, s)| s.footnote.is_some())
             .map(|(i, _)| i as u32)
             .collect();
-        assert_eq!(footnote_ordinals.len(), 2, "expected exactly 2 footnoted rows");
+        assert_eq!(
+            footnote_ordinals.len(),
+            2,
+            "expected exactly 2 footnoted rows"
+        );
         let fn_ord_0 = footnote_ordinals[0];
         let fn_ord_1 = footnote_ordinals[1];
 
         // Supply the higher-ordinal footnote row first.
-        let outcomes = vec![
-            pass(fn_ord_1, 0),
-            pass(fn_ord_0, 0),
-            pass(fn_ord_0, 1),
-        ];
+        let outcomes = vec![pass(fn_ord_1, 0), pass(fn_ord_0, 0), pass(fn_ord_0, 1)];
 
         let out = fold(outcomes, table);
 

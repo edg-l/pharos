@@ -23,8 +23,7 @@ pub struct RowSpec {
 
 /// The exact Q1 footnote text, copied verbatim from the `report.add_footnote`
 /// call in `lib.rs::run()`.
-const FORK_CHOICE_Q1_FOOTNOTE: &str =
-    "Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures. Resolved by M3b (commit `784d75b`): altair containers landed so anchor states now decode and the rows show real pass counts. The skip-unknown-step-keys policy is retained for bellatrix+ step types. Decision recorded in `docs/decisions.md` (Q1).";
+const FORK_CHOICE_Q1_FOOTNOTE: &str = "Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures. Resolved by M3b (commit `784d75b`): altair containers landed so anchor states now decode and the rows show real pass counts. The skip-unknown-step-keys policy is retained for bellatrix+ step types. Decision recorded in `docs/decisions.md` (Q1).";
 
 /// All 107 conformance rows in the exact order that `lib.rs::run()` emits them.
 ///
@@ -39,11 +38,7 @@ pub fn row_table() -> &'static [RowSpec] {
             footnote: None,
         }
     }
-    const fn rf(
-        fork: &'static str,
-        category: &'static str,
-        preset: &'static str,
-    ) -> RowSpec {
+    const fn rf(fork: &'static str, category: &'static str, preset: &'static str) -> RowSpec {
         RowSpec {
             fork,
             category,
@@ -54,124 +49,124 @@ pub fn row_table() -> &'static [RowSpec] {
 
     static TABLE: &[RowSpec] = &[
         // ── phase0 ──────────────────────────────────────────────────────────
-        r("phase0", "ssz_generic", "-"),       // 0
-        r("phase0", "ssz_static", "mainnet"),  // 1
-        r("phase0", "ssz_static", "minimal"),  // 2
-        r("general", "bls", "-"),              // 3
-        r("phase0", "shuffling", "mainnet"),   // 4
-        r("phase0", "shuffling", "minimal"),   // 5
-        r("phase0", "genesis", "minimal"),     // 6
-        r("phase0", "operations", "mainnet"),  // 7
-        r("phase0", "operations", "minimal"),  // 8
+        r("phase0", "ssz_generic", "-"),            // 0
+        r("phase0", "ssz_static", "mainnet"),       // 1
+        r("phase0", "ssz_static", "minimal"),       // 2
+        r("general", "bls", "-"),                   // 3
+        r("phase0", "shuffling", "mainnet"),        // 4
+        r("phase0", "shuffling", "minimal"),        // 5
+        r("phase0", "genesis", "minimal"),          // 6
+        r("phase0", "operations", "mainnet"),       // 7
+        r("phase0", "operations", "minimal"),       // 8
         r("phase0", "epoch_processing", "mainnet"), // 9
         r("phase0", "epoch_processing", "minimal"), // 10
-        r("phase0", "sanity", "mainnet"),      // 11
-        r("phase0", "sanity", "minimal"),      // 12
-        r("phase0", "finality", "mainnet"),    // 13
-        r("phase0", "finality", "minimal"),    // 14
-        r("phase0", "random", "mainnet"),      // 15
-        r("phase0", "random", "minimal"),      // 16
-        r("phase0", "rewards", "mainnet"),     // 17
-        r("phase0", "rewards", "minimal"),     // 18
+        r("phase0", "sanity", "mainnet"),           // 11
+        r("phase0", "sanity", "minimal"),           // 12
+        r("phase0", "finality", "mainnet"),         // 13
+        r("phase0", "finality", "minimal"),         // 14
+        r("phase0", "random", "mainnet"),           // 15
+        r("phase0", "random", "minimal"),           // 16
+        r("phase0", "rewards", "mainnet"),          // 17
+        r("phase0", "rewards", "minimal"),          // 18
         // fork_choice rows carry the Q1 footnote.
         rf("phase0", "fork_choice", "mainnet"), // 19
         rf("phase0", "fork_choice", "minimal"), // 20
         // ── altair ──────────────────────────────────────────────────────────
-        r("altair", "transition", "mainnet"),  // 21
-        r("altair", "transition", "minimal"),  // 22
-        r("altair", "ssz_static", "mainnet"),  // 23
-        r("altair", "ssz_static", "minimal"),  // 24
-        r("altair", "operations", "mainnet"),  // 25
-        r("altair", "operations", "minimal"),  // 26
+        r("altair", "transition", "mainnet"),       // 21
+        r("altair", "transition", "minimal"),       // 22
+        r("altair", "ssz_static", "mainnet"),       // 23
+        r("altair", "ssz_static", "minimal"),       // 24
+        r("altair", "operations", "mainnet"),       // 25
+        r("altair", "operations", "minimal"),       // 26
         r("altair", "epoch_processing", "mainnet"), // 27
         r("altair", "epoch_processing", "minimal"), // 28
-        r("altair", "sanity", "mainnet"),      // 29
-        r("altair", "sanity", "minimal"),      // 30
-        r("altair", "finality", "mainnet"),    // 31
-        r("altair", "finality", "minimal"),    // 32
-        r("altair", "random", "mainnet"),      // 33
-        r("altair", "random", "minimal"),      // 34
-        r("altair", "rewards", "mainnet"),     // 35
-        r("altair", "rewards", "minimal"),     // 36
-        r("altair", "light_client", "mainnet"), // 37
-        r("altair", "light_client", "minimal"), // 38
-        r("altair", "genesis", "mainnet"),     // 39
-        r("altair", "genesis", "minimal"),     // 40
+        r("altair", "sanity", "mainnet"),           // 29
+        r("altair", "sanity", "minimal"),           // 30
+        r("altair", "finality", "mainnet"),         // 31
+        r("altair", "finality", "minimal"),         // 32
+        r("altair", "random", "mainnet"),           // 33
+        r("altair", "random", "minimal"),           // 34
+        r("altair", "rewards", "mainnet"),          // 35
+        r("altair", "rewards", "minimal"),          // 36
+        r("altair", "light_client", "mainnet"),     // 37
+        r("altair", "light_client", "minimal"),     // 38
+        r("altair", "genesis", "mainnet"),          // 39
+        r("altair", "genesis", "minimal"),          // 40
         // ── bellatrix ────────────────────────────────────────────────────────
-        r("bellatrix", "transition", "mainnet"),  // 41
-        r("bellatrix", "transition", "minimal"),  // 42
-        r("bellatrix", "ssz_static", "mainnet"),  // 43
-        r("bellatrix", "ssz_static", "minimal"),  // 44
-        r("bellatrix", "operations", "mainnet"),  // 45
-        r("bellatrix", "operations", "minimal"),  // 46
+        r("bellatrix", "transition", "mainnet"),       // 41
+        r("bellatrix", "transition", "minimal"),       // 42
+        r("bellatrix", "ssz_static", "mainnet"),       // 43
+        r("bellatrix", "ssz_static", "minimal"),       // 44
+        r("bellatrix", "operations", "mainnet"),       // 45
+        r("bellatrix", "operations", "minimal"),       // 46
         r("bellatrix", "epoch_processing", "mainnet"), // 47
         r("bellatrix", "epoch_processing", "minimal"), // 48
-        r("bellatrix", "sanity", "mainnet"),      // 49
-        r("bellatrix", "sanity", "minimal"),      // 50
-        r("bellatrix", "finality", "mainnet"),    // 51
-        r("bellatrix", "finality", "minimal"),    // 52
-        r("bellatrix", "random", "mainnet"),      // 53
-        r("bellatrix", "random", "minimal"),      // 54
-        r("bellatrix", "rewards", "mainnet"),     // 55
-        r("bellatrix", "rewards", "minimal"),     // 56
-        r("bellatrix", "fork_choice", "mainnet"), // 57
-        r("bellatrix", "fork_choice", "minimal"), // 58
+        r("bellatrix", "sanity", "mainnet"),           // 49
+        r("bellatrix", "sanity", "minimal"),           // 50
+        r("bellatrix", "finality", "mainnet"),         // 51
+        r("bellatrix", "finality", "minimal"),         // 52
+        r("bellatrix", "random", "mainnet"),           // 53
+        r("bellatrix", "random", "minimal"),           // 54
+        r("bellatrix", "rewards", "mainnet"),          // 55
+        r("bellatrix", "rewards", "minimal"),          // 56
+        r("bellatrix", "fork_choice", "mainnet"),      // 57
+        r("bellatrix", "fork_choice", "minimal"),      // 58
         // ── capella (transition + ssz_static) ───────────────────────────────
-        r("capella", "transition", "mainnet"),  // 59
-        r("capella", "transition", "minimal"),  // 60
-        r("capella", "ssz_static", "mainnet"),  // 61
-        r("capella", "ssz_static", "minimal"),  // 62
+        r("capella", "transition", "mainnet"), // 59
+        r("capella", "transition", "minimal"), // 60
+        r("capella", "ssz_static", "mainnet"), // 61
+        r("capella", "ssz_static", "minimal"), // 62
         // ── deneb/ssz_static (inserted here by run(), between capella ssz_static
         //    and capella operations) ──────────────────────────────────────────
-        r("deneb", "ssz_static", "mainnet"),    // 63
-        r("deneb", "ssz_static", "minimal"),    // 64
+        r("deneb", "ssz_static", "mainnet"), // 63
+        r("deneb", "ssz_static", "minimal"), // 64
         // ── capella (remaining) ──────────────────────────────────────────────
-        r("capella", "operations", "mainnet"),  // 65
-        r("capella", "operations", "minimal"),  // 66
+        r("capella", "operations", "mainnet"),       // 65
+        r("capella", "operations", "minimal"),       // 66
         r("capella", "epoch_processing", "mainnet"), // 67
         r("capella", "epoch_processing", "minimal"), // 68
-        r("capella", "sanity", "mainnet"),      // 69
-        r("capella", "sanity", "minimal"),      // 70
-        r("capella", "finality", "mainnet"),    // 71
-        r("capella", "finality", "minimal"),    // 72
-        r("capella", "random", "mainnet"),      // 73
-        r("capella", "random", "minimal"),      // 74
-        r("capella", "rewards", "mainnet"),     // 75
-        r("capella", "rewards", "minimal"),     // 76
-        r("capella", "fork_choice", "mainnet"), // 77
-        r("capella", "fork_choice", "minimal"), // 78
-        r("capella", "light_client", "mainnet"), // 79
-        r("capella", "light_client", "minimal"), // 80
+        r("capella", "sanity", "mainnet"),           // 69
+        r("capella", "sanity", "minimal"),           // 70
+        r("capella", "finality", "mainnet"),         // 71
+        r("capella", "finality", "minimal"),         // 72
+        r("capella", "random", "mainnet"),           // 73
+        r("capella", "random", "minimal"),           // 74
+        r("capella", "rewards", "mainnet"),          // 75
+        r("capella", "rewards", "minimal"),          // 76
+        r("capella", "fork_choice", "mainnet"),      // 77
+        r("capella", "fork_choice", "minimal"),      // 78
+        r("capella", "light_client", "mainnet"),     // 79
+        r("capella", "light_client", "minimal"),     // 80
         // ── sync/optimistic ──────────────────────────────────────────────────
-        r("sync", "optimistic", "mainnet"),     // 81
-        r("sync", "optimistic", "minimal"),     // 82
+        r("sync", "optimistic", "mainnet"), // 81
+        r("sync", "optimistic", "minimal"), // 82
         // ── engine/yaml ──────────────────────────────────────────────────────
-        r("engine", "yaml", "-"),               // 83
+        r("engine", "yaml", "-"), // 83
         // ── deneb (remaining) ────────────────────────────────────────────────
-        r("deneb", "kzg", "-"),                 // 84
-        r("deneb", "merkle_proof", "mainnet"),  // 85
-        r("deneb", "merkle_proof", "minimal"),  // 86
-        r("deneb", "transition", "mainnet"),    // 87
-        r("deneb", "transition", "minimal"),    // 88
-        r("deneb", "operations", "mainnet"),    // 89
-        r("deneb", "operations", "minimal"),    // 90
+        r("deneb", "kzg", "-"),                    // 84
+        r("deneb", "merkle_proof", "mainnet"),     // 85
+        r("deneb", "merkle_proof", "minimal"),     // 86
+        r("deneb", "transition", "mainnet"),       // 87
+        r("deneb", "transition", "minimal"),       // 88
+        r("deneb", "operations", "mainnet"),       // 89
+        r("deneb", "operations", "minimal"),       // 90
         r("deneb", "epoch_processing", "mainnet"), // 91
         r("deneb", "epoch_processing", "minimal"), // 92
-        r("deneb", "sanity", "mainnet"),        // 93
-        r("deneb", "sanity", "minimal"),        // 94
-        r("deneb", "finality", "mainnet"),      // 95
-        r("deneb", "finality", "minimal"),      // 96
-        r("deneb", "random", "mainnet"),        // 97
-        r("deneb", "random", "minimal"),        // 98
-        r("deneb", "rewards", "mainnet"),       // 99
-        r("deneb", "rewards", "minimal"),       // 100
-        r("deneb", "fork_choice", "mainnet"),   // 101
-        r("deneb", "fork_choice", "minimal"),   // 102
-        r("deneb", "light_client", "mainnet"),  // 103
-        r("deneb", "light_client", "minimal"),  // 104
+        r("deneb", "sanity", "mainnet"),           // 93
+        r("deneb", "sanity", "minimal"),           // 94
+        r("deneb", "finality", "mainnet"),         // 95
+        r("deneb", "finality", "minimal"),         // 96
+        r("deneb", "random", "mainnet"),           // 97
+        r("deneb", "random", "minimal"),           // 98
+        r("deneb", "rewards", "mainnet"),          // 99
+        r("deneb", "rewards", "minimal"),          // 100
+        r("deneb", "fork_choice", "mainnet"),      // 101
+        r("deneb", "fork_choice", "minimal"),      // 102
+        r("deneb", "light_client", "mainnet"),     // 103
+        r("deneb", "light_client", "minimal"),     // 104
         // ── future forks (placeholders from fill_future_placeholders) ────────
-        r("electra", "ssz_static", "-"),        // 105
-        r("fulu", "ssz_static", "-"),           // 106
+        r("electra", "ssz_static", "-"), // 105
+        r("fulu", "ssz_static", "-"),    // 106
     ];
     TABLE
 }
@@ -353,14 +348,12 @@ mod tests {
             assert_eq!(
                 spec.fork, "phase0",
                 "footnoted row {} has unexpected fork {:?}",
-                i,
-                spec.fork
+                i, spec.fork
             );
             assert_eq!(
                 spec.category, "fork_choice",
                 "footnoted row {} has unexpected category {:?}",
-                i,
-                spec.category
+                i, spec.category
             );
             assert!(
                 spec.footnote.unwrap().contains("Phase-0 fork-choice"),

@@ -98,6 +98,8 @@ pub struct ForkEpochs {
     pub capella: u64,
     /// Epoch at which Capella upgrades to Deneb (`DENEB_FORK_EPOCH`).
     pub deneb: u64,
+    /// Epoch at which Deneb upgrades to Electra (`ELECTRA_FORK_EPOCH`).
+    pub electra: u64,
 }
 
 impl ForkEpochs {
@@ -111,10 +113,11 @@ impl ForkEpochs {
             bellatrix: u64::MAX,
             capella: u64::MAX,
             deneb: u64::MAX,
+            electra: u64::MAX,
         }
     }
 
-    /// Construct from a `RuntimeConfig`, reading the four fork epoch fields.
+    /// Construct from a `RuntimeConfig`, reading the five fork epoch fields.
     ///
     /// Used by the live `state_transition` entry point so it can fire irregular
     /// fork upgrades when the state crosses a fork boundary on the way to the
@@ -125,6 +128,7 @@ impl ForkEpochs {
             bellatrix: cfg.bellatrix_fork_epoch,
             capella: cfg.capella_fork_epoch,
             deneb: cfg.deneb_fork_epoch,
+            electra: cfg.electra_fork_epoch,
         }
     }
 }
@@ -628,6 +632,10 @@ where
             wrapped.invalidate_root_cache();
             return Ok((wrapped, payload_status));
         }
+        ForkVariant::Electra => {
+            // Electra STF not yet implemented (Phase 1 plumbing only).
+            return Err(StateTransitionError::UnsupportedFork);
+        }
     }
     // STF mutated `state` (phase0 + altair arms operate on `&mut state`); reset
     // the cached top-level root so the next `cached_tree_hash_root` call
@@ -809,6 +817,7 @@ where
             wrapped.invalidate_root_cache();
             Ok(wrapped)
         }
+        ForkVariant::Electra => Err(StateTransitionError::UnsupportedFork),
     }
 }
 
@@ -861,6 +870,7 @@ where
             *state = E::deneb_into_state(inner);
             Ok(())
         }
+        ForkVariant::Electra => Err(EpochProcessingError::UnsupportedFork),
     }
 }
 
@@ -946,7 +956,8 @@ where
             ForkVariant::Altair => boundary_slot_if(fork_epochs.bellatrix, current_slot),
             ForkVariant::Bellatrix => boundary_slot_if(fork_epochs.capella, current_slot),
             ForkVariant::Capella => boundary_slot_if(fork_epochs.deneb, current_slot),
-            ForkVariant::Deneb => None,
+            ForkVariant::Deneb => boundary_slot_if(fork_epochs.electra, current_slot),
+            ForkVariant::Electra => None,
         };
 
         let step_target = next_boundary.unwrap_or(target_slot);
@@ -978,6 +989,10 @@ where
                     .clone();
                 inner.process_slots_deneb(step_target, runtime_cfg)?;
                 *state = E::deneb_into_state(inner);
+            }
+            ForkVariant::Electra => {
+                // Electra STF not yet implemented (Phase 1 plumbing only).
+                return Err(StateTransitionError::UnsupportedFork);
             }
         }
 
@@ -1011,7 +1026,11 @@ where
                         *state = E::deneb_into_state(upgraded);
                     }
                     ForkVariant::Deneb => {
-                        // Deneb is the last supported fork; no successor boundary.
+                        // Electra STF not yet implemented; treat Deneb as terminal for now.
+                        break;
+                    }
+                    ForkVariant::Electra => {
+                        // Electra is the last plumbed fork; no successor boundary.
                         break;
                     }
                 }
@@ -1840,6 +1859,7 @@ mod fork_upgrade_tests {
             bellatrix: u64::MAX,
             capella: capella_epoch,
             deneb: u64::MAX,
+            electra: u64::MAX,
         };
 
         // Advance to one slot past the boundary — triggers the upgrade.
@@ -1929,6 +1949,7 @@ mod fork_upgrade_tests {
             bellatrix: bellatrix_epoch,
             capella: capella_epoch,
             deneb: u64::MAX,
+            electra: u64::MAX,
         };
 
         // One slot into the capella epoch: crosses bellatrix (slot spe) and
@@ -1987,6 +2008,7 @@ mod fork_upgrade_tests {
             bellatrix: u64::MAX,
             capella: capella_epoch,
             deneb: u64::MAX,
+            electra: u64::MAX,
         };
 
         // Pre-state: bellatrix at slot 7 (last slot of epoch 0), with one active

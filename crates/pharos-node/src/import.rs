@@ -966,6 +966,11 @@ mod tests {
             4,
             16,
             4096,
+            8192,
+            4,
+            8192,
+            16,
+            2,
         >,
     ) {
         let anchor_body = MinimalBeaconBlockBody::default();
@@ -1046,6 +1051,11 @@ mod tests {
             4,
             16,
             4096,
+            8192,
+            4,
+            8192,
+            16,
+            2,
         > = ForkSignedBeaconBlock::Bellatrix(MinimalSignedBeaconBlock {
             message: anchor_block_inner,
             signature: BLSSignature::from_array([0u8; 96]),
@@ -1082,6 +1092,11 @@ mod tests {
         4,
         16,
         4096,
+        8192,
+        4,
+        8192,
+        16,
+        2,
     > {
         use pharos_stf::state_transition;
 
@@ -1133,6 +1148,11 @@ mod tests {
             4,
             16,
             4096,
+            8192,
+            4,
+            8192,
+            16,
+            2,
         > = ForkSignedBeaconBlock::Bellatrix(MinimalSignedBeaconBlock {
             message: draft,
             signature: BLSSignature::from_array([0u8; 96]),

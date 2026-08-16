@@ -55,6 +55,7 @@ pub enum ForkVariant {
     Bellatrix,
     Capella,
     Deneb,
+    Electra,
 }
 
 // ── SignedContributionAndProofView ────────────────────────────────────────────

@@ -32,6 +32,7 @@ pub fn fork_variant_str(variant: ForkVariant) -> &'static str {
         ForkVariant::Bellatrix => "bellatrix",
         ForkVariant::Capella => "capella",
         ForkVariant::Deneb => "deneb",
+        ForkVariant::Electra => "electra",
     }
 }
 
@@ -133,7 +134,9 @@ impl<T: Serialize> ForkTagged<T> {
 pub fn fork_variant_at_slot(cfg: &RuntimeConfig, slot: u64, slots_per_epoch: u64) -> ForkVariant {
     let epoch = slot.checked_div(slots_per_epoch).unwrap_or(0);
     // Walk forks from highest to lowest; return the first that has activated.
-    if cfg.deneb_fork_epoch != u64::MAX && epoch >= cfg.deneb_fork_epoch {
+    if cfg.electra_fork_epoch != u64::MAX && epoch >= cfg.electra_fork_epoch {
+        ForkVariant::Electra
+    } else if cfg.deneb_fork_epoch != u64::MAX && epoch >= cfg.deneb_fork_epoch {
         ForkVariant::Deneb
     } else if cfg.capella_fork_epoch != u64::MAX && epoch >= cfg.capella_fork_epoch {
         ForkVariant::Capella
@@ -269,5 +272,6 @@ mod tests {
         assert_eq!(fork_variant_str(ForkVariant::Bellatrix), "bellatrix");
         assert_eq!(fork_variant_str(ForkVariant::Capella), "capella");
         assert_eq!(fork_variant_str(ForkVariant::Deneb), "deneb");
+        assert_eq!(fork_variant_str(ForkVariant::Electra), "electra");
     }
 }

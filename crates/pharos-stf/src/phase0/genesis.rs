@@ -310,6 +310,9 @@ impl<
     const SYNC_COMMITTEE_SIZE: u64,
     const BYTES_PER_LOGS_BLOOM: u64,
     const MAX_EXTRA_DATA_BYTES: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
 > BeaconStateMut
     for ForkBeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -324,6 +327,9 @@ impl<
         SYNC_COMMITTEE_SIZE,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
     >
 where
     pharos_utils::Hash256: Default + Clone,
@@ -345,6 +351,9 @@ where
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis query called on Deneb BeaconState")
             }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis query called on Electra BeaconState")
+            }
         }
     }
 
@@ -362,6 +371,9 @@ where
             }
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis mutation called on Deneb BeaconState")
+            }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis mutation called on Electra BeaconState")
             }
         }
     }
@@ -381,6 +393,9 @@ where
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis query called on Deneb BeaconState")
             }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis query called on Electra BeaconState")
+            }
         }
     }
 
@@ -398,6 +413,9 @@ where
             }
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis query called on Deneb BeaconState")
+            }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis query called on Electra BeaconState")
             }
         }
     }
@@ -417,6 +435,9 @@ where
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis query called on Deneb BeaconState")
             }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis query called on Electra BeaconState")
+            }
         }
     }
 
@@ -434,6 +455,9 @@ where
             }
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis mutation called on Deneb BeaconState")
+            }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis mutation called on Electra BeaconState")
             }
         }
     }
@@ -453,6 +477,9 @@ where
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis mutation called on Deneb BeaconState")
             }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis mutation called on Electra BeaconState")
+            }
         }
     }
 
@@ -470,6 +497,9 @@ where
             }
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis mutation called on Deneb BeaconState")
+            }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis mutation called on Electra BeaconState")
             }
         }
     }
@@ -489,6 +519,9 @@ where
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis mutation called on Deneb BeaconState")
             }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis mutation called on Electra BeaconState")
+            }
         }
     }
 
@@ -507,6 +540,9 @@ where
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis query called on Deneb BeaconState")
             }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis query called on Electra BeaconState")
+            }
         }
     }
 
@@ -524,6 +560,9 @@ where
             }
             ForkBeaconState::Deneb(_) => {
                 unreachable!("genesis mutation called on Deneb BeaconState")
+            }
+            ForkBeaconState::Electra(_) => {
+                unreachable!("genesis mutation called on Electra BeaconState")
             }
         }
     }

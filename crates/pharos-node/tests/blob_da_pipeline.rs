@@ -66,6 +66,11 @@ type MinForkSigned = ForkSignedBlock<
     4,
     16,
     4096,
+    8192,
+    4,
+    8192,
+    16,
+    2,
 >;
 
 type MinForkBlock = ForkBeaconBlock<
@@ -84,6 +89,11 @@ type MinForkBlock = ForkBeaconBlock<
     4,
     16,
     4096,
+    8192,
+    4,
+    8192,
+    16,
+    2,
 >;
 
 // ── ToggleDAChecker ───────────────────────────────────────────────────────────

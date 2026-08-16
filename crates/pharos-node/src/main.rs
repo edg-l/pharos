@@ -626,6 +626,10 @@ async fn main() -> anyhow::Result<()> {
             runtime_cfg.deneb_fork_version,
         ),
         deneb_fork_epoch: pharos_utils::Epoch(runtime_cfg.deneb_fork_epoch),
+        electra_fork_version: pharos_types::phase0::primitives::Version::from_array(
+            runtime_cfg.electra_fork_version,
+        ),
+        electra_fork_epoch: pharos_utils::Epoch(runtime_cfg.electra_fork_epoch),
         genesis_validators_root,
     });
 
@@ -924,6 +928,11 @@ async fn main() -> anyhow::Result<()> {
                                 }),
                             };
                             (ssz, 4u8, stub_json)
+                        }
+                        // Electra block production is not yet implemented; produce_block
+                        // returns Err(WrongFork) before reaching this branch.
+                        pharos_types::state::SignedBeaconBlock::Electra(_) => {
+                            unreachable!("Electra block production reached signed-block match")
                         }
                     };
 

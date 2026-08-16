@@ -86,11 +86,20 @@ pub struct RuntimeConfig {
     pub deneb_fork_version: [u8; 4],
     /// `DENEB_FORK_EPOCH` from `configs/{mainnet,minimal}.yaml`.
     pub deneb_fork_epoch: u64,
+    // -- Electra fork schedule --
+    /// `ELECTRA_FORK_VERSION` from `configs/{mainnet,minimal}.yaml`.
+    pub electra_fork_version: [u8; 4],
+    /// `ELECTRA_FORK_EPOCH` from `configs/{mainnet,minimal}.yaml`.
+    pub electra_fork_epoch: u64,
     /// `MAX_BLOBS_PER_BLOCK` (runtime limit, may differ from `MAX_BLOB_COMMITMENTS_PER_BLOCK`).
     ///
     /// This is the EL-side maximum that the CL enforces when building/validating blocks.
     /// Mainnet default: 6. Can be overridden via the runtime config YAML.
     pub max_blobs_per_block: u64,
+    /// `MAX_BLOBS_PER_BLOCK_ELECTRA` (EIP-7691, Electra-era blob limit).
+    ///
+    /// Mainnet/minimal default: 9. Can be overridden via the runtime config YAML.
+    pub max_blobs_per_block_electra: u64,
     /// `MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT` per EIP-7514 / `configs/{mainnet,minimal}.yaml`.
     ///
     /// Caps the number of validators activated per epoch in Deneb+ to prevent sudden
