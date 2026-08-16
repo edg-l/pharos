@@ -163,6 +163,22 @@ where
                 },
             }
         }
+
+        // Blob sidecar req-resp methods per `specs/deneb/p2p-interface.md:816-968`.
+        //
+        // Blob storage (Phase 4) is not yet implemented; respond with
+        // ResourceUnavailable (code 3) so the peer can try another source.
+        // The `BlobProvider<E>` host trait (Task 3.6) will replace these stubs
+        // when Phase 5 wires the availability store.
+        RpcRequest::BlobSidecarsByRange(_) => RpcResponse::Error {
+            code: 3, // ResourceUnavailable
+            message: make_error_message("blob sidecars not yet available"),
+        },
+
+        RpcRequest::BlobSidecarsByRoot(_) => RpcResponse::Error {
+            code: 3, // ResourceUnavailable
+            message: make_error_message("blob sidecars not yet available"),
+        },
     }
 }
 
@@ -384,6 +400,14 @@ mod tests {
             _msg: &<MainnetEthSpec as pharos_types::EthSpec>::CapellaLightClientOptimisticUpdate,
         ) -> GossipVerdict {
             GossipVerdict::Accept
+        }
+
+        fn validate_blob_sidecar(
+            &self,
+            _subnet: crate::types::SubnetId,
+            _sidecar: &pharos_types::deneb::BlobSidecar,
+        ) -> GossipVerdict {
+            unreachable!()
         }
     }
 

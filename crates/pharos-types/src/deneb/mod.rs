@@ -10,7 +10,10 @@ pub mod execution_payload;
 pub mod state;
 
 pub use blob::{BYTES_PER_BLOB, Blob, BlobIndex, KZGCommitment, KZGProof};
-pub use blob_sidecar::{BlobIdentifier, BlobSidecar, KZG_COMMITMENT_INCLUSION_PROOF_DEPTH};
+pub use blob_sidecar::{
+    BlobIdentifier, BlobSidecar, BlobSidecarsByRangeRequest, BlobSidecarsByRootRequest,
+    KZG_COMMITMENT_INCLUSION_PROOF_DEPTH,
+};
 pub use block::{
     BeaconBlock, MainnetBeaconBlock, MainnetSignedBeaconBlock, MinimalBeaconBlock,
     MinimalSignedBeaconBlock, SignedBeaconBlock,

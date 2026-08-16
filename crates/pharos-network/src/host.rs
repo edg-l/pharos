@@ -13,6 +13,7 @@ use pharos_types::EthSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::capella::operations::SignedBLSToExecutionChange;
+use pharos_types::deneb::BlobSidecar;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
     Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing, Root,
@@ -218,6 +219,16 @@ pub trait GossipValidator<E: EthSpec>: Send + Sync + 'static {
         &self,
         msg: &E::CapellaLightClientOptimisticUpdate,
     ) -> GossipVerdict;
+
+    // ── Deneb gossip topics ───────────────────────────────────────────────────
+    //
+    // Per `specs/deneb/p2p-interface.md:489-586`.
+
+    /// Validate a `blob_sidecar_{subnet_id}` message.
+    ///
+    /// `subnet` is the subnet id extracted from the topic string.
+    /// All 14 validation rules per `specs/deneb/p2p-interface.md:497-585`.
+    fn validate_blob_sidecar(&self, subnet: SubnetId, sidecar: &BlobSidecar) -> GossipVerdict;
 }
 
 // ── LightClientProvider ───────────────────────────────────────────────────────
@@ -312,6 +323,47 @@ where
         &self,
     ) -> Option<E::CapellaLightClientOptimisticUpdate> {
         (**self).light_client_optimistic_update_capella()
+    }
+}
+
+// ── BlobProvider ─────────────────────────────────────────────────────────────
+
+/// Provides blob-sidecar data for `BlobSidecarsByRange` and `BlobSidecarsByRoot`
+/// req-resp handlers.
+///
+/// The network crate does not read storage directly; it delegates through this
+/// trait boundary to `pharos-storage`. Implemented by `HostImpl<E>` in
+/// `pharos-node`.
+///
+/// Per `specs/deneb/p2p-interface.md:816-974`.
+pub trait BlobProvider<E: EthSpec>: Send + Sync + 'static {
+    /// Retrieve a contiguous range of blob sidecars starting from `start_slot`.
+    ///
+    /// Returns up to `count * MAX_BLOBS_PER_BLOCK` sidecars from canonical
+    /// slots `[start_slot, start_slot + count)`. May return fewer if some slots
+    /// have no blobs or are outside `blob_serve_range`. The caller clamps the
+    /// response to `compute_max_request_blob_sidecars()`.
+    fn blobs_by_range(&self, start_slot: Slot, count: u64) -> Vec<BlobSidecar>;
+
+    /// Retrieve blob sidecars by `(block_root, blob_index)` pairs.
+    ///
+    /// For each `BlobIdentifier` that is found in the local store, the matching
+    /// `BlobSidecar` is included in the response (in order). Unknown identifiers
+    /// are silently omitted.
+    fn blobs_by_root(&self, ids: &[(Root, u64)]) -> Vec<BlobSidecar>;
+}
+
+impl<T, E> BlobProvider<E> for Arc<T>
+where
+    T: BlobProvider<E> + ?Sized,
+    E: EthSpec,
+{
+    fn blobs_by_range(&self, start_slot: Slot, count: u64) -> Vec<BlobSidecar> {
+        (**self).blobs_by_range(start_slot, count)
+    }
+
+    fn blobs_by_root(&self, ids: &[(Root, u64)]) -> Vec<BlobSidecar> {
+        (**self).blobs_by_root(ids)
     }
 }
 
@@ -464,6 +516,10 @@ where
         msg: &E::CapellaLightClientOptimisticUpdate,
     ) -> GossipVerdict {
         (**self).validate_capella_light_client_optimistic_update(msg)
+    }
+
+    fn validate_blob_sidecar(&self, subnet: SubnetId, sidecar: &BlobSidecar) -> GossipVerdict {
+        (**self).validate_blob_sidecar(subnet, sidecar)
     }
 }
 

@@ -203,6 +203,14 @@ impl GossipValidator<E> for BenchHost {
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
+
+    fn validate_blob_sidecar(
+        &self,
+        _subnet: pharos_network::types::SubnetId,
+        _sidecar: &pharos_types::deneb::BlobSidecar,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
 }
 
 // ── Spawn helpers ─────────────────────────────────────────────────────────────

@@ -162,6 +162,9 @@ rpc_behaviour_wrapper!(RpcLcBootstrapBehaviour, RpcLcBootstrapEvent);
 rpc_behaviour_wrapper!(RpcLcUpdatesByRangeBehaviour, RpcLcUpdatesByRangeEvent);
 rpc_behaviour_wrapper!(RpcLcFinalityUpdateBehaviour, RpcLcFinalityUpdateEvent);
 rpc_behaviour_wrapper!(RpcLcOptimisticUpdateBehaviour, RpcLcOptimisticUpdateEvent);
+// Deneb blob-sidecar req-resp behaviours per `specs/deneb/p2p-interface.md`.
+rpc_behaviour_wrapper!(RpcBlobSidecarsByRangeBehaviour, RpcBlobSidecarsByRangeEvent);
+rpc_behaviour_wrapper!(RpcBlobSidecarsByRootBehaviour, RpcBlobSidecarsByRootEvent);
 
 // ── PharosBehaviourEvent ──────────────────────────────────────────────────────
 
@@ -183,6 +186,8 @@ where
     RpcLcUpdatesByRange(request_response::Event<RpcRequest, RpcResponse<E>>),
     RpcLcFinalityUpdate(request_response::Event<RpcRequest, RpcResponse<E>>),
     RpcLcOptimisticUpdate(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcBlobSidecarsByRange(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcBlobSidecarsByRoot(request_response::Event<RpcRequest, RpcResponse<E>>),
     /// Boxed to keep the enum size reasonable (`identify::Event` is large).
     Identify(Box<identify::Event>),
     Ping(ping::Event),
@@ -296,6 +301,24 @@ where
     }
 }
 
+impl<E: EthSpec> From<RpcBlobSidecarsByRangeEvent<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcBlobSidecarsByRangeEvent<E>) -> Self {
+        PharosBehaviourEvent::RpcBlobSidecarsByRange(e.0)
+    }
+}
+
+impl<E: EthSpec> From<RpcBlobSidecarsByRootEvent<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcBlobSidecarsByRootEvent<E>) -> Self {
+        PharosBehaviourEvent::RpcBlobSidecarsByRoot(e.0)
+    }
+}
+
 impl<E: EthSpec> From<identify::Event> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
@@ -351,6 +374,9 @@ where
     pub rpc_lc_updates_by_range: RpcLcUpdatesByRangeBehaviour<E>,
     pub rpc_lc_finality_update: RpcLcFinalityUpdateBehaviour<E>,
     pub rpc_lc_optimistic_update: RpcLcOptimisticUpdateBehaviour<E>,
+    /// Deneb blob-sidecar req-resp behaviours per `specs/deneb/p2p-interface.md`.
+    pub rpc_blob_sidecars_by_range: RpcBlobSidecarsByRangeBehaviour<E>,
+    pub rpc_blob_sidecars_by_root: RpcBlobSidecarsByRootBehaviour<E>,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
 }

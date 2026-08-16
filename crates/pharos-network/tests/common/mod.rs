@@ -430,6 +430,14 @@ impl GossipValidator<MainnetEthSpec> for TestHost {
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
+
+    fn validate_blob_sidecar(
+        &self,
+        _subnet: SubnetId,
+        _sidecar: &pharos_types::deneb::BlobSidecar,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
 }
 
 // ── CapturingScorer ───────────────────────────────────────────────────────────

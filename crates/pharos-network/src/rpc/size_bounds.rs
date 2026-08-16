@@ -3,7 +3,7 @@
 //! Used by the codec to reject payloads whose declared SSZ length is outside
 //! the expected range before reading the compressed body.
 
-use crate::rpc::types::MAX_REQUEST_BLOCKS;
+use crate::rpc::types::{MAX_REQUEST_BLOB_SIDECARS, MAX_REQUEST_BLOCKS};
 use crate::scoring::RpcMethod;
 
 /// Returns `(min_ssz_bytes, max_ssz_bytes)` for a req-resp method's payload.
@@ -39,6 +39,12 @@ pub fn type_size_bounds(method: &RpcMethod) -> (usize, usize) {
         RpcMethod::LightClientUpdatesByRange => (16, 16),
         // LightClientFinalityUpdate and LightClientOptimisticUpdate have no request body.
         RpcMethod::LightClientFinalityUpdate | RpcMethod::LightClientOptimisticUpdate => (0, 0),
+        // BlobSidecarsByRange request: start_slot(8) + count(8) = 16 bytes.
+        RpcMethod::BlobSidecarsByRange => (16, 16),
+        // BlobSidecarsByRoot request: bare List[BlobIdentifier, N].
+        // BlobIdentifier SSZ: block_root(32) + index(8) = 40 bytes each.
+        // 0 to MAX_REQUEST_BLOB_SIDECARS entries.
+        RpcMethod::BlobSidecarsByRoot => (0, (MAX_REQUEST_BLOB_SIDECARS as usize) * 40),
     }
 }
 
@@ -48,6 +54,13 @@ pub fn type_size_bounds(method: &RpcMethod) -> (usize, usize) {
 /// (BLS pubkeys × 512 = 48 × 512 = 24 KiB) plus headers and branches.
 /// 64 KiB provides a generous ceiling for mainnet objects.
 pub const MAX_LIGHT_CLIENT_OBJECT_SSZ_BYTES: usize = 64 * 1024;
+
+/// Upper bound on a single `BlobSidecar` SSZ encoding.
+///
+/// `BlobSidecar` contains a 131072-byte blob plus headers and proof.
+/// Total: ~131072 (blob) + 48 (kzg_commitment) + 48 (kzg_proof) + ~200 (header+proof) ≈ 132 KiB.
+/// 200 KiB provides a safe ceiling.
+pub const MAX_BLOB_SIDECAR_SSZ_BYTES: usize = 200 * 1024;
 
 /// Conservative upper bound on a Phase-0 `SignedBeaconBlock` SSZ encoding.
 ///

@@ -151,6 +151,15 @@ pub trait BeaconBlockBodyView {
     fn execution_block_hash(&self) -> Option<[u8; 32]> {
         None
     }
+
+    /// Return the number of KZG commitments in the block body for Deneb+ bodies.
+    ///
+    /// Pre-Deneb bodies return `0` (no blob_kzg_commitments field).
+    /// Overridden in the Deneb body impl.
+    /// Used by the gossip validator C2 rule: REJECT if count > MAX_BLOBS_PER_BLOCK.
+    fn num_blob_kzg_commitments(&self) -> usize {
+        0
+    }
 }
 
 // ── BeaconBlockView ───────────────────────────────────────────────────────────

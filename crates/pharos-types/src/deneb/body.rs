@@ -3,7 +3,7 @@
 //! Per `specs/deneb/beacon-chain.md` (Modified containers → BeaconBlockBody).
 //! Extends Capella with `blob_kzg_commitments`.
 
-use pharos_ssz::{Decode, Encode, SszList, TreeHash};
+use pharos_ssz::{Decode, Encode, SszList, SszSequence as _, TreeHash};
 use pharos_utils::{BLSSignature, Bytes32};
 
 use crate::altair::operations::SyncAggregate;
@@ -160,6 +160,10 @@ impl<
 
     fn execution_block_hash(&self) -> Option<[u8; 32]> {
         Some(self.execution_payload.block_hash.into())
+    }
+
+    fn num_blob_kzg_commitments(&self) -> usize {
+        self.blob_kzg_commitments.len()
     }
 }
 

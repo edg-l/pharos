@@ -17,8 +17,10 @@
 //! `bls_to_exec: ` validator.
 //!
 //! Counts audited from source: block=13, att=15, agg=20, exit=8, ps=8, as=8,
-//! bte=7, sync_msg=8, sync_contrib=14, total=100 (each validator has a defensive
-//! "head state unavailable" IGNORE string beyond the spec IGNORE/REJECT rules).
+//! bte=7, sync_msg=8, sync_contrib=14, blob=20, total=121 (each validator has a
+//! defensive "head state unavailable" IGNORE string beyond the spec IGNORE/REJECT
+//! rules; blob validator adds 14 spec rules + 6 defensive checks = 20;
+//! blob breakdown: 6 IGNORE + 14 REJECT).
 //!
 //! `"block: unrecognised fork variant"` was removed in M7 commit 2598fb5: the
 //! `EthSpec::signed_block_message` refactor made an unrecognised fork a compile
@@ -38,7 +40,7 @@ const NETWORK_HOST_SRC: &str = include_str!("../../../crates/pharos-network/src/
 /// `pharos-network/src/host.rs`.  The `verdict_strings_match_known_list` test
 /// verifies it separately via `pharos_network::host::GOSSIP_REASON_PARENT_UNSEEN`.
 const EXPECTED: &[&str] = &[
-    // ── block (12) ────────────────────────────────────────────────────────────
+    // ── block (13) ────────────────────────────────────────────────────────────
     "block: clock unavailable",
     "block: duplicate proposer/slot",
     "block: finalized not ancestor",
@@ -51,6 +53,7 @@ const EXPECTED: &[&str] = &[
     "block: proposer index out of range",
     "block: proposer mismatch",
     "block: shuffling unavailable",
+    "block: too many blob kzg commitments",
     // ── att (15) ──────────────────────────────────────────────────────────────
     "att: agg bits length mismatch",
     "att: clock unavailable",
@@ -147,6 +150,28 @@ const EXPECTED: &[&str] = &[
     "sync_contrib: not selected as aggregator",
     "sync_contrib: slot not current",
     "sync_contrib: subcommittee index out of range",
+    // ── blob (20: 6 IGNORE + 14 REJECT) ──────────────────────────────────────
+    // 14 spec rules (deneb/p2p-interface.md:497-585) + 6 defensive checks.
+    "blob: clock unavailable",
+    "blob: duplicate sidecar tuple",
+    "blob: finalized not ancestor of block",
+    "blob: from future slot",
+    "blob: index >= MAX_BLOBS_PER_BLOCK",
+    "blob: invalid inclusion proof",
+    "blob: invalid kzg proof",
+    "blob: invalid proposer signature",
+    "blob: kzg proof error",
+    "blob: not from a higher slot than parent",
+    "blob: not from slot > finalized slot",
+    "blob: parent failed validation",
+    "blob: parent not seen",
+    "blob: proposer_index does not match expected proposer",
+    "blob: proposer index out of range",
+    "blob: shuffling unavailable",
+    "blob: wrong blob length",
+    "blob: wrong commitment length",
+    "blob: wrong proof length",
+    "blob: wrong subnet for index",
 ];
 
 /// Extract all quoted strings from `src` that start with one of the topic
@@ -162,6 +187,7 @@ fn extract_prefixed_strings(src: &str) -> Vec<String> {
         "bls_to_exec: ",
         "sync_msg: ",
         "sync_contrib: ",
+        "blob: ",
     ];
     let mut found = std::collections::BTreeSet::new();
     let mut chars = src.chars().peekable();
@@ -241,6 +267,7 @@ fn verdict_strings_match_known_list() {
     let block_count = EXPECTED.iter().filter(|s| s.starts_with("block: ")).count();
     let att_count = EXPECTED.iter().filter(|s| s.starts_with("att: ")).count();
     let agg_count = EXPECTED.iter().filter(|s| s.starts_with("agg: ")).count();
+    let blob_count = EXPECTED.iter().filter(|s| s.starts_with("blob: ")).count();
     let exit_count = EXPECTED.iter().filter(|s| s.starts_with("exit: ")).count();
     let ps_count = EXPECTED
         .iter()
@@ -263,8 +290,8 @@ fn verdict_strings_match_known_list() {
         .filter(|s| s.starts_with("sync_contrib: "))
         .count();
     assert_eq!(
-        block_count, 12,
-        "expected 12 inline block: strings (parent-unseen lives in const)"
+        block_count, 13,
+        "expected 13 inline block: strings (parent-unseen lives in const; +1 blob-kzg C2)"
     );
     assert_eq!(att_count, 15, "expected 15 att: strings");
     assert_eq!(agg_count, 20, "expected 20 agg: strings");
@@ -287,9 +314,13 @@ fn verdict_strings_match_known_list() {
         "expected 14 sync_contrib: strings (5 IGNORE + 9 REJECT)"
     );
     assert_eq!(
+        blob_count, 20,
+        "expected 20 blob: strings (6 IGNORE + 14 REJECT; 14 spec rules + 6 defensive)"
+    );
+    assert_eq!(
         EXPECTED.len(),
-        100,
-        "expected 100 total inline verdict strings"
+        121,
+        "expected 121 total inline verdict strings"
     );
 
     // ── Part 4: GOSSIP_REASON_PARENT_UNSEEN const is the canonical definition ──

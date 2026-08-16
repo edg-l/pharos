@@ -25,6 +25,7 @@ use pharos_ssz::Decode as _;
 use pharos_types::EthSpec;
 use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::capella::operations::SignedBLSToExecutionChange;
+use pharos_types::deneb::BlobSidecar;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::phase0::{
     Attestation, AttesterSlashing, ProposerSlashing, SignedAggregateAndProof, SignedVoluntaryExit,
@@ -305,6 +306,14 @@ pub fn dispatch_gossip_message<E: EthSpec, H: Host<E>>(
                 Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
             }
         }
+        // ── Deneb topics ───────────────────────────────────────────────────────
+        // Per `specs/deneb/p2p-interface.md:489-586`.
+        // KZG verify + BLS verify in `validate_blob_sidecar` are sync/CPU-bound;
+        // the caller runs this in `spawn_blocking` (D-bls-on-hot-path).
+        GossipTopicKind::BlobSidecar(subnet) => match BlobSidecar::from_ssz_bytes(ssz_bytes) {
+            Ok(sidecar) => host.validate_blob_sidecar(*subnet, &sidecar),
+            Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+        },
     }
 }
 
@@ -449,6 +458,14 @@ mod tests {
         fn validate_capella_light_client_optimistic_update(
             &self,
             _msg: &<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate,
+        ) -> GossipVerdict {
+            GossipVerdict::Accept
+        }
+
+        fn validate_blob_sidecar(
+            &self,
+            _subnet: crate::types::SubnetId,
+            _sidecar: &pharos_types::deneb::BlobSidecar,
         ) -> GossipVerdict {
             GossipVerdict::Accept
         }

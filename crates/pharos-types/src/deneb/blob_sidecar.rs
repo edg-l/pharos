@@ -2,7 +2,7 @@
 //!
 //! Per `specs/deneb/p2p-interface.md:75-93` and `specs/deneb/beacon-chain.md`.
 
-use pharos_ssz::{Decode, Encode, SszVector, TreeHash};
+use pharos_ssz::{Decode, Encode, SszError, SszList, SszVector, TreeHash};
 use pharos_utils::Hash256;
 
 use crate::deneb::blob::{Blob, BlobIndex, KZGCommitment, KZGProof};
@@ -62,11 +62,75 @@ pub struct BlobSidecar {
         SszVector<Hash256, { KZG_COMMITMENT_INCLUSION_PROOF_DEPTH as u64 }>,
 }
 
+// ── BlobSidecarsByRangeRequest ────────────────────────────────────────────────
+
+/// `BlobSidecarsByRange` request per `specs/deneb/p2p-interface.md`.
+///
+/// SSZ-encoded as a container (two fixed-size u64 fields = 16 bytes total).
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct BlobSidecarsByRangeRequest {
+    /// First slot to return sidecars for.
+    pub start_slot: u64,
+    /// Number of slots to return sidecars for.
+    pub count: u64,
+}
+
+// ── BlobSidecarsByRootRequest ─────────────────────────────────────────────────
+
+/// `BlobSidecarsByRoot` request per `specs/deneb/p2p-interface.md`.
+///
+/// SSZ-encoded as the bare `List[BlobIdentifier, N]` (single-field rule).
+/// **No container offset.** Using derived SSZ would add a 4-byte offset prefix
+/// and earn a -100 Lighthouse ban (the `D-blocksbyroot-bare-list` trap).
+///
+/// `Encode`/`Decode` are hand-written for the same reason as
+/// `BeaconBlocksByRootRequest` in `pharos_types::phase0::operations`.
+#[derive(TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct BlobSidecarsByRootRequest<const MAX_REQUEST_BLOB_SIDECARS: u64> {
+    /// The list of blob identifiers requested.
+    pub blob_ids: SszList<BlobIdentifier, MAX_REQUEST_BLOB_SIDECARS>,
+}
+
+impl<const MAX_REQUEST_BLOB_SIDECARS: u64> Encode
+    for BlobSidecarsByRootRequest<MAX_REQUEST_BLOB_SIDECARS>
+{
+    // Transparent over `blob_ids`: the request IS the list (single-field rule).
+    const IS_FIXED_SIZE: bool = false;
+
+    fn ssz_fixed_len() -> usize {
+        <SszList<BlobIdentifier, MAX_REQUEST_BLOB_SIDECARS> as Encode>::ssz_fixed_len()
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        self.blob_ids.ssz_bytes_len()
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        self.blob_ids.ssz_append(buf);
+    }
+}
+
+impl<const MAX_REQUEST_BLOB_SIDECARS: u64> Decode
+    for BlobSidecarsByRootRequest<MAX_REQUEST_BLOB_SIDECARS>
+{
+    const IS_FIXED_SIZE: bool = false;
+
+    fn ssz_fixed_len() -> usize {
+        <SszList<BlobIdentifier, MAX_REQUEST_BLOB_SIDECARS> as Decode>::ssz_fixed_len()
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, SszError> {
+        Ok(Self {
+            blob_ids: SszList::from_ssz_bytes(bytes)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pharos_ssz::{Decode, Encode, TreeHash};
 
-    use super::BlobSidecar;
+    use super::{BlobIdentifier, BlobSidecar, BlobSidecarsByRootRequest};
 
     fn roundtrip<T: Encode + Decode + PartialEq + std::fmt::Debug>(val: T) {
         let encoded = val.as_ssz_bytes();
@@ -86,5 +150,59 @@ mod tests {
         let r1 = s.tree_hash_root();
         let r2 = s.tree_hash_root();
         assert_eq!(r1, r2, "tree_hash_root is not deterministic");
+    }
+
+    /// `BlobSidecarsByRootRequest` MUST be the bare `List[BlobIdentifier, N]`
+    /// with NO container offset.  Mirrors `blocks_by_root_request_is_bare_list_no_offset`.
+    ///
+    /// `BlobIdentifier` SSZ: block_root(32) + index(8) = 40 bytes fixed.
+    #[test]
+    fn blob_sidecars_by_root_request_is_bare_list_no_offset() {
+        use pharos_ssz::SszList;
+        use pharos_utils::Hash256;
+
+        type Req = BlobSidecarsByRootRequest<768>;
+
+        // Empty request: zero bytes (no offset prefix).
+        let empty = Req::default();
+        assert_eq!(
+            empty.as_ssz_bytes().len(),
+            0,
+            "empty BlobSidecarsByRoot request must be 0 bytes, not 4"
+        );
+
+        // Two blob identifiers: 2 × 40 = 80 bytes, no prefix.
+        let id0 = BlobIdentifier {
+            block_root: Hash256::from([0x11u8; 32]),
+            index: 0,
+        };
+        let id1 = BlobIdentifier {
+            block_root: Hash256::from([0x22u8; 32]),
+            index: 1,
+        };
+        let req = Req {
+            blob_ids: SszList::from_vec(vec![id0.clone(), id1.clone()]).unwrap(),
+        };
+        let encoded = req.as_ssz_bytes();
+        assert_eq!(
+            encoded.len(),
+            80,
+            "two BlobIdentifiers must encode to exactly 80 bytes"
+        );
+        // First 40 bytes must be id0's SSZ (block_root then index).
+        assert_eq!(
+            &encoded[..32],
+            id0.block_root.as_slice(),
+            "first 32 bytes must be id0.block_root"
+        );
+        assert_eq!(
+            encoded[32..40],
+            id0.index.to_le_bytes(),
+            "bytes 32..40 must be id0.index"
+        );
+
+        // Roundtrip.
+        let decoded = Req::from_ssz_bytes(&encoded).expect("decode failed");
+        assert_eq!(req, decoded, "roundtrip must match");
     }
 }

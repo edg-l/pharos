@@ -15,6 +15,7 @@ path = "src/main.rs"
 pharos-api.workspace = true
 pharos-engine.workspace = true
 pharos-fork-choice.workspace = true
+pharos-kzg.workspace = true
 pharos-network.workspace = true
 pharos-ssz.workspace = true
 pharos-stf.workspace = true

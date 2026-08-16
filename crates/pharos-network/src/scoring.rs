@@ -61,6 +61,10 @@ pub enum RpcMethod {
     LightClientFinalityUpdate,
     /// `light_client_optimistic_update/1/ssz_snappy` — `specs/altair/light-client/p2p-interface.md`.
     LightClientOptimisticUpdate,
+    /// `blob_sidecars_by_range/1/ssz_snappy` — `specs/deneb/p2p-interface.md`.
+    BlobSidecarsByRange,
+    /// `blob_sidecars_by_root/1/ssz_snappy` — `specs/deneb/p2p-interface.md`.
+    BlobSidecarsByRoot,
 }
 
 /// Kinds of RPC error that affect scoring.

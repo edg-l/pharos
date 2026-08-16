@@ -60,6 +60,12 @@ impl RpcMethod {
             RpcMethod::LightClientOptimisticUpdate => {
                 "/eth2/beacon_chain/req/light_client_optimistic_update/1/ssz_snappy"
             }
+            RpcMethod::BlobSidecarsByRange => {
+                "/eth2/beacon_chain/req/blob_sidecars_by_range/1/ssz_snappy"
+            }
+            RpcMethod::BlobSidecarsByRoot => {
+                "/eth2/beacon_chain/req/blob_sidecars_by_root/1/ssz_snappy"
+            }
         }
     }
 
@@ -78,6 +84,8 @@ impl RpcMethod {
                 | RpcMethod::LightClientUpdatesByRange
                 | RpcMethod::LightClientFinalityUpdate
                 | RpcMethod::LightClientOptimisticUpdate
+                | RpcMethod::BlobSidecarsByRange
+                | RpcMethod::BlobSidecarsByRoot
         )
     }
 }
@@ -134,6 +142,14 @@ mod tests {
             RpcMethod::LightClientOptimisticUpdate.protocol_id(),
             "/eth2/beacon_chain/req/light_client_optimistic_update/1/ssz_snappy"
         );
+        assert_eq!(
+            RpcMethod::BlobSidecarsByRange.protocol_id(),
+            "/eth2/beacon_chain/req/blob_sidecars_by_range/1/ssz_snappy"
+        );
+        assert_eq!(
+            RpcMethod::BlobSidecarsByRoot.protocol_id(),
+            "/eth2/beacon_chain/req/blob_sidecars_by_root/1/ssz_snappy"
+        );
     }
 
     #[test]
@@ -146,6 +162,16 @@ mod tests {
             RpcMethod::LightClientUpdatesByRange,
             RpcMethod::LightClientFinalityUpdate,
             RpcMethod::LightClientOptimisticUpdate,
+        ] {
+            assert!(
+                method.has_context_bytes(),
+                "{method:?} should have context bytes"
+            );
+        }
+        // Blob sidecar methods have context bytes.
+        for method in [
+            RpcMethod::BlobSidecarsByRange,
+            RpcMethod::BlobSidecarsByRoot,
         ] {
             assert!(
                 method.has_context_bytes(),

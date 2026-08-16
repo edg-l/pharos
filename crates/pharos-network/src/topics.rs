@@ -10,6 +10,9 @@
 //! - `voluntary_exit`
 //! - `proposer_slashing`
 //! - `attester_slashing`
+//!
+//! Deneb topics per `specs/deneb/p2p-interface.md`:
+//! - `blob_sidecar_<subnet_id>` (decimal, no padding)
 
 use std::collections::HashMap;
 
@@ -18,6 +21,19 @@ use pharos_types::altair::SYNC_COMMITTEE_SUBNET_COUNT;
 
 use crate::error::NetworkError;
 use crate::types::{ForkDigest, SubnetId};
+
+// ── compute_subnet_for_blob_sidecar ───────────────────────────────────────────
+
+/// Map a blob index to its gossip subnet.
+///
+/// `compute_subnet_for_blob_sidecar(index) = index % BLOB_SIDECAR_SUBNET_COUNT`
+/// per `specs/deneb/p2p-interface.md`.
+///
+/// `blob_sidecar_subnet_count` must be `E::BLOB_SIDECAR_SUBNET_COUNT` (= 6 for
+/// both mainnet and minimal).
+pub fn compute_subnet_for_blob_sidecar(index: u64, blob_sidecar_subnet_count: u64) -> SubnetId {
+    index % blob_sidecar_subnet_count
+}
 
 // ── GossipTopicKind ───────────────────────────────────────────────────────────
 
@@ -53,6 +69,12 @@ pub enum GossipTopicKind {
     /// Propagates `SignedBLSToExecutionChange` messages to all potential block
     /// proposers. The message type is defined in `specs/capella/beacon-chain.md`.
     BlsToExecutionChange,
+    // ── Deneb topics ──────────────────────────────────────────────────────────
+    /// `blob_sidecar_<subnet_id>` per `specs/deneb/p2p-interface.md`.
+    ///
+    /// Each blob sidecar is broadcast on subnet `index % BLOB_SIDECAR_SUBNET_COUNT`.
+    /// The subnet id is a decimal integer in the topic name (no padding).
+    BlobSidecar(SubnetId),
 }
 
 // ── GossipTopic ───────────────────────────────────────────────────────────────
@@ -189,6 +211,8 @@ fn topic_kind_name(kind: &GossipTopicKind) -> String {
         }
         // Capella topics — `specs/capella/p2p-interface.md`.
         GossipTopicKind::BlsToExecutionChange => "bls_to_execution_change".to_string(),
+        // Deneb topics — `specs/deneb/p2p-interface.md`.
+        GossipTopicKind::BlobSidecar(subnet) => format!("blob_sidecar_{subnet}"),
     }
 }
 
@@ -221,6 +245,11 @@ fn parse_topic_kind(name: &str) -> Option<GossipTopicKind> {
                     return None;
                 }
                 return Some(GossipTopicKind::SyncCommittee(subnet_id));
+            }
+            // Handle `blob_sidecar_<decimal-subnet-id>`.
+            if let Some(subnet_str) = name.strip_prefix("blob_sidecar_") {
+                let subnet_id: SubnetId = subnet_str.parse().ok()?;
+                return Some(GossipTopicKind::BlobSidecar(subnet_id));
             }
             None
         }
@@ -274,6 +303,9 @@ mod tests {
             topic(fd, GossipTopicKind::LightClientOptimisticUpdate),
             // Capella topics.
             topic(fd, GossipTopicKind::BlsToExecutionChange),
+            // Deneb topics.
+            topic(fd, GossipTopicKind::BlobSidecar(0)),
+            topic(fd, GossipTopicKind::BlobSidecar(5)),
         ];
         for t in &cases {
             let s = t.topic_str();
@@ -371,6 +403,24 @@ mod tests {
         assert_eq!(t.topic_hash(), t.topic_hash());
         let expected = IdentTopic::new(t.topic_str()).hash();
         assert_eq!(t.topic_hash(), expected);
+    }
+
+    /// `topic_str` for Deneb `blob_sidecar_<i>`.
+    #[test]
+    fn topic_str_blob_sidecar_subnet_3() {
+        let t = topic([0x01, 0x02, 0x03, 0x04], GossipTopicKind::BlobSidecar(3));
+        assert_eq!(t.topic_str(), "/eth2/01020304/blob_sidecar_3/ssz_snappy");
+    }
+
+    /// `compute_subnet_for_blob_sidecar` maps blob index to `index % count`.
+    #[test]
+    fn blob_sidecar_subnet_computation() {
+        use super::compute_subnet_for_blob_sidecar;
+        // BLOB_SIDECAR_SUBNET_COUNT = 6 for both presets.
+        assert_eq!(compute_subnet_for_blob_sidecar(0, 6), 0);
+        assert_eq!(compute_subnet_for_blob_sidecar(5, 6), 5);
+        assert_eq!(compute_subnet_for_blob_sidecar(6, 6), 0);
+        assert_eq!(compute_subnet_for_blob_sidecar(7, 6), 1);
     }
 
     // ── Negative cases ────────────────────────────────────────────────────────

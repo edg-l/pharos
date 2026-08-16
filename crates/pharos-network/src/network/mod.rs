@@ -209,6 +209,20 @@ pub enum NetworkEvent {
         peer: PeerId,
         data: Vec<u8>,
     },
+
+    /// A validated `blob_sidecar_{subnet_id}` gossip message.
+    ///
+    /// Emitted after `validate_blob_sidecar` returns `Accept`.  The consumer
+    /// (Phase 5 `run_blob_ingestion_loop`) persists the sidecar and re-injects
+    /// the parent block when all sidecars for a slot are complete.
+    ///
+    /// `subnet` is the gossip subnet the message arrived on.
+    /// `data` is the snappy-decompressed SSZ bytes of the `BlobSidecar`.
+    GossipBlobSidecar {
+        subnet: crate::types::SubnetId,
+        peer: PeerId,
+        data: Vec<u8>,
+    },
 }
 
 impl NetworkEvent {
@@ -230,6 +244,7 @@ impl NetworkEvent {
             Self::DialFailed { .. } => "DialFailed",
             Self::ExternalAddrConfirmed { .. } => "ExternalAddrConfirmed",
             Self::UnknownParentBlock { .. } => "UnknownParentBlock",
+            Self::GossipBlobSidecar { .. } => "GossipBlobSidecar",
         }
     }
 }
@@ -563,6 +578,18 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                 self.on_request_response_event(rr_event, RpcMethod::LightClientOptimisticUpdate)
                     .await;
             }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcBlobSidecarsByRange(
+                rr_event,
+            )) => {
+                self.on_request_response_event(rr_event, RpcMethod::BlobSidecarsByRange)
+                    .await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcBlobSidecarsByRoot(
+                rr_event,
+            )) => {
+                self.on_request_response_event(rr_event, RpcMethod::BlobSidecarsByRoot)
+                    .await;
+            }
             libp2p::swarm::SwarmEvent::ConnectionEstablished {
                 peer_id,
                 endpoint,
@@ -765,13 +792,25 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
         // Emit topic-specific events for accepted and selected-ignore messages.
         match &verdict {
             GossipVerdict::Accept => {
-                // Move the decompressed bytes into the event (no second decompress).
-                self.emit_event(NetworkEvent::GossipMessage {
-                    topic,
-                    peer: propagation_source,
-                    data: ssz_bytes,
-                })
-                .await;
+                // Blob sidecars get their own typed event so Phase 5's
+                // `run_blob_ingestion_loop` can receive them without parsing the
+                // generic `GossipMessage` data field (D-bls-on-hot-path / task 3.4).
+                if let GossipTopicKind::BlobSidecar(subnet) = topic.kind {
+                    self.emit_event(NetworkEvent::GossipBlobSidecar {
+                        subnet,
+                        peer: propagation_source,
+                        data: ssz_bytes,
+                    })
+                    .await;
+                } else {
+                    // All other accepted topics: emit the generic GossipMessage.
+                    self.emit_event(NetworkEvent::GossipMessage {
+                        topic,
+                        peer: propagation_source,
+                        data: ssz_bytes,
+                    })
+                    .await;
+                }
             }
             GossipVerdict::Ignore(reason)
                 if topic.kind == GossipTopicKind::BeaconBlock
@@ -900,6 +939,14 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
                             }
                             RpcMethod::LightClientOptimisticUpdate => b
                                 .rpc_lc_optimistic_update
+                                .0
+                                .send_response(channel, response),
+                            RpcMethod::BlobSidecarsByRange => b
+                                .rpc_blob_sidecars_by_range
+                                .0
+                                .send_response(channel, response),
+                            RpcMethod::BlobSidecarsByRoot => b
+                                .rpc_blob_sidecars_by_root
                                 .0
                                 .send_response(channel, response),
                         }
@@ -1054,6 +1101,12 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + Send + Sync + 'static, S:
             }
             RpcRequest::LightClientOptimisticUpdate => {
                 b.rpc_lc_optimistic_update.0.send_request(peer, req)
+            }
+            RpcRequest::BlobSidecarsByRange(_) => {
+                b.rpc_blob_sidecars_by_range.0.send_request(peer, req)
+            }
+            RpcRequest::BlobSidecarsByRoot(_) => {
+                b.rpc_blob_sidecars_by_root.0.send_request(peer, req)
             }
         }
     }
@@ -1611,6 +1664,8 @@ fn rpc_method_from_request(req: &RpcRequest) -> RpcMethod {
         RpcRequest::LightClientUpdatesByRange(_) => RpcMethod::LightClientUpdatesByRange,
         RpcRequest::LightClientFinalityUpdate => RpcMethod::LightClientFinalityUpdate,
         RpcRequest::LightClientOptimisticUpdate => RpcMethod::LightClientOptimisticUpdate,
+        RpcRequest::BlobSidecarsByRange(_) => RpcMethod::BlobSidecarsByRange,
+        RpcRequest::BlobSidecarsByRoot(_) => RpcMethod::BlobSidecarsByRoot,
     }
 }
 
@@ -1845,6 +1900,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
         use crate::rpc::protocol::RpcProtocol;
         use crate::scoring::RpcMethod as M;
         use behaviour::{
+            RpcBlobSidecarsByRangeBehaviour, RpcBlobSidecarsByRootBehaviour,
             RpcBlocksByRangeBehaviour, RpcBlocksByRootBehaviour, RpcGoodbyeBehaviour,
             RpcLcBootstrapBehaviour, RpcLcFinalityUpdateBehaviour, RpcLcOptimisticUpdateBehaviour,
             RpcLcUpdatesByRangeBehaviour, RpcMetaDataBehaviour, RpcMetaDataV1Behaviour,
@@ -1904,6 +1960,13 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E>, S: PeerScorer> NetworkBuil
                 )),
                 rpc_lc_optimistic_update: RpcLcOptimisticUpdateBehaviour(mk_rr_ctx(
                     M::LightClientOptimisticUpdate,
+                )),
+                // Blob-sidecar behaviours use context-bytes codec (fork digest prefix per chunk).
+                rpc_blob_sidecars_by_range: RpcBlobSidecarsByRangeBehaviour(mk_rr_ctx(
+                    M::BlobSidecarsByRange,
+                )),
+                rpc_blob_sidecars_by_root: RpcBlobSidecarsByRootBehaviour(mk_rr_ctx(
+                    M::BlobSidecarsByRoot,
                 )),
                 identify,
                 ping,
@@ -2286,6 +2349,14 @@ mod tests {
         fn validate_capella_light_client_optimistic_update(
             &self,
             _msg: &<MainnetEthSpec as EthSpec>::CapellaLightClientOptimisticUpdate,
+        ) -> GossipVerdict {
+            unreachable!()
+        }
+
+        fn validate_blob_sidecar(
+            &self,
+            _subnet: SubnetId,
+            _sidecar: &pharos_types::deneb::BlobSidecar,
         ) -> GossipVerdict {
             unreachable!()
         }

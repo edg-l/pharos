@@ -3243,6 +3243,7 @@ dependencies = [
  "pharos-api",
  "pharos-engine",
  "pharos-fork-choice",
+ "pharos-kzg",
  "pharos-network",
  "pharos-ssz",
  "pharos-stf",

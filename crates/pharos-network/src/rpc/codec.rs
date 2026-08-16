@@ -21,6 +21,7 @@ use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use pharos_ssz::{Decode, Encode};
 use pharos_types::EthSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
+use pharos_types::deneb::{BlobSidecar, BlobSidecarsByRangeRequest, BlobSidecarsByRootRequest};
 use pharos_types::phase0::{
     BeaconBlocksByRangeRequest, BeaconBlocksByRootRequest, ErrorMessage, MetaData, Status,
 };
@@ -28,10 +29,12 @@ use pharos_types::phase0::{
 use crate::codec::snappy_frame::encode_snappy_frame;
 use crate::host::ForkContext;
 use crate::rpc::protocol::RpcProtocol;
-use crate::rpc::size_bounds::{MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES, type_size_bounds};
+use crate::rpc::size_bounds::{
+    MAX_BLOB_SIDECAR_SSZ_BYTES, MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES, type_size_bounds,
+};
 use crate::rpc::types::{
-    LightClientBootstrapRequest, LightClientUpdatesByRangeRequest, MAX_REQUEST_BLOCKS,
-    MetaDataResponse, RpcRequest, RpcResponse,
+    LightClientBootstrapRequest, LightClientUpdatesByRangeRequest, MAX_REQUEST_BLOB_SIDECARS,
+    MAX_REQUEST_BLOCKS, MetaDataResponse, RpcRequest, RpcResponse,
 };
 use crate::rpc::varint::{read_varint, write_varint};
 use crate::scoring::RpcMethod;
@@ -106,6 +109,8 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
         if matches!(method, RpcMethod::LightClientOptimisticUpdate) {
             return Ok(RpcRequest::LightClientOptimisticUpdate);
         }
+        // Note: BlobSidecarsByRange and BlobSidecarsByRoot have request bodies;
+        // they fall through to the normal length-prefixed decode path below.
 
         let ssz_len = read_varint(io).await.map_err(io_err)? as usize;
 
@@ -131,6 +136,7 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
         // Accumulators for streaming list methods.
         let mut blocks: Vec<E::SignedBeaconBlock> = Vec::new();
         let mut lc_updates: Vec<E::AltairLightClientUpdate> = Vec::new();
+        let mut blob_sidecars: Vec<BlobSidecar> = Vec::new();
         let mut first_response: Option<RpcResponse<E>> = None;
 
         loop {
@@ -179,6 +185,15 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                 {
                     return Err(io::Error::other(
                         "light-client chunk has non-altair/capella context bytes",
+                    ));
+                }
+                // For blob sidecar methods, context bytes MUST indicate Deneb or later.
+                // Per `specs/deneb/p2p-interface.md`.
+                RpcMethod::BlobSidecarsByRange | RpcMethod::BlobSidecarsByRoot
+                    if !matches!(chunk_fork, Some(Fork::Deneb)) =>
+                {
+                    return Err(io::Error::other(
+                        "blob sidecar chunk has non-deneb context bytes",
                     ));
                 }
                 _ => {}
@@ -316,6 +331,22 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     first_response = Some(RpcResponse::LightClientOptimisticUpdate(update));
                     break;
                 }
+                // Blob sidecar streaming: each success chunk is one BlobSidecar.
+                // Context bytes MUST be Deneb (validated above).
+                // Per `specs/deneb/p2p-interface.md` (BlobSidecarsByRange v1 /
+                // BlobSidecarsByRoot v1).
+                RpcMethod::BlobSidecarsByRange | RpcMethod::BlobSidecarsByRoot => {
+                    if blob_sidecars.len() >= MAX_REQUEST_BLOB_SIDECARS as usize {
+                        return Err(io::Error::other(
+                            "response exceeds MAX_REQUEST_BLOB_SIDECARS",
+                        ));
+                    }
+                    let sidecar =
+                        read_ssz_snappy_payload::<_, BlobSidecar>(io, MAX_BLOB_SIDECAR_SSZ_BYTES)
+                            .await?;
+                    blob_sidecars.push(sidecar);
+                    // Continue reading chunks.
+                }
             }
         }
 
@@ -329,6 +360,9 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
             RpcMethod::BlocksByRoot => Ok(RpcResponse::BlocksByRoot(blocks)),
             RpcMethod::LightClientUpdatesByRange => {
                 Ok(RpcResponse::LightClientUpdatesByRange(lc_updates))
+            }
+            RpcMethod::BlobSidecarsByRange | RpcMethod::BlobSidecarsByRoot => {
+                Ok(RpcResponse::BlobSidecars(blob_sidecars))
             }
             _ => {
                 // Single-response method with zero chunks.
@@ -360,6 +394,8 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
         ) {
             return Ok(());
         }
+        // Note: BlobSidecarsByRange and BlobSidecarsByRoot have request bodies;
+        // they encode via encode_request_ssz and write_ssz_snappy below.
 
         let ssz = encode_request_ssz(req)?;
         write_ssz_snappy(io, &ssz).await
@@ -451,7 +487,9 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     // per `specs/altair/p2p-interface.md:445-461` and
                     // `specs/capella/p2p-interface.md`.
                     // Dispatch to the inner SSZ bytes (no fork discriminant byte).
-                    let (fork, ssz) = if let Some(inner) = E::unwrap_capella_signed_block(block) {
+                    let (fork, ssz) = if let Some(inner) = E::unwrap_deneb_signed_block(block) {
+                        (Fork::Deneb, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_capella_signed_block(block) {
                         (Fork::Capella, inner.as_ssz_bytes())
                     } else if let Some(inner) = E::unwrap_bellatrix_signed_block(block) {
                         (Fork::Bellatrix, inner.as_ssz_bytes())
@@ -467,6 +505,19 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
                     io.write_all(&[0]).await?;
                     io.write_all(&fc.fork_digest_for(fork).into_inner()).await?;
                     write_ssz_snappy(io, &ssz).await?;
+                }
+            }
+            // Blob sidecars: each sidecar is one success chunk with Deneb context bytes.
+            // Per `specs/deneb/p2p-interface.md` (BlobSidecarsByRange/Root v1).
+            RpcResponse::BlobSidecars(sidecars) => {
+                let fc = self.fork_context.as_deref().ok_or_else(|| {
+                    io::Error::other("missing fork context: cannot encode context bytes")
+                })?;
+                for sidecar in &sidecars {
+                    io.write_all(&[0]).await?;
+                    io.write_all(&fc.fork_digest_for(Fork::Deneb).into_inner())
+                        .await?;
+                    write_ssz_snappy(io, &sidecar.as_ssz_bytes()).await?;
                 }
             }
         }
@@ -622,6 +673,10 @@ fn encode_request_ssz(req: RpcRequest) -> io::Result<Vec<u8>> {
         RpcRequest::LightClientFinalityUpdate | RpcRequest::LightClientOptimisticUpdate => {
             Vec::new()
         }
+        // BlobSidecarsByRange: start_slot(8) + count(8) = 16 bytes (container).
+        RpcRequest::BlobSidecarsByRange(r) => r.as_ssz_bytes(),
+        // BlobSidecarsByRoot: bare List[BlobIdentifier, N] (transparent SSZ, no offset).
+        RpcRequest::BlobSidecarsByRoot(r) => r.as_ssz_bytes(),
     })
 }
 
@@ -685,6 +740,18 @@ fn decode_request(method: &RpcMethod, bytes: &[u8]) -> io::Result<RpcRequest> {
         // calling decode_request, so this arm is unreachable.
         RpcMethod::LightClientFinalityUpdate => Ok(RpcRequest::LightClientFinalityUpdate),
         RpcMethod::LightClientOptimisticUpdate => Ok(RpcRequest::LightClientOptimisticUpdate),
+        // BlobSidecarsByRange: start_slot(8) + count(8) = 16 bytes.
+        RpcMethod::BlobSidecarsByRange => {
+            let r = BlobSidecarsByRangeRequest::from_ssz_bytes(bytes)
+                .map_err(|e| io::Error::other(format!("ssz decode BlobSidecarsByRange: {e}")))?;
+            Ok(RpcRequest::BlobSidecarsByRange(r))
+        }
+        // BlobSidecarsByRoot: bare List[BlobIdentifier, N].
+        RpcMethod::BlobSidecarsByRoot => {
+            let r = BlobSidecarsByRootRequest::<MAX_REQUEST_BLOB_SIDECARS>::from_ssz_bytes(bytes)
+                .map_err(|e| io::Error::other(format!("ssz decode BlobSidecarsByRoot: {e}")))?;
+            Ok(RpcRequest::BlobSidecarsByRoot(r))
+        }
     }
 }
 
@@ -702,7 +769,11 @@ fn io_err(e: crate::error::NetworkError) -> io::Error {
 mod tests {
     use super::*;
     use libp2p::request_response::Codec as _;
+    use pharos_ssz::{SszList, SszSequence as _};
     use pharos_types::MainnetEthSpec;
+    use pharos_types::deneb::{
+        BlobIdentifier, BlobSidecarsByRangeRequest, BlobSidecarsByRootRequest,
+    };
     use pharos_types::phase0::Status;
     use pharos_utils::{Bytes4, Epoch, Hash256, Slot};
 
@@ -839,6 +910,132 @@ mod tests {
                 );
             }
             other => panic!("expected RpcResponse::Status, got: {other:?}"),
+        }
+    }
+
+    /// Roundtrip a `BlobSidecarsByRange` request through write_request → read_request.
+    ///
+    /// `BlobSidecarsByRangeRequest` is a fixed 16-byte container (start_slot + count).
+    /// Per `specs/deneb/p2p-interface.md` (BlobSidecarsByRange v1).
+    #[tokio::test]
+    async fn codec_blob_sidecars_by_range_request_roundtrip() {
+        let original = BlobSidecarsByRangeRequest {
+            start_slot: 1024,
+            count: 64,
+        };
+
+        let protocol = RpcProtocol(RpcMethod::BlobSidecarsByRange);
+        let mut codec = RpcCodec::<MainnetEthSpec>::default();
+
+        let mut buf: Vec<u8> = Vec::new();
+        codec
+            .write_request(
+                &protocol,
+                &mut buf,
+                RpcRequest::BlobSidecarsByRange(original.clone()),
+            )
+            .await
+            .expect("write_request failed");
+
+        // BlobSidecarsByRange is a fixed 16-byte container: varint(16) + snappy(ssz).
+        println!(
+            "BlobSidecarsByRange wire ({} bytes): {:02x?}",
+            buf.len(),
+            buf
+        );
+
+        let mut reader = futures::io::Cursor::new(buf);
+        let req = codec
+            .read_request(&protocol, &mut reader)
+            .await
+            .expect("read_request failed");
+
+        match req {
+            RpcRequest::BlobSidecarsByRange(decoded) => {
+                assert_eq!(
+                    decoded, original,
+                    "decoded BlobSidecarsByRange must equal original"
+                );
+            }
+            other => panic!("expected RpcRequest::BlobSidecarsByRange, got: {other:?}"),
+        }
+    }
+
+    /// Roundtrip a `BlobSidecarsByRoot` request through write_request → read_request.
+    ///
+    /// `BlobSidecarsByRootRequest` is a bare `List[BlobIdentifier, N]` (no container
+    /// offset — see `D-blocksbyroot-bare-list`).  Each `BlobIdentifier` is 40 bytes
+    /// (block_root:32 + index:8).  Two identifiers = 80 bytes bare.
+    #[tokio::test]
+    async fn codec_blob_sidecars_by_root_request_roundtrip() {
+        let id0 = BlobIdentifier {
+            block_root: Hash256::from_array([0x11u8; 32]),
+            index: 0,
+        };
+        let id1 = BlobIdentifier {
+            block_root: Hash256::from_array([0x22u8; 32]),
+            index: 3,
+        };
+
+        let blob_ids = SszList::from_vec(vec![id0.clone(), id1.clone()])
+            .expect("construct BlobIdentifier list");
+        let original = BlobSidecarsByRootRequest::<{ MAX_REQUEST_BLOB_SIDECARS }> { blob_ids };
+
+        let protocol = RpcProtocol(RpcMethod::BlobSidecarsByRoot);
+        let mut codec = RpcCodec::<MainnetEthSpec>::default();
+
+        let mut buf: Vec<u8> = Vec::new();
+        codec
+            .write_request(
+                &protocol,
+                &mut buf,
+                RpcRequest::BlobSidecarsByRoot(original.clone()),
+            )
+            .await
+            .expect("write_request failed");
+
+        // Two BlobIdentifiers at 40 bytes each = 80 bytes bare (no container offset).
+        println!(
+            "BlobSidecarsByRoot wire ({} bytes): {:02x?}",
+            buf.len(),
+            buf
+        );
+
+        let mut reader = futures::io::Cursor::new(buf);
+        let req = codec
+            .read_request(&protocol, &mut reader)
+            .await
+            .expect("read_request failed");
+
+        match req {
+            RpcRequest::BlobSidecarsByRoot(decoded) => {
+                assert_eq!(
+                    decoded.blob_ids.len(),
+                    2,
+                    "decoded BlobSidecarsByRoot must contain 2 identifiers"
+                );
+                assert_eq!(
+                    decoded.blob_ids.get(0).unwrap().block_root,
+                    id0.block_root,
+                    "first blob_id block_root must match"
+                );
+                assert_eq!(
+                    decoded.blob_ids.get(0).unwrap().index,
+                    id0.index,
+                    "first blob_id index must match"
+                );
+                assert_eq!(
+                    decoded.blob_ids.get(1).unwrap().block_root,
+                    id1.block_root,
+                    "second blob_id block_root must match"
+                );
+                assert_eq!(
+                    decoded.blob_ids.get(1).unwrap().index,
+                    id1.index,
+                    "second blob_id index must match"
+                );
+            }
+            other => panic!("expected RpcRequest::BlobSidecarsByRoot, got: {other:?}"),
         }
     }
 }

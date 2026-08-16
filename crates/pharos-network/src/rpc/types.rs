@@ -4,6 +4,7 @@
 
 use pharos_types::EthSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
+use pharos_types::deneb::{BlobSidecar, BlobSidecarsByRangeRequest, BlobSidecarsByRootRequest};
 use pharos_types::phase0::{
     BeaconBlocksByRangeRequest, BeaconBlocksByRootRequest, ErrorMessage, MetaData, Status,
 };
@@ -20,6 +21,20 @@ pub const MAX_REQUEST_BLOCKS: u64 = 1024;
 ///
 /// Per `specs/altair/light-client/p2p-interface.md:35`.
 pub const MAX_REQUEST_LIGHT_CLIENT_UPDATES: u64 = 128;
+
+/// Maximum number of blocks in a `BeaconBlocksByRange` / `BeaconBlocksByRoot`
+/// request in Deneb and later.
+///
+/// Per `specs/deneb/p2p-interface.md` (`MAX_REQUEST_BLOCKS_DENEB = 128`).
+pub const MAX_REQUEST_BLOCKS_DENEB: u64 = 128;
+
+/// Maximum number of blob sidecars returnable in a single request.
+///
+/// `compute_max_request_blob_sidecars() = MAX_REQUEST_BLOCKS_DENEB * MAX_BLOBS_PER_BLOCK`
+/// = 128 * 6 = 768.
+///
+/// Per `specs/deneb/p2p-interface.md`.
+pub const MAX_REQUEST_BLOB_SIDECARS: u64 = 768;
 
 // ── MetaDataResponse ──────────────────────────────────────────────────────────
 
@@ -94,6 +109,17 @@ pub enum RpcRequest {
     ///
     /// Per `specs/altair/light-client/p2p-interface.md:103-116`. No body.
     LightClientOptimisticUpdate,
+    /// Blob sidecars by slot range.
+    ///
+    /// Per `specs/deneb/p2p-interface.md` (`BlobSidecarsByRange v1`).
+    BlobSidecarsByRange(BlobSidecarsByRangeRequest),
+    /// Blob sidecars by block root and blob index.
+    ///
+    /// Request body is a bare `List[BlobIdentifier, MAX_REQUEST_BLOB_SIDECARS]`
+    /// (single-field rule, no container offset — identical trap to `D-blocksbyroot-bare-list`).
+    ///
+    /// Per `specs/deneb/p2p-interface.md` (`BlobSidecarsByRoot v1`).
+    BlobSidecarsByRoot(BlobSidecarsByRootRequest<MAX_REQUEST_BLOB_SIDECARS>),
 }
 
 // ── RpcResponse ───────────────────────────────────────────────────────────────
@@ -131,6 +157,10 @@ pub enum RpcResponse<E: EthSpec> {
     ///
     /// Per `specs/altair/light-client/p2p-interface.md:103-116`.
     LightClientOptimisticUpdate(E::AltairLightClientOptimisticUpdate),
+    /// Blob sidecars by range or by root — zero or more `BlobSidecar` objects.
+    ///
+    /// Per `specs/deneb/p2p-interface.md`.
+    BlobSidecars(Vec<BlobSidecar>),
     /// Error chunk (result code 1/2/3) with an `ErrorMessage` payload.
     Error { code: u8, message: ErrorMessage },
 }
@@ -153,6 +183,7 @@ where
             Self::LightClientUpdatesByRange(v) => Self::LightClientUpdatesByRange(v.clone()),
             Self::LightClientFinalityUpdate(u) => Self::LightClientFinalityUpdate(u.clone()),
             Self::LightClientOptimisticUpdate(u) => Self::LightClientOptimisticUpdate(u.clone()),
+            Self::BlobSidecars(v) => Self::BlobSidecars(v.clone()),
             Self::Error { code, message } => Self::Error {
                 code: *code,
                 message: message.clone(),
@@ -183,6 +214,10 @@ where
             Self::LightClientOptimisticUpdate(_) => {
                 f.debug_tuple("LightClientOptimisticUpdate").finish()
             }
+            Self::BlobSidecars(v) => f
+                .debug_tuple("BlobSidecars")
+                .field(&format!("[{} sidecars]", v.len()))
+                .finish(),
             Self::Error { code, message } => f
                 .debug_struct("Error")
                 .field("code", code)
