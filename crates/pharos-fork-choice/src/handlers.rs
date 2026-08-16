@@ -396,9 +396,14 @@ where
     // to `engine_newPayloadV1`. Pre-Bellatrix blocks also get an entry, but
     // the engine driver only emits `newPayload` for Bellatrix+ payloads, so
     // their status stays `NotValidated` for the lifetime of the entry.
-    store
-        .payload_statuses
-        .insert(block_root, pharos_types::PayloadStatus::NotValidated);
+    //
+    // Uses `mark_payload_status_if_absent` so a `Valid`/`Invalid` verdict the
+    // async engine driver may have already written for a block that raced
+    // through the newPayload path before the persist worker is not clobbered.
+    store.mark_payload_status_if_absent(
+        block_root,
+        pharos_types::PayloadStatus::NotValidated,
+    );
 
     // Record timeliness using the caller-supplied `now` timestamp.
     // Saves `store.time` from being mutated by on_block (time is managed by on_tick).

@@ -112,6 +112,6 @@ pub async fn run_blob_ingestion_loop<E: EthSpec>(
         // Notify the registry that a sidecar for this block root arrived.
         // If a block is parked awaiting DA, re-inject it. The DA gate in
         // `import_block` will re-run and determine whether all blobs are present.
-        blob_awaiting.notify_blob_arrived(block_root);
+        blob_awaiting.notify_blob_arrived(block_root).await;
     }
 }

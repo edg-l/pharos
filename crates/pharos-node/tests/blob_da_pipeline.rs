@@ -428,7 +428,7 @@ async fn blob_da_pipeline() {
     // ── Deliver sidecar → notify re-inject ────────────────────────────────────
 
     da_checker.unblock();
-    blob_awaiting.notify_blob_arrived(block1_root);
+    blob_awaiting.notify_blob_arrived(block1_root).await;
 
     // The re-inject channel now has the block.
     let reinjected = tokio::time::timeout(Duration::from_secs(2), reinject_rx.recv())
@@ -491,7 +491,7 @@ async fn blob_da_pipeline() {
         reinject_tx.clone(),
     );
 
-    blob_awaiting.notify_blob_arrived(dummy_root);
+    blob_awaiting.notify_blob_arrived(dummy_root).await;
 
     // Only one re-inject (first park); second park was dedup'd.
     let _first_reinjected = tokio::time::timeout(Duration::from_secs(1), reinject_rx.recv())

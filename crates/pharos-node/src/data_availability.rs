@@ -324,11 +324,11 @@ impl BlobAwaitingBlocks {
     ///
     /// If no entry exists for `block_root`, this is a no-op (the block was
     /// either never parked, already re-injected, or already evicted).
-    pub fn notify_blob_arrived(&self, block_root: Root) {
+    pub async fn notify_blob_arrived(&self, block_root: Root) {
         let entry = self.inner.lock().remove(&block_root);
         if let Some(PendingEntry { block, reinject_tx }) = entry {
-            if reinject_tx.try_send(block).is_err() {
-                warn!(%block_root, "blob_awaiting: reinject_tx full or closed; DA-pending block lost");
+            if reinject_tx.send(block).await.is_err() {
+                warn!(%block_root, "blob_awaiting: reinject_tx closed (receiver dropped); DA-pending block lost");
             } else {
                 debug!(%block_root, "blob_awaiting: re-injecting block after blob arrival");
             }

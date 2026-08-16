@@ -393,6 +393,13 @@ where
                             "backfill uses NoopDataAvailabilityChecker: DataNotAvailable is impossible"
                         )
                     }
+                    // Duplicate block — already present in fork-choice from a
+                    // prior backfill iteration or lookup-sync.  Benign: move to
+                    // the next block in the chunk.
+                    Err(crate::import::ImportError::AlreadyImported { root }) => {
+                        debug!(%root, "backfill: block already imported; skipping");
+                        continue;
+                    }
                 };
 
             host.on_head_change(outcome.head_change.clone());

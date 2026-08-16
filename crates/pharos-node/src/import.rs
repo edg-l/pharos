@@ -91,6 +91,11 @@ pub enum ImportError {
          parent execution status unknown — rejecting non-VALID execution block"
     )]
     NotOptimisticCandidate { block_slot: u64, current_slot: u64 },
+
+    /// Block is already present in the fork-choice store (duplicate from
+    /// lookup-sync or backfill re-fetch).  The caller should drop this block.
+    #[error("block already imported: {root}")]
+    AlreadyImported { root: Root },
 }
 
 // ── ImportOutcome ─────────────────────────────────────────────────────────────
@@ -346,6 +351,18 @@ where
     let cfg_clone = cfg.clone();
     let da_checker_clone = Arc::clone(da_checker);
     let block_root_for_da = extract_block_root::<E>(signed_block);
+    // (a.6) Duplicate import guard: if the block root is already in the
+    // fork-choice store, reject immediately without touching the STF.
+    // This prevents re-processing blocks that lookup-sync or backfill may
+    // re-fetch after they've already been imported via gossip.
+    {
+        let store_read = fc_store.read();
+        if store_read.blocks.contains_key(&block_root_for_da) {
+            return Err(ImportError::AlreadyImported {
+                root: block_root_for_da,
+            });
+        }
+    }
     let stf_result: Result<_, ImportError> = tokio::task::spawn_blocking(move || {
         // Step (a.5) inner: DA gate — BEFORE state_transition (RI-1).
         let verdict = da_checker_clone.is_data_available(block_root_for_da, &kzg_commitments);
