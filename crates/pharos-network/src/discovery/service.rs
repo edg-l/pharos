@@ -5,6 +5,7 @@
 //! change.
 
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 
 use discv5::socket::ListenConfig;
 use discv5::{ConfigBuilder, Discv5};
@@ -14,7 +15,9 @@ use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use crate::discovery::enr::{Enr, build_local_enr, matches_local_fork, read_eth2_field};
+use crate::discovery::enr::{
+    Enr, build_local_enr, load_enr_seq, matches_local_fork, read_eth2_field, save_enr_seq,
+};
 use crate::error::NetworkError;
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -38,6 +41,11 @@ pub struct DiscoveryConfig {
     pub fork_id: ENRForkID,
     /// Attestation subnet subscriptions embedded in the `attnets` ENR key.
     pub attnets: Bitvector<ATTESTATION_SUBNET_COUNT>,
+    /// Directory for persisting the ENR sequence number across restarts
+    /// (`D-enr-seq-persistence`). `None` disables persistence (tests, ephemeral
+    /// nodes). When `Some`, the ENR seq is loaded on startup and saved on every
+    /// ENR mutation so restarts yield monotonically increasing sequence numbers.
+    pub network_dir: Option<PathBuf>,
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -61,6 +69,9 @@ pub struct DiscoveryService {
     events_rx: mpsc::Receiver<discv5::Event>,
     /// The fork identity we advertise and validate peers against.
     fork_id: ENRForkID,
+    /// Directory for ENR seq persistence (`D-enr-seq-persistence`). `None` when
+    /// persistence is disabled (ephemeral nodes / tests without a data dir).
+    network_dir: Option<PathBuf>,
 }
 
 impl DiscoveryService {
@@ -84,6 +95,11 @@ impl DiscoveryService {
         };
         let port = cfg.listen_addr.port();
 
+        // Load the persisted ENR sequence number so restarts continue from the
+        // same seq rather than resetting to 1 (`D-enr-seq-persistence`).
+        // `load_enr_seq` returns 1 when the file is absent (first start).
+        let initial_seq = cfg.network_dir.as_deref().map(load_enr_seq).unwrap_or(1);
+
         // Build the local ENR with IP, UDP (discv5), TCP (libp2p), and optional
         // QUIC UDP port populated, so peers discovering us can dial both
         // libp2p transports. IPv6 / quic6 are not populated in this phase.
@@ -96,6 +112,7 @@ impl DiscoveryService {
             None,
             cfg.fork_id.clone(),
             cfg.attnets,
+            initial_seq,
         )?;
 
         // discv5 0.10 ConfigBuilder (renamed from Discv5ConfigBuilder).
@@ -126,10 +143,19 @@ impl DiscoveryService {
             .await
             .map_err(|e| NetworkError::Discv5(e.to_string()))?;
 
+        // Persist the initial seq now that the ENR is built (write-on-start so a
+        // crash before the first mutation still advances the seq on next restart).
+        if let Some(ref dir) = cfg.network_dir {
+            if let Err(e) = save_enr_seq(dir, discv5.local_enr().seq()) {
+                warn!(error = %e, "failed to persist initial ENR seq; continuing without persistence");
+            }
+        }
+
         Ok(Self {
             discv5,
             events_rx,
             fork_id: cfg.fork_id,
+            network_dir: cfg.network_dir,
         })
     }
 
@@ -166,6 +192,8 @@ impl DiscoveryService {
     ///
     /// SSZ-encodes `new_attnets` and inserts the bytes via `discv5.enr_insert`,
     /// which auto-increments the ENR sequence number and re-signs the record.
+    /// Persists the new seq to disk for restart continuity
+    /// (`D-enr-seq-persistence`).
     ///
     /// Per `~/dev/consensus-specs/specs/phase0/p2p-interface.md:1658-1660`:
     /// nodes MUST set the `attnets` key when any attestation subnet bit is set.
@@ -178,7 +206,22 @@ impl DiscoveryService {
         self.discv5
             .enr_insert("attnets", &bytes.as_slice())
             .map(|_| ())
-            .map_err(|e| NetworkError::Discv5(e.to_string()))
+            .map_err(|e| NetworkError::Discv5(e.to_string()))?;
+        self.persist_enr_seq();
+        Ok(())
+    }
+
+    /// Write the current ENR seq to disk if a network directory is configured.
+    ///
+    /// Called after every ENR mutation (attnets update, eth2 update, syncnets
+    /// update) so that restarts start from the latest seq.
+    pub(crate) fn persist_enr_seq(&self) {
+        if let Some(ref dir) = self.network_dir {
+            let seq = self.discv5.local_enr().seq();
+            if let Err(e) = save_enr_seq(dir, seq) {
+                warn!(error = %e, seq, "failed to persist ENR seq after mutation");
+            }
+        }
     }
 
     /// Returns the locally signed ENR (a fresh clone from the discv5 internal
@@ -259,6 +302,7 @@ mod tests {
             local_key: key,
             fork_id,
             attnets,
+            network_dir: None,
         };
 
         let service = DiscoveryService::start(cfg)

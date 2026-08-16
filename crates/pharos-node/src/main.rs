@@ -801,6 +801,12 @@ async fn main() -> anyhow::Result<()> {
 
     let discv5_addr = SocketAddr::new(listen_ip, args.discv5_port);
 
+    // Create the per-node network directory (`<data-dir>/network/`) for ENR seq
+    // persistence (`D-enr-seq-persistence`).
+    let network_dir = args.data_dir.join("network");
+    std::fs::create_dir_all(&network_dir)
+        .with_context(|| format!("creating network directory {}", network_dir.display()))?;
+
     let (mut handle, discovery_handle) =
         NetworkBuilder::<MainnetEthSpec, Arc<HostImpl<MainnetEthSpec>>, NoopScorer>::new(
             host.clone(),
@@ -814,6 +820,9 @@ async fn main() -> anyhow::Result<()> {
         // discv5 cadence formula (`D-connection-limit-prefer-high-score`).
         .max_peers(args.max_peers)
         .target_peers(args.target_peers)
+        // M11 Phase 13: persist ENR seq across restarts so peers can re-resolve
+        // us efficiently (`D-enr-seq-persistence`).
+        .network_dir(network_dir)
         // M11 Phase 11: replace the M2 NoopScorer with the real peer scorer so
         // the swarm loop feeds live gossip/req-resp/dial signals into scoring
         // and acts on disconnect/ban/rate-limit/backoff decisions.

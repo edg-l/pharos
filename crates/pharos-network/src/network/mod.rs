@@ -1946,6 +1946,9 @@ pub struct NetworkBuilder<E, H, S> {
     max_peers: usize,
     /// Desired steady-state connected peer count (M11 Phase 12). Default: 50.
     target_peers: usize,
+    /// Directory for ENR seq persistence (`D-enr-seq-persistence`). `None`
+    /// disables persistence (tests, ephemeral nodes).
+    network_dir: Option<std::path::PathBuf>,
     _phantom: PhantomData<E>,
 }
 
@@ -1970,6 +1973,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>>
             event_channel_capacity: 1024,
             max_peers: 50,
             target_peers: 50,
+            network_dir: None,
             _phantom: PhantomData,
         }
     }
@@ -2047,6 +2051,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
             event_channel_capacity: self.event_channel_capacity,
             max_peers: self.max_peers,
             target_peers: self.target_peers,
+            network_dir: self.network_dir,
             _phantom: PhantomData,
         }
     }
@@ -2066,6 +2071,18 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
     /// (per M11 Phase 12); `tick_score_prune` prunes to this level.
     pub fn target_peers(mut self, target_peers: usize) -> Self {
         self.target_peers = target_peers;
+        self
+    }
+
+    /// Set the directory for ENR sequence-number persistence across restarts
+    /// (`D-enr-seq-persistence`, M11 Phase 13).
+    ///
+    /// When set, the ENR seq is loaded from `<dir>/enr_seq` on startup and
+    /// written back after every ENR mutation so restarts yield monotonically
+    /// increasing sequence numbers. Pass the node's `<data-dir>/network/`
+    /// directory. When absent (default) persistence is disabled.
+    pub fn network_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.network_dir = Some(dir);
         self
     }
 
@@ -2134,6 +2151,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
             local_key: combined_key,
             fork_id,
             attnets: attnets.clone(),
+            network_dir: self.network_dir,
         })
         .await?;
 

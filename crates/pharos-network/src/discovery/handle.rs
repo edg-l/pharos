@@ -145,6 +145,9 @@ impl DiscoveryService {
                     .enr_insert("eth2", &bytes.as_slice())
                     .map(|_| ())
                     .map_err(|e| NetworkError::Discv5(e.to_string()));
+                if result.is_ok() {
+                    self.persist_enr_seq();
+                }
                 let _ = reply.send(result);
             }
             DiscoveryCommand::UpdateSyncnets { syncnets, reply } => {
@@ -154,6 +157,9 @@ impl DiscoveryService {
                     .enr_insert("syncnets", &bytes.as_slice())
                     .map(|_| ())
                     .map_err(|e| NetworkError::Discv5(e.to_string()));
+                if result.is_ok() {
+                    self.persist_enr_seq();
+                }
                 let _ = reply.send(result);
             }
             DiscoveryCommand::LocalEnr { reply } => {

@@ -8,7 +8,9 @@
 //! Lighthouse and other CL clients. The convention is documented under
 //! Q-quic-enr in `docs/decisions.md`.
 
+use std::io;
 use std::net::Ipv4Addr;
+use std::path::Path;
 
 use discv5::enr::{CombinedKey, CombinedPublicKey, EnrPublicKey as _};
 use libp2p::Multiaddr;
@@ -56,6 +58,46 @@ fn rlp_decode_bytes(rlp: &[u8]) -> Option<&[u8]> {
 /// The discv5 `Enr` type (already `Enr<CombinedKey>` via the type alias).
 pub type Enr = discv5::Enr;
 
+// ── ENR sequence-number persistence ──────────────────────────────────────────
+
+/// File name for the persisted ENR sequence number (relative to the network dir).
+const ENR_SEQ_FILENAME: &str = "enr_seq";
+
+/// Load the ENR sequence number from `<dir>/enr_seq`.
+///
+/// Returns `1` if the file is absent (first start) or unreadable, so the ENR
+/// always begins at a valid sequence. Per EIP-778 the sequence number MUST be
+/// a positive integer; `1` is the minimum for a freshly built ENR.
+///
+/// The file stores the sequence number as an 8-byte little-endian `u64`.
+pub fn load_enr_seq(dir: &Path) -> u64 {
+    let path = dir.join(ENR_SEQ_FILENAME);
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => return 1,
+    };
+    if bytes.len() != 8 {
+        return 1;
+    }
+    let seq = u64::from_le_bytes(bytes.try_into().unwrap_or([0u8; 8]));
+    seq.max(1)
+}
+
+/// Persist the ENR sequence number to `<dir>/enr_seq` atomically.
+///
+/// Writes via a `.tmp` sibling and renames so a crash mid-write never leaves a
+/// truncated file. Creates the directory if absent.
+///
+/// Per `D-enr-seq-persistence` (M11 Phase 13).
+pub fn save_enr_seq(dir: &Path, seq: u64) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{ENR_SEQ_FILENAME}.tmp"));
+    let path = dir.join(ENR_SEQ_FILENAME);
+    std::fs::write(&tmp, seq.to_le_bytes())?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 // ── build_local_enr ───────────────────────────────────────────────────────────
 
 /// Build and sign a local ENR for the Pharos node.
@@ -69,6 +111,11 @@ pub type Enr = discv5::Enr;
 /// `quic`  = RLP-encoded `u16` (IPv4 QUIC UDP port).
 /// `quic6` = RLP-encoded `u16` (IPv6 QUIC UDP port).
 ///
+/// `initial_seq` is the starting ENR sequence number. When persisting ENR seq
+/// across restarts (per `D-enr-seq-persistence`), pass the value from
+/// `load_enr_seq`; pass `1` for the first start. The ENR spec (EIP-778)
+/// requires seq >= 1; values below 1 are clamped to 1.
+///
 /// Spec: `specs/phase0/p2p-interface.md:1654-1656` and `:1670-1672`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_local_enr(
@@ -80,8 +127,13 @@ pub fn build_local_enr(
     quic6_port: Option<u16>,
     fork_id: ENRForkID,
     attnets: Bitvector<ATTESTATION_SUBNET_COUNT>,
+    initial_seq: u64,
 ) -> Result<Enr, NetworkError> {
     let mut builder = discv5::enr::Enr::builder();
+    // Seed the sequence number so restarts continue from the persisted value
+    // rather than resetting to 1 (`D-enr-seq-persistence`). Clamp to at least 1
+    // because EIP-778 forbids seq = 0 in a live ENR.
+    builder.seq(initial_seq.max(1));
 
     if let Some(ip) = ip4 {
         builder.ip4(ip);
@@ -247,6 +299,7 @@ mod tests {
             Some(9001),
             fork_id.clone(),
             attnets.clone(),
+            1,
         )
         .expect("build_local_enr failed");
 
@@ -282,8 +335,18 @@ mod tests {
         let fork_id = test_fork_id();
         let attnets = Bitvector::<ATTESTATION_SUBNET_COUNT>::new();
 
-        let enr = build_local_enr(&key, None, None, None, Some(9001), None, fork_id, attnets)
-            .expect("build_local_enr failed");
+        let enr = build_local_enr(
+            &key,
+            None,
+            None,
+            None,
+            Some(9001),
+            None,
+            fork_id,
+            attnets,
+            1,
+        )
+        .expect("build_local_enr failed");
 
         assert_eq!(read_quic_port(&enr), Some(9001));
         assert_eq!(read_quic6_port(&enr), None);
@@ -349,6 +412,7 @@ mod tests {
             None,
             fork_id,
             attnets,
+            1,
         )
         .expect("build_local_enr failed");
 
@@ -411,5 +475,65 @@ mod tests {
             next_fork_epoch: Epoch(0),
         };
         assert!(!matches_local_fork(&a, &b));
+    }
+
+    // ── Phase 13: ENR seq persistence ────────────────────────────────────────
+
+    /// Write seq N to a temp dir, read it back; assert the loaded value equals N.
+    #[test]
+    fn enr_seq_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seq: u64 = 42;
+        save_enr_seq(dir.path(), seq).expect("save_enr_seq");
+        let loaded = load_enr_seq(dir.path());
+        assert_eq!(loaded, seq);
+    }
+
+    /// Absent file returns 1 (first-start default).
+    #[test]
+    fn enr_seq_absent_returns_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(load_enr_seq(dir.path()), 1);
+    }
+
+    /// Simulate two `build_local_enr` cycles: the second cycle seeds from the
+    /// persisted seq and produces an ENR with seq >= the first ENR's seq.
+    /// This proves that restarts yield monotonically increasing seq numbers.
+    #[test]
+    fn enr_seq_increments_across_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = CombinedKey::generate_secp256k1();
+        let fork_id = test_fork_id();
+        let attnets = Bitvector::<ATTESTATION_SUBNET_COUNT>::new();
+
+        // First "boot": load (returns 1, no file yet), build ENR, then persist
+        // the ENR's seq so downstream mutations are tracked.
+        let seq1 = load_enr_seq(dir.path());
+        let enr1 = build_local_enr(
+            &key,
+            None,
+            None,
+            None,
+            None,
+            None,
+            fork_id.clone(),
+            attnets.clone(),
+            seq1,
+        )
+        .expect("build_local_enr first boot");
+        save_enr_seq(dir.path(), enr1.seq()).expect("save after first boot");
+
+        // Second "boot": load the saved seq, build a new ENR. Its initial seq
+        // must be >= the first ENR's seq (monotonic across restart).
+        let seq2 = load_enr_seq(dir.path());
+        let enr2 = build_local_enr(&key, None, None, None, None, None, fork_id, attnets, seq2)
+            .expect("build_local_enr second boot");
+
+        assert!(
+            enr2.seq() >= enr1.seq(),
+            "seq should be monotonic: first={}, second={}",
+            enr1.seq(),
+            enr2.seq()
+        );
     }
 }
