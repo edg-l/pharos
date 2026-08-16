@@ -43,7 +43,7 @@
 //! # Per `consensus-specs/sync/optimistic.md`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pharos_fork_choice::{
     HashMapPowBlockProvider, PayloadStatus, Store, apply_invalid_payload, get_forkchoice_store,
@@ -66,6 +66,65 @@ use crate::fixture_walker::{
 };
 use crate::fork_choice::ForkChoiceResult;
 use crate::fs_util::dir_name;
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per optimistic sync test case in the same walk-order
+/// as `run_optimistic_mainnet` / `run_optimistic_minimal`. Called by the Phase 7
+/// flat work-pool.
+///
+/// Walk order: bellatrix cases (0..n), then capella cases (n..m).
+pub fn enumerate_optimistic(root: &Path, preset: &'static str, row_ordinal: u32) -> Vec<CaseTask> {
+    let mut tasks = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    for fork in ["bellatrix", "capella"] {
+        let cases: Vec<(PathBuf, _)> = walk_category(
+            root,
+            preset,
+            fork,
+            "sync/optimistic",
+            None,
+            WalkOpts {
+                meta_required: false,
+                inner_dir: Some("pyspec_tests"),
+            },
+        )
+        .collect();
+
+        for (case_dir, _meta) in cases {
+            let case_ordinal = ordinal;
+            ordinal += 1;
+            let case_name = format!("{fork}/sync/optimistic/{preset}/{}", dir_name(&case_dir));
+
+            let run: CaseFn = match preset {
+                "mainnet" => Box::new(move || {
+                    match run_optimistic_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                _ => Box::new(move || {
+                    match run_optimistic_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+            };
+
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+
+    tasks
+}
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
@@ -903,4 +962,53 @@ fn parse_hash256(s: &str) -> Result<Hash256, String> {
 
 fn value_as_str(v: &serde_yaml_ng::Value) -> Option<String> {
     v.as_str().map(|s| s.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+    use crate::task::CaseOutcome;
+
+    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
+        let mut pass = 0u64;
+        let mut fail = 0u64;
+        let mut skip = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => pass += 1,
+                CaseOutcome::Fail(_) => fail += 1,
+                CaseOutcome::Skip => skip += 1,
+            }
+        }
+        (pass, fail, skip)
+    }
+
+    #[test]
+    fn enumerate_optimistic_parity_mainnet() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let run_result = run_optimistic_mainnet(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_optimistic(&root, "mainnet", 81));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_optimistic mainnet counts differ from run_optimistic_mainnet"
+        );
+    }
+
+    #[test]
+    fn enumerate_optimistic_parity_minimal() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let run_result = run_optimistic_minimal(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_optimistic(&root, "minimal", 82));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_optimistic minimal counts differ from run_optimistic_minimal"
+        );
+    }
 }

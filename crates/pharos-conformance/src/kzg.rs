@@ -12,10 +12,12 @@
 //! The runner skips cleanly when fixtures are absent (returns all-zero counts).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use pharos_kzg::KzgVerifier;
 
 use crate::fs_util::{dir_name, read_dir_sorted};
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Result of running all KZG conformance tests.
 pub struct KzgResult {
@@ -23,6 +25,116 @@ pub struct KzgResult {
     pub fail: u64,
     pub skip: u64,
     pub failures: Vec<String>,
+}
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per KZG test case in the same walk-order as `run_kzg`.
+/// Called by the Phase 7 flat work-pool.
+///
+/// KZG tests live under `<root>/general/deneb/kzg/` and are preset-independent
+/// (row 84 in `rows.rs`: `("deneb", "kzg", "-")`).
+pub fn enumerate_kzg(root: &Path, row_ordinal: u32) -> Vec<CaseTask> {
+    let base = root.join("general/deneb/kzg");
+    if !base.is_dir() {
+        return Vec::new();
+    }
+
+    // Share one verifier across all cases via Arc.
+    let verifier = Arc::new(KzgVerifier::mainnet());
+
+    let sub_cats: &[&str] = &[
+        "blob_to_kzg_commitment",
+        "verify_blob_kzg_proof",
+        "verify_blob_kzg_proof_batch",
+    ];
+
+    let mut tasks = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    for &sub_cat in sub_cats {
+        let sub_dir = base.join(sub_cat);
+        if !sub_dir.is_dir() {
+            continue;
+        }
+
+        let suites = match read_dir_sorted(&sub_dir) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        for suite_dir in suites {
+            if !suite_dir.is_dir() {
+                continue;
+            }
+            let cases = match read_dir_sorted(&suite_dir) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let suite_name = dir_name(&suite_dir);
+
+            for case_dir in cases {
+                if !case_dir.is_dir() {
+                    continue;
+                }
+                let case_ordinal = ordinal;
+                ordinal += 1;
+
+                let case_name = format!(
+                    "general/deneb/kzg/{}/{}/{}",
+                    sub_cat,
+                    suite_name,
+                    dir_name(&case_dir)
+                );
+                let data_path = case_dir.join("data.yaml");
+                let verifier_clone = Arc::clone(&verifier);
+                let sub_cat_owned: &'static str = sub_cat;
+
+                let run: CaseFn = Box::new(move || {
+                    if !data_path.exists() {
+                        return CaseOutcome::Skip;
+                    }
+                    let text = match std::fs::read_to_string(&data_path) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            return CaseOutcome::Fail(format!("{case_name}: read error: {e}"));
+                        }
+                    };
+                    let val: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&text) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return CaseOutcome::Fail(format!("{case_name}: yaml parse error: {e}"));
+                        }
+                    };
+                    let result = match sub_cat_owned {
+                        "blob_to_kzg_commitment" => {
+                            run_blob_to_kzg_commitment(&verifier_clone, &case_name, &val)
+                        }
+                        "verify_blob_kzg_proof" => {
+                            run_verify_blob_kzg_proof(&verifier_clone, &case_name, &val)
+                        }
+                        "verify_blob_kzg_proof_batch" => {
+                            run_verify_blob_kzg_proof_batch(&verifier_clone, &case_name, &val)
+                        }
+                        _ => return CaseOutcome::Skip,
+                    };
+                    match result {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                });
+
+                tasks.push(CaseTask {
+                    row_ordinal,
+                    case_ordinal,
+                    run,
+                });
+            }
+        }
+    }
+
+    tasks
 }
 
 /// Run all KZG conformance tests under `<root>/general/deneb/kzg/`.
@@ -399,4 +511,35 @@ fn parse_hex_to_fixed<const N: usize>(s: &str) -> Result<[u8; N], String> {
     let mut arr = [0u8; N];
     arr.copy_from_slice(&bytes);
     Ok(arr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+    use crate::task::CaseOutcome;
+
+    #[test]
+    fn enumerate_kzg_parity() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let run_result = run_kzg(&root);
+        let tasks = enumerate_kzg(&root, 84);
+        let mut ep = 0u64;
+        let mut ef = 0u64;
+        let mut es = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => ep += 1,
+                CaseOutcome::Fail(_) => ef += 1,
+                CaseOutcome::Skip => es += 1,
+            }
+        }
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_kzg counts differ from run_kzg"
+        );
+    }
 }

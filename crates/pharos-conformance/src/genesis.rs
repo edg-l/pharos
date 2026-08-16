@@ -7,7 +7,7 @@
 //! Only `phase0/genesis/minimal` exists in consensus-spec-tests v1.6.1.
 //! No mainnet genesis fixtures exist upstream.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pharos_ssz::{Decode, Encode};
 use pharos_stf::phase0::{
@@ -20,6 +20,7 @@ use rayon::prelude::*;
 
 use crate::fixture_walker::{WalkOpts, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Result of running all genesis tests for one preset.
 pub struct GenesisResult {
@@ -92,6 +93,91 @@ pub fn run_genesis_minimal(root: &Path) -> GenesisResult {
         skip,
         failures,
     }
+}
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per genesis test case in the same walk-order as
+/// `run_genesis_minimal` (initialization sub then validity sub). Called by the
+/// Phase 7 flat work-pool.
+///
+/// Only `phase0/genesis/minimal` has upstream fixtures. Altair rows produce an
+/// empty Vec (mirrors `run_genesis_altair_*` returning zero counts).
+pub fn enumerate_genesis(
+    root: &Path,
+    fork: &'static str,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    if fork != "phase0" || preset != "minimal" {
+        // Altair (and any future fork) genesis rows have no fixtures.
+        return Vec::new();
+    }
+
+    let init_cases: Vec<(PathBuf, _)> = walk_category(
+        root,
+        "minimal",
+        "phase0",
+        "genesis",
+        Some("initialization"),
+        WalkOpts::default(),
+    )
+    .collect();
+
+    let validity_cases: Vec<(PathBuf, _)> = walk_category(
+        root,
+        "minimal",
+        "phase0",
+        "genesis",
+        Some("validity"),
+        WalkOpts::default(),
+    )
+    .collect();
+
+    let mut tasks = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    for (case_dir, meta) in init_cases {
+        let case_ordinal = ordinal;
+        ordinal += 1;
+        let case_name = format!(
+            "phase0/genesis/minimal/initialization/{}",
+            dir_name(&case_dir)
+        );
+        let run: CaseFn = Box::new(move || {
+            match run_initialization_case::<MinimalEthSpec>(&case_dir, &case_name, meta) {
+                CaseResult::Pass => CaseOutcome::Pass,
+                CaseResult::Skip => CaseOutcome::Skip,
+                CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+            }
+        });
+        tasks.push(CaseTask {
+            row_ordinal,
+            case_ordinal,
+            run,
+        });
+    }
+
+    for (case_dir, _meta) in validity_cases {
+        let case_ordinal = ordinal;
+        ordinal += 1;
+        let case_name = format!("phase0/genesis/minimal/validity/{}", dir_name(&case_dir));
+        let run: CaseFn =
+            Box::new(
+                move || match run_validity_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                    CaseResult::Pass => CaseOutcome::Pass,
+                    CaseResult::Skip => CaseOutcome::Skip,
+                    CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                },
+            );
+        tasks.push(CaseTask {
+            row_ordinal,
+            case_ordinal,
+            run,
+        });
+    }
+
+    tasks
 }
 
 // ── Altair entry points ───────────────────────────────────────────────────────
@@ -285,4 +371,52 @@ fn load_raw_ssz_snappy(dir: &Path, name: &str) -> Result<Vec<u8>, String> {
     let compressed = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     crate::snappy::decompress_raw(&compressed)
         .map_err(|e| format!("snappy decompress {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+    use crate::task::CaseOutcome;
+
+    #[test]
+    fn enumerate_genesis_parity_phase0_minimal() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let run_result = run_genesis_minimal(&root);
+        let tasks = enumerate_genesis(&root, "phase0", "minimal", 6);
+        let mut ep = 0u64;
+        let mut ef = 0u64;
+        let mut es = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => ep += 1,
+                CaseOutcome::Fail(_) => ef += 1,
+                CaseOutcome::Skip => es += 1,
+            }
+        }
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_genesis phase0/minimal counts differ from run_genesis_minimal"
+        );
+    }
+
+    #[test]
+    fn enumerate_genesis_altair_is_empty() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let tasks_mainnet = enumerate_genesis(&root, "altair", "mainnet", 39);
+        let tasks_minimal = enumerate_genesis(&root, "altair", "minimal", 40);
+        assert!(
+            tasks_mainnet.is_empty(),
+            "expected empty tasks for altair/mainnet genesis"
+        );
+        assert!(
+            tasks_minimal.is_empty(),
+            "expected empty tasks for altair/minimal genesis"
+        );
+    }
 }

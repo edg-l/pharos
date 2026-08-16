@@ -29,6 +29,7 @@ use pharos_utils::Hash256;
 use crate::error::ConformanceError;
 use crate::fs_util::{dir_name, read_dir_sorted};
 use crate::snappy::decompress_raw;
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Result of running all merkle_proof conformance tests for one preset.
 pub struct MerkleProofResult {
@@ -46,6 +47,62 @@ pub fn run_merkle_proof_mainnet(root: &Path) -> MerkleProofResult {
 /// Run all `deneb/merkle_proof` tests for `minimal` preset.
 pub fn run_merkle_proof_minimal(root: &Path) -> MerkleProofResult {
     run_merkle_proof_preset(&root.join("minimal"), "minimal")
+}
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per merkle_proof test case in the same walk-order as
+/// `run_merkle_proof_preset`. Called by the Phase 7 flat work-pool.
+pub fn enumerate_merkle_proof(
+    root: &Path,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    let preset_dir = root.join(preset);
+    let base = preset_dir.join("deneb/merkle_proof/single_merkle_proof");
+    if !base.is_dir() {
+        return Vec::new();
+    }
+
+    let mut tasks = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    let object_type_dirs = read_dir_sorted(&base).unwrap_or_default();
+    for object_type_dir in object_type_dirs {
+        if !object_type_dir.is_dir() {
+            continue;
+        }
+        let object_type: String = dir_name(&object_type_dir);
+        let case_dirs = read_dir_sorted(&object_type_dir).unwrap_or_default();
+        for case_dir in case_dirs {
+            if !case_dir.is_dir() {
+                continue;
+            }
+            let case_ordinal = ordinal;
+            ordinal += 1;
+            let case_name = format!(
+                "{preset}/deneb/merkle_proof/single_merkle_proof/{}/{}",
+                object_type,
+                dir_name(&case_dir)
+            );
+            let preset_owned: String = preset.to_string();
+            let object_type_owned: String = object_type.clone();
+            let run: CaseFn = Box::new(move || {
+                match run_one_case(&preset_owned, &object_type_owned, &case_dir, &case_name) {
+                    Ok(true) => CaseOutcome::Pass,
+                    Ok(false) => CaseOutcome::Skip,
+                    Err(e) => CaseOutcome::Fail(format!("`{case_name}`: {e}")),
+                }
+            });
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+
+    tasks
 }
 
 fn run_merkle_proof_preset(preset_dir: &Path, preset_name: &str) -> MerkleProofResult {
@@ -208,4 +265,53 @@ fn parse_hash256(s: &str, field: &str) -> Result<Hash256, ConformanceError> {
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     Ok(Hash256::from_array(arr))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+    use crate::task::CaseOutcome;
+
+    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
+        let mut pass = 0u64;
+        let mut fail = 0u64;
+        let mut skip = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => pass += 1,
+                CaseOutcome::Fail(_) => fail += 1,
+                CaseOutcome::Skip => skip += 1,
+            }
+        }
+        (pass, fail, skip)
+    }
+
+    #[test]
+    fn enumerate_merkle_proof_parity_mainnet() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let run_result = run_merkle_proof_mainnet(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_merkle_proof(&root, "mainnet", 85));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_merkle_proof mainnet counts differ"
+        );
+    }
+
+    #[test]
+    fn enumerate_merkle_proof_parity_minimal() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let run_result = run_merkle_proof_minimal(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_merkle_proof(&root, "minimal", 86));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_merkle_proof minimal counts differ"
+        );
+    }
 }

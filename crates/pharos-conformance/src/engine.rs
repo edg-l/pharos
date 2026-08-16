@@ -15,6 +15,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
+
 use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -67,6 +69,134 @@ struct YamlExample {
     params_json: Value,
     /// JSON-serialised `result.value`.
     result_json: Value,
+}
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per Engine API YAML example in the same walk-order as
+/// `run_engine_yaml_suite`. Called by the Phase 7 flat work-pool.
+///
+/// Engine YAML tests are preset-independent (row 83: `("engine", "yaml", "-")`).
+///
+/// Per Q2 in `docs/m-conf-perf-plan.md`: each example spins up its own
+/// tokio Runtime + binds 127.0.0.1:0, so Runtimes are per-example (not
+/// amortised) but ports are unique — correct under the flat pool.
+pub fn enumerate_engine_yaml(specs_dir: &Path, row_ordinal: u32) -> Vec<CaseTask> {
+    if !specs_dir.is_dir() {
+        // One "failure" task mirrors the existing run_engine_yaml_suite behaviour.
+        let msg = format!("engine yaml: specs dir not found: {}", specs_dir.display());
+        return vec![CaseTask {
+            row_ordinal,
+            case_ordinal: 0,
+            run: Box::new(move || CaseOutcome::Fail(msg)),
+        }];
+    }
+
+    let yaml_files: Vec<_> = {
+        let mut files: Vec<_> = std::fs::read_dir(specs_dir)
+            .unwrap_or_else(|_| panic!("cannot read dir {}", specs_dir.display()))
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|e| e == "yaml").unwrap_or(false))
+            .collect();
+        files.sort();
+        files
+    };
+
+    let mut tasks = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    for yaml_path in &yaml_files {
+        let methods = match parse_yaml_methods(yaml_path) {
+            Ok(m) => m,
+            Err(e) => {
+                let msg = format!("engine yaml: failed to parse {}: {e}", yaml_path.display());
+                let case_ordinal = ordinal;
+                ordinal += 1;
+                tasks.push(CaseTask {
+                    row_ordinal,
+                    case_ordinal,
+                    run: Box::new(move || CaseOutcome::Fail(msg)),
+                });
+                continue;
+            }
+        };
+
+        for method in methods {
+            let method_name: String = method.name.clone();
+            let is_engine = method_name.starts_with("engine_");
+
+            if !is_engine {
+                // Non-engine methods: one skip task per example, matching run_method_examples.
+                for ex in &method.examples {
+                    let case_ordinal = ordinal;
+                    ordinal += 1;
+                    tasks.push(CaseTask {
+                        row_ordinal,
+                        case_ordinal,
+                        run: Box::new(|| CaseOutcome::Skip),
+                    });
+                    let _ = ex; // suppress unused warning
+                }
+                continue;
+            }
+
+            const DEFERRED_V1: &[&str] = &[
+                "engine_getBlobsV1",
+                "engine_getPayloadBodiesByHashV1",
+                "engine_getPayloadBodiesByRangeV1",
+            ];
+            const UNVERSIONED: &[&str] = &["engine_exchangeCapabilities"];
+            const V2_IN_SCOPE: &[&str] = &["engine_newPayloadV2", "engine_forkchoiceUpdatedV2"];
+            const V3_IN_SCOPE: &[&str] = &[
+                "engine_newPayloadV3",
+                "engine_forkchoiceUpdatedV3",
+                "engine_getPayloadV3",
+            ];
+            const V4_PLUS: &[&str] = &[
+                "engine_newPayloadV4",
+                "engine_forkchoiceUpdatedV4",
+                "engine_getPayloadV4",
+            ];
+
+            let is_v1 = method_name.ends_with("V1");
+            let is_v2_in_scope = V2_IN_SCOPE.contains(&method_name.as_str());
+            let is_v3_in_scope = V3_IN_SCOPE.contains(&method_name.as_str());
+            let is_unversioned = UNVERSIONED.contains(&method_name.as_str());
+            let is_deferred = DEFERRED_V1.contains(&method_name.as_str())
+                || V4_PLUS.contains(&method_name.as_str());
+
+            for ex in method.examples {
+                let case_ordinal = ordinal;
+                ordinal += 1;
+
+                if is_deferred || (!is_v1 && !is_v2_in_scope && !is_v3_in_scope && !is_unversioned)
+                {
+                    tasks.push(CaseTask {
+                        row_ordinal,
+                        case_ordinal,
+                        run: Box::new(|| CaseOutcome::Skip),
+                    });
+                    continue;
+                }
+
+                let method_name_owned = method_name.clone();
+                let label = format!("{method_name}/{}", ex.name);
+                let run: CaseFn =
+                    Box::new(move || match run_single_example(&method_name_owned, &ex) {
+                        Ok(()) => CaseOutcome::Pass,
+                        Err(e) => CaseOutcome::Fail(format!("engine/{label}: {e}")),
+                    });
+                tasks.push(CaseTask {
+                    row_ordinal,
+                    case_ordinal,
+                    run,
+                });
+            }
+        }
+    }
+
+    tasks
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -807,4 +937,47 @@ fn params_to_transition_config(v: Option<&Value>) -> TransitionConfigurationV1 {
 
 fn str_field(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::CaseOutcome;
+
+    /// Resolve the engine YAML specs dir the same way `lib.rs::dirs_engine_yaml` does.
+    fn engine_specs_dir() -> std::path::PathBuf {
+        if let Ok(dir) = std::env::var("EXECUTION_APIS_DIR") {
+            let p = std::path::Path::new(&dir).join("src/engine/openrpc/methods");
+            if p.is_dir() {
+                return p;
+            }
+        }
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+        std::path::PathBuf::from(home).join("dev/execution-apis/src/engine/openrpc/methods")
+    }
+
+    #[test]
+    fn enumerate_engine_yaml_parity() {
+        let specs_dir = engine_specs_dir();
+        if !specs_dir.is_dir() {
+            return; // skip cleanly when execution-apis not present
+        }
+        let run_result = run_engine_yaml_suite(&specs_dir);
+        let tasks = enumerate_engine_yaml(&specs_dir, 83);
+        let mut ep = 0u64;
+        let mut ef = 0u64;
+        let mut es = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => ep += 1,
+                CaseOutcome::Fail(_) => ef += 1,
+                CaseOutcome::Skip => es += 1,
+            }
+        }
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_engine_yaml counts differ from run_engine_yaml_suite"
+        );
+    }
 }
