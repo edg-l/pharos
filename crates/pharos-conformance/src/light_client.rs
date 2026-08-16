@@ -52,6 +52,7 @@ use rayon::prelude::*;
 
 use crate::fixture_walker::{WalkOpts, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Result tally for light-client tests.
 pub struct LightClientResult {
@@ -95,6 +96,251 @@ pub fn run_light_client_altair_minimal(root: &Path) -> LightClientResult {
     total.merge(run_single_merkle_proof_minimal(root));
     total.merge(run_sync_minimal(root));
     total
+}
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per light-client test case for a single `(fork, preset)` row,
+/// in the same walk-order as the corresponding `run_light_client_*` function.
+/// Called by the Phase 7 flat work-pool.
+///
+/// Walk order: `single_merkle_proof` cases first, then `sync` cases (mirrors
+/// `run_light_client_altair/capella/deneb_*`).
+///
+/// For capella and deneb, `single_merkle_proof` has two sub-dirs: `BeaconState/`
+/// then `BeaconBlockBody/` (in that order, same as the existing runner).
+///
+/// Supported forks: `"altair"`, `"capella"`, `"deneb"`.
+pub fn enumerate_light_client(
+    root: &Path,
+    fork: &'static str,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    let mut tasks: Vec<CaseTask> = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    // ── single_merkle_proof sub-sweep ─────────────────────────────────────────
+    //
+    // altair: one sub-dir (BeaconState).
+    // capella/deneb: two sub-dirs (BeaconState, BeaconBlockBody) in that order.
+    let smp_sub_dirs: &[&str] = match fork {
+        "altair" => &["BeaconState"],
+        _ => &["BeaconState", "BeaconBlockBody"],
+    };
+
+    for &sub_dir_name in smp_sub_dirs {
+        let smp_dir = root
+            .join(preset)
+            .join(fork)
+            .join("light_client")
+            .join("single_merkle_proof")
+            .join(sub_dir_name);
+
+        if !smp_dir.is_dir() {
+            continue;
+        }
+
+        let entries = match std::fs::read_dir(&smp_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let case_dir = entry.path();
+            if !case_dir.is_dir() {
+                continue;
+            }
+            let case_ordinal = ordinal;
+            ordinal += 1;
+            let case_name = format!(
+                "{fork}/light_client/single_merkle_proof/{preset}/{sub_dir_name}/{}",
+                dir_name(&case_dir)
+            );
+
+            let run: CaseFn = match (fork, sub_dir_name, preset) {
+                ("altair", "BeaconState", "mainnet") => Box::new(move || {
+                    match run_single_merkle_proof_case::<pharos_types::MainnetEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("altair", "BeaconState", _) => {
+                    Box::new(move || {
+                        match run_single_merkle_proof_case::<pharos_types::MinimalEthSpec>(
+                            &case_dir, &case_name,
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
+                ("capella", "BeaconState", "mainnet") => Box::new(move || {
+                    match run_single_merkle_proof_capella_state_case::<pharos_types::MainnetEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", "BeaconState", _) => Box::new(move || {
+                    match run_single_merkle_proof_capella_state_case::<pharos_types::MinimalEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", "BeaconBlockBody", "mainnet") => Box::new(move || {
+                    match run_single_merkle_proof_body_case::<pharos_types::MainnetEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", "BeaconBlockBody", _) => Box::new(move || {
+                    match run_single_merkle_proof_body_case::<pharos_types::MinimalEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("deneb", "BeaconState", "mainnet") => Box::new(move || {
+                    match run_single_merkle_proof_deneb_state_case::<pharos_types::MainnetEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("deneb", "BeaconState", _) => Box::new(move || {
+                    match run_single_merkle_proof_deneb_state_case::<pharos_types::MinimalEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("deneb", "BeaconBlockBody", "mainnet") => Box::new(move || {
+                    match run_single_merkle_proof_deneb_body_case::<pharos_types::MainnetEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("deneb", "BeaconBlockBody", _) => Box::new(move || {
+                    match run_single_merkle_proof_deneb_body_case::<pharos_types::MinimalEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                // Unknown combination: skip
+                _ => Box::new(move || CaseOutcome::Skip),
+            };
+
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+
+    // ── sync sub-sweep ────────────────────────────────────────────────────────
+
+    let sync_cases: Vec<(std::path::PathBuf, _)> = walk_category(
+        root,
+        preset,
+        fork,
+        "light_client",
+        Some("sync"),
+        WalkOpts::default(),
+    )
+    .collect();
+
+    for (case_dir, _meta) in sync_cases {
+        let case_ordinal = ordinal;
+        ordinal += 1;
+        let case_name = format!("{fork}/light_client/sync/{preset}/{}", dir_name(&case_dir));
+
+        let run: CaseFn = match (fork, preset) {
+            ("altair", "mainnet") => {
+                Box::new(move || match run_sync_case_mainnet(&case_dir, &case_name) {
+                    CaseResult::Pass => CaseOutcome::Pass,
+                    CaseResult::Skip => CaseOutcome::Skip,
+                    CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                })
+            }
+            ("altair", _) => Box::new(move || match run_sync_case_minimal(&case_dir, &case_name) {
+                CaseResult::Pass => CaseOutcome::Pass,
+                CaseResult::Skip => CaseOutcome::Skip,
+                CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+            }),
+            ("capella", "mainnet") => {
+                Box::new(
+                    move || match run_sync_case_capella_mainnet(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    },
+                )
+            }
+            ("capella", _) => {
+                Box::new(
+                    move || match run_sync_case_capella_minimal(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    },
+                )
+            }
+            ("deneb", "mainnet") => {
+                Box::new(
+                    move || match run_sync_case_deneb_mainnet(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    },
+                )
+            }
+            ("deneb", _) => {
+                Box::new(
+                    move || match run_sync_case_deneb_minimal(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    },
+                )
+            }
+            // Unknown combination: skip
+            _ => Box::new(move || CaseOutcome::Skip),
+        };
+
+        tasks.push(CaseTask {
+            row_ordinal,
+            case_ordinal,
+            run,
+        });
+    }
+
+    tasks
 }
 
 // ── single_merkle_proof ───────────────────────────────────────────────────────
@@ -2056,4 +2302,56 @@ enum CaseResult {
     Pass,
     Fail(String),
     Skip,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+
+    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
+        let mut pass = 0u64;
+        let mut fail = 0u64;
+        let mut skip = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => pass += 1,
+                CaseOutcome::Fail(_) => fail += 1,
+                CaseOutcome::Skip => skip += 1,
+            }
+        }
+        (pass, fail, skip)
+    }
+
+    /// Parity test: `enumerate_light_client` for altair/mainnet matches
+    /// `run_light_client_altair_mainnet`.
+    #[test]
+    fn enumerate_light_client_parity_altair_mainnet() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let run_result = run_light_client_altair_mainnet(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_light_client(&root, "altair", "mainnet", 37));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_light_client altair/mainnet counts differ from run_light_client_altair_mainnet"
+        );
+    }
+
+    /// Parity test: `enumerate_light_client` for capella/minimal matches
+    /// `run_light_client_capella_minimal`.
+    #[test]
+    fn enumerate_light_client_parity_capella_minimal() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let run_result = run_light_client_capella_minimal(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_light_client(&root, "capella", "minimal", 80));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_light_client capella/minimal counts differ from run_light_client_capella_minimal"
+        );
+    }
 }

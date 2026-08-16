@@ -54,6 +54,167 @@ use crate::fixture_walker::{
     walk_category,
 };
 use crate::fs_util::{dir_name, read_dir_sorted};
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per fork-choice test case for a single `(fork, preset)` row,
+/// in the same walk-order as the corresponding `run_fork_choice_*` function.
+/// Called by the Phase 7 flat work-pool.
+///
+/// Walk order: sorted sub-categories (from `read_dir_sorted`), then sorted cases
+/// within each sub-category. Ordinals thread across sub-sweeps.
+///
+/// Supported forks:
+/// - `"phase0"`: exercises altair fixtures per Q1 (same as `run_fork_choice_mainnet/minimal`).
+/// - `"bellatrix"`: bellatrix case driver.
+/// - `"capella"`: capella case driver.
+/// - `"deneb"`: deneb case driver.
+pub fn enumerate_fork_choice(
+    root: &Path,
+    fork: &'static str,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    // phase0/fork_choice rows use altair fixtures per Q1.
+    let fixture_fork: &'static str = if fork == "phase0" { "altair" } else { fork };
+
+    let base = root.join(preset).join(fixture_fork).join("fork_choice");
+    let sub_paths = if base.is_dir() {
+        read_dir_sorted(&base).unwrap_or_default()
+    } else {
+        return Vec::new();
+    };
+
+    let mut tasks: Vec<CaseTask> = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    for sub_path in sub_paths {
+        if !sub_path.is_dir() {
+            continue;
+        }
+        let sub: String = match sub_path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_owned(),
+            None => continue,
+        };
+
+        let cases: Vec<(PathBuf, _)> = walk_category(
+            root,
+            preset,
+            fixture_fork,
+            "fork_choice",
+            Some(&sub),
+            WalkOpts {
+                meta_required: false,
+                inner_dir: Some("pyspec_tests"),
+            },
+        )
+        .collect();
+
+        for (case_dir, _meta) in cases {
+            let case_ordinal = ordinal;
+            ordinal += 1;
+            let case_name = format!(
+                "{fixture_fork}/fork_choice/{sub}/{preset}/{}",
+                dir_name(&case_dir)
+            );
+
+            let run: CaseFn = match (fork, preset) {
+                // phase0 rows → altair case driver (Q1: altair fixtures used)
+                ("phase0", "mainnet") => {
+                    Box::new(
+                        move || match run_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        },
+                    )
+                }
+                ("phase0", _) => {
+                    Box::new(
+                        move || match run_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        },
+                    )
+                }
+                // bellatrix rows → bellatrix case driver
+                ("bellatrix", "mainnet") => Box::new(move || {
+                    match run_bellatrix_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("bellatrix", _) => Box::new(move || {
+                    match run_bellatrix_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                // capella rows → capella case driver
+                ("capella", "mainnet") => Box::new(move || {
+                    match run_capella_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", _) => Box::new(move || {
+                    match run_capella_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                // deneb rows → deneb case driver
+                ("deneb", "mainnet") => Box::new(move || {
+                    match run_deneb_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("deneb", _) => Box::new(move || {
+                    match run_deneb_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                // Fallback: altair case driver (also handles "altair" if ever added)
+                (_, "mainnet") => {
+                    Box::new(
+                        move || match run_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        },
+                    )
+                }
+                (_, _) => {
+                    Box::new(
+                        move || match run_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        },
+                    )
+                }
+            };
+
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+
+    tasks
+}
 
 // ── Result tally ──────────────────────────────────────────────────────────────
 
@@ -3002,4 +3163,56 @@ where
     }
 
     CaseResult::Pass
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+
+    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
+        let mut pass = 0u64;
+        let mut fail = 0u64;
+        let mut skip = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => pass += 1,
+                CaseOutcome::Fail(_) => fail += 1,
+                CaseOutcome::Skip => skip += 1,
+            }
+        }
+        (pass, fail, skip)
+    }
+
+    /// Parity test: `enumerate_fork_choice` for phase0/mainnet matches
+    /// `run_fork_choice_mainnet` (exercises altair fixtures per Q1).
+    #[test]
+    fn enumerate_fork_choice_parity_phase0_mainnet() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let run_result = run_fork_choice_mainnet(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_fork_choice(&root, "phase0", "mainnet", 19));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_fork_choice phase0/mainnet counts differ from run_fork_choice_mainnet"
+        );
+    }
+
+    /// Parity test: `enumerate_fork_choice` for bellatrix/minimal matches
+    /// `run_fork_choice_bellatrix_minimal`.
+    #[test]
+    fn enumerate_fork_choice_parity_bellatrix_minimal() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let run_result = run_fork_choice_bellatrix_minimal(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_fork_choice(&root, "bellatrix", "minimal", 58));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_fork_choice bellatrix/minimal counts differ from run_fork_choice_bellatrix_minimal"
+        );
+    }
 }
