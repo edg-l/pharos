@@ -351,7 +351,18 @@ where
         //
         // The broadcast is *delayed* to the spec's gossip window so it is not
         // rejected as TooEarly by peers (D-lc-publish-due-time).
-        let has_lc_snapshots = outcome.fork_variant != ForkVariant::Phase0;
+        // ForkVariant::Electra intentionally absent — LC snapshot writer is a stub (Phase 6e).
+        // Until the real electra LC writer lands, an electra head would otherwise fall
+        // through to the Altair `else` branch below and publish a stale pre-electra LC
+        // update (from the altair-era CFs) under the ELECTRA fork digest, which peers
+        // reject as InvalidSSZ. Gate electra out so it skips LC publication entirely.
+        let has_lc_snapshots = matches!(
+            outcome.fork_variant,
+            ForkVariant::Altair
+                | ForkVariant::Bellatrix
+                | ForkVariant::Capella
+                | ForkVariant::Deneb
+        );
         if has_lc_snapshots {
             let digest = host.current_fork_digest();
             if outcome.fork_variant == ForkVariant::Deneb {

@@ -29,7 +29,8 @@ use pharos_network::topics::{GossipTopic, GossipTopicKind};
 use pharos_network::types::Fork as NetworkFork;
 use pharos_ssz::{Encode as _, SszList, SszSequence as _, SszVector, TreeHash};
 use pharos_stf::{
-    DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO, NullExecutionEngine, compute_signing_root, get_domain,
+    DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO, NullExecutionEngine, compute_signing_root,
+    get_beacon_proposer_index_electra, get_domain,
 };
 use pharos_types::altair::MinimalSyncCommittee;
 use pharos_types::capella::{
@@ -1311,6 +1312,18 @@ async fn produce_block_signed_reimports_validated_electra() {
         MinForkSignedBlock::Electra(i) => i.clone(),
         _ => panic!("produced block must be Electra variant"),
     };
+
+    // Regression guard: the produced `proposer_index` must come from the electra
+    // proposer accessor (16-bit committee shuffle), NOT the pre-electra 8-bit one.
+    // NOTE: `build_electra_anchor` builds a SINGLE-validator set, so an 8-bit vs
+    // 16-bit accessor regression cannot actually diverge here (both return 0); this
+    // assertion still pins the source-of-truth so a future multi-validator fixture
+    // catches a regression to the 8-bit accessor.
+    assert_eq!(
+        inner.message.proposer_index,
+        get_beacon_proposer_index_electra::<MinimalEthSpec>(&fork_anchor_state),
+        "produced electra proposer_index must equal get_beacon_proposer_index_electra"
+    );
 
     // ── Sign the produced block as proposer ───────────────────────────────────
     let proposer_domain =

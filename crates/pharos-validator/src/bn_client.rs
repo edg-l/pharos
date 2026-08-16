@@ -173,6 +173,17 @@ pub struct AggregateAttestationDto {
     pub signature: String,
 }
 
+/// Electra aggregate attestation (EIP-7549): the v2 endpoint returns the
+/// multi-committee `Attestation` shape, which carries the new `committee_bits`
+/// `Bitvector[MAX_COMMITTEES_PER_SLOT]` alongside `aggregation_bits`.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AggregateAttestationV2Dto {
+    pub aggregation_bits: String,
+    pub committee_bits: String,
+    pub data: AttestationDataDto,
+    pub signature: String,
+}
+
 // ── SignedAggregateAndProof ───────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -497,6 +508,33 @@ impl BnClient {
         Ok(data.data)
     }
 
+    /// `GET /eth/v2/validator/aggregate_attestation` — electra (EIP-7549) variant.
+    ///
+    /// Identical endpoint to [`get_aggregate_attestation`](Self::get_aggregate_attestation)
+    /// but sends/expects the `Eth-Consensus-Version` header naming the fork and
+    /// deserialises the electra `Attestation` shape (with `committee_bits`). At and
+    /// after Electra the aggregate is the multi-committee `Attestation`; conflating
+    /// it with the phase0 shape yields an invalid `AggregateAndProof` signature.
+    pub async fn get_aggregate_attestation_v2(
+        &self,
+        attestation_data_root: &str,
+        slot: u64,
+        consensus_version: &str,
+    ) -> Result<AggregateAttestationV2Dto, BnError> {
+        let path = format!(
+            "eth/v2/validator/aggregate_attestation?attestation_data_root={attestation_data_root}&slot={slot}"
+        );
+        let resp = self
+            .send_with_failover(&path, |url| {
+                self.client
+                    .get(url)
+                    .header("Eth-Consensus-Version", consensus_version)
+            })
+            .await?;
+        let data: DataResponse<AggregateAttestationV2Dto> = resp.json().await?;
+        Ok(data.data)
+    }
+
     /// `POST /eth/v2/validator/aggregate_and_proofs`
     pub async fn post_aggregate_and_proofs(
         &self,
@@ -505,6 +543,27 @@ impl BnClient {
         self.post("eth/v2/validator/aggregate_and_proofs", proofs)
             .await?;
         Ok(())
+    }
+
+    /// `POST /eth/v2/validator/aggregate_and_proofs` — electra (EIP-7549) variant.
+    ///
+    /// Sends the `Eth-Consensus-Version` header naming the fork. At and after
+    /// Electra the `aggregate` field is the multi-committee `Attestation`
+    /// (`committee_bits` present, `data.index == 0`). The body is supplied as raw
+    /// JSON so the caller controls the exact electra wire shape.
+    pub async fn post_aggregate_and_proofs_v2(
+        &self,
+        proofs: &JsonValue,
+        consensus_version: &str,
+    ) -> Result<(), BnError> {
+        self.send_with_failover("eth/v2/validator/aggregate_and_proofs", |url| {
+            self.client
+                .post(url)
+                .header("Eth-Consensus-Version", consensus_version)
+                .json(proofs)
+        })
+        .await
+        .map(|_| ())
     }
 
     // ── Proposer registration ─────────────────────────────────────────────────

@@ -1873,9 +1873,12 @@ pub fn get_execution_requests_list<
 /// list of byte strings and the proposer must reconstruct the typed
 /// `ExecutionRequests` to put in the electra `BeaconBlockBody`. Per EIP-7685.
 ///
-/// Returns `None` if any entry has an unknown type byte, an empty body, or an
-/// SSZ list that fails to decode (the engine is trusted to produce well-formed
-/// requests; a malformed entry must not silently produce a wrong block body).
+/// Returns `None` if any entry is completely empty (no type byte at all), has an
+/// unknown type byte, or carries an SSZ list that fails to decode (the engine is
+/// trusted to produce well-formed requests; a malformed entry must not silently
+/// produce a wrong block body). Note an entry that is a bare type byte with an
+/// empty body decodes to an empty SSZ list (`Ok`), not `None` — that case is
+/// valid (it simply never appears, since the encoder omits empty lists).
 pub fn parse_execution_requests_list<
     const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
     const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,

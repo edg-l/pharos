@@ -45,6 +45,9 @@ use pharos_ssz::{Bitlist, Bitvector};
 use pharos_types::altair::{
     MainnetContributionAndProof, MainnetSyncCommitteeContribution, SyncAggregatorSelectionData,
 };
+use pharos_types::electra::{
+    MainnetAggregateAndProof as ElectraAggregateAndProof, MainnetAttestation as ElectraAttestation,
+};
 use pharos_types::phase0::misc::{AttestationData, Checkpoint};
 use pharos_types::phase0::primitives::{CommitteeIndex, Epoch, Root, Slot, ValidatorIndex};
 use pharos_types::phase0::{MainnetAggregateAndProof, MainnetAttestation};
@@ -449,54 +452,139 @@ pub async fn run_attester(
     // Compute attestation_data_root for the aggregate query.
     let att_data_root_hex = format!("0x{}", hex::encode(att_hash.as_slice()));
 
-    let aggregate = match bn.get_aggregate_attestation(&att_data_root_hex, slot).await {
-        Ok(a) => a,
-        Err(BnError::Unavailable) => {
-            warn!(
-                slot,
-                "BN unavailable (503) for aggregate; skipping aggregate"
-            );
-            return;
+    // PEER-BAN HAZARD (EIP-7549): at and after Electra the aggregate is the
+    // multi-committee `Attestation` (committee_bits present, data.index == 0), and
+    // `AggregateAndProof` wraps that electra `Attestation`. Signing a phase0-shaped
+    // aggregate (no committee_bits, non-zero data.index) yields a signature that the
+    // BN/peers reject as invalid over the recomputed SSZ root. Mirror the
+    // `SingleAttestation` v2 path above: fetch + post on the electra-versioned v2
+    // endpoints with `Eth-Consensus-Version: electra`. Per `specs/electra/validator.md`.
+    if is_electra {
+        let aggregate = match bn
+            .get_aggregate_attestation_v2(&att_data_root_hex, slot, "electra")
+            .await
+        {
+            Ok(a) => a,
+            Err(BnError::Unavailable) => {
+                warn!(
+                    slot,
+                    "BN unavailable (503) for aggregate (electra); skipping aggregate"
+                );
+                return;
+            }
+            Err(e) => {
+                warn!(slot, %e, "aggregate fetch failed (electra); skipping aggregate");
+                return;
+            }
+        };
+
+        // Build the TYPED electra `AggregateAndProof` over the electra `Attestation`
+        // (committee_bits + data.index == 0) and sign its real `tree_hash_root`. The
+        // wire DTO below carries the same fields, so the signature verifies against it.
+        let typed_agg = ElectraAttestation {
+            aggregation_bits: Bitlist::from_ssz_bytes(&bytes_from_hex(&aggregate.aggregation_bits))
+                .unwrap_or_default(),
+            data: att_data_from_dto(&aggregate.data),
+            signature: bls_signature_from_hex(&aggregate.signature),
+            committee_bits: Bitvector::from_ssz_bytes(&bytes_from_hex(&aggregate.committee_bits))
+                .unwrap_or_default(),
+        };
+        let typed_agg_and_proof = ElectraAggregateAndProof {
+            aggregator_index: ValidatorIndex(entry.index),
+            aggregate: typed_agg,
+            selection_proof: selection_sig,
+        };
+        let agg_sig = sign_aggregate_and_proof(&entry.secret_key, &typed_agg_and_proof, fork);
+        let agg_sig_hex = format!("0x{}", hex::encode(agg_sig.as_ref()));
+
+        let signed_agg = json!([{
+            "message": {
+                "aggregator_index": entry.index.to_string(),
+                "aggregate": {
+                    "aggregation_bits": aggregate.aggregation_bits,
+                    "committee_bits": aggregate.committee_bits,
+                    "data": {
+                        "slot": aggregate.data.slot,
+                        "index": aggregate.data.index,
+                        "beacon_block_root": aggregate.data.beacon_block_root,
+                        "source": {
+                            "epoch": aggregate.data.source.epoch,
+                            "root": aggregate.data.source.root,
+                        },
+                        "target": {
+                            "epoch": aggregate.data.target.epoch,
+                            "root": aggregate.data.target.root,
+                        },
+                    },
+                    "signature": aggregate.signature,
+                },
+                "selection_proof": selection_sig_hex,
+            },
+            "signature": agg_sig_hex,
+        }]);
+
+        match bn
+            .post_aggregate_and_proofs_v2(&signed_agg, "electra")
+            .await
+        {
+            Ok(()) => {
+                info!(slot, validator = %entry.pubkey_hex, "aggregate-and-proof submitted (electra)")
+            }
+            Err(BnError::Unavailable) => {
+                warn!(slot, "BN unavailable (503) on aggregate submit (electra)")
+            }
+            Err(e) => warn!(slot, %e, "aggregate-and-proof submit failed (electra)"),
         }
-        Err(e) => {
-            warn!(slot, %e, "aggregate fetch failed; skipping aggregate");
-            return;
+    } else {
+        let aggregate = match bn.get_aggregate_attestation(&att_data_root_hex, slot).await {
+            Ok(a) => a,
+            Err(BnError::Unavailable) => {
+                warn!(
+                    slot,
+                    "BN unavailable (503) for aggregate; skipping aggregate"
+                );
+                return;
+            }
+            Err(e) => {
+                warn!(slot, %e, "aggregate fetch failed; skipping aggregate");
+                return;
+            }
+        };
+
+        // Build the TYPED `AggregateAndProof` and sign its real `tree_hash_root`.
+        // Peers and the BN recompute the SSZ signing root over the submitted
+        // `SignedAggregateAndProof`; the wire DTO carries the same fields, so signing
+        // the typed object's root yields a signature that verifies against the DTO.
+        let typed_agg = MainnetAttestation {
+            aggregation_bits: Bitlist::<2048>::from_ssz_bytes(&bytes_from_hex(
+                &aggregate.aggregation_bits,
+            ))
+            .unwrap_or_default(),
+            data: att_data_from_dto(&aggregate.data),
+            signature: bls_signature_from_hex(&aggregate.signature),
+        };
+        let typed_agg_and_proof = MainnetAggregateAndProof {
+            aggregator_index: ValidatorIndex(entry.index),
+            aggregate: typed_agg,
+            selection_proof: selection_sig,
+        };
+        let agg_sig = sign_aggregate_and_proof(&entry.secret_key, &typed_agg_and_proof, fork);
+        let agg_sig_hex = format!("0x{}", hex::encode(agg_sig.as_ref()));
+
+        let signed_agg = SignedAggregateAndProofDto {
+            message: AggregateAndProofDto {
+                aggregator_index: entry.index.to_string(),
+                aggregate,
+                selection_proof: selection_sig_hex,
+            },
+            signature: agg_sig_hex,
+        };
+
+        match bn.post_aggregate_and_proofs(&[signed_agg]).await {
+            Ok(()) => info!(slot, validator = %entry.pubkey_hex, "aggregate-and-proof submitted"),
+            Err(BnError::Unavailable) => warn!(slot, "BN unavailable (503) on aggregate submit"),
+            Err(e) => warn!(slot, %e, "aggregate-and-proof submit failed"),
         }
-    };
-
-    // Build the TYPED `AggregateAndProof` and sign its real `tree_hash_root`.
-    // Peers and the BN recompute the SSZ signing root over the submitted
-    // `SignedAggregateAndProof`; the wire DTO carries the same fields, so signing
-    // the typed object's root yields a signature that verifies against the DTO.
-    let typed_agg = MainnetAttestation {
-        aggregation_bits: Bitlist::<2048>::from_ssz_bytes(&bytes_from_hex(
-            &aggregate.aggregation_bits,
-        ))
-        .unwrap_or_default(),
-        data: att_data_from_dto(&aggregate.data),
-        signature: bls_signature_from_hex(&aggregate.signature),
-    };
-    let typed_agg_and_proof = MainnetAggregateAndProof {
-        aggregator_index: ValidatorIndex(entry.index),
-        aggregate: typed_agg,
-        selection_proof: selection_sig,
-    };
-    let agg_sig = sign_aggregate_and_proof(&entry.secret_key, &typed_agg_and_proof, fork);
-    let agg_sig_hex = format!("0x{}", hex::encode(agg_sig.as_ref()));
-
-    let signed_agg = SignedAggregateAndProofDto {
-        message: AggregateAndProofDto {
-            aggregator_index: entry.index.to_string(),
-            aggregate,
-            selection_proof: selection_sig_hex,
-        },
-        signature: agg_sig_hex,
-    };
-
-    match bn.post_aggregate_and_proofs(&[signed_agg]).await {
-        Ok(()) => info!(slot, validator = %entry.pubkey_hex, "aggregate-and-proof submitted"),
-        Err(BnError::Unavailable) => warn!(slot, "BN unavailable (503) on aggregate submit"),
-        Err(e) => warn!(slot, %e, "aggregate-and-proof submit failed"),
     }
 
     // Register attestation committee subscription for future aggregation.
@@ -784,8 +872,17 @@ pub async fn run_vc_loop(
 
         // EIP-7549: the active fork is Electra when the live fork version matches
         // the network's `ELECTRA_FORK_VERSION` (fetched from the BN spec at
-        // startup). Drives the `SingleAttestation` v2 submission path in
-        // `run_attester`. `None` (pre-electra network) → always phase0 path.
+        // startup). Drives the `SingleAttestation` v2 submission path and the
+        // electra aggregator path in `run_attester`. `None` (pre-electra network)
+        // → always phase0 path.
+        //
+        // FORWARD-COMPAT FAILURE MODE: this is an EXACT-equality match against the
+        // electra fork version only. The first post-electra fork ships a NEW
+        // `current_version`, which this predicate would treat as `false` and
+        // silently revert the VC to the phase0 attestation/aggregate path — wrong
+        // shapes, instant peer ban. When a post-electra fork is added this MUST
+        // become a fork-ordering `>=` comparison (electra-or-later), keyed off the
+        // ordered fork schedule rather than a single version equality.
         let is_electra = config
             .electra_fork_version
             .is_some_and(|v| v == current_version);
