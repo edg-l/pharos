@@ -65,12 +65,27 @@ pub fn run_merkle_proof_electra_minimal(root: &Path) -> MerkleProofResult {
     run_merkle_proof_preset("electra", &root.join("minimal"), "minimal")
 }
 
+/// Run all `fulu/merkle_proof` tests for `mainnet` preset.
+///
+/// Fulu's `blob_kzg_commitments` inclusion proof is at depth
+/// `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH = 4` (vs deneb/electra's 17); the
+/// runner derives the depth from the fixture's branch length, so both work
+/// through the same dispatch.
+pub fn run_merkle_proof_fulu_mainnet(root: &Path) -> MerkleProofResult {
+    run_merkle_proof_preset("fulu", &root.join("mainnet"), "mainnet")
+}
+
+/// Run all `fulu/merkle_proof` tests for `minimal` preset.
+pub fn run_merkle_proof_fulu_minimal(root: &Path) -> MerkleProofResult {
+    run_merkle_proof_preset("fulu", &root.join("minimal"), "minimal")
+}
+
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
 /// Produce one `CaseTask` per merkle_proof test case in the same walk-order as
 /// `run_merkle_proof_preset`. Called by the Phase 7 flat work-pool.
 ///
-/// `fork` must be `"deneb"` or `"electra"`.
+/// `fork` must be `"deneb"`, `"electra"`, or `"fulu"`.
 pub fn enumerate_merkle_proof(
     root: &Path,
     fork: &'static str,
@@ -227,7 +242,13 @@ fn run_one_case(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let depth = KZG_COMMITMENT_INCLUSION_PROOF_DEPTH as u64;
+    // Depth is the branch length. Deneb/electra `blob_kzg_commitment` proofs are
+    // at depth `KZG_COMMITMENT_INCLUSION_PROOF_DEPTH = 17`; fulu's
+    // `blob_kzg_commitments` (whole-list) proof is at
+    // `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH = 4`. Both are recovered from the
+    // fixture's branch length, so the single dispatch serves all three forks.
+    let _ = KZG_COMMITMENT_INCLUSION_PROOF_DEPTH;
+    let depth = branch.len() as u64;
     let positional_index = leaf_index.checked_sub(1u64 << depth).ok_or_else(|| {
         ConformanceError::MalformedFixture(format!("leaf_index {leaf_index} < 2^depth {depth}"))
     })?;
@@ -272,6 +293,33 @@ fn run_one_case(
             body.tree_hash_root()
         }
         ("electra", "minimal", "BeaconBlockBody") => {
+            let body = ElectraMinimalBody::from_ssz_bytes(&ssz_bytes)?;
+            let re_encoded = body.as_ssz_bytes();
+            if re_encoded != ssz_bytes {
+                return Err(ConformanceError::EncodeRoundTrip {
+                    case: case_label.into(),
+                    got_hex: hex::encode(&re_encoded),
+                    want_hex: hex::encode(&ssz_bytes),
+                });
+            }
+            body.tree_hash_root()
+        }
+        // Fulu `BeaconBlockBody` IS the electra body (re-export), so the electra
+        // decoder applies. The proof under test is the whole-list
+        // `blob_kzg_commitments` inclusion proof (depth 4, derived above).
+        ("fulu", "mainnet", "BeaconBlockBody") => {
+            let body = ElectraMainnetBody::from_ssz_bytes(&ssz_bytes)?;
+            let re_encoded = body.as_ssz_bytes();
+            if re_encoded != ssz_bytes {
+                return Err(ConformanceError::EncodeRoundTrip {
+                    case: case_label.into(),
+                    got_hex: hex::encode(&re_encoded),
+                    want_hex: hex::encode(&ssz_bytes),
+                });
+            }
+            body.tree_hash_root()
+        }
+        ("fulu", "minimal", "BeaconBlockBody") => {
             let body = ElectraMinimalBody::from_ssz_bytes(&ssz_bytes)?;
             let re_encoded = body.as_ssz_bytes();
             if re_encoded != ssz_bytes {

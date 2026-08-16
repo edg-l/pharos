@@ -389,6 +389,15 @@ pub trait BeaconStateView {
         None
     }
 
+    /// EIP-7917 (Fulu): the full precomputed `proposer_lookahead` vector
+    /// (`(MIN_SEED_LOOKAHEAD + 1) * SLOTS_PER_EPOCH` validator indices). Returns
+    /// `None` for pre-Fulu states (no lookahead field). Default `None`. Used by
+    /// the `proposer_lookahead` beacon-API endpoint to serve the state field
+    /// directly (RI-6: never recompute on-demand for a Fulu state).
+    fn proposer_lookahead_vec(&self) -> Option<Vec<ValidatorIndex>> {
+        None
+    }
+
     fn genesis_time(&self) -> u64;
     fn genesis_validators_root(&self) -> Root;
     fn slot(&self) -> Slot;

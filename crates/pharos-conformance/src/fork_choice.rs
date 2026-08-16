@@ -345,6 +345,82 @@ pub fn enumerate_fork_choice(
     tasks
 }
 
+/// Enumerate `fulu/fast_confirmation` cases (confirmation-rule fixtures, minimal
+/// preset only — there are no mainnet `fast_confirmation` fixtures).
+///
+/// The fast-confirmation fixtures drive a NEW confirmation rule (`is_one_confirmed`
+/// / `confirmed_root` / observed+unrealized checkpoints / per-slot heads) layered
+/// on top of LMD-GHOST, and feed standalone confirmation-rule attestations that the
+/// base `on_attestation` legitimately rejects. Pharos's `pharos-fork-choice` does
+/// NOT implement that confirmation extension — the M12 `D-electra-placeholder-
+/// categories` decision deferred `electra/fast_confirmation` for exactly this
+/// reason, and the same applies to fulu.
+///
+/// This runner walks the fixture tree (so the row is real — it reflects the actual
+/// case count, not a hard-coded placeholder) and emits `Skip` for each case: honest
+/// about the unimplemented confirmation rule, with `fail=0`. When the fork-choice
+/// confirmation extension lands, swap the per-case body to a real driver.
+///
+/// Tree shape: `{root}/{preset}/fulu/fast_confirmation/<subcat>/pyspec_tests/<case>/`.
+pub fn enumerate_fast_confirmation(
+    root: &Path,
+    fork: &'static str,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    // Minimal-only: no mainnet fast_confirmation fixtures exist.
+    if preset != "minimal" {
+        return Vec::new();
+    }
+
+    let base = root.join(preset).join(fork).join("fast_confirmation");
+    let sub_paths = if base.is_dir() {
+        read_dir_sorted(&base).unwrap_or_default()
+    } else {
+        return Vec::new();
+    };
+
+    let mut tasks: Vec<CaseTask> = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    for sub_path in sub_paths {
+        if !sub_path.is_dir() {
+            continue;
+        }
+        let sub: String = match sub_path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_owned(),
+            None => continue,
+        };
+
+        let cases: Vec<(PathBuf, _)> = walk_category(
+            root,
+            preset,
+            fork,
+            "fast_confirmation",
+            Some(&sub),
+            WalkOpts {
+                meta_required: false,
+                inner_dir: Some("pyspec_tests"),
+            },
+        )
+        .collect();
+
+        for (_case_dir, _meta) in cases {
+            let case_ordinal = ordinal;
+            ordinal += 1;
+            // Skip: the confirmation rule is unimplemented (see fn doc).
+            let run: CaseFn = Box::new(|| CaseOutcome::Skip);
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+
+    tasks
+}
+
 // ── Case driver ───────────────────────────────────────────────────────────────
 
 enum CaseResult {

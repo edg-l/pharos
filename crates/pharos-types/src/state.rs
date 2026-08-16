@@ -369,6 +369,14 @@ impl<
         }
     }
 
+    fn proposer_lookahead_vec(&self) -> Option<Vec<ValidatorIndex>> {
+        match self {
+            // EIP-7917: Fulu carries the precomputed proposer lookahead vector.
+            BeaconState::Fulu(s) => Some(s.proposer_lookahead.as_slice().to_vec()),
+            _ => None,
+        }
+    }
+
     fn genesis_time(&self) -> u64 {
         match self {
             BeaconState::Phase0(s) => s.genesis_time(),

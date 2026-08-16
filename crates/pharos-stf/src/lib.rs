@@ -21,7 +21,7 @@ pub mod phase0;
 
 pub use altair::light_client_dispatch::{
     AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds, DenebDispatchBounds,
-    ElectraDispatchBounds,
+    ElectraDispatchBounds, FuluDispatchBounds,
 };
 pub use altair::state_transition::{AltairDispatch, AltairJaFDispatch, AltairProcessSlotsDispatch};
 pub use bellatrix::execution_engine::{

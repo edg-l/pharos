@@ -606,6 +606,8 @@ async fn produce_block_state_root_consistent_capella() {
             Arc::new(NoopDataAvailabilityChecker),
             Arc::new(BlobAwaitingBlocks::new()),
             None,
+            None,
+            None,
         )
         .await;
     });
@@ -1063,6 +1065,8 @@ async fn produce_block_signed_reimports_validated_capella() {
             Arc::new(NoopDataAvailabilityChecker),
             Arc::new(BlobAwaitingBlocks::new()),
             None,
+            None,
+            None,
         )
         .await;
     });
@@ -1415,6 +1419,8 @@ async fn produce_block_signed_reimports_validated_electra() {
             true, // validate_result: TRUE — full BLS + state-root re-verification
             Arc::new(NoopDataAvailabilityChecker),
             Arc::new(BlobAwaitingBlocks::new()),
+            None,
+            None,
             None,
         )
         .await;

@@ -1042,7 +1042,10 @@ pub async fn get_pending_deposits<E: BeaconSpec>(
 
         // Electra-or-later allowlist: extend this match when a post-electra
         // fork variant (e.g. Fulu) is added (ForkVariant has no Ord).
-        if !matches!(beacon_state.fork_variant(), ForkVariant::Electra) {
+        if !matches!(
+            beacon_state.fork_variant(),
+            ForkVariant::Electra | ForkVariant::Fulu
+        ) {
             return Err(ApiError::BadRequest(
                 "pending_deposits is only available for Electra+ states".to_string(),
             ));
@@ -1062,7 +1065,9 @@ pub async fn get_pending_deposits<E: BeaconSpec>(
             })
             .collect();
 
-        let version = crate::fork_tag::fork_variant_str(ForkVariant::Electra);
+        // Report the state's actual fork (electra or fulu); the field shape is
+        // identical across electra+ but a fulu state must serve the fulu version.
+        let version = crate::fork_tag::fork_variant_str(beacon_state.fork_variant());
         let dto = serde_json::json!({
             "version": version,
             "execution_optimistic": resolved.execution_optimistic,
@@ -1076,14 +1081,19 @@ pub async fn get_pending_deposits<E: BeaconSpec>(
 
     match result {
         Ok(Ok((dto, _resolved))) => {
-            use crate::fork_tag::{ETH_CONSENSUS_VERSION, fork_variant_str};
+            use crate::fork_tag::ETH_CONSENSUS_VERSION;
             let body = match serde_json::to_vec(&dto) {
                 Ok(b) => b,
                 Err(e) => {
                     return ApiError::Internal(format!("JSON serialization: {e}")).into_response();
                 }
             };
-            let version = fork_variant_str(ForkVariant::Electra);
+            // Mirror the dto's version field (electra or fulu) in the header.
+            let version = dto
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("electra")
+                .to_owned();
             let mut r = (
                 axum::http::StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -1091,7 +1101,7 @@ pub async fn get_pending_deposits<E: BeaconSpec>(
             )
                 .into_response();
             let _ = format;
-            if let Ok(hv) = axum::http::HeaderValue::from_str(version) {
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&version) {
                 r.headers_mut().insert(ETH_CONSENSUS_VERSION.clone(), hv);
             }
             r
@@ -1125,7 +1135,10 @@ pub async fn get_pending_partial_withdrawals<E: BeaconSpec>(
 
         // Electra-or-later allowlist: extend this match when a post-electra
         // fork variant (e.g. Fulu) is added (ForkVariant has no Ord).
-        if !matches!(beacon_state.fork_variant(), ForkVariant::Electra) {
+        if !matches!(
+            beacon_state.fork_variant(),
+            ForkVariant::Electra | ForkVariant::Fulu
+        ) {
             return Err(ApiError::BadRequest(
                 "pending_partial_withdrawals is only available for Electra+ states".to_string(),
             ));
@@ -1145,7 +1158,9 @@ pub async fn get_pending_partial_withdrawals<E: BeaconSpec>(
             })
             .collect();
 
-        let version = crate::fork_tag::fork_variant_str(ForkVariant::Electra);
+        // Report the state's actual fork (electra or fulu); the field shape is
+        // identical across electra+ but a fulu state must serve the fulu version.
+        let version = crate::fork_tag::fork_variant_str(beacon_state.fork_variant());
         let dto = serde_json::json!({
             "version": version,
             "execution_optimistic": resolved.execution_optimistic,
@@ -1159,14 +1174,19 @@ pub async fn get_pending_partial_withdrawals<E: BeaconSpec>(
 
     match result {
         Ok(Ok((dto, _resolved))) => {
-            use crate::fork_tag::{ETH_CONSENSUS_VERSION, fork_variant_str};
+            use crate::fork_tag::ETH_CONSENSUS_VERSION;
             let body = match serde_json::to_vec(&dto) {
                 Ok(b) => b,
                 Err(e) => {
                     return ApiError::Internal(format!("JSON serialization: {e}")).into_response();
                 }
             };
-            let version = fork_variant_str(ForkVariant::Electra);
+            // Mirror the dto's version field (electra or fulu) in the header.
+            let version = dto
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("electra")
+                .to_owned();
             let mut r = (
                 axum::http::StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -1174,7 +1194,7 @@ pub async fn get_pending_partial_withdrawals<E: BeaconSpec>(
             )
                 .into_response();
             let _ = format;
-            if let Ok(hv) = axum::http::HeaderValue::from_str(version) {
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&version) {
                 r.headers_mut().insert(ETH_CONSENSUS_VERSION.clone(), hv);
             }
             r
@@ -1208,7 +1228,10 @@ pub async fn get_pending_consolidations<E: BeaconSpec>(
 
         // Electra-or-later allowlist: extend this match when a post-electra
         // fork variant (e.g. Fulu) is added (ForkVariant has no Ord).
-        if !matches!(beacon_state.fork_variant(), ForkVariant::Electra) {
+        if !matches!(
+            beacon_state.fork_variant(),
+            ForkVariant::Electra | ForkVariant::Fulu
+        ) {
             return Err(ApiError::BadRequest(
                 "pending_consolidations is only available for Electra+ states".to_string(),
             ));
@@ -1227,7 +1250,9 @@ pub async fn get_pending_consolidations<E: BeaconSpec>(
             })
             .collect();
 
-        let version = crate::fork_tag::fork_variant_str(ForkVariant::Electra);
+        // Report the state's actual fork (electra or fulu); the field shape is
+        // identical across electra+ but a fulu state must serve the fulu version.
+        let version = crate::fork_tag::fork_variant_str(beacon_state.fork_variant());
         let dto = serde_json::json!({
             "version": version,
             "execution_optimistic": resolved.execution_optimistic,
@@ -1241,14 +1266,19 @@ pub async fn get_pending_consolidations<E: BeaconSpec>(
 
     match result {
         Ok(Ok((dto, _resolved))) => {
-            use crate::fork_tag::{ETH_CONSENSUS_VERSION, fork_variant_str};
+            use crate::fork_tag::ETH_CONSENSUS_VERSION;
             let body = match serde_json::to_vec(&dto) {
                 Ok(b) => b,
                 Err(e) => {
                     return ApiError::Internal(format!("JSON serialization: {e}")).into_response();
                 }
             };
-            let version = fork_variant_str(ForkVariant::Electra);
+            // Mirror the dto's version field (electra or fulu) in the header.
+            let version = dto
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("electra")
+                .to_owned();
             let mut r = (
                 axum::http::StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -1256,7 +1286,7 @@ pub async fn get_pending_consolidations<E: BeaconSpec>(
             )
                 .into_response();
             let _ = format;
-            if let Ok(hv) = axum::http::HeaderValue::from_str(version) {
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&version) {
                 r.headers_mut().insert(ETH_CONSENSUS_VERSION.clone(), hv);
             }
             r
@@ -1374,7 +1404,10 @@ pub async fn get_proposer_lookahead<E: BeaconSpec>(
 
         // Electra-or-later allowlist: extend this match when a post-electra
         // fork variant (e.g. Fulu) is added (ForkVariant has no Ord).
-        if !matches!(beacon_state.fork_variant(), ForkVariant::Electra) {
+        if !matches!(
+            beacon_state.fork_variant(),
+            ForkVariant::Electra | ForkVariant::Fulu
+        ) {
             return Err(ApiError::BadRequest(
                 "proposer_lookahead is only available for Electra+ states".to_string(),
             ));
@@ -1383,43 +1416,57 @@ pub async fn get_proposer_lookahead<E: BeaconSpec>(
         // Lookahead window: (MIN_SEED_LOOKAHEAD + 1) * SLOTS_PER_EPOCH slots from
         // the state's current epoch start.
         // MIN_SEED_LOOKAHEAD = 1 epoch, so lookahead_slots = 2 * SLOTS_PER_EPOCH.
+        let state_variant = beacon_state.fork_variant();
         let state_slot = beacon_state.slot();
         let current_epoch = compute_epoch_at_slot(state_slot, E::SLOTS_PER_EPOCH);
         let lookahead_slots = 2 * E::SLOTS_PER_EPOCH;
         let start_slot = current_epoch.0 * E::SLOTS_PER_EPOCH;
 
-        // For each slot in the lookahead window, compute the proposer index.
-        let lookahead: Vec<serde_json::Value> = (0..lookahead_slots)
-            .map(|offset| {
-                let slot = Slot(start_slot + offset);
-                // Reuse the helper from validator_duties.
-                use pharos_stf::electra::helpers::compute_proposer_index_electra;
-                use pharos_stf::phase0::accessors::{
-                    compute_epoch_at_slot as epat, get_active_validator_indices, get_seed,
-                };
-                use pharos_stf::phase0::helpers::{DOMAIN_BEACON_PROPOSER, uint_to_bytes};
-                use pharos_utils::{Bytes4, hash};
+        // RI-6: for a Fulu state, EIP-7917 stores the proposer lookahead AS A
+        // STATE FIELD (`state.proposer_lookahead`). Read it directly — never
+        // recompute on-demand (the M12 16-bit-proposer gotcha that bit three
+        // sites). For a pre-Fulu (Electra) state there is no field, so the
+        // window is computed via the electra 16-bit proposer selection.
+        let lookahead: Vec<serde_json::Value> =
+            if let Some(precomputed) = beacon_state.proposer_lookahead_vec() {
+                precomputed
+                    .into_iter()
+                    .map(|v| JsonValue::String(v.0.to_string()))
+                    .collect()
+            } else {
+                (0..lookahead_slots)
+                    .map(|offset| {
+                        let slot = Slot(start_slot + offset);
+                        // Reuse the helper from validator_duties.
+                        use pharos_stf::electra::helpers::compute_proposer_index_electra;
+                        use pharos_stf::phase0::accessors::{
+                            compute_epoch_at_slot as epat, get_active_validator_indices, get_seed,
+                        };
+                        use pharos_stf::phase0::helpers::{DOMAIN_BEACON_PROPOSER, uint_to_bytes};
+                        use pharos_utils::{Bytes4, hash};
 
-                let epoch = epat(slot, E::SLOTS_PER_EPOCH);
-                let seed_base = get_seed::<E>(
-                    &beacon_state,
-                    epoch,
-                    Bytes4::from_array(DOMAIN_BEACON_PROPOSER),
-                );
-                let slot_bytes = uint_to_bytes(slot.0);
-                let mut input = [0u8; 40];
-                input[..32].copy_from_slice(seed_base.as_slice());
-                input[32..].copy_from_slice(&slot_bytes);
-                let seed = hash::hash(&input);
-                let indices = get_active_validator_indices::<E>(&beacon_state, epoch);
-                // EIP-7251: electra uses the 16-bit proposer selection (vs the
-                // phase0 8-bit accessor); the two yield different indices.
-                let proposer = compute_proposer_index_electra::<E>(&beacon_state, &indices, &seed);
-                JsonValue::String(proposer.0.to_string())
-            })
-            .collect();
+                        let epoch = epat(slot, E::SLOTS_PER_EPOCH);
+                        let seed_base = get_seed::<E>(
+                            &beacon_state,
+                            epoch,
+                            Bytes4::from_array(DOMAIN_BEACON_PROPOSER),
+                        );
+                        let slot_bytes = uint_to_bytes(slot.0);
+                        let mut input = [0u8; 40];
+                        input[..32].copy_from_slice(seed_base.as_slice());
+                        input[32..].copy_from_slice(&slot_bytes);
+                        let seed = hash::hash(&input);
+                        let indices = get_active_validator_indices::<E>(&beacon_state, epoch);
+                        // EIP-7251: electra uses the 16-bit proposer selection (vs the
+                        // phase0 8-bit accessor); the two yield different indices.
+                        let proposer =
+                            compute_proposer_index_electra::<E>(&beacon_state, &indices, &seed);
+                        JsonValue::String(proposer.0.to_string())
+                    })
+                    .collect()
+            };
 
-        let version = crate::fork_tag::fork_variant_str(ForkVariant::Electra);
+        let version = crate::fork_tag::fork_variant_str(state_variant);
         let dto = serde_json::json!({
             "version": version,
             "execution_optimistic": resolved.execution_optimistic,
@@ -1433,14 +1480,21 @@ pub async fn get_proposer_lookahead<E: BeaconSpec>(
 
     match result {
         Ok(Ok((dto, _resolved))) => {
-            use crate::fork_tag::{ETH_CONSENSUS_VERSION, fork_variant_str};
+            use crate::fork_tag::ETH_CONSENSUS_VERSION;
+            // Header version reflects the state's actual fork (electra or fulu),
+            // carried in the dto's `version` field (RI-6: a fulu state serves the
+            // fulu version).
+            let version = dto
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("electra")
+                .to_owned();
             let body = match serde_json::to_vec(&dto) {
                 Ok(b) => b,
                 Err(e) => {
                     return ApiError::Internal(format!("JSON serialization: {e}")).into_response();
                 }
             };
-            let version = fork_variant_str(ForkVariant::Electra);
             let mut r = (
                 axum::http::StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -1448,7 +1502,7 @@ pub async fn get_proposer_lookahead<E: BeaconSpec>(
             )
                 .into_response();
             let _ = format;
-            if let Ok(hv) = axum::http::HeaderValue::from_str(version) {
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&version) {
                 r.headers_mut().insert(ETH_CONSENSUS_VERSION.clone(), hv);
             }
             r

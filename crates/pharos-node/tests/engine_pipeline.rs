@@ -572,6 +572,8 @@ async fn engine_pipeline_drives_bellatrix_chain() {
                 Arc::new(NoopDataAvailabilityChecker),
                 Arc::new(BlobAwaitingBlocks::new()),
                 None,
+                None,
+                None,
             )
             .await
             {

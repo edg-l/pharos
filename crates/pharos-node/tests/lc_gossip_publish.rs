@@ -340,6 +340,8 @@ async fn snapshots_written_after_altair_block() {
             Arc::new(NoopDataAvailabilityChecker),
             Arc::new(BlobAwaitingBlocks::new()),
             None,
+            None,
+            None,
         )
         .await;
     });
@@ -433,6 +435,8 @@ async fn publish_called_after_head_change() {
             false,
             Arc::new(NoopDataAvailabilityChecker),
             Arc::new(BlobAwaitingBlocks::new()),
+            None,
+            None,
             None,
         )
         .await;
@@ -703,6 +707,8 @@ async fn no_publish_for_phase0_block() {
             false,
             Arc::new(NoopDataAvailabilityChecker),
             Arc::new(BlobAwaitingBlocks::new()),
+            None,
+            None,
             None,
         )
         .await;

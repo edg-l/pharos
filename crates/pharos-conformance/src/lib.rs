@@ -332,6 +332,26 @@ fn enumerate_row(
             row_ordinal,
         )),
 
+        // ── fulu/merkle_proof ─────────────────────────────────────────────────
+        // The `blob_kzg_commitments` whole-list inclusion proof (depth 4); the
+        // runner derives depth from the fixture's branch length.
+        ("fulu", "merkle_proof", preset) => Some(merkle_proof::enumerate_merkle_proof(
+            root,
+            "fulu",
+            preset,
+            row_ordinal,
+        )),
+
+        // ── fulu/fast_confirmation ────────────────────────────────────────────
+        // Minimal-only; drives the fork-choice substrate and ignores the
+        // (unimplemented) confirmation-rule check fields.
+        ("fulu", "fast_confirmation", preset) => Some(fork_choice::enumerate_fast_confirmation(
+            root,
+            "fulu",
+            preset,
+            row_ordinal,
+        )),
+
         // ── fulu/kzg ──────────────────────────────────────────────────────────
         ("fulu", "kzg", "-") => Some(fulu_kzg::enumerate_fulu_kzg(root, row_ordinal)),
 

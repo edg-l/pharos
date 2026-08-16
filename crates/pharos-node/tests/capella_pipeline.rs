@@ -598,6 +598,8 @@ async fn capella_pipeline_drives_v2_engine_calls() {
                 Arc::new(NoopDataAvailabilityChecker),
                 Arc::new(BlobAwaitingBlocks::new()),
                 None,
+                None,
+                None,
             )
             .await
             {

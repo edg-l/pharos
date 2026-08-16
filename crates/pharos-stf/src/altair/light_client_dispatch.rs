@@ -2724,6 +2724,131 @@ where
     }
 }
 
+// ── FuluDispatchBounds ─────────────────────────────────────────────────────────
+
+/// Dispatch trait for running the LC snapshot writes on fulu states.
+///
+/// Fulu does NOT reshape the light-client containers: the fulu LC types ARE the
+/// electra LC types, the fulu block IS the electra block, and the fulu
+/// `BeaconState` is an electra `BeaconState` plus the EIP-7917
+/// `proposer_lookahead` field (irrelevant to the LC snapshot, which projects to
+/// altair). The impl therefore projects the fulu state to electra via
+/// `fulu_state_to_electra` and delegates to `call_update_lc_snapshots_electra`,
+/// writing into the SAME electra LC column families (the fulu LC header uses the
+/// STF-verified `block.state_root`, the M4c invariant carried through electra).
+///
+/// Per `D-fulu-lc-uses-block-state-root`.
+pub trait FuluDispatchBounds<E: BeaconSpec>: Sized {
+    /// Run the LC snapshot writes using `self` (fulu post-state).
+    fn call_update_lc_snapshots_fulu<S: pharos_storage::Store<E>>(
+        &self,
+        block: &E::FuluBeaconBlock,
+        attested_state: Option<&Self>,
+        attested_block: Option<&E::FuluBeaconBlock>,
+        finalized_block: Option<&E::FuluBeaconBlock>,
+        store: &S,
+    );
+}
+
+#[allow(clippy::type_complexity)]
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    const LOOKAHEAD_WINDOW: u64,
+    SharedBlock,
+    E,
+> FuluDispatchBounds<E>
+    for pharos_types::fulu::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >
+where
+    E: BeaconSpec<
+            FuluBeaconState = pharos_types::fulu::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                PENDING_DEPOSITS_LIMIT,
+                PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+                PENDING_CONSOLIDATIONS_LIMIT,
+                LOOKAHEAD_WINDOW,
+            >,
+            ElectraBeaconState = pharos_types::electra::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                PENDING_DEPOSITS_LIMIT,
+                PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+                PENDING_CONSOLIDATIONS_LIMIT,
+            >,
+            // The fulu block IS the electra block (re-export): bind both
+            // associated types to the SAME concrete `SharedBlock` so the electra
+            // dispatch (which takes `&E::ElectraBeaconBlock`) accepts the
+            // `&E::FuluBeaconBlock` we hold.
+            FuluBeaconBlock = SharedBlock,
+            ElectraBeaconBlock = SharedBlock,
+        >,
+    E::ElectraBeaconState: ElectraDispatchBounds<E>,
+{
+    fn call_update_lc_snapshots_fulu<S: pharos_storage::Store<E>>(
+        &self,
+        block: &E::FuluBeaconBlock,
+        attested_state: Option<&Self>,
+        attested_block: Option<&E::FuluBeaconBlock>,
+        finalized_block: Option<&E::FuluBeaconBlock>,
+        store: &S,
+    ) {
+        // Project fulu post-state → electra (drop `proposer_lookahead`), then run
+        // the electra LC snapshot writes (fulu LC types == electra LC types).
+        let post_electra = crate::fulu::fulu_state_to_electra(self);
+        let attested_electra = attested_state.map(crate::fulu::fulu_state_to_electra);
+        post_electra.call_update_lc_snapshots_electra::<S>(
+            block,
+            attested_electra.as_ref(),
+            attested_block,
+            finalized_block,
+            store,
+        );
+    }
+}
+
 // ── Electra LC helper functions ───────────────────────────────────────────────
 
 /// Build an Electra `LightClientBootstrap`.

@@ -144,6 +144,11 @@ where
     E::ElectraBeaconBlock: pharos_types::views::BeaconBlockView,
     <E::ElectraBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
         pharos_types::views::BeaconBlockBodyView,
+    E::FuluSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::FuluBeaconBlock>,
+    E::FuluBeaconBlock: pharos_types::views::BeaconBlockView,
+    <E::FuluBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
+        pharos_types::views::BeaconBlockBodyView,
 {
     use pharos_types::views::{
         BeaconBlockBodyView as _, BeaconBlockView as _, SignedBeaconBlockView as _,
@@ -151,6 +156,8 @@ where
     if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
         inner.message().body().blob_kzg_commitments_slice().to_vec()
     } else if let Some(inner) = E::unwrap_electra_signed_block(signed_block) {
+        inner.message().body().blob_kzg_commitments_slice().to_vec()
+    } else if let Some(inner) = E::unwrap_fulu_signed_block(signed_block) {
         inner.message().body().blob_kzg_commitments_slice().to_vec()
     } else {
         Vec::new()
@@ -192,6 +199,12 @@ fn signed_block_is_execution_enabled<E: BeaconSpec>(b: &E::SignedBeaconBlock) ->
             .body()
             .execution_block_hash()
             .is_some_and(|h| h != [0u8; 32])
+    } else if let Some(inner) = E::unwrap_fulu_signed_block(b) {
+        inner
+            .message()
+            .body()
+            .execution_block_hash()
+            .is_some_and(|h| h != [0u8; 32])
     } else {
         false
     }
@@ -218,6 +231,8 @@ pub fn signed_block_slot<E: BeaconSpec>(
         inner.message().slot()
     } else if let Some(inner) = E::unwrap_electra_signed_block(b) {
         inner.message().slot()
+    } else if let Some(inner) = E::unwrap_fulu_signed_block(b) {
+        inner.message().slot()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")
     }
@@ -243,6 +258,8 @@ pub fn signed_block_state_root<E: BeaconSpec>(
     } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
         inner.message().state_root()
     } else if let Some(inner) = E::unwrap_electra_signed_block(b) {
+        inner.message().state_root()
+    } else if let Some(inner) = E::unwrap_fulu_signed_block(b) {
         inner.message().state_root()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")
@@ -287,6 +304,8 @@ pub fn signed_block_header<E: BeaconSpec>(
     } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
         header_of!(inner)
     } else if let Some(inner) = E::unwrap_electra_signed_block(b) {
+        header_of!(inner)
+    } else if let Some(inner) = E::unwrap_fulu_signed_block(b) {
         header_of!(inner)
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")

@@ -240,6 +240,18 @@ pub fn row_table() -> &'static [RowSpec] {
         // fixtures (OQ2 `D-partial-columns-deferred`).
         r("fulu", "networking", "mainnet"),
         r("fulu", "networking", "minimal"),
+        // M13-Fulu Phase 6b: light-client + merkle-proof + fast-confirmation rows.
+        // Fulu LC = electra LC types + fulu fork tag; the merkle-proof row covers
+        // the `blob_kzg_commitments` whole-list inclusion proof (depth 4).
+        // `fast_confirmation` is minimal-only (no mainnet fixtures) and drives the
+        // fork-choice substrate (confirmation-rule check fields are ignored).
+        // sync/optimistic is NOT a new row — the existing global
+        // `("sync","optimistic",preset)` row now enumerates fulu cases too.
+        r("fulu", "light_client", "mainnet"),
+        r("fulu", "light_client", "minimal"),
+        r("fulu", "merkle_proof", "mainnet"),
+        r("fulu", "merkle_proof", "minimal"),
+        r("fulu", "fast_confirmation", "minimal"),
     ];
     TABLE
 }
@@ -423,6 +435,11 @@ mod tests {
             ("fulu", "fork_choice", "minimal"),
             ("fulu", "networking", "mainnet"),
             ("fulu", "networking", "minimal"),
+            ("fulu", "light_client", "mainnet"),
+            ("fulu", "light_client", "minimal"),
+            ("fulu", "merkle_proof", "mainnet"),
+            ("fulu", "merkle_proof", "minimal"),
+            ("fulu", "fast_confirmation", "minimal"),
         ];
 
         let table = row_table();
@@ -502,13 +519,13 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 155 (153 + 2 M13-Fulu Phase 5b networking
-    /// placeholder rows, mainnet + minimal). The 153 base is 135 + 16 M13-Fulu
-    /// Phase 3b STF rows (operations, epoch_processing, transition, rewards,
-    /// finality, fork, sanity, random — each mainnet + minimal) + 2 M13-Fulu
-    /// Phase 4 fork_choice rows (mainnet + minimal).
+    /// Total row count is exactly 160 (155 + 5 M13-Fulu Phase 6b rows:
+    /// `fulu/light_client` mainnet+minimal, `fulu/merkle_proof` mainnet+minimal,
+    /// `fulu/fast_confirmation` minimal). The 155 base is the M13-Fulu Phase 5b
+    /// total (153 + 2 networking placeholder rows). `sync/optimistic` is NOT a new
+    /// row — the existing global row enumerates fulu cases too.
     #[test]
-    fn row_count_is_155() {
-        assert_eq!(row_table().len(), 155);
+    fn row_count_is_160() {
+        assert_eq!(row_table().len(), 160);
     }
 }

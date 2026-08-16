@@ -249,6 +249,44 @@ pub fn enumerate_light_client(
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
                 }),
+                ("fulu", "BeaconState", "mainnet") => Box::new(move || {
+                    match run_single_merkle_proof_fulu_state_case::<pharos_types::MainnetBeaconSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("fulu", "BeaconState", _) => Box::new(move || {
+                    match run_single_merkle_proof_fulu_state_case::<pharos_types::MinimalBeaconSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                // Fulu `BeaconBlockBody` IS the electra body (re-export), so the
+                // electra body merkle-proof case decodes it unchanged.
+                ("fulu", "BeaconBlockBody", "mainnet") => Box::new(move || {
+                    match run_single_merkle_proof_electra_body_case::<pharos_types::MainnetBeaconSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("fulu", "BeaconBlockBody", _) => Box::new(move || {
+                    match run_single_merkle_proof_electra_body_case::<pharos_types::MinimalBeaconSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
                 // Unknown combination: skip
                 _ => Box::new(move || CaseOutcome::Skip),
             };
@@ -339,6 +377,24 @@ pub fn enumerate_light_client(
             ("electra", _) => {
                 Box::new(
                     move || match run_sync_case_electra_minimal(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    },
+                )
+            }
+            ("fulu", "mainnet") => {
+                Box::new(
+                    move || match run_sync_case_fulu_mainnet(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    },
+                )
+            }
+            ("fulu", _) => {
+                Box::new(
+                    move || match run_sync_case_fulu_minimal(&case_dir, &case_name) {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Skip => CaseOutcome::Skip,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
@@ -1921,6 +1977,77 @@ where
     }
 }
 
+/// Fulu `BeaconState` merkle-proof case. Fulu reshapes `BeaconState` (adds the
+/// EIP-7917 `proposer_lookahead` field), so the fulu state type is decoded here
+/// rather than the electra one. The LC branch proofs (current/next sync committee,
+/// finality root) are otherwise identical to electra.
+fn run_single_merkle_proof_fulu_state_case<E: BeaconSpec>(
+    case_dir: &Path,
+    case_name: &str,
+) -> CaseResult
+where
+    E::FuluBeaconState: Decode + TreeHash,
+{
+    let proof_path = case_dir.join("proof.yaml");
+    let proof_text = match std::fs::read_to_string(&proof_path) {
+        Ok(t) => t,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: read proof.yaml: {e}")),
+    };
+    let proof_val: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&proof_text) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: parse proof.yaml: {e}")),
+    };
+
+    let leaf_hex = match proof_val.get("leaf").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing leaf in proof.yaml")),
+    };
+    let leaf_index = match proof_val.get("leaf_index").and_then(|v| v.as_u64()) {
+        Some(n) => n,
+        None => return CaseResult::Fail(format!("{case_name}: missing leaf_index in proof.yaml")),
+    };
+    let branch_val = match proof_val.get("branch").and_then(|v| v.as_sequence()) {
+        Some(b) => b.clone(),
+        None => return CaseResult::Fail(format!("{case_name}: missing branch in proof.yaml")),
+    };
+
+    let leaf = match parse_bytes32(leaf_hex) {
+        Ok(b) => b,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: leaf parse: {e}")),
+    };
+
+    let mut branch: Vec<Bytes32> = Vec::new();
+    for (i, v) in branch_val.iter().enumerate() {
+        let hex = match v.as_str() {
+            Some(s) => s,
+            None => return CaseResult::Fail(format!("{case_name}: branch[{i}] is not a string")),
+        };
+        match parse_bytes32(hex) {
+            Ok(b) => branch.push(b),
+            Err(e) => return CaseResult::Fail(format!("{case_name}: branch[{i}] parse: {e}")),
+        }
+    }
+
+    let state_inner = match load_ssz_snappy::<E::FuluBeaconState>(case_dir, "object.ssz_snappy") {
+        Ok(s) => s,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let state_root = state_inner.tree_hash_root();
+
+    if leaf_index == 0 {
+        return CaseResult::Fail(format!("{case_name}: leaf_index 0 is invalid"));
+    }
+    let depth = 63 - leaf_index.leading_zeros() as u64;
+    let index = leaf_index % (1u64 << depth);
+
+    use pharos_stf::phase0::operations::deposit::is_valid_merkle_branch;
+    if is_valid_merkle_branch(&leaf, &branch, depth, index, &state_root) {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!("{case_name}: merkle branch verification failed"))
+    }
+}
+
 fn run_single_merkle_proof_electra_body_case<E: BeaconSpec>(
     case_dir: &Path,
     case_name: &str,
@@ -1996,6 +2123,17 @@ fn run_sync_case_electra_mainnet(case_dir: &Path, case_name: &str) -> CaseResult
 }
 
 fn run_sync_case_electra_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
+    run_sync_case_electra_impl::<MinimalBeaconSpec, 32, 256, 32>(case_dir, case_name)
+}
+
+// Fulu LC sync: the fulu LC bootstrap/update/header types ARE the electra LC
+// types (re-exported in `pharos_types::fulu::light_client`), so the fulu sync
+// case decodes and verifies through the same electra LC store machinery.
+fn run_sync_case_fulu_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
+    run_sync_case_electra_impl::<MainnetBeaconSpec, 512, 256, 32>(case_dir, case_name)
+}
+
+fn run_sync_case_fulu_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
     run_sync_case_electra_impl::<MinimalBeaconSpec, 32, 256, 32>(case_dir, case_name)
 }
 

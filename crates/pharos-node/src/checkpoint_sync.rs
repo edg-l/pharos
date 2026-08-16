@@ -134,6 +134,7 @@ where
     <E::CapellaSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::DenebSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::ElectraSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
+    <E::FuluSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
 {
     // ── Step 1-2: fetch state ─────────────────────────────────────────────────
     let state_url = url
@@ -485,6 +486,15 @@ fn decode_state<E: BeaconSpec>(
             let root = state.tree_hash_root();
             Ok((state, root))
         }
+        "fulu" => {
+            let inner = E::FuluBeaconState::from_ssz_bytes(bytes)
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            let state = E::fulu_into_state(inner)
+                .into_tree_backend()
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            let root = state.tree_hash_root();
+            Ok((state, root))
+        }
         other => Err(CheckpointSyncError::UnsupportedFork(other.to_owned())),
     }
 }
@@ -525,6 +535,11 @@ fn decode_signed_block<E: BeaconSpec>(
                 .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
             Ok(E::electra_into_signed_block(inner))
         }
+        "fulu" => {
+            let inner = E::FuluSignedBeaconBlock::from_ssz_bytes(bytes)
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            Ok(E::fulu_into_signed_block(inner))
+        }
         other => Err(CheckpointSyncError::UnsupportedFork(other.to_owned())),
     }
 }
@@ -548,6 +563,7 @@ where
     <E::CapellaSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::DenebSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
     <E::ElectraSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
+    <E::FuluSignedBeaconBlock as SignedBeaconBlockView>::Message: TreeHash,
 {
     if let Some(inner) = E::unwrap_phase0_signed_block(signed) {
         return Ok(inner.message().tree_hash_root());
@@ -565,6 +581,9 @@ where
         return Ok(inner.message().tree_hash_root());
     }
     if let Some(inner) = E::unwrap_electra_signed_block(signed) {
+        return Ok(inner.message().tree_hash_root());
+    }
+    if let Some(inner) = E::unwrap_fulu_signed_block(signed) {
         return Ok(inner.message().tree_hash_root());
     }
     unreachable!("unrecognised SignedBeaconBlock fork variant")
@@ -601,7 +620,11 @@ fn extract_block_fields<E: BeaconSpec>(
         let msg = inner.message();
         return Ok((msg.state_root(), msg.slot(), msg.proposer_index()));
     }
-    // Unreachable: all six fork-enum arms are covered above.
+    if let Some(inner) = E::unwrap_fulu_signed_block(signed) {
+        let msg = inner.message();
+        return Ok((msg.state_root(), msg.slot(), msg.proposer_index()));
+    }
+    // Unreachable: all seven fork-enum arms are covered above.
     unreachable!("unrecognised SignedBeaconBlock fork variant")
 }
 
@@ -955,7 +978,7 @@ mod tests {
                     async move {
                         let mut headers = HeaderMap::new();
                         // Use a truly unknown fork name (not any currently supported fork).
-                        headers.insert("Eth-Consensus-Version", "fulu".parse().unwrap());
+                        headers.insert("Eth-Consensus-Version", "gloas".parse().unwrap());
                         (StatusCode::OK, headers, (*sb).clone())
                     }
                 }
@@ -970,8 +993,8 @@ mod tests {
         handle.abort();
 
         assert!(
-            matches!(result, Err(CheckpointSyncError::UnsupportedFork(ref s)) if s == "fulu"),
-            "expected UnsupportedFork(fulu), got {result:?}"
+            matches!(result, Err(CheckpointSyncError::UnsupportedFork(ref s)) if s == "gloas"),
+            "expected UnsupportedFork(gloas), got {result:?}"
         );
     }
 

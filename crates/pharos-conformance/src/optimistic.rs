@@ -2,8 +2,7 @@
 //!
 //! Fixture path: `{root}/{preset}/{fork}/sync/optimistic/pyspec_tests/{case}/`
 //!
-//! Forks covered: bellatrix, capella, deneb, electra (both mainnet + minimal).
-//! Higher forks (fulu+) are skipped — types not yet landed.
+//! Forks covered: bellatrix, capella, deneb, electra, fulu (both mainnet + minimal).
 //!
 //! # Step types
 //!
@@ -47,8 +46,8 @@ use std::path::{Path, PathBuf};
 
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_state,
-    load_capella_state, load_deneb_state, load_electra_state, load_phase0_state, load_ssz_snappy,
-    walk_category,
+    load_capella_state, load_deneb_state, load_electra_state, load_fulu_state, load_phase0_state,
+    load_ssz_snappy, walk_category,
 };
 use crate::fs_util::dir_name;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
@@ -78,7 +77,7 @@ pub fn enumerate_optimistic(root: &Path, preset: &'static str, row_ordinal: u32)
     let mut tasks = Vec::new();
     let mut ordinal: u32 = 0;
 
-    for fork in ["bellatrix", "capella", "deneb", "electra"] {
+    for fork in ["bellatrix", "capella", "deneb", "electra", "fulu"] {
         let cases: Vec<(PathBuf, _)> = walk_category(
             root,
             preset,
@@ -140,6 +139,12 @@ enum CaseResult {
 /// `on_attestation_electra` with the correct const generics per preset.
 trait OptimisticElectraFeed: BeaconSpec {
     fn feed_electra_attestations(store: &mut Store<Self>, signed: &Self::ElectraSignedBeaconBlock);
+    /// Feed a fulu block's attestations. Fulu attestations are electra-shaped
+    /// (EIP-7549) and the fulu signed block IS the electra signed block type, so
+    /// this delegates to the electra feed; the separate method exists only because
+    /// the generic `E::FuluSignedBeaconBlock` / `E::ElectraSignedBeaconBlock`
+    /// associated types are not provably equal without naming the concrete preset.
+    fn feed_fulu_attestations(store: &mut Store<Self>, signed: &Self::FuluSignedBeaconBlock);
 }
 
 impl OptimisticElectraFeed for MainnetBeaconSpec {
@@ -151,12 +156,30 @@ impl OptimisticElectraFeed for MainnetBeaconSpec {
             let _ = on_attestation_electra::<131072, 64, Self>(store, att, true);
         }
     }
+
+    fn feed_fulu_attestations(
+        store: &mut Store<Self>,
+        signed: &pharos_types::fulu::MainnetSignedBeaconBlock,
+    ) {
+        for att in signed.message.body.attestations.as_slice() {
+            let _ = on_attestation_electra::<131072, 64, Self>(store, att, true);
+        }
+    }
 }
 
 impl OptimisticElectraFeed for MinimalBeaconSpec {
     fn feed_electra_attestations(
         store: &mut Store<Self>,
         signed: &pharos_types::electra::MinimalSignedBeaconBlock,
+    ) {
+        for att in signed.message.body.attestations.as_slice() {
+            let _ = on_attestation_electra::<8192, 4, Self>(store, att, true);
+        }
+    }
+
+    fn feed_fulu_attestations(
+        store: &mut Store<Self>,
+        signed: &pharos_types::fulu::MinimalSignedBeaconBlock,
     ) {
         for att in signed.message.body.attestations.as_slice() {
             let _ = on_attestation_electra::<8192, 4, Self>(store, att, true);
@@ -245,36 +268,48 @@ where
         Decode + Clone + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
     E::ElectraBeaconBlock: Decode + BeaconBlockView + TreeHash,
     E::ElectraSignedBeaconBlock: Decode + Clone,
+    E::FuluBeaconBlock: Decode + BeaconBlockView + TreeHash,
+    E::FuluSignedBeaconBlock: Decode + Clone + SignedBeaconBlockView<Message = E::FuluBeaconBlock>,
     E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
 {
-    // Load anchor state: electra first, then deneb, capella, bellatrix, altair, phase0.
+    // Load anchor state: fulu first, then electra, deneb, capella, bellatrix,
+    // altair, phase0. Fulu reshapes `BeaconState` (EIP-7917 `proposer_lookahead`),
+    // so it must be tried before electra (an electra decode of a fulu state would
+    // either fail or mis-parse the trailing field).
+    let is_fulu_anchor = load_fulu_state::<E>(case_dir, "anchor_state.ssz_snappy").is_ok();
     let anchor_state: E::BeaconState =
-        match load_electra_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+        match load_fulu_state::<E>(case_dir, "anchor_state.ssz_snappy") {
             Ok(s) => s,
-            Err(_) => match load_deneb_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+            Err(_) => match load_electra_state::<E>(case_dir, "anchor_state.ssz_snappy") {
                 Ok(s) => s,
-                Err(_) => match load_capella_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                Err(_) => match load_deneb_state::<E>(case_dir, "anchor_state.ssz_snappy") {
                     Ok(s) => s,
-                    Err(_) => {
-                        match load_bellatrix_state::<E>(case_dir, "anchor_state.ssz_snappy") {
-                            Ok(s) => s,
-                            Err(_) => {
-                                match load_altair_state::<E>(case_dir, "anchor_state.ssz_snappy") {
-                                    Ok(s) => s,
-                                    Err(_) => {
-                                        match load_phase0_state::<E>(
-                                            case_dir,
-                                            "anchor_state.ssz_snappy",
-                                        ) {
-                                            Ok(s) => s,
-                                            Err(_) => return CaseResult::Skip,
+                    Err(_) => match load_capella_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                        Ok(s) => s,
+                        Err(_) => {
+                            match load_bellatrix_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                                Ok(s) => s,
+                                Err(_) => {
+                                    match load_altair_state::<E>(
+                                        case_dir,
+                                        "anchor_state.ssz_snappy",
+                                    ) {
+                                        Ok(s) => s,
+                                        Err(_) => {
+                                            match load_phase0_state::<E>(
+                                                case_dir,
+                                                "anchor_state.ssz_snappy",
+                                            ) {
+                                                Ok(s) => s,
+                                                Err(_) => return CaseResult::Skip,
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
+                    },
                 },
             },
         };
@@ -385,10 +420,69 @@ where
                 let block_file = format!("{block}.ssz_snappy");
                 let cfg = E::default_runtime_config();
 
-                // Decode the block: try electra first, then deneb, capella, bellatrix,
-                // altair, skip. Using raw inner types gives typed access to attestations
-                // and block_root without calling .message() on the fork-enum (which panics).
-                if let Ok(electra_inner) =
+                // Decode the block: try fulu (when the anchor is fulu) first, then
+                // electra, deneb, capella, bellatrix, altair, skip. The fulu signed
+                // block IS the electra signed block type (re-export), so a fulu
+                // block also decodes as `E::ElectraSignedBeaconBlock`; the
+                // `is_fulu_anchor` gate ensures it is wrapped as the FULU fork
+                // variant so `state_transition` dispatches the fulu STF (the fulu
+                // state carries `proposer_lookahead`, which the electra STF would
+                // not advance). Fulu attestations are electra-shaped (EIP-7549).
+                if is_fulu_anchor
+                    && let Ok(fulu_inner) =
+                        load_ssz_snappy::<E::FuluSignedBeaconBlock>(case_dir, &block_file)
+                {
+                    let fulu_wrapped = E::fulu_into_signed_block(fulu_inner.clone());
+                    let parent_root = fulu_inner.message().parent_root();
+                    let pre_state = match store.block_states.get(&parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: fulu block {block}: parent state for {parent_root} not found in store"
+                            ));
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &fulu_wrapped,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let post_state = match post_state_result {
+                        Ok((ps, _)) => ps,
+                        Err(e) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: fulu block {block}: state_transition failed: {e:?}"
+                            ));
+                        }
+                    };
+                    let now = store.time;
+                    let block_root = fulu_inner.message().tree_hash_root();
+                    if on_block::<E, HashMapPowBlockProvider>(
+                        &mut store,
+                        &fulu_wrapped,
+                        post_state,
+                        now,
+                        &pow_provider,
+                    )
+                    .is_ok()
+                    {
+                        let el_hash = store
+                            .blocks
+                            .get(&block_root)
+                            .and_then(|b| E::get_execution_block_hash(b))
+                            .unwrap_or_default();
+                        if el_hash != Hash256::default() {
+                            el_hash_to_cl_root.insert(el_hash, block_root);
+                            if let Some((status, lvh)) = el_hash_to_verdict.get(&el_hash).cloned() {
+                                apply_payload_verdict(&mut store, block_root, &status, lvh);
+                            }
+                        }
+                        // Fulu attestations are electra-shaped (EIP-7549).
+                        E::feed_fulu_attestations(&mut store, &fulu_inner);
+                    }
+                } else if let Ok(electra_inner) =
                     load_ssz_snappy::<E::ElectraSignedBeaconBlock>(case_dir, &block_file)
                 {
                     let electra_wrapped = E::electra_into_signed_block(electra_inner.clone());

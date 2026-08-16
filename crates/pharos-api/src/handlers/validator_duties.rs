@@ -162,6 +162,26 @@ fn proposer_index_at_slot<E: BeaconSpec>(
     use pharos_types::views::ForkVariant;
     use pharos_utils::{Bytes4, hash};
 
+    // RI-6: a Fulu state carries the EIP-7917 precomputed `proposer_lookahead`.
+    // Read it directly rather than recomputing on-demand (the M12 16-bit-proposer
+    // gotcha that bit production, lookahead, and duties). The lookahead covers
+    // `(MIN_SEED_LOOKAHEAD + 1) * SLOTS_PER_EPOCH` slots starting at the current
+    // epoch's first slot; `slot - current_epoch_start` indexes into it. Slots
+    // outside the window fall through to the on-demand computation (which the spec
+    // never requests for proposer duties — only current/next epoch).
+    if state.fork_variant() == ForkVariant::Fulu {
+        if let Some(lookahead) = state.proposer_lookahead_vec() {
+            let current_epoch = compute_epoch_at_slot(state.slot(), E::SLOTS_PER_EPOCH);
+            let window_start = current_epoch.0 * E::SLOTS_PER_EPOCH;
+            if slot.0 >= window_start {
+                let offset = (slot.0 - window_start) as usize;
+                if let Some(idx) = lookahead.get(offset).copied() {
+                    return idx;
+                }
+            }
+        }
+    }
+
     let epoch = compute_epoch_at_slot(slot, E::SLOTS_PER_EPOCH);
     let seed_base = get_seed::<E>(state, epoch, Bytes4::from_array(DOMAIN_BEACON_PROPOSER));
     let slot_bytes = uint_to_bytes(slot.0);
@@ -170,10 +190,14 @@ fn proposer_index_at_slot<E: BeaconSpec>(
     input[32..].copy_from_slice(&slot_bytes);
     let seed = hash::hash(&input);
     let indices = get_active_validator_indices::<E>(state, epoch);
-    // EIP-7251: electra (and later) uses the 16-bit proposer selection. This MUST
-    // match `produce_block`/`get_beacon_proposer_index_electra` and the STF, or the
-    // VC signs as the wrong proposer and the block fails the step-2 signature check.
-    if matches!(state.fork_variant(), ForkVariant::Electra) {
+    // EIP-7251: electra (and Fulu, when outside the lookahead window) use the
+    // 16-bit proposer selection. This MUST match `produce_block` /
+    // `get_beacon_proposer_index_electra` and the STF, or the VC signs as the
+    // wrong proposer and the block fails the step-2 signature check.
+    if matches!(
+        state.fork_variant(),
+        ForkVariant::Electra | ForkVariant::Fulu
+    ) {
         compute_proposer_index_electra::<E>(state, &indices, &seed)
     } else {
         compute_proposer_index::<E>(state, &indices, &seed)

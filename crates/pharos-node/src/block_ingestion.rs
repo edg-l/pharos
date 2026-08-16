@@ -24,7 +24,7 @@ use pharos_network::topics::{GossipTopic, GossipTopicKind};
 use pharos_ssz::Decode;
 use pharos_stf::{
     AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds, DenebDispatchBounds,
-    ElectraDispatchBounds, ExecutionEngine, StateTransitionError,
+    ElectraDispatchBounds, ExecutionEngine, FuluDispatchBounds, StateTransitionError,
 };
 use pharos_storage::StorageError;
 use pharos_types::views::{
@@ -149,9 +149,17 @@ pub async fn run_block_ingestion_loop<E, EE, DA>(
     validate_result: bool,
     da_checker: Arc<DA>,
     blob_awaiting: Arc<BlobAwaitingBlocks>,
+    // Registry for DA-pending fulu blocks awaiting data-column sidecars
+    // (EIP-7594 PeerDAS). `None` in pre-Fulu configurations; fulu blocks fall
+    // back to `blob_awaiting` parking when absent.
+    column_awaiting: Option<Arc<crate::column_ingestion::ColumnAwaitingBlocks>>,
     // Forward channel for `GossipBlobSidecar` events to the blob ingestion loop.
     // `None` in pre-Deneb configurations; blob events are silently dropped.
     blob_event_tx: Option<mpsc::Sender<NetworkEvent>>,
+    // Forward channel for `GossipDataColumnSidecar` events to the column ingestion
+    // loop (EIP-7594 PeerDAS). `None` in pre-Fulu configurations; column events
+    // are silently dropped.
+    column_event_tx: Option<mpsc::Sender<NetworkEvent>>,
 ) -> Result<(), IngestionError>
 where
     DA: DataAvailabilityChecker<E> + 'static,
@@ -192,7 +200,8 @@ where
     E::FuluBeaconState: pharos_stf::FuluDispatch<E, EE>
         + pharos_stf::FuluJaFDispatch<E>
         + pharos_stf::FuluProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
+        + pharos_ssz::TreeHash
+        + FuluDispatchBounds<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock:
         pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
@@ -235,6 +244,15 @@ where
                     if let Some(ref tx) = blob_event_tx {
                         if tx.try_send(event).is_err() {
                             warn!("blob_ingestion: blob_event channel full; dropping GossipBlobSidecar (awaiting block may be parked until timeout)");
+                        }
+                    }
+                    continue;
+                }
+                // Forward data-column sidecar events to the column ingestion loop.
+                if let NetworkEvent::GossipDataColumnSidecar { .. } = &event {
+                    if let Some(ref tx) = column_event_tx {
+                        if tx.try_send(event).is_err() {
+                            warn!("column_ingestion: column_event channel full; dropping GossipDataColumnSidecar (awaiting block may be parked until timeout)");
                         }
                     }
                     continue;
@@ -305,12 +323,26 @@ where
                 egress.notify_backfill.notify_one();
                 continue;
             }
-            // DA not yet satisfied: park in BlobAwaitingBlocks.
-            // When blobs arrive (blob_ingestion loop) and complete the set,
-            // the block is re-injected via reinject_tx.
+            // DA not yet satisfied: park awaiting the missing sidecars. When they
+            // arrive (blob / column ingestion loop) and complete the set, the
+            // block is re-injected via reinject_tx. Fulu blocks await data-column
+            // sidecars (ColumnAwaitingBlocks); pre-Fulu blocks await blob sidecars
+            // (BlobAwaitingBlocks). Route by the topic's fork digest so a single
+            // block is parked in exactly one registry (no double re-inject).
             Err(crate::import::ImportError::DataNotAvailable) => {
                 let block_root = crate::block_ingestion::extract_block_root::<E>(&signed_block);
-                blob_awaiting.park(block_root, (topic, data), egress.reinject_tx.clone());
+                let is_fulu = matches!(
+                    host.fork_from_context(&topic.fork_digest.into_inner()),
+                    Some(pharos_network::types::Fork::Fulu)
+                );
+                match (is_fulu, &column_awaiting) {
+                    (true, Some(registry)) => {
+                        registry.park(block_root, (topic, data), egress.reinject_tx.clone());
+                    }
+                    _ => {
+                        blob_awaiting.park(block_root, (topic, data), egress.reinject_tx.clone());
+                    }
+                }
                 continue;
             }
             // Future block: per fork-choice.md its consideration "must be delayed
@@ -380,10 +412,49 @@ where
                 | ForkVariant::Capella
                 | ForkVariant::Deneb
                 | ForkVariant::Electra
+                | ForkVariant::Fulu
         );
         if has_lc_snapshots {
             let digest = host.current_fork_digest();
-            if outcome.fork_variant == ForkVariant::Electra {
+            if outcome.fork_variant == ForkVariant::Fulu {
+                // Fulu LC types ARE the electra LC types and are written to the
+                // electra LC CFs by `call_update_lc_snapshots_fulu`; read them via
+                // the electra LC provider methods and publish under the FULU
+                // fork-digest (the BPO-aware `current_fork_digest`).
+                use pharos_network::host::LightClientProvider as _;
+                if let Some(fu) = host.light_client_finality_update_electra() {
+                    let wait = host.lc_publish_wait(fu.finality_signature_slot());
+                    let net = egress.network.clone();
+                    tokio::spawn(async move {
+                        if !wait.is_zero() {
+                            tokio::time::sleep(wait).await;
+                        }
+                        let topic = GossipTopic {
+                            fork_digest: digest,
+                            kind: GossipTopicKind::LightClientFinalityUpdate,
+                        };
+                        if let Err(e) = net.publish(topic, &fu).await {
+                            warn!(error = %e, "fulu lc finality update publish failed");
+                        }
+                    });
+                }
+                if let Some(ou) = host.light_client_optimistic_update_electra() {
+                    let wait = host.lc_publish_wait(ou.optimistic_signature_slot());
+                    let net = egress.network.clone();
+                    tokio::spawn(async move {
+                        if !wait.is_zero() {
+                            tokio::time::sleep(wait).await;
+                        }
+                        let topic = GossipTopic {
+                            fork_digest: digest,
+                            kind: GossipTopicKind::LightClientOptimisticUpdate,
+                        };
+                        if let Err(e) = net.publish(topic, &ou).await {
+                            warn!(error = %e, "fulu lc optimistic update publish failed");
+                        }
+                    });
+                }
+            } else if outcome.fork_variant == ForkVariant::Electra {
                 // Electra LC: read from electra CFs and publish with electra digest.
                 use pharos_network::host::LightClientProvider as _;
                 if let Some(fu) = host.light_client_finality_update_electra() {
@@ -598,6 +669,7 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
     E::CapellaBeaconState: CapellaDispatchBounds<E>,
     E::DenebBeaconState: DenebDispatchBounds<E>,
     E::ElectraBeaconState: ElectraDispatchBounds<E>,
+    E::FuluBeaconState: FuluDispatchBounds<E>,
     S: pharos_storage::Store<E>,
     E::AltairSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
@@ -614,6 +686,9 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
     E::ElectraSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::ElectraBeaconBlock>,
     E::ElectraBeaconBlock: pharos_types::views::BeaconBlockView,
+    E::FuluSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::FuluBeaconBlock>,
+    E::FuluBeaconBlock: pharos_types::views::BeaconBlockView,
     E::BeaconState: pharos_types::views::BeaconStateView,
 {
     use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _};
@@ -788,8 +863,37 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
             );
         }
         ForkVariant::Fulu => {
-            // Fulu light-client snapshot writes land in the M13-Fulu LC phase;
-            // the live node imports no fulu blocks during Phase 1 plumbing.
+            let Some(fulu_signed) = E::unwrap_fulu_signed_block(signed_block) else {
+                return;
+            };
+            let fulu_block = fulu_signed.message();
+            let Some(post_state_fulu) = E::unwrap_fulu_state(post_state) else {
+                return;
+            };
+
+            let attested_root = fulu_block.parent_root();
+            let finalized_root = post_state.finalized_checkpoint().root;
+
+            let attested_block_opt = fc_store
+                .blocks
+                .get(&attested_root)
+                .and_then(|b| E::unwrap_fulu_block(b));
+            let attested_state_opt = fc_store
+                .block_states
+                .get(&attested_root)
+                .and_then(|s| E::unwrap_fulu_state(s));
+            let finalized_block_opt = fc_store
+                .blocks
+                .get(&finalized_root)
+                .and_then(|b| E::unwrap_fulu_block(b));
+
+            post_state_fulu.call_update_lc_snapshots_fulu::<S>(
+                fulu_block,
+                attested_state_opt,
+                attested_block_opt,
+                finalized_block_opt,
+                store,
+            );
         }
     }
 }
@@ -832,6 +936,8 @@ where
     } else if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
         inner.message().parent_root()
     } else if let Some(inner) = E::unwrap_electra_signed_block(signed_block) {
+        inner.message().parent_root()
+    } else if let Some(inner) = E::unwrap_fulu_signed_block(signed_block) {
         inner.message().parent_root()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")
@@ -948,6 +1054,7 @@ where
     E::CapellaSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::DenebSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::ElectraSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
+    E::FuluSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     <E::Phase0SignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
     <E::AltairSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
@@ -959,6 +1066,8 @@ where
     <E::DenebSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
     <E::ElectraSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
+        pharos_ssz::TreeHash,
+    <E::FuluSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
 {
     use pharos_ssz::TreeHash as _;
@@ -973,6 +1082,8 @@ where
     } else if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
         inner.message().tree_hash_root()
     } else if let Some(inner) = E::unwrap_electra_signed_block(signed_block) {
+        inner.message().tree_hash_root()
+    } else if let Some(inner) = E::unwrap_fulu_signed_block(signed_block) {
         inner.message().tree_hash_root()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")

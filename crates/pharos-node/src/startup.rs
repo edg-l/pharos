@@ -169,8 +169,11 @@ where
 /// `&RocksStore` without requiring `Arc` wrapping, making it usable during the
 /// early startup phase before `Arc`s are allocated.
 ///
-/// Uses `RuntimeConfig::default()` for the replay (same as checkpoint-sync
-/// anchor replay).  `validate_result = false` — stored blocks are trusted.
+/// Threads the caller-supplied `runtime_cfg` (the real fork schedule loaded from
+/// `--config-dir`) through `state_transition` / `process_slots_fork` so a replay
+/// that crosses a fork boundary (e.g. electra→fulu) upgrades live rather than
+/// freezing on `UnsupportedFork` (the M6 `D-runtime-cfg-threading-live-loops`
+/// lesson).  `validate_result = false` — stored blocks are trusted.
 fn inline_replay_to<E: BeaconSpec>(
     store: &RocksStore,
     mut state: E::BeaconState,

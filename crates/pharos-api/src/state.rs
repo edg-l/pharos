@@ -1318,6 +1318,7 @@ where
     E::CapellaSignedBeaconBlock: BlockApiSerializer,
     E::DenebSignedBeaconBlock: BlockApiSerializer,
     E::ElectraSignedBeaconBlock: BlockApiSerializer,
+    E::FuluSignedBeaconBlock: BlockApiSerializer,
     E::AltairLightClientBootstrap: LcApiSerializer,
     E::AltairLightClientUpdate: LcApiSerializer,
     E::AltairLightClientFinalityUpdate: LcApiSerializer,
@@ -1618,6 +1619,8 @@ where
             header_from!(inner)
         } else if let Some(inner) = E::unwrap_electra_signed_block(&signed) {
             header_from!(inner)
+        } else if let Some(inner) = E::unwrap_fulu_signed_block(&signed) {
+            header_from!(inner)
         } else {
             None
         }
@@ -1671,8 +1674,11 @@ where
         if let Some(b) = E::unwrap_electra_signed_block(&block) {
             return Ok(Some(b.to_block_for_api()?));
         }
-        // All six forks (phase0/altair/bellatrix/capella/deneb/electra) are exhaustive.
-        // Reaching here indicates a new unknown fork variant not yet handled.
+        if let Some(b) = E::unwrap_fulu_signed_block(&block) {
+            return Ok(Some(b.to_block_for_api()?));
+        }
+        // All seven forks (phase0/altair/bellatrix/capella/deneb/electra/fulu) are
+        // exhaustive. Reaching here indicates a new unknown fork variant.
         unreachable!("unknown fork variant in SignedBeaconBlock — update block_by_root_for_api")
     }
 

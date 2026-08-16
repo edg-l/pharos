@@ -29,11 +29,13 @@ use pharos_node::blob_ingestion::run_blob_ingestion_loop;
 use pharos_node::blob_prune::run_blob_prune_loop;
 use pharos_node::block_ingestion::{IngestionEgress, ReinjectBlock, run_block_ingestion_loop};
 use pharos_node::checkpoint_sync::{apply_anchor, fetch_checkpoint};
+use pharos_node::column_ingestion::{ColumnAwaitingBlocks, run_column_ingestion_loop};
+use pharos_node::column_prune::run_column_prune_loop;
 use pharos_node::custody::{CustodyState, run_custody_adjustment_loop};
 use pharos_node::data_availability::{BlobAvailabilityChecker, BlobAwaitingBlocks};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::engine_keepalive::{hex_to_u256, run_transition_config_keepalive, u256_to_hex};
-use pharos_node::fork_migration::run_fork_migration_loop;
+use pharos_node::fork_migration::{run_bpo_migration_loop, run_fork_migration_loop};
 use pharos_node::freezer::run_freezer_loop;
 use pharos_node::host_impl::HostImpl;
 use pharos_node::jwt_autogen::ensure_jwt_secret;
@@ -463,6 +465,8 @@ async fn main() -> anyhow::Result<()> {
             } else if let Some(inner) = MainnetBeaconSpec::unwrap_deneb_signed_block(&signed) {
                 inner.message().state_root()
             } else if let Some(inner) = MainnetBeaconSpec::unwrap_electra_signed_block(&signed) {
+                inner.message().state_root()
+            } else if let Some(inner) = MainnetBeaconSpec::unwrap_fulu_signed_block(&signed) {
                 inner.message().state_root()
             } else {
                 unreachable!("unrecognised SignedBeaconBlock fork variant in warm restart")
@@ -941,6 +945,27 @@ async fn main() -> anyhow::Result<()> {
         let sched = Arc::clone(&fork_schedule);
         tokio::spawn(async move {
             run_fork_migration_loop::<MainnetBeaconSpec>(cmd, disc, sched, genesis_time_secs).await;
+        });
+    }
+
+    // Spawn the BPO-boundary migration loop (EIP-7892, RI-2): rotates the
+    // fork-digest WITHIN the fulu fork at every BLOB_SCHEDULE entry's epoch
+    // (distinct from the fork-VERSION crossings handled by the fork migration
+    // loop). Exits immediately when no BPO entries are scheduled.
+    {
+        let cmd = handle.command_sender();
+        let disc = discovery_handle.clone();
+        let sched = Arc::clone(&fork_schedule);
+        let max_blobs_electra = runtime_cfg.max_blobs_per_block_electra;
+        tokio::spawn(async move {
+            run_bpo_migration_loop::<MainnetBeaconSpec>(
+                cmd,
+                disc,
+                sched,
+                genesis_time_secs,
+                max_blobs_electra,
+            )
+            .await;
         });
     }
 
@@ -1749,6 +1774,31 @@ async fn main() -> anyhow::Result<()> {
         info!(deneb_fork_epoch, "blob prune loop started");
     }
 
+    // ── Data-column prune loop (EIP-7594 PeerDAS, separate head-watch loop) ─────
+    //
+    // Driven off a clone of `head_rx` (same pattern as the blob prune + freezer
+    // loops). Deletes data-column sidecars whose epoch is older than
+    // `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` (= 4096) behind the head
+    // epoch, clamped to never prune at or below `fulu_fork_epoch`.
+    {
+        let column_prune_head_rx = head_rx.clone();
+        let column_prune_store = Arc::clone(&store_arc);
+        let column_prune_fc = Arc::clone(&fork_choice);
+        let fulu_fork_epoch = runtime_cfg.fulu_fork_epoch;
+        let column_prune_shutdown = pharos_node_shutdown_rx.clone();
+        tokio::spawn(async move {
+            run_column_prune_loop::<MainnetBeaconSpec>(
+                column_prune_head_rx,
+                column_prune_store,
+                column_prune_fc,
+                fulu_fork_epoch,
+                column_prune_shutdown,
+            )
+            .await;
+        });
+        info!(fulu_fork_epoch, "data-column prune loop started");
+    }
+
     // Spawn engine driver loop + block ingestion loop when the engine is active.
     if let Some(engine_handle) = engine_handle_opt {
         // Build production execution-engine bridge (EngineHandle → ExecutionEngine).
@@ -1803,8 +1853,17 @@ async fn main() -> anyhow::Result<()> {
         ));
         let blob_awaiting = Arc::new(BlobAwaitingBlocks::new());
 
+        // Column-awaiting registry (EIP-7594 PeerDAS, Fulu). DA-pending fulu blocks
+        // park here awaiting their data-column sidecars; re-injected on set completion.
+        let column_awaiting = Arc::new(ColumnAwaitingBlocks::new());
+
         // Blob-sidecar forwarding channel (block ingestion loop demuxes blob events).
         let (blob_event_tx, blob_event_rx) =
+            mpsc::channel::<pharos_network::network::NetworkEvent>(256);
+
+        // Data-column-sidecar forwarding channel (block ingestion loop demuxes
+        // GossipDataColumnSidecar events to the column ingestion loop).
+        let (column_event_tx, column_event_rx) =
             mpsc::channel::<pharos_network::network::NetworkEvent>(256);
 
         // Take the network event receiver and spawn the block-ingestion loop.
@@ -1826,6 +1885,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let da_checker_clone = Arc::clone(&da_checker);
             let blob_awaiting_clone = Arc::clone(&blob_awaiting);
+            let column_awaiting_clone = Arc::clone(&column_awaiting);
             tokio::spawn(async move {
                 if let Err(e) = run_block_ingestion_loop::<
                     MainnetBeaconSpec,
@@ -1842,7 +1902,9 @@ async fn main() -> anyhow::Result<()> {
                     true, // validate_result: enforce BLS signatures and state roots
                     da_checker_clone,
                     blob_awaiting_clone,
+                    Some(column_awaiting_clone),
                     Some(blob_event_tx),
+                    Some(column_event_tx),
                 )
                 .await
                 {
@@ -1866,6 +1928,21 @@ async fn main() -> anyhow::Result<()> {
             });
         }
         info!("blob ingestion loop started");
+
+        // Spawn data-column-sidecar ingestion loop (EIP-7594 PeerDAS).
+        {
+            let column_store = Arc::clone(&store_arc);
+            let column_awaiting_col = Arc::clone(&column_awaiting);
+            tokio::spawn(async move {
+                run_column_ingestion_loop::<MainnetBeaconSpec>(
+                    column_event_rx,
+                    column_store,
+                    column_awaiting_col,
+                )
+                .await;
+            });
+        }
+        info!("data-column ingestion loop started");
 
         // Phase 2 (Task 2.1): forward-backfill progress signal. The forward loop
         // publishes the lowest imported block slot here; the backward state-backfill
