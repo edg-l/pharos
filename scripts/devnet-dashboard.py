@@ -227,180 +227,278 @@ PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Pharos devnet dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pharos devnet</title>
 <style>
   :root {
-    --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#c9d1d9;
-    --muted:#8b949e; --accent:#58a6ff; --ok:#3fb950; --warn:#d29922;
-    --err:#f85149; --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+    --bg:#070b12; --bg2:#0b1119; --panel:#10172180; --panel-solid:#101721;
+    --border:#1e2937; --border2:#2a3a4d; --fg:#e6edf6; --muted:#7d8da3;
+    --dim:#56657c; --accent:#4aa8ff; --accent2:#7c5cff;
+    --ok:#34d399; --warn:#fbbf24; --err:#f87171;
+    --mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
   }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
-  header { display:flex; align-items:baseline; gap:16px; padding:12px 20px;
-           border-bottom:1px solid var(--border); background:var(--panel); }
-  header h1 { font-size:16px; margin:0; font-weight:600; }
-  header .sub { color:var(--muted); font-size:12px; }
-  #status { margin-left:auto; font-size:12px; }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%;
-         margin-right:6px; vertical-align:middle; }
-  .dot.on { background:var(--ok); } .dot.off { background:var(--err); }
-  .grid { display:grid; gap:14px; padding:18px;
-          grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); }
-  .panel { background:var(--panel); border:1px solid var(--border);
-           border-radius:8px; padding:14px 16px; }
-  .panel h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase;
-              letter-spacing:.05em; color:var(--accent); }
-  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px;
-        font-size:13px; }
-  .kv dt { color:var(--muted); white-space:nowrap; }
-  .kv dd { margin:0; font-family:var(--mono); word-break:break-all; }
-  .pill { display:inline-block; padding:1px 8px; border-radius:10px;
-          font-size:11px; font-family:var(--mono); }
-  .pill.ok { background:rgba(63,185,80,.15); color:var(--ok); }
-  .pill.warn { background:rgba(210,153,34,.15); color:var(--warn); }
-  .pill.err { background:rgba(248,81,73,.15); color:var(--err); }
-  .mono { font-family:var(--mono); }
+  html,body { margin:0; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 12% -10%, #12305522, transparent 60%),
+      radial-gradient(1000px 500px at 100% 0%, #2a1a5522, transparent 55%),
+      var(--bg);
+    color:var(--fg); font:16px/1.55 var(--sans);
+    -webkit-font-smoothing:antialiased; min-height:100vh;
+    padding-bottom:32px;
+  }
+  /* ── header ── */
+  header {
+    display:flex; align-items:center; gap:18px;
+    padding:20px 30px; border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#0b111b 0%, #070b1200 100%);
+    position:sticky; top:0; z-index:5; backdrop-filter:blur(8px);
+  }
+  .brand { display:flex; align-items:baseline; gap:12px; }
+  .brand h1 {
+    margin:0; font-size:26px; font-weight:800; letter-spacing:-.02em;
+    background:linear-gradient(90deg,#fff,#9fc7ff 60%,#b9a6ff);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .brand .tag { font-size:14px; color:var(--muted); font-weight:600;
+                text-transform:uppercase; letter-spacing:.18em; }
+  .nv { font-family:var(--mono); font-size:12.5px; color:var(--dim);
+        padding:3px 10px; border:1px solid var(--border); border-radius:8px; }
+  .right { margin-left:auto; display:flex; align-items:center; gap:18px; }
+  .clock { font-family:var(--mono); font-size:15px; color:var(--muted);
+           font-variant-numeric:tabular-nums; }
+  #status { display:flex; align-items:center; gap:9px; font-size:14px;
+            color:var(--muted); font-weight:600; }
+  .dot { width:11px; height:11px; border-radius:50%; }
+  .dot.on  { background:var(--ok);  box-shadow:0 0 0 0 #34d39966;
+             animation:pulse 1.8s infinite; }
+  .dot.off { background:var(--err); box-shadow:0 0 8px #f8717188; }
+  @keyframes pulse { 70%{box-shadow:0 0 0 9px #34d39900;} 100%{box-shadow:0 0 0 0 #34d39900;} }
+
+  /* ── hero metrics ── */
+  .hero { display:grid; gap:16px; padding:26px 30px 6px;
+          grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
+  .stat {
+    background:linear-gradient(180deg,#121b28cc,#0c121bcc);
+    border:1px solid var(--border); border-radius:16px; padding:18px 20px;
+    position:relative; overflow:hidden;
+  }
+  .stat::before { content:""; position:absolute; inset:0 auto 0 0; width:4px;
+                  background:var(--accent); opacity:.85; }
+  .stat.accent2::before { background:var(--accent2); }
+  .stat.ok::before { background:var(--ok); }
+  .stat.warn::before { background:var(--warn); }
+  .stat.err::before { background:var(--err); }
+  .stat .label { font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+                 color:var(--dim); font-weight:700; }
+  .stat .val { font-size:42px; font-weight:800; line-height:1.05; margin-top:8px;
+               font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+  .stat .val.mono { font-family:var(--mono); font-size:30px; }
+  .stat .sub { font-size:13px; color:var(--muted); margin-top:5px;
+               font-family:var(--mono); }
+  .stat .val.ok{color:var(--ok);} .stat .val.warn{color:var(--warn);}
+  .stat .val.err{color:var(--err);} .stat .val.accent{color:var(--accent);}
+
+  /* ── panels ── */
+  .grid { display:grid; gap:18px; padding:18px 30px;
+          grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); }
+  .panel {
+    background:linear-gradient(180deg,#0e1622cc,#0a0f17cc);
+    border:1px solid var(--border); border-radius:16px; padding:20px 22px;
+    box-shadow:0 8px 30px #00000040;
+  }
+  .panel h2 { margin:0 0 16px; font-size:13px; text-transform:uppercase;
+              letter-spacing:.16em; color:var(--accent); font-weight:700;
+              display:flex; align-items:center; gap:9px; }
+  .panel h2::before { content:""; width:7px; height:7px; border-radius:2px;
+                      background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:11px 18px;
+        font-size:15px; align-items:baseline; }
+  .kv dt { color:var(--muted); white-space:nowrap; font-weight:500; }
+  .kv dd { margin:0; font-family:var(--mono); word-break:break-all;
+           text-align:right; }
+  .pill { display:inline-block; padding:3px 11px; border-radius:999px;
+          font-size:12.5px; font-family:var(--mono); font-weight:600;
+          border:1px solid transparent; }
+  .pill.ok   { background:#34d39920; color:var(--ok);   border-color:#34d39940; }
+  .pill.warn { background:#fbbf2420; color:var(--warn); border-color:#fbbf2440; }
+  .pill.err  { background:#f8717120; color:var(--err);  border-color:#f8717140; }
+  .pill.neutral { background:#4aa8ff18; color:var(--accent); border-color:#4aa8ff35; }
   .muted { color:var(--muted); }
-  table { width:100%; border-collapse:collapse; font-size:12px;
+
+  table { width:100%; border-collapse:collapse; font-size:13.5px;
           font-family:var(--mono); }
-  th,td { text-align:left; padding:3px 6px; border-bottom:1px solid var(--border); }
-  th { color:var(--muted); font-weight:500; }
-  tr.missed td { color:var(--warn); }
-  .peers { max-height:180px; overflow:auto; }
-  .bar { height:6px; background:var(--border); border-radius:3px;
-         overflow:hidden; margin-top:4px; }
-  .bar > span { display:block; height:100%; background:var(--accent); }
+  th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--border); }
+  th { color:var(--dim); font-weight:600; text-transform:uppercase;
+       font-size:11px; letter-spacing:.08em; }
+  tbody tr:last-child td { border-bottom:none; }
+  tr.missed td { color:var(--warn); opacity:.85; }
+  td.r, th.r { text-align:right; }
+  .scroll { max-height:230px; overflow:auto; margin:-2px; padding:2px; }
+  .scroll::-webkit-scrollbar { width:8px; }
+  .scroll::-webkit-scrollbar-thumb { background:var(--border2); border-radius:4px; }
+
+  /* slot-timing bar */
+  .timing { margin-bottom:18px; }
+  .timing .row { display:flex; justify-content:space-between; font-size:13px;
+                 color:var(--muted); margin-bottom:7px; font-family:var(--mono); }
+  .bar { height:12px; background:#0a1019; border:1px solid var(--border);
+         border-radius:7px; overflow:hidden; }
+  .bar > span { display:block; height:100%;
+                background:linear-gradient(90deg,var(--accent),var(--accent2));
+                transition:width .4s ease; box-shadow:0 0 12px #4aa8ff66; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Pharos devnet</h1>
-  <span class="sub" id="node-version"></span>
-  <span id="status"></span>
+  <div class="brand"><h1>Pharos</h1><span class="tag">devnet</span></div>
+  <span class="nv" id="node-version"></span>
+  <div class="right">
+    <span class="clock" id="clock"></span>
+    <span id="status"><span class="dot off"></span>connecting…</span>
+  </div>
 </header>
+
+<div class="hero" id="hero"></div>
+
 <div class="grid">
-  <section class="panel"><h2>Chain status</h2><div id="chain"></div></section>
+  <section class="panel"><h2>Chain</h2><div id="chain"></div></section>
   <section class="panel"><h2>Sync &amp; peers</h2><div id="sync"></div></section>
   <section class="panel"><h2>Validator activity</h2><div id="validator"></div></section>
   <section class="panel"><h2>Execution layer</h2><div id="execution"></div></section>
 </div>
+
 <script>
 const $ = id => document.getElementById(id);
-function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-function short(h){ if(!h) return '—'; return h.length>14 ? h.slice(0,10)+'…'+h.slice(-6) : h; }
-function cp(c){ return c ? `epoch ${esc(c.epoch)} · <span class="muted">${short(c.root)}</span>` : '—'; }
-function kv(rows){
-  return '<dl class="kv">'+rows.map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('')+'</dl>';
+const esc = s => String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const short = h => !h ? '—' : (h.length>16 ? h.slice(0,10)+'…'+h.slice(-6) : h);
+const pill = (t,c) => `<span class="pill ${c}">${esc(t)}</span>`;
+const cp = c => c ? `<span class="muted">ep</span> ${esc(c.epoch)} · ${short(c.root)}` : '—';
+const num = n => (n===undefined||n===null) ? '—'
+                 : Number(n).toLocaleString('en-US');
+const kv = rows => '<dl class="kv">'+rows.map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('')+'</dl>';
+function stat(label,val,cls,sub){
+  return `<div class="stat ${cls||''}"><div class="label">${label}</div>`+
+         `<div class="val ${cls||''}">${val}</div>`+
+         (sub?`<div class="sub">${sub}</div>`:'')+`</div>`;
 }
-function pill(text,cls){ return `<span class="pill ${cls}">${esc(text)}</span>`; }
 
 function render(s){
-  // status line
   if(!s.online){
-    $('status').innerHTML = '<span class="dot off"></span>offline';
-    $('chain').innerHTML = $('sync').innerHTML = $('validator').innerHTML =
-      $('execution').innerHTML = '<span class="muted">node unreachable…</span>';
+    $('status').innerHTML = '<span class="dot off"></span>node offline';
+    $('hero').innerHTML = '';
+    for(const id of ['chain','sync','validator','execution'])
+      $(id).innerHTML = '<span class="muted">waiting for pharos Beacon API…</span>';
     return;
   }
   const age = Math.max(0, Math.floor(Date.now()/1000) - s.ts);
-  $('status').innerHTML = `<span class="dot on"></span>live · updated ${age}s ago`;
+  $('status').innerHTML = `<span class="dot on"></span>live · ${age}s ago`;
   $('node-version').textContent = s.node_version || '';
 
-  // ── Chain status ──
-  const head = s.head || {};
+  const head = s.head || {}, fin = s.finality || {}, sy = s.syncing || {};
   const lag = s.wall_lag;
-  let lagPill = '—';
-  if(lag !== undefined){
-    const cls = lag<=0 ? 'ok' : (lag<=2 ? 'warn' : 'err');
-    lagPill = pill((lag<=0?'':'+')+lag+' slots', cls);
-  }
-  const fin = s.finality || {};
+  const lagCls = lag===undefined ? '' : (lag<=0?'ok':(lag<=2?'warn':'err'));
+  const lagTxt = lag===undefined ? '—' : ((lag<=0?'':'+')+lag);
+
+  // ── hero metrics ──
+  $('hero').innerHTML =
+    stat('Fork', s.fork? esc(s.fork.toUpperCase()):'—', 'accent') +
+    stat('Head slot', num(head.slot), '', `wall ${num(s.wall_slot)}`) +
+    stat('Epoch', num(s.epoch), 'accent2') +
+    stat('Wall lag', lagTxt, lagCls, lag===undefined?'':'slots behind tip') +
+    stat('Peers', num((s.peer_count||{}).connected), '',
+         (s.peers&&s.peers.length)?`${s.peers.length} listed`:'as reported');
+
+  // ── Chain ──
   $('chain').innerHTML = kv([
-    ['fork', s.fork ? pill(s.fork, 'ok') : '—'],
-    ['head slot', head.slot ?? '—'],
+    ['fork', s.fork ? pill(s.fork,'neutral') : '—'],
+    ['head slot', num(head.slot)],
     ['head root', `<span class="muted">${short(head.root)}</span>`],
-    ['epoch', s.epoch ?? '—'],
-    ['wall slot', s.wall_slot ?? '—'],
-    ['wall lag', lagPill],
+    ['parent root', `<span class="muted">${short(head.parent_root)}</span>`],
+    ['epoch', num(s.epoch)],
+    ['wall slot', num(s.wall_slot)],
+    ['wall lag', pill(lagTxt+' slots', lagCls||'neutral')],
     ['justified', cp(fin.current_justified)],
     ['finalized', cp(fin.finalized)],
   ]);
 
   // ── Sync & peers ──
-  const sy = s.syncing || {};
-  const pc = s.peer_count || {};
-  const optCls = sy.is_optimistic ? 'warn' : 'ok';
-  const syncCls = sy.is_syncing ? 'warn' : 'ok';
+  const b2 = v => pill(v?'true':'false', v?'warn':'ok');
   let html = kv([
-    ['syncing', pill(sy.is_syncing?'true':'false', syncCls)],
-    ['optimistic', pill(sy.is_optimistic?'true':'false', optCls)],
-    ['el_offline', pill(sy.el_offline?'true':'false', sy.el_offline?'err':'ok')],
-    ['sync distance', sy.sync_distance ?? '—'],
-    ['peers', `${pc.connected ?? 0} connected`],
+    ['syncing', b2(sy.is_syncing)],
+    ['optimistic', b2(sy.is_optimistic)],
+    ['el offline', pill(sy.el_offline?'true':'false', sy.el_offline?'err':'ok')],
+    ['sync distance', num(sy.sync_distance)],
+    ['connected', num((s.peer_count||{}).connected)],
   ]);
   const peers = s.peers || [];
   if(peers.length){
-    html += '<div class="peers"><table><tr><th>peer</th><th>state</th><th>dir</th></tr>';
-    for(const p of peers){
+    html += '<div class="scroll" style="margin-top:14px"><table><thead><tr>'+
+            '<th>peer</th><th>state</th><th>dir</th></tr></thead><tbody>';
+    for(const p of peers)
       html += `<tr><td>${short(p.peer_id)}</td><td>${esc(p.state||'?')}</td>`+
               `<td>${esc(p.direction||'?')}</td></tr>`;
-    }
-    html += '</table></div>';
+    html += '</tbody></table></div>';
+  } else {
+    html += '<p class="muted" style="margin:14px 0 0;font-size:13.5px">'+
+            'no peers listed by pharos API</p>';
   }
   $('sync').innerHTML = html;
 
   // ── Validator activity ──
-  let vhtml = '';
-  if(s.slot_into !== undefined && s.slot_into !== null && s.seconds_per_slot){
+  let v = '';
+  if(s.slot_into!=null && s.seconds_per_slot){
     const pct = Math.min(100, Math.round(100*s.slot_into/s.seconds_per_slot));
-    vhtml += kv([['slot timing', `t+${s.slot_into}s / ${s.seconds_per_slot}s`]]);
-    vhtml += `<div class="bar"><span style="width:${pct}%"></span></div>`;
+    v += `<div class="timing"><div class="row"><span>slot timing</span>`+
+         `<span>t+${s.slot_into}s / ${s.seconds_per_slot}s</span></div>`+
+         `<div class="bar"><span style="width:${pct}%"></span></div></div>`;
   }
   const rb = s.recent_blocks || [];
-  vhtml += '<table style="margin-top:10px"><tr><th>slot</th><th>proposer</th><th>root</th></tr>';
+  v += '<div class="scroll"><table><thead><tr><th>slot</th><th>proposer</th>'+
+       '<th class="r">root</th></tr></thead><tbody>';
   for(const b of rb){
-    if(b.missed){
-      vhtml += `<tr class="missed"><td>${b.slot}</td><td colspan="2">— missed —</td></tr>`;
-    } else {
-      vhtml += `<tr><td>${b.slot}</td><td>#${b.proposer_index}</td>`+
-               `<td class="muted">${short(b.root)}</td></tr>`;
-    }
+    v += b.missed
+      ? `<tr class="missed"><td>${b.slot}</td><td colspan="2">— missed —</td></tr>`
+      : `<tr><td>${b.slot}</td><td>#${b.proposer_index}</td>`+
+        `<td class="r muted">${short(b.root)}</td></tr>`;
   }
-  vhtml += '</table>';
-  $('validator').innerHTML = vhtml;
+  v += '</tbody></table></div>';
+  $('validator').innerHTML = v;
 
   // ── Execution layer (pharos's view) ──
   const el = s.execution;
   if(!el){
-    $('execution').innerHTML = '<span class="muted">pre-merge head — no execution payload</span>';
+    $('execution').innerHTML =
+      '<p class="muted">pre-merge head — no execution payload</p>';
   } else {
-    const optimistic = s.execution_optimistic;
-    const elRows = [
-      ['payload', optimistic ? pill('OPTIMISTIC (unverified)','warn')
-                             : pill('VALID','ok')],
-      ['block #', el.block_number ?? '—'],
+    const rows = [
+      ['payload', s.execution_optimistic
+        ? pill('OPTIMISTIC','warn') : pill('VALID','ok')],
+      ['block #', num(el.block_number)],
       ['block hash', `<span class="muted">${short(el.block_hash)}</span>`],
-      ['gas', `${el.gas_used ?? '?'} / ${el.gas_limit ?? '?'}`],
+      ['gas used', num(el.gas_used)],
+      ['gas limit', num(el.gas_limit)],
       ['fee recipient', `<span class="muted">${short(el.fee_recipient)}</span>`],
     ];
-    if(el.blob_count !== undefined) elRows.push(['blobs', el.blob_count]);
-    if(el.blob_gas_used !== undefined) elRows.push(['blob gas used', el.blob_gas_used]);
-    if(el.excess_blob_gas !== undefined) elRows.push(['excess blob gas', el.excess_blob_gas]);
-    $('execution').innerHTML = kv(elRows);
+    if(el.blob_count!==undefined)    rows.push(['blobs', el.blob_count]);
+    if(el.blob_gas_used!==undefined) rows.push(['blob gas used', num(el.blob_gas_used)]);
+    if(el.excess_blob_gas!==undefined) rows.push(['excess blob gas', num(el.excess_blob_gas)]);
+    $('execution').innerHTML = kv(rows);
   }
 }
 
-async function tick(){
-  try {
-    const r = await fetch('/data', {cache:'no-store'});
-    render(await r.json());
-  } catch(e){
-    $('status').innerHTML = '<span class="dot off"></span>dashboard fetch error';
-  }
+function clock(){
+  const d = new Date();
+  $('clock').textContent = d.toLocaleTimeString('en-GB');
 }
-tick();
-setInterval(tick, 1000);
+async function tick(){
+  try { render(await (await fetch('/data',{cache:'no-store'})).json()); }
+  catch(e){ $('status').innerHTML = '<span class="dot off"></span>fetch error'; }
+}
+clock(); setInterval(clock, 1000);
+tick();  setInterval(tick, 1000);
 </script>
 </body>
 </html>
@@ -436,6 +534,8 @@ def main():
     ap = argparse.ArgumentParser(description="Pharos devnet dashboard")
     ap.add_argument("--beacon", default="http://127.0.0.1:5053",
                     help="pharos Beacon API base URL (default: %(default)s)")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="bind address; pass 0.0.0.0 for LAN access (default: %(default)s)")
     ap.add_argument("--port", type=int, default=8080,
                     help="dashboard HTTP port (default: %(default)s)")
     ap.add_argument("--interval", type=float, default=2.0,
@@ -448,8 +548,8 @@ def main():
     t = threading.Thread(target=poller.run, daemon=True)
     t.start()
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(poller))
-    print(f"pharos devnet dashboard → http://127.0.0.1:{args.port}")
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(poller))
+    print(f"pharos devnet dashboard → http://{args.host}:{args.port}")
     print(f"  polling Beacon API at {args.beacon} every {args.interval}s")
     try:
         server.serve_forever()
