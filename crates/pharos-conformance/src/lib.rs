@@ -17,6 +17,7 @@ pub mod finality;
 pub mod fixture_walker;
 pub mod fixtures;
 pub mod fork_choice;
+pub mod fulu_kzg;
 pub mod genesis;
 pub mod kzg;
 pub mod light_client;
@@ -322,6 +323,9 @@ fn enumerate_row(
             preset,
             row_ordinal,
         )),
+
+        // ── fulu/kzg ──────────────────────────────────────────────────────────
+        ("fulu", "kzg", "-") => Some(fulu_kzg::enumerate_fulu_kzg(root, row_ordinal)),
 
         // ── not yet implemented / future placeholder ──────────────────────────
         // Returning None keeps the row as Row::placeholder in the report.

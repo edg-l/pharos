@@ -206,6 +206,7 @@ pub fn row_table() -> &'static [RowSpec] {
         // ── M13-Fulu ──────────────────────────────────────────────────────────
         r("fulu", "ssz_static", "mainnet"), // 131
         r("fulu", "ssz_static", "minimal"), // 132
+        r("fulu", "kzg", "-"),              // 133
     ];
     TABLE
 }
@@ -368,6 +369,7 @@ mod tests {
             // M13-Fulu
             ("fulu", "ssz_static", "mainnet"),
             ("fulu", "ssz_static", "minimal"),
+            ("fulu", "kzg", "-"),
         ];
 
         let table = row_table();
@@ -447,10 +449,9 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 134 (M13-Fulu Phase 1 replaced the single
-    /// `fulu/ssz_static/-` placeholder with per-preset mainnet+minimal rows).
+    /// Total row count is exactly 135 (fulu/kzg added after fulu/ssz_static rows).
     #[test]
-    fn row_count_is_134() {
-        assert_eq!(row_table().len(), 134);
+    fn row_count_is_135() {
+        assert_eq!(row_table().len(), 135);
     }
 }
