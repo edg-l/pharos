@@ -17,9 +17,10 @@ use std::sync::Arc;
 
 use pharos_network::{
     NetworkCommandSender,
-    rpc::types::{RpcRequest, RpcResponse},
+    rpc::types::{MAX_REQUEST_BLOB_SIDECARS, RpcRequest, RpcResponse},
 };
 use pharos_ssz::SszList;
+use pharos_types::deneb::{BlobIdentifier, BlobSidecar, BlobSidecarsByRootRequest};
 use pharos_types::{EthSpec, phase0::BeaconBlocksByRootRequest, phase0::primitives::Root};
 
 use crate::lookup::{LOOKUP_REQ_TIMEOUT, LookupBlockProvider, LookupError, MAX_LOOKUP_DEPTH};
@@ -76,6 +77,38 @@ where
 
         match self.cmd.request(peer, req, LOOKUP_REQ_TIMEOUT).await {
             Ok(RpcResponse::BlocksByRoot(blocks)) => Ok(blocks),
+            Ok(other) => Err(LookupError::Provider(format!(
+                "unexpected response variant: {other:?}"
+            ))),
+            Err(e) => Err(LookupError::Provider(format!(
+                "request to {peer:?} failed: {e}"
+            ))),
+        }
+    }
+
+    async fn blobs_by_root(
+        &self,
+        ids: Vec<BlobIdentifier>,
+    ) -> Result<Vec<BlobSidecar>, LookupError> {
+        // A by-root lookup of one block's sidecars is at most
+        // `MAX_BLOB_COMMITMENTS_PER_BLOCK` ids — well under
+        // `MAX_REQUEST_BLOB_SIDECARS`. Guard anyway so an over-long id list never
+        // exceeds the wire bound and earns a peer penalty.
+        if ids.len() as u64 > MAX_REQUEST_BLOB_SIDECARS {
+            return Err(LookupError::TooManyRoots);
+        }
+
+        let blob_ids = SszList::from_vec(ids).map_err(|_| LookupError::TooManyRoots)?;
+        let req = RpcRequest::BlobSidecarsByRoot(BlobSidecarsByRootRequest { blob_ids });
+
+        let peer = self
+            .peer_picker
+            .pick_highest_head_peer()
+            .await
+            .ok_or(LookupError::NoUsablePeers)?;
+
+        match self.cmd.request(peer, req, LOOKUP_REQ_TIMEOUT).await {
+            Ok(RpcResponse::BlobSidecars(sidecars)) => Ok(sidecars),
             Ok(other) => Err(LookupError::Provider(format!(
                 "unexpected response variant: {other:?}"
             ))),

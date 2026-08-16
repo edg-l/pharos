@@ -27,6 +27,8 @@ use tracing::{debug, warn};
 use pharos_fork_choice::Store as FcStore;
 use pharos_network::host::ForkContext as _;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
+use pharos_storage::Store as DbStore;
+use pharos_types::deneb::{BlobIdentifier, BlobSidecar};
 use pharos_types::{
     EthSpec,
     phase0::primitives::{ForkDigest, Root},
@@ -36,10 +38,10 @@ use crate::block_ingestion::{
     ReinjectBlock, decode_block_by_topic, encode_signed_block_as_gossip_bytes, extract_block_root,
     extract_parent_root, hold_future_block,
 };
-use crate::data_availability::NoopDataAvailabilityChecker;
+use crate::data_availability::{BlobAvailabilityChecker, NoopDataAvailabilityChecker};
 use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2};
 use crate::host_impl::HostImpl;
-use crate::import::ImportError;
+use crate::import::{ImportError, extract_blob_kzg_commitments};
 use crate::pending_blocks::{PendingBlocks, PendingEntry};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -132,6 +134,23 @@ pub trait LookupBlockProvider<E: EthSpec>: Send + Sync + 'static {
         &self,
         roots: Vec<Root>,
     ) -> impl std::future::Future<Output = Result<Vec<E::SignedBeaconBlock>, LookupError>> + Send;
+
+    /// Co-fetch blob sidecars for a Deneb-or-later block via `BlobSidecarsByRoot`.
+    ///
+    /// The lookup path runs the REAL `BlobAvailabilityChecker` against a Deneb+
+    /// block (the same DA gate the gossip/ingestion path uses); that checker reads
+    /// sidecars from the store, so the sidecars must be fetched and persisted
+    /// before the block is imported. This mirrors `blocks_by_root` and reuses the
+    /// same network handle, so no extra plumbing is threaded into the lookup loop.
+    ///
+    /// Returns whatever sidecars the chosen peer serves; the DA gate (not this
+    /// method) decides whether the set is complete. An empty result is a valid
+    /// answer (no sidecars served) and leaves the DA gate to return
+    /// `NotAvailable`.
+    fn blobs_by_root(
+        &self,
+        ids: Vec<BlobIdentifier>,
+    ) -> impl std::future::Future<Output = Result<Vec<BlobSidecar>, LookupError>> + Send;
 }
 
 // ── run_lookup_loop ───────────────────────────────────────────────────────────
@@ -222,6 +241,17 @@ where
     // STF can trigger live fork upgrades across a boundary (see block_ingestion).
     let cfg = fc_store.read().runtime_cfg.clone();
 
+    // Real DA checker for Deneb-or-later blocks fetched by root. Built once and
+    // shared across all imports: it reads the freshly co-fetched sidecars from
+    // the store and batch-verifies their KZG proofs, exactly as the gossip path
+    // does. Pre-Deneb (or empty-commitment) blocks bypass it via the Noop checker
+    // inside `try_import`.
+    let kzg_verifier = Arc::new(pharos_kzg::KzgVerifier::mainnet());
+    let da_checker = Arc::new(BlobAvailabilityChecker::<E>::new(
+        host.store_arc(),
+        kzg_verifier,
+    ));
+
     loop {
         tokio::select! {
             Some(req) = lookup_rx.recv() => {
@@ -250,6 +280,8 @@ where
                             debug!(%block_root, "lookup: parent known; importing directly");
                             match try_import(
                                 &signed_block,
+                                &provider,
+                                &da_checker,
                                 &fc_store,
                                 &execution_engine,
                                 &pow_provider,
@@ -263,6 +295,8 @@ where
                                 ImportAttempt::Imported => {
                                     drain_and_replay(
                                         block_root,
+                                        &provider,
+                                        &da_checker,
                                         &pending,
                                         &host,
                                         &fc_store,
@@ -298,6 +332,7 @@ where
                             fetch_and_walk(
                                 parent_root,
                                 &provider,
+                                &da_checker,
                                 &pending,
                                 &host,
                                 &fc_store,
@@ -316,6 +351,8 @@ where
                     LookupRequest::ParentImported { root } => {
                         drain_and_replay(
                             root,
+                            &provider,
+                            &da_checker,
                             &pending,
                             &host,
                             &fc_store,
@@ -352,8 +389,10 @@ where
 /// all cases (errors are logged at warn). Lookup does not publish LC updates —
 /// that is ingestion-only (catch-up path).
 #[allow(clippy::too_many_arguments)]
-async fn try_import<E, EE, PP>(
+async fn try_import<E, P, EE, PP>(
     signed_block: &E::SignedBeaconBlock,
+    provider: &P,
+    da_checker: &Arc<BlobAvailabilityChecker<E>>,
     fc_store: &Arc<RwLock<FcStore<E>>>,
     execution_engine: &Arc<EE>,
     pow_provider: &Arc<PP>,
@@ -364,6 +403,7 @@ async fn try_import<E, EE, PP>(
 ) -> ImportAttempt
 where
     E: EthSpec,
+    P: LookupBlockProvider<E>,
     EE: pharos_stf::ExecutionEngine + 'static,
     PP: pharos_fork_choice::PowBlockProvider + Send + Sync + 'static,
     E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + Clone,
@@ -409,16 +449,162 @@ where
         + pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::DenebSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::DenebBeaconBlock: pharos_types::views::BeaconBlockView,
+    <E::DenebBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
+        pharos_types::views::BeaconBlockBodyView,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
     E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
 {
-    // TODO(M10-Deneb): lookup-sync uses NoopDataAvailabilityChecker because it does
-    // not yet co-fetch BlobSidecarsByRoot alongside the block. Recent Deneb blocks
-    // fetched by root therefore bypass the DA gate. Before Deneb is live this path
-    // must co-fetch sidecars and use the real BlobAvailabilityChecker (see fork-choice.md on_block).
+    // Data-availability gate selection. A Deneb-or-later block that carries blob
+    // commitments must clear the REAL DA gate (the same `BlobAvailabilityChecker`
+    // the gossip/ingestion path uses) — fork-choice must not accept and advance
+    // head on a block whose blobs are unavailable. Unlike the gossip path, the
+    // lookup path has no concurrent blob-gossip stream for these by-root blocks,
+    // so we co-fetch the sidecars over `BlobSidecarsByRoot` and persist them
+    // before importing; the checker then reads them back from the store.
+    //
+    // Pre-Deneb blocks (and empty-commitment Deneb+ blocks) carry no blobs;
+    // `extract_blob_kzg_commitments` returns an empty slice for them and the
+    // Noop checker (which returns `Irrelevant`) is used unchanged.
+    let kzg_commitments = extract_blob_kzg_commitments::<E>(signed_block);
+
+    if !kzg_commitments.is_empty() {
+        let block_root = extract_block_root::<E>(signed_block);
+
+        // Co-fetch the block's blob sidecars by root, then persist each so the
+        // `BlobAvailabilityChecker` finds them. Best-effort: a peer that serves
+        // fewer than the expected sidecars leaves the DA gate to return
+        // `NotAvailable`, which surfaces below as a (non-walking) rejection.
+        let ids: Vec<BlobIdentifier> = (0..kzg_commitments.len() as u64)
+            .map(|index| BlobIdentifier { block_root, index })
+            .collect();
+        match provider.blobs_by_root(ids).await {
+            Ok(sidecars) => {
+                let store = host.store_arc();
+                for sidecar in &sidecars {
+                    if let Err(e) = <pharos_storage::RocksStore as DbStore<E>>::put_blob_sidecar(
+                        &store,
+                        block_root,
+                        sidecar.index,
+                        sidecar,
+                    ) {
+                        warn!(%block_root, index = sidecar.index, error = %e, "lookup: blob sidecar persist failed");
+                    }
+                }
+            }
+            Err(e) => {
+                // Sidecar fetch failed entirely; the DA gate will see no stored
+                // sidecars and return NotAvailable (block not imported).
+                warn!(%block_root, error = %e, "lookup: BlobSidecarsByRoot fetch failed; DA gate will reject");
+            }
+        }
+
+        return run_import::<E, EE, PP, BlobAvailabilityChecker<E>>(
+            signed_block,
+            da_checker,
+            fc_store,
+            execution_engine,
+            pow_provider,
+            payload_tx,
+            cfg,
+            host,
+            head_tx,
+        )
+        .await;
+    }
+
+    // Pre-Deneb (or empty-commitment) block: no blobs to verify. The Noop checker
+    // returns `Irrelevant`, matching the gossip path's treatment of such blocks.
     let noop_da = Arc::new(NoopDataAvailabilityChecker);
-    match crate::import::import_block::<E, EE, PP, NoopDataAvailabilityChecker>(
+    run_import::<E, EE, PP, NoopDataAvailabilityChecker>(
+        signed_block,
+        &noop_da,
+        fc_store,
+        execution_engine,
+        pow_provider,
+        payload_tx,
+        cfg,
+        host,
+        head_tx,
+    )
+    .await
+}
+
+/// Invoke `import_block` with the supplied DA checker and map its result onto an
+/// `ImportAttempt`. Shared by `try_import`'s Deneb+ and pre-Deneb arms so the
+/// outcome handling (head-change publish, missing-parent / future-slot / reject
+/// classification) lives in exactly one place.
+#[allow(clippy::too_many_arguments)]
+async fn run_import<E, EE, PP, DA>(
+    signed_block: &E::SignedBeaconBlock,
+    da_checker: &Arc<DA>,
+    fc_store: &Arc<RwLock<FcStore<E>>>,
+    execution_engine: &Arc<EE>,
+    pow_provider: &Arc<PP>,
+    payload_tx: &mpsc::Sender<NewPayloadRequest<E>>,
+    cfg: &pharos_types::config::RuntimeConfig,
+    host: &Arc<HostImpl<E>>,
+    head_tx: &watch::Sender<Option<HeadChange>>,
+) -> ImportAttempt
+where
+    E: EthSpec,
+    EE: pharos_stf::ExecutionEngine + 'static,
+    PP: pharos_fork_choice::PowBlockProvider + Send + Sync + 'static,
+    DA: crate::data_availability::DataAvailabilityChecker<E> + 'static,
+    E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + Clone,
+    E::BeaconBlock: pharos_types::views::BeaconBlockView + pharos_ssz::TreeHash + Clone,
+    E::SignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::BeaconBlock>
+        + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, EE>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, EE>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, EE>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, EE>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock:
+        pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
+    E::Phase0SignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::Phase0BeaconBlockBody: pharos_ssz::TreeHash
+        + pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    E::AltairBeaconBlock: pharos_types::views::BeaconBlockView + Clone,
+    E::AltairSignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::DenebSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::DenebBeaconBlock: pharos_types::views::BeaconBlockView,
+    E::ExecutionPayload: PayloadToWire,
+    E::CapellaExecutionPayload: PayloadToWireV2,
+    E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
+{
+    match crate::import::import_block::<E, EE, PP, DA>(
         signed_block,
         fc_store,
         execution_engine,
@@ -427,7 +613,7 @@ where
         true,
         cfg,
         &host.store_arc(),
-        &noop_da,
+        da_checker,
     )
     .await
     {
@@ -502,6 +688,7 @@ where
 async fn fetch_and_walk<E, P, EE, PP>(
     target_root: Root,
     provider: &P,
+    da_checker: &Arc<BlobAvailabilityChecker<E>>,
     pending: &Arc<PendingBlocks>,
     host: &Arc<HostImpl<E>>,
     fc_store: &Arc<RwLock<FcStore<E>>>,
@@ -564,6 +751,11 @@ async fn fetch_and_walk<E, P, EE, PP>(
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
         + pharos_ssz::Encode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::DenebSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::DenebBeaconBlock: pharos_types::views::BeaconBlockView,
+    <E::DenebBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
+        pharos_types::views::BeaconBlockBodyView,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
     E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
@@ -602,6 +794,8 @@ async fn fetch_and_walk<E, P, EE, PP>(
         // Try to import the fetched block.
         match try_import(
             fetched,
+            provider,
+            da_checker,
             fc_store,
             execution_engine,
             pow_provider,
@@ -617,6 +811,8 @@ async fn fetch_and_walk<E, P, EE, PP>(
                 debug!(%fetched_block_root, "lookup: fetched block imported; replaying children");
                 drain_and_replay(
                     fetched_block_root,
+                    provider,
+                    da_checker,
                     pending,
                     host,
                     fc_store,
@@ -703,8 +899,10 @@ async fn fetch_and_walk<E, P, EE, PP>(
 /// `pending.drain_children(r)` acquires and releases the mutex in one
 /// synchronous call.  No guard is held across any `.await` below.
 #[allow(clippy::too_many_arguments)]
-async fn drain_and_replay<E, EE, PP>(
+async fn drain_and_replay<E, P, EE, PP>(
     root: Root,
+    provider: &P,
+    da_checker: &Arc<BlobAvailabilityChecker<E>>,
     pending: &Arc<PendingBlocks>,
     host: &Arc<HostImpl<E>>,
     fc_store: &Arc<RwLock<FcStore<E>>>,
@@ -716,6 +914,7 @@ async fn drain_and_replay<E, EE, PP>(
     reinject_tx: &mpsc::Sender<ReinjectBlock>,
 ) where
     E: EthSpec,
+    P: LookupBlockProvider<E>,
     EE: pharos_stf::ExecutionEngine + 'static,
     PP: pharos_fork_choice::PowBlockProvider + Send + Sync + 'static,
     E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + Clone,
@@ -761,6 +960,11 @@ async fn drain_and_replay<E, EE, PP>(
         + pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::DenebSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::DenebBeaconBlock: pharos_types::views::BeaconBlockView,
+    <E::DenebBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
+        pharos_types::views::BeaconBlockBodyView,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
     E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
@@ -795,6 +999,8 @@ async fn drain_and_replay<E, EE, PP>(
             // Import.  No guard held here — try_import is .await-able.
             match try_import(
                 &signed_block,
+                provider,
+                da_checker,
                 fc_store,
                 execution_engine,
                 pow_provider,

@@ -72,6 +72,8 @@ use pharos_node::data_availability::{DataAvailabilityChecker, DataAvailabilityVe
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::host_impl::HostImpl;
 use pharos_node::import::import_block;
+use pharos_node::lookup::{LookupBlockProvider, LookupError, LookupRequest, run_lookup_loop};
+use pharos_node::pending_blocks::PendingBlocks;
 use pharos_node::pow_block::EnginePowBlockProvider;
 
 mod common;
@@ -715,4 +717,207 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
     // (c) Reaching here without panics / timeout proves no crash.
     drop(head_tx);
     drop(payload_tx);
+}
+
+// ── Lookup-path DA gate ─────────────────────────────────────────────────────────
+
+/// Fixture `LookupBlockProvider` for the lookup-path DA test.
+///
+/// `blocks_by_root` is never called (the test drives the direct-import path:
+/// the orphan's parent is already in the store). `blobs_by_root` records that
+/// it was invoked and returns whatever sidecar set it was seeded with — empty
+/// in this test, so the real `BlobAvailabilityChecker` sees no sidecars and
+/// returns `NotAvailable`.
+#[derive(Clone)]
+struct BlobRecordingProvider {
+    blobs_called: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl LookupBlockProvider<MinimalEthSpec> for BlobRecordingProvider {
+    async fn blocks_by_root(
+        &self,
+        _roots: Vec<Root>,
+    ) -> Result<Vec<MinForkSignedBlock>, LookupError> {
+        Err(LookupError::NoUsablePeers)
+    }
+
+    async fn blobs_by_root(
+        &self,
+        _ids: Vec<pharos_types::deneb::BlobIdentifier>,
+    ) -> Result<Vec<pharos_types::deneb::BlobSidecar>, LookupError> {
+        self.blobs_called
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Serve no sidecars: the DA gate must reject (block not imported).
+        Ok(Vec::new())
+    }
+}
+
+/// Lookup-sync must run the REAL DA gate for a Deneb block fetched by root.
+///
+/// A Deneb block carrying a blob commitment, imported through the lookup
+/// direct-import path, must co-fetch its sidecars via `BlobSidecarsByRoot` and
+/// run `BlobAvailabilityChecker`. With no sidecars served the DA gate returns
+/// `NotAvailable`, so the block must NOT be imported (head stays at the anchor).
+/// Before the fix the lookup path used `NoopDataAvailabilityChecker`, which
+/// would have imported this blob-less block unconditionally — a consensus hole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lookup_runs_real_da_gate_for_deneb_block() {
+    use pharos_network::host::ForkContext as _;
+    use pharos_network::topics::{GossipTopic, GossipTopicKind};
+    use pharos_network::types::Fork as NetworkFork;
+    use pharos_ssz::Encode as _;
+
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // Capella anchor + deneb-at-epoch-1 runtime config (mirrors the V3 test).
+    let genesis_time = 0u64;
+    let (_state_inner, anchor_signed, fork_state) = build_capella_anchor(genesis_time);
+    let anchor_block = pharos_types::state::BeaconBlock::Capella(anchor_signed.message.clone());
+    let anchor_root: Root = anchor_block.tree_hash_root();
+
+    let mut fc = get_forkchoice_store::<MinimalEthSpec>(fork_state.clone(), anchor_block);
+    fc.time = 10_000_000;
+    fc.set_terminal_config(
+        pharos_utils::Uint256::ZERO,
+        Hash256::from_array(TERMINAL_HASH),
+        0,
+    );
+    let runtime_cfg = RuntimeConfig {
+        altair_fork_epoch: 0,
+        altair_fork_version: MinimalEthSpec::ALTAIR_FORK_VERSION,
+        bellatrix_fork_epoch: 0,
+        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        capella_fork_epoch: 0,
+        capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+        deneb_fork_epoch: DENEB_FORK_EPOCH,
+        deneb_fork_version: [0x04, 0x00, 0x00, 0x01],
+        ..RuntimeConfig::default()
+    };
+    fc.runtime_cfg = runtime_cfg.clone();
+    fc.set_fork_epochs(
+        runtime_cfg.altair_fork_epoch,
+        runtime_cfg.bellatrix_fork_epoch,
+        runtime_cfg.capella_fork_epoch,
+    );
+    let fc = Arc::new(RwLock::new(fc));
+
+    // Deneb block carrying one blob commitment; its parent is the anchor (in store).
+    let (deneb_signed, deneb_block_root) = build_deneb_block(fork_state, anchor_root, &runtime_cfg);
+
+    // Host + store (no engine: DA rejects before the STF, so the engine is never hit).
+    let tmpdir = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            path: tmpdir.path().join("chain_db"),
+            create_if_missing: true,
+        })
+        .unwrap(),
+    );
+    let genesis_validators_root = Root::default();
+    let fork_schedule = ForkSchedule {
+        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        altair_fork_epoch: UtilsEpoch(0),
+        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_epoch: UtilsEpoch(0),
+        capella_fork_version: Version::from_array(MinimalEthSpec::CAPELLA_FORK_VERSION),
+        capella_fork_epoch: UtilsEpoch(0),
+        deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x01]),
+        deneb_fork_epoch: UtilsEpoch(DENEB_FORK_EPOCH),
+        electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x01]),
+        electra_fork_epoch: UtilsEpoch(u64::MAX),
+        genesis_validators_root,
+    };
+    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+        Arc::clone(&store),
+        Arc::clone(&fc),
+        genesis_validators_root,
+        fork_schedule,
+        genesis_time,
+        Arc::new(runtime_cfg.clone()),
+    ));
+
+    // Channels for run_lookup_loop.
+    let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (lookup_tx, lookup_rx) = mpsc::channel::<LookupRequest>(64);
+    let (reinject_tx, _reinject_rx) =
+        mpsc::channel::<pharos_node::block_ingestion::ReinjectBlock>(64);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let pending = Arc::new(PendingBlocks::default());
+    let notify_backfill = Arc::new(tokio::sync::Notify::new());
+    let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
+    let exec_engine = Arc::new(NullExecutionEngine);
+
+    let blobs_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let provider = BlobRecordingProvider {
+        blobs_called: Arc::clone(&blobs_called),
+    };
+
+    let fc_for_assert = Arc::clone(&fc);
+
+    let loop_handle = tokio::spawn(run_lookup_loop::<
+        MinimalEthSpec,
+        BlobRecordingProvider,
+        NullExecutionEngine,
+        pharos_fork_choice::NoopPowBlockProvider,
+    >(
+        lookup_rx,
+        provider,
+        Arc::clone(&host),
+        Arc::clone(&fc),
+        exec_engine,
+        pow_provider,
+        head_tx,
+        payload_tx,
+        Arc::clone(&pending),
+        Arc::clone(&notify_backfill),
+        reinject_tx,
+        shutdown_rx,
+    ));
+
+    // Encode the deneb block as raw inner SSZ (as gossip carries it) and send it
+    // as an UnknownParent orphan under the deneb fork digest.
+    let deneb_ssz = match &deneb_signed {
+        ForkSignedBeaconBlock::Deneb(inner) => inner.as_ssz_bytes(),
+        _ => unreachable!("build_deneb_block always yields a Deneb block"),
+    };
+    let topic = GossipTopic {
+        fork_digest: host.fork_digest_for(NetworkFork::Deneb),
+        kind: GossipTopicKind::BeaconBlock,
+    };
+    lookup_tx
+        .send(LookupRequest::UnknownParent {
+            topic,
+            peer: libp2p::PeerId::random(),
+            data: deneb_ssz,
+        })
+        .await
+        .unwrap();
+
+    // Wait until the provider's blobs_by_root was invoked (co-fetch wired in).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !blobs_called.load(std::sync::atomic::Ordering::SeqCst) {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timeout: lookup never co-fetched blob sidecars for the deneb block");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // Give the import a moment to (not) complete, then assert head is unchanged:
+    // the DA gate returned NotAvailable, so the deneb block was NOT imported.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let head = get_head::<MinimalEthSpec>(&fc_for_assert.read());
+    assert_eq!(
+        head, anchor_root,
+        "deneb block with unavailable blobs must NOT be imported via lookup"
+    );
+    assert_ne!(
+        head, deneb_block_root,
+        "head must not advance to the blob-unavailable deneb block"
+    );
+
+    let _ = shutdown_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(5), loop_handle).await;
 }

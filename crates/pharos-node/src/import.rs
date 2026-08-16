@@ -126,7 +126,10 @@ pub struct ImportOutcome<E: EthSpec> {
 /// no fork-dispatch.  Pre-Deneb blocks return an empty `Vec` (DA is Irrelevant).
 ///
 /// Uses `BeaconBlockBodyView::blob_kzg_commitments_slice()` — a default-empty
-/// method on the trait; the Deneb body overrides it to return the real slice.
+/// method on the trait; the Deneb and Electra bodies override it to return the
+/// real slice. BOTH blob-carrying forks must be unwrapped here: an Electra block
+/// whose commitments were read as empty would silently bypass the DA gate on the
+/// live fork.
 pub(crate) fn extract_blob_kzg_commitments<E: EthSpec>(
     signed_block: &E::SignedBeaconBlock,
 ) -> Vec<KZGCommitment>
@@ -136,11 +139,18 @@ where
     E::DenebBeaconBlock: pharos_types::views::BeaconBlockView,
     <E::DenebBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
         pharos_types::views::BeaconBlockBodyView,
+    E::ElectraSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::ElectraBeaconBlock>,
+    E::ElectraBeaconBlock: pharos_types::views::BeaconBlockView,
+    <E::ElectraBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
+        pharos_types::views::BeaconBlockBodyView,
 {
     use pharos_types::views::{
         BeaconBlockBodyView as _, BeaconBlockView as _, SignedBeaconBlockView as _,
     };
     if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
+        inner.message().body().blob_kzg_commitments_slice().to_vec()
+    } else if let Some(inner) = E::unwrap_electra_signed_block(signed_block) {
         inner.message().body().blob_kzg_commitments_slice().to_vec()
     } else {
         Vec::new()

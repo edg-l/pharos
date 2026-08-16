@@ -71,6 +71,15 @@ impl LookupBlockProvider<MinimalEthSpec> for MapLookupProvider {
             Ok(out)
         }
     }
+
+    async fn blobs_by_root(
+        &self,
+        _ids: Vec<pharos_types::deneb::BlobIdentifier>,
+    ) -> Result<Vec<pharos_types::deneb::BlobSidecar>, LookupError> {
+        // Bellatrix fixtures carry no blobs; the DA gate sees an empty commitment
+        // list and treats availability as Irrelevant, so this is never reached.
+        Ok(Vec::new())
+    }
 }
 
 // ── Test ──────────────────────────────────────────────────────────────────────
