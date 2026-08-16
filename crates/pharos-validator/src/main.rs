@@ -73,6 +73,25 @@ struct Args {
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     doppelganger_protection: bool,
 
+    /// Web3Signer (remote external signer) base URL, e.g.
+    /// `http://127.0.0.1:9000`.
+    ///
+    /// When set, validators whose pubkey is listed in `--signer-public-keys`
+    /// (or ALL loaded validators when `--signer-public-keys` is empty) delegate
+    /// signing to this remote signer instead of using their local keystore key.
+    /// Local slashing protection (`check_and_record_*`) still runs BEFORE every
+    /// remote signing request, exactly as for the local path.
+    #[arg(long, value_name = "URL")]
+    signer_url: Option<reqwest::Url>,
+
+    /// Pubkeys (0x-prefixed, repeatable) routed to the remote `--signer-url`.
+    ///
+    /// When `--signer-url` is set and this is empty, ALL loaded validators use
+    /// the remote signer. When non-empty, only the listed pubkeys are remote;
+    /// the rest use their local keystore key. Ignored without `--signer-url`.
+    #[arg(long, value_name = "PUBKEY", num_args = 0..)]
+    signer_public_keys: Vec<String>,
+
     /// Import a slashing protection interchange file (EIP-3076 JSON) at startup.
     ///
     /// The genesis_validators_root in the file must match the BN's genesis.
@@ -182,14 +201,39 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
 
+    // Lowercased remote-signer pubkey allow-list (empty + `--signer-url` set ⇒ all remote).
+    let remote_pubkeys: std::collections::HashSet<String> = args
+        .signer_public_keys
+        .iter()
+        .map(|p| p.to_lowercase())
+        .collect();
+    let route_all_remote = args.signer_url.is_some() && remote_pubkeys.is_empty();
+
     let mut validator_entries: Vec<ValidatorEntry> = Vec::new();
     for (pubkey_hex, secret_key) in loaded_keys {
         match index_by_pubkey.get(&pubkey_hex.to_lowercase()) {
-            Some(&index) => validator_entries.push(ValidatorEntry {
-                index,
-                pubkey_hex,
-                secret_key,
-            }),
+            Some(&index) => {
+                let use_remote = args.signer_url.is_some()
+                    && (route_all_remote || remote_pubkeys.contains(&pubkey_hex.to_lowercase()));
+                let signer: Arc<dyn pharos_validator::web3signer::Signer> = if use_remote {
+                    let url = args
+                        .signer_url
+                        .clone()
+                        .expect("signer_url present when use_remote");
+                    info!(pubkey = %pubkey_hex, "routing validator to remote Web3Signer");
+                    Arc::new(pharos_validator::web3signer::Web3RemoteSigner::new(
+                        url,
+                        pubkey_hex.clone(),
+                    ))
+                } else {
+                    Arc::new(pharos_validator::web3signer::LocalSigner::new(secret_key))
+                };
+                validator_entries.push(ValidatorEntry {
+                    index,
+                    pubkey_hex,
+                    signer,
+                });
+            }
             None => warn!(
                 pubkey = %pubkey_hex,
                 "validator has no on-chain index (not yet deposited/activated?); excluding from duties"

@@ -33,6 +33,7 @@ use crate::bn_client::{
     SignedAggregateAndProofDto, SignedContributionAndProofDto, SyncCommitteeSubscription,
 };
 
+use crate::bn_client::AttestationDataDto;
 use crate::duties::SharedDuties;
 use crate::signing::{
     ForkContext, bls_signature_from_hex, root_from_hex, sign_aggregate_and_proof, sign_attestation,
@@ -40,6 +41,7 @@ use crate::signing::{
     sign_sync_committee_message, sign_sync_committee_selection_proof,
 };
 use crate::slashing::SlashingProtection;
+use crate::web3signer::Signer;
 use pharos_ssz::Decode as _;
 use pharos_ssz::{Bitlist, Bitvector};
 use pharos_types::altair::{
@@ -51,9 +53,6 @@ use pharos_types::electra::{
 use pharos_types::phase0::misc::{AttestationData, Checkpoint};
 use pharos_types::phase0::primitives::{CommitteeIndex, Epoch, Root, Slot, ValidatorIndex};
 use pharos_types::phase0::{MainnetAggregateAndProof, MainnetAttestation};
-use pharos_utils::bls::BLSSecretKey;
-
-use crate::bn_client::AttestationDataDto;
 
 /// Convert a wire `AttestationDataDto` (hex/decimal strings) into the typed
 /// `AttestationData` SSZ container, so callers can sign over its real
@@ -79,6 +78,45 @@ fn att_data_from_dto(dto: &AttestationDataDto) -> AttestationData {
 /// yields an empty vec (an SSZ decode of which fails cleanly).
 fn bytes_from_hex(s: &str) -> Vec<u8> {
     hex::decode(s.strip_prefix("0x").unwrap_or(s)).unwrap_or_default()
+}
+
+/// Build the Web3Signer `BLOCK_V2` `beacon_block` payload (`{version, block_header}`)
+/// from the decoded typed beacon block.
+///
+/// Used only by the remote-signer path's optional slashing plugin; the
+/// `signing_root` Pharos sends alongside is the authoritative BLS message.
+fn block_v2_payload(
+    block: &pharos_types::state::MainnetBeaconBlock,
+    version: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    use pharos_ssz::TreeHash;
+    use pharos_types::BeaconBlockView;
+    use pharos_types::state::BeaconBlock;
+
+    // `BeaconBlockView::body()` is unimplemented on the fork-enum; the body root
+    // must be taken from the inner concrete variant.
+    let body_root = match block {
+        BeaconBlock::Phase0(b) => b.body.tree_hash_root(),
+        BeaconBlock::Altair(b) => b.body.tree_hash_root(),
+        BeaconBlock::Bellatrix(b) => b.body.tree_hash_root(),
+        BeaconBlock::Capella(b) => b.body.tree_hash_root(),
+        BeaconBlock::Deneb(b) => b.body.tree_hash_root(),
+        BeaconBlock::Electra(b) => b.body.tree_hash_root(),
+    };
+    let version_str = version
+        .and_then(|v| v.as_str())
+        .unwrap_or("bellatrix")
+        .to_uppercase();
+    json!({
+        "version": version_str,
+        "block_header": {
+            "slot": block.slot().0.to_string(),
+            "proposer_index": block.proposer_index().0.to_string(),
+            "parent_root": format!("0x{}", hex::encode(block.parent_root().as_slice())),
+            "state_root": format!("0x{}", hex::encode(block.state_root().as_slice())),
+            "body_root": format!("0x{}", hex::encode(body_root.as_slice())),
+        }
+    })
 }
 
 // ── is_aggregator ─────────────────────────────────────────────────────────────
@@ -110,11 +148,15 @@ pub fn is_sync_committee_aggregator(selection_proof_sig: &[u8]) -> bool {
 
 // ── ValidatorEntry ────────────────────────────────────────────────────────────
 
-/// A loaded validator key with its index and pubkey.
+/// A loaded validator with its index, pubkey, and signer.
+///
+/// The `signer` is either a [`crate::web3signer::LocalSigner`] (decrypted
+/// EIP-2335 keystore) or a [`crate::web3signer::Web3RemoteSigner`] (remote
+/// Web3Signer), selected per pubkey by the presence of `--signer-url`.
 pub struct ValidatorEntry {
     pub index: u64,
     pub pubkey_hex: String,
-    pub secret_key: BLSSecretKey,
+    pub signer: Arc<dyn Signer>,
 }
 
 // ── VcConfig ─────────────────────────────────────────────────────────────────
@@ -191,7 +233,13 @@ pub async fn run_proposer(
     info!(slot, validator = %entry.pubkey_hex, "proposer slot: building block");
 
     // Step 1: RANDAO reveal.
-    let randao_sig = sign_randao_reveal(&entry.secret_key, epoch, fork);
+    let randao_sig = match sign_randao_reveal(&*entry.signer, epoch, fork).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(slot, %e, "RANDAO reveal signing failed; skipping slot");
+            return;
+        }
+    };
     let randao_hex = format!("0x{}", hex::encode(randao_sig.as_ref()));
 
     // Step 2: Produce block (503 → skip).
@@ -236,14 +284,21 @@ pub async fn run_proposer(
             return;
         }
     };
+    // Web3Signer `BLOCK_V2` payload: `{version, block_header}`. The `signing_root`
+    // Pharos computes is authoritative; this payload feeds the signer's optional
+    // slashing plugin (the body root is the typed block's body `tree_hash_root`).
+    let block_payload = block_v2_payload(&beacon_block, block_json.get("version"));
     let block_sig = match sign_beacon_block(
-        &entry.secret_key,
+        &*entry.signer,
         &entry.pubkey_hex,
         &beacon_block,
         slot,
         fork,
         slashing_db,
-    ) {
+        block_payload,
+    )
+    .await
+    {
         Ok(s) => s,
         Err(e) => {
             error!(slot, %e, "block signing rejected by slashing protection; skipping");
@@ -335,16 +390,35 @@ pub async fn run_attester(
     }
     let att_hash = typed_att.tree_hash_root();
 
+    // Web3Signer `attestation` payload (the `AttestationData`); authoritative
+    // BLS message is the `signing_root` Pharos computes from `typed_att`.
+    let att_payload = json!({
+        "slot": typed_att.slot.0.to_string(),
+        "index": typed_att.index.0.to_string(),
+        "beacon_block_root": format!("0x{}", hex::encode(typed_att.beacon_block_root.as_slice())),
+        "source": {
+            "epoch": typed_att.source.epoch.0.to_string(),
+            "root": format!("0x{}", hex::encode(typed_att.source.root.as_slice())),
+        },
+        "target": {
+            "epoch": typed_att.target.epoch.0.to_string(),
+            "root": format!("0x{}", hex::encode(typed_att.target.root.as_slice())),
+        },
+    });
+
     // Step 2: Sign attestation (slashing check+record committed before signing).
     let att_sig = match sign_attestation(
-        &entry.secret_key,
+        &*entry.signer,
         &entry.pubkey_hex,
         &typed_att,
         source_epoch,
         target_epoch,
         fork,
         slashing_db,
-    ) {
+        att_payload,
+    )
+    .await
+    {
         Ok(s) => s,
         Err(e) => {
             error!(slot, %e, "attestation signing rejected by slashing protection; skipping");
@@ -437,7 +511,13 @@ pub async fn run_attester(
     // ── Aggregator path (slot + 2/3) ──────────────────────────────────────────
 
     // Compute selection proof.
-    let selection_sig = sign_selection_proof(&entry.secret_key, slot, fork);
+    let selection_sig = match sign_selection_proof(&*entry.signer, slot, fork).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(slot, %e, "selection-proof signing failed; skipping aggregate");
+            return;
+        }
+    };
     let selection_sig_hex = format!("0x{}", hex::encode(selection_sig.as_ref()));
 
     if !is_aggregator(selection_sig.as_ref(), committee_length) {
@@ -494,7 +574,33 @@ pub async fn run_attester(
             aggregate: typed_agg,
             selection_proof: selection_sig,
         };
-        let agg_sig = sign_aggregate_and_proof(&entry.secret_key, &typed_agg_and_proof, fork);
+        // Web3Signer `aggregate_and_proof` payload; `signing_root` is authoritative.
+        let agg_payload = json!({
+            "aggregator_index": entry.index.to_string(),
+            "aggregate": {
+                "aggregation_bits": aggregate.aggregation_bits,
+                "committee_bits": aggregate.committee_bits,
+                "data": {
+                    "slot": aggregate.data.slot,
+                    "index": aggregate.data.index,
+                    "beacon_block_root": aggregate.data.beacon_block_root,
+                    "source": { "epoch": aggregate.data.source.epoch, "root": aggregate.data.source.root },
+                    "target": { "epoch": aggregate.data.target.epoch, "root": aggregate.data.target.root },
+                },
+                "signature": aggregate.signature,
+            },
+            "selection_proof": selection_sig_hex,
+        });
+        let agg_sig =
+            match sign_aggregate_and_proof(&*entry.signer, &typed_agg_and_proof, fork, agg_payload)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(slot, %e, "aggregate-and-proof signing failed (electra); skipping");
+                    return;
+                }
+            };
         let agg_sig_hex = format!("0x{}", hex::encode(agg_sig.as_ref()));
 
         let signed_agg = json!([{
@@ -568,7 +674,32 @@ pub async fn run_attester(
             aggregate: typed_agg,
             selection_proof: selection_sig,
         };
-        let agg_sig = sign_aggregate_and_proof(&entry.secret_key, &typed_agg_and_proof, fork);
+        // Web3Signer `aggregate_and_proof` payload; `signing_root` is authoritative.
+        let agg_payload = json!({
+            "aggregator_index": entry.index.to_string(),
+            "aggregate": {
+                "aggregation_bits": aggregate.aggregation_bits,
+                "data": {
+                    "slot": aggregate.data.slot,
+                    "index": aggregate.data.index,
+                    "beacon_block_root": aggregate.data.beacon_block_root,
+                    "source": { "epoch": aggregate.data.source.epoch, "root": aggregate.data.source.root },
+                    "target": { "epoch": aggregate.data.target.epoch, "root": aggregate.data.target.root },
+                },
+                "signature": aggregate.signature,
+            },
+            "selection_proof": selection_sig_hex,
+        });
+        let agg_sig =
+            match sign_aggregate_and_proof(&*entry.signer, &typed_agg_and_proof, fork, agg_payload)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(slot, %e, "aggregate-and-proof signing failed; skipping");
+                    return;
+                }
+            };
         let agg_sig_hex = format!("0x{}", hex::encode(agg_sig.as_ref()));
 
         let signed_agg = SignedAggregateAndProofDto {
@@ -628,7 +759,21 @@ pub async fn run_sync_committee(
     // `compute_signing_root(beacon_block_root, DOMAIN_SYNC_COMMITTEE)`; the block
     // root is a `Root` (a 32-byte basic leaf), so we sign over its `tree_hash_root`.
     let head_root = Root::from(root_from_hex(head_block_root_hex));
-    let sync_sig = sign_sync_committee_message(&entry.secret_key, &head_root, fork);
+    let sync_sig = match sign_sync_committee_message(
+        &*entry.signer,
+        &head_root,
+        fork,
+        head_block_root_hex,
+        slot,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(slot, %e, "sync-committee message signing failed; skipping");
+            return;
+        }
+    };
     let sync_sig_hex = format!("0x{}", hex::encode(sync_sig.as_ref()));
 
     // Submit sync message.
@@ -670,7 +815,21 @@ pub async fn run_sync_committee(
             slot: Slot(slot),
             subcommittee_index: subnet_id,
         };
-        let sel_sig = sign_sync_committee_selection_proof(&entry.secret_key, &sel_data, fork);
+        let sel_sig = match sign_sync_committee_selection_proof(
+            &*entry.signer,
+            &sel_data,
+            fork,
+            slot,
+            subnet_id,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(slot, %e, "sync selection-proof signing failed; skipping subcommittee");
+                continue;
+            }
+        };
 
         if !is_sync_committee_aggregator(sel_sig.as_ref()) {
             continue;
@@ -711,7 +870,32 @@ pub async fn run_sync_committee(
             contribution: typed_contribution,
             selection_proof: sel_sig,
         };
-        let cap_sig = sign_contribution_and_proof(&entry.secret_key, &typed_cap, fork);
+        // Web3Signer `contribution_and_proof` payload; `signing_root` is authoritative.
+        let cap_payload = json!({
+            "aggregator_index": entry.index.to_string(),
+            "contribution": {
+                "slot": contribution.slot,
+                "beacon_block_root": contribution.beacon_block_root,
+                "subcommittee_index": contribution.subcommittee_index,
+                "aggregation_bits": contribution.aggregation_bits,
+                "signature": contribution.signature,
+            },
+            "selection_proof": sel_sig_hex,
+        });
+        let cap_sig = match sign_contribution_and_proof(
+            &*entry.signer,
+            &typed_cap,
+            fork,
+            cap_payload,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(slot, %e, "contribution-and-proof signing failed; skipping subcommittee");
+                continue;
+            }
+        };
         let cap_sig_hex = format!("0x{}", hex::encode(cap_sig.as_ref()));
 
         // Build the wire DTO (moves `contribution`).

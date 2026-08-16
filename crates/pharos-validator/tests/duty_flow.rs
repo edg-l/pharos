@@ -277,6 +277,8 @@ impl SlashingProtection for SpySlashing {
 
 fn make_validator_entry() -> ValidatorEntry {
     use pharos_utils::bls::BLSSecretKey;
+    use pharos_validator::web3signer::LocalSigner;
+    use std::sync::Arc;
     // Generate a deterministic secret key from a fixed scalar for test reproducibility.
     // blst::min_pk::SecretKey::keygen takes an IKM of at least 32 bytes.
     let ikm = b"pharos_test_vc_duty_flow_ikm_v01";
@@ -286,7 +288,7 @@ fn make_validator_entry() -> ValidatorEntry {
     ValidatorEntry {
         index: 1,
         pubkey_hex: pk_hex,
-        secret_key: sk,
+        signer: Arc::new(LocalSigner::new(sk)),
     }
 }
 

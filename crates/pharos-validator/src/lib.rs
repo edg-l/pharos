@@ -11,3 +11,4 @@ pub mod keystore;
 pub mod run;
 pub mod signing;
 pub mod slashing;
+pub mod web3signer;
