@@ -34,4 +34,16 @@ pub enum ConformanceError {
         preset: String,
         type_name: String,
     },
+    #[error("unknown ssz_generic uint size in suite `{suite}`")]
+    UnknownUintSize { suite: String },
+    #[error("unknown ssz_generic basic_vector length {n} for element `{elem}`")]
+    UnknownVecLength { elem: String, n: u64 },
+    #[error("unknown ssz_generic basic_vector element type `{elem}`")]
+    UnknownVecElemType { elem: String },
+    #[error("unknown ssz_generic bitvector length {n}")]
+    UnknownBitvectorLength { n: u64 },
+    #[error("unknown ssz_generic bitlist limit {n}")]
+    UnknownBitlistLimit { n: u64 },
+    #[error("unknown ssz_generic container struct `{name}`")]
+    UnknownContainerStruct { name: String },
 }

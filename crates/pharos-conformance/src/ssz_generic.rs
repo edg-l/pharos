@@ -9,7 +9,9 @@
 //! - `bitvector`    → `Bitvector<N>`
 //! - `bitlist`      → `Bitlist<N>`
 //! - `containers`   → named test structs
-//! - others         → skip with message
+//! - `basic_progressive_list` / `progressive_bitlist` /
+//!   `progressive_containers` / `compatible_unions` → Phase-7-not-yet Skip
+//! - other unknown handlers → Fail (`ConformanceError::UnsupportedHandler`)
 
 use std::path::Path;
 
@@ -30,8 +32,9 @@ use crate::yaml_util::read_root_from_file;
 
 /// Produce one `CaseTask` per ssz_generic test case.
 ///
-/// The walk is handler → suite → case (sorted). Unsupported handlers are
-/// skipped (no tasks emitted).
+/// The walk is handler → suite → case (sorted). Progressive/union handlers
+/// (Phase-7-not-yet) emit `Skip` tasks so they count in the denominator; a
+/// handler not in the known set produces `Err` (Fail), never a silent drop.
 ///
 /// Outcome mapping:
 /// - `Ok(CaseOutcome::Pass)` → `TaskCaseOutcome::Pass`
@@ -53,16 +56,6 @@ pub fn enumerate_ssz_generic(root: &Path, row_ordinal: u32) -> Vec<CaseTask> {
 
     for handler_path in handlers {
         let handler: String = dir_name(&handler_path);
-        // Skip unsupported handlers.
-        match handler.as_str() {
-            "basic_progressive_list"
-            | "progressive_bitlist"
-            | "progressive_containers"
-            | "compatible_unions" => {
-                continue;
-            }
-            _ => {}
-        }
 
         let suites = read_dir_sorted(&handler_path).unwrap_or_default();
         for suite_path in suites {
@@ -131,10 +124,13 @@ fn run_case(
         "bitvector" => run_bitvector(case_name, case_path, case_label, &ssz_bytes, is_valid),
         "bitlist" => run_bitlist(case_name, case_path, case_label, &ssz_bytes, is_valid),
         "containers" => run_container(case_name, case_path, case_label, &ssz_bytes, is_valid),
-        _ => {
-            eprintln!("skipping unknown handler: {handler}");
-            Ok(CaseOutcome::Skip)
-        }
+        // Phase-7-not-yet: EIP-7916 progressive lists/bitlists and EIP-7495 compatible unions.
+        // These four handlers require progressive SSZ, implemented in Phase 7.
+        "basic_progressive_list"
+        | "progressive_bitlist"
+        | "progressive_containers"
+        | "compatible_unions" => Ok(CaseOutcome::Skip),
+        _ => Err(ConformanceError::UnsupportedHandler(handler.to_string())),
     }
 }
 
@@ -222,10 +218,9 @@ fn run_uint(
         Some(64) => run_typed::<u64>(case_path, case_label, ssz_bytes, is_valid),
         Some(128) => run_typed::<u128>(case_path, case_label, ssz_bytes, is_valid),
         Some(256) => run_typed::<Uint256>(case_path, case_label, ssz_bytes, is_valid),
-        _ => {
-            eprintln!("skipping uints case with unknown size in suite: {suite}");
-            Ok(CaseOutcome::Skip)
-        }
+        _ => Err(ConformanceError::UnknownUintSize {
+            suite: suite.to_string(),
+        }),
     }
 }
 
@@ -253,16 +248,17 @@ fn run_basic_vector(
     let (elem, n) = match parse_vec_params(suite) {
         Some(v) => v,
         None => {
-            eprintln!("skipping basic_vector with unparseable suite: {suite}");
-            return Ok(CaseOutcome::Skip);
+            return Err(ConformanceError::MalformedFixture(format!(
+                "basic_vector suite name unparseable: {suite}"
+            )));
         }
     };
 
     // Dispatch over (elem, N) combinations present in the fixture matrix.
-    // We enumerate all N values that appear for each element type.
-    // The fixture matrix uses N: 1, 2, 3, 4, 5, 8, 16, 31, 32, 33, 64, 128, 256, 512, 1024
+    // Fixture Ns: 0, 1, 2, 3, 4, 5, 8, 16, 31, 512, 513
+    // Extra arms (32, 33, 64, 128, 256, 1024) are retained for forward-compatibility.
     macro_rules! dispatch_vec {
-        ($T:ty, $n:expr) => {
+        ($T:ty, $elem_str:expr, $n:expr) => {
             match $n {
                 0 => run_typed::<SszVector<$T, 0>>(case_path, case_label, ssz_bytes, is_valid),
                 1 => run_typed::<SszVector<$T, 1>>(case_path, case_label, ssz_bytes, is_valid),
@@ -283,26 +279,23 @@ fn run_basic_vector(
                 1024 => {
                     run_typed::<SszVector<$T, 1024>>(case_path, case_label, ssz_bytes, is_valid)
                 }
-                _ => {
-                    eprintln!("skipping vec_{elem}_{n}: length {n} not in dispatch table");
-                    Ok(CaseOutcome::Skip)
-                }
+                _ => Err(ConformanceError::UnknownVecLength {
+                    elem: $elem_str.to_string(),
+                    n: $n,
+                }),
             }
         };
     }
 
     match elem.as_str() {
-        "bool" => dispatch_vec!(bool, n),
-        "uint8" => dispatch_vec!(u8, n),
-        "uint16" => dispatch_vec!(u16, n),
-        "uint32" => dispatch_vec!(u32, n),
-        "uint64" => dispatch_vec!(u64, n),
-        "uint128" => dispatch_vec!(u128, n),
-        "uint256" => dispatch_vec!(Uint256, n),
-        _ => {
-            eprintln!("skipping basic_vector with unknown element type: {elem}");
-            Ok(CaseOutcome::Skip)
-        }
+        "bool" => dispatch_vec!(bool, "bool", n),
+        "uint8" => dispatch_vec!(u8, "uint8", n),
+        "uint16" => dispatch_vec!(u16, "uint16", n),
+        "uint32" => dispatch_vec!(u32, "uint32", n),
+        "uint64" => dispatch_vec!(u64, "uint64", n),
+        "uint128" => dispatch_vec!(u128, "uint128", n),
+        "uint256" => dispatch_vec!(Uint256, "uint256", n),
+        _ => Err(ConformanceError::UnknownVecElemType { elem }),
     }
 }
 
@@ -338,8 +331,9 @@ fn run_bitvector(
     let n = match parse_bitvec_n(suite) {
         Some(n) => n,
         None => {
-            eprintln!("skipping bitvector with unparseable suite: {suite}");
-            return Ok(CaseOutcome::Skip);
+            return Err(ConformanceError::MalformedFixture(format!(
+                "bitvector suite name unparseable: {suite}"
+            )));
         }
     };
 
@@ -368,10 +362,7 @@ fn run_bitvector(
                 511 => run_typed::<Bitvector<511>>(case_path, case_label, ssz_bytes, is_valid),
                 512 => run_typed::<Bitvector<512>>(case_path, case_label, ssz_bytes, is_valid),
                 513 => run_typed::<Bitvector<513>>(case_path, case_label, ssz_bytes, is_valid),
-                _ => {
-                    eprintln!("skipping bitvec_{n}: length not in dispatch table");
-                    Ok(CaseOutcome::Skip)
-                }
+                _ => Err(ConformanceError::UnknownBitvectorLength { n: $n }),
             }
         };
     }
@@ -399,8 +390,9 @@ fn run_bitlist(
     let n = match parse_bitlist_n(suite) {
         Some(n) => n,
         None => {
-            eprintln!("skipping bitlist with unparseable suite: {suite}");
-            return Ok(CaseOutcome::Skip);
+            return Err(ConformanceError::MalformedFixture(format!(
+                "bitlist suite name unparseable: {suite}"
+            )));
         }
     };
 
@@ -429,10 +421,7 @@ fn run_bitlist(
                 511 => run_typed::<Bitlist<511>>(case_path, case_label, ssz_bytes, is_valid),
                 512 => run_typed::<Bitlist<512>>(case_path, case_label, ssz_bytes, is_valid),
                 513 => run_typed::<Bitlist<513>>(case_path, case_label, ssz_bytes, is_valid),
-                _ => {
-                    eprintln!("skipping bitlist_{n}: limit not in dispatch table");
-                    Ok(CaseOutcome::Skip)
-                }
+                _ => Err(ConformanceError::UnknownBitlistLimit { n: $n }),
             }
         };
     }
@@ -475,10 +464,12 @@ fn run_container(
             run_typed::<ComplexTestStruct>(case_path, case_label, ssz_bytes, is_valid)
         }
         "BitsStruct" => run_typed::<BitsStruct>(case_path, case_label, ssz_bytes, is_valid),
-        _ => {
-            eprintln!("skipping containers case with unknown struct: {suite}");
-            Ok(CaseOutcome::Skip)
-        }
+        // Phase-7-not-yet: these structs contain ProgressiveList / ProgressiveBitlist fields
+        // (EIP-7916), which require progressive SSZ implemented in Phase 7.
+        "ProgressiveTestStruct" | "ProgressiveBitsStruct" => Ok(CaseOutcome::Skip),
+        _ => Err(ConformanceError::UnknownContainerStruct {
+            name: name.to_string(),
+        }),
     }
 }
 
