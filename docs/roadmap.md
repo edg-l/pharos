@@ -269,7 +269,7 @@ what actually shipped.** Order as shipped (v0.13.0):
 | M8-OptimisticSync | Spec-correct optimistic sync | DONE |
 | M9-Validator | In-house validator client (`pharos-vc`) + BN production surface | DONE |
 | **M10-Deneb** | Deneb fork (KZG/blobs) | **next fork, not started** |
-| Devnet dashboard | Standalone Python web dashboard for the local devnet (tooling) | planned (after M10-DA) |
+| Devnet dashboard | Standalone Python web dashboard for the local devnet (tooling) | **shipped** (`scripts/devnet-dashboard.py`) |
 | M11 | Productionization (entrenched bucket; parallel hardening track) | planned |
 | M12-Electra | Electra fork | planned |
 | M13-Fulu | Fulu / PeerDAS | planned |
@@ -1052,12 +1052,14 @@ The server MUST NOT return 400 on an unrecognised-but-spec-listed topic.
   `BlobSidecarsByRoot`. Codec extension required.
 - `engine_getBlobsV1` Engine API call for blob retrieval.
 
-### Devnet dashboard — local-devnet web monitor (tooling, planned after M10-DA)
+### Devnet dashboard — local-devnet web monitor (tooling, SHIPPED `scripts/devnet-dashboard.py`)
 
 Small standalone web tool to watch the local devnet (`~/.cache/pharos-devnet/run-blockprod.sh`:
 pharos + Lighthouse v8.1.3 + ethrex v13) and surface what pharos is doing at a
-glance. Slots in after M10-DA closes, before/alongside M10-Deneb (the EL panel
-gets richer once Deneb blob/gas fields land).
+glance. Shipped as a single stdlib-only Python file; the EL panel gets richer
+once Deneb blob/gas fields land (the script already surfaces `blob_count` /
+`blob_gas_used` / `excess_blob_gas` when present). Run:
+`scripts/devnet-dashboard.py` (defaults to Beacon API `:5053`, serves `:8080`).
 
 - **Scope: pharos-only.** All data sourced from pharos's own Beacon API (the
   axum server shipped in M7). Does NOT query Lighthouse or ethrex directly.
