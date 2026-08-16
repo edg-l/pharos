@@ -4007,3 +4007,39 @@ block body attestations via `on_attestation_electra` with preset-specific const 
 The electra fork loop adds `"electra"` to the existing `["bellatrix", "capella", "deneb"]`
 walk. Fixtures at `{preset}/electra/sync/optimistic/pyspec_tests/from_syncing_to_invalid/`
 both pass, and the row is no longer a placeholder.
+
+### D-electra-produce-block-serialize-arm — produce_block API handler electra serialize arm (devnet-found)
+
+**Status**: Accepted. Live-only correctness bug, found on the M12-Electra transition devnet
+(lighthouse v8.1.3 + ethrex v13, `ELECTRA_FORK_EPOCH=1`).
+
+Phase 6d wired `ElectraBlockAssembler` and the electra `produce_block` core, but the
+`produce_block` HTTP-API handler in `crates/pharos-node/src/main.rs` has a *separate*
+hand-written match that SSZ-encodes the produced `SignedBeaconBlock` and builds the
+VC-facing JSON/`block_ssz` (one DTO per fork). That match still had an
+`unreachable!("Electra block production reached signed-block match")` arm with a stale
+comment claiming `produce_block` returns `Err(WrongFork)` before reaching it — no longer
+true once 6d made electra production real. The first post-fork pharos-vc proposal (an
+electra slot) therefore reached the arm and panicked the beacon node. Fixed by mirroring
+the Deneb arm: SSZ-encode, discriminant byte `5u8` (electra), `ForkVariant::Electra`, and
+the stub JSON carrying `message.slot`/`proposer_index`/`parent_root`/`state_root` (the VC
+signs over `block_ssz`, not the JSON). Re-verified live: pharos-vc built+published an
+electra block (slot 50) with the node panic-free. This is the M12 analogue of the
+M5-follow / M6-Capella / M9 live-only correctness bugs: a hand-written fork-dispatch site
+the conformance suite does not exercise. All other `unreachable!()` arms in the live node
+path were audited and confirmed to be correct catch-alls (real electra arm present before
+the catch-all).
+
+### D-electra-devnet-prague-syscontracts — EL genesis requires Prague system-contract predeploys
+
+**Status**: Accepted (devnet-infra, not a pharos code change).
+
+An Electra/Prague EL genesis MUST include the Prague system-contract predeploys in `alloc`
+with bytecode: EIP-7002 withdrawal requests (`0x00000961ef480eb55e80d19ad83579a64c007002`),
+EIP-7251 consolidation requests (`0x0000bbddc7ce488642fb579f8b00f3a590007251`), and EIP-2935
+history storage (`0x0000f90827f1c53a10cb7a02335b175320002935`). Without them ethrex's
+`getPayload` fails with "System contract: 0x0000…7002 has no code after deployment" and the
+chain freezes at the fork. The Deneb-genesis devnet never needed them; Electra is the first
+fork that does. The devnet generator (`~/.cache/pharos-devnet/gen-testnet.sh`) now merges
+these predeploys (extracted from `ethrex/fixtures/genesis/l1.json`) into the EL genesis and
+sets `pragueTime` to the electra fork wall-clock plus a `prague` blob-schedule entry.

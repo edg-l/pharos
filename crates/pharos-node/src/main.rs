@@ -931,10 +931,28 @@ async fn main() -> anyhow::Result<()> {
                             };
                             (ssz, 4u8, stub_json)
                         }
-                        // Electra block production is not yet implemented; produce_block
-                        // returns Err(WrongFork) before reaching this branch.
-                        pharos_types::state::SignedBeaconBlock::Electra(_) => {
-                            unreachable!("Electra block production reached signed-block match")
+                        pharos_types::state::SignedBeaconBlock::Electra(inner) => {
+                            use pharos_ssz::Encode as _;
+                            use pharos_types::views::ForkVariant;
+                            let ssz = inner.as_ssz_bytes();
+                            // As with Deneb: the VC signs over `block_ssz` (the unsigned
+                            // message bytes), not the JSON body, so the JSON is a stub
+                            // carrying message.slot etc. The `block_ssz` field carries the
+                            // real fork-enum bytes for the proposer-root computation.
+                            let stub_json = pharos_api::dto::block::SignedBlockForApi {
+                                variant: ForkVariant::Electra,
+                                ssz_bytes: ssz.clone(),
+                                attestations_json: vec![],
+                                json: serde_json::json!({
+                                    "message": {
+                                        "slot": inner.message.slot.0.to_string(),
+                                        "proposer_index": inner.message.proposer_index.0.to_string(),
+                                        "parent_root": format!("0x{}", hex::encode(inner.message.parent_root.as_slice())),
+                                        "state_root": format!("0x{}", hex::encode(inner.message.state_root.as_slice())),
+                                    }
+                                }),
+                            };
+                            (ssz, 5u8, stub_json)
                         }
                     };
 
