@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 rust-version = "1.86"
 license = "MIT OR Apache-2.0"
@@ -109,6 +109,7 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 debug = "line-tables-only"
+strip = "debuginfo"
 panic = "abort"
 overflow-checks = false
 
@@ -119,7 +120,12 @@ debug = true
 
 [profile.dev]
 opt-level = 2
-debug = true
+# line-tables-only: keeps file:line in panics/backtraces, drops variable/type
+# DWARF. We debug logic via logs/tests, not gdb live-inspection.
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+# No debuginfo for dependencies; the dep tree (rocksdb, libp2p, blst, c-kzg,
+# rustls) is the bulk of target/debug and we never step into it.
+debug = false

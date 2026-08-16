@@ -1,2 +1,11 @@
-[build]
-rustflags = ["-C", "target-cpu=native"]
+# NOTE: cargo uses rustflags from `target.<triple>` OR `build`, never both —
+# the target-specific table wins and `build.rustflags` is ignored. So both the
+# native-CPU tuning and the mold linker flag must live in the same table here,
+# otherwise the global mold config (~/.cargo/config.toml) would shadow this and
+# drop `target-cpu=native`.
+#
+# target-cpu=native: tuned to the build host's CPU. Non-portable — a binary
+# built here may SIGILL on a different/older CPU. Fine while pharos runs on this
+# box; revisit if distributing binaries.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-fuse-ld=mold"]
