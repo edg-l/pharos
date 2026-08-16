@@ -166,17 +166,23 @@ async fn enrtree_walk_resolves_fixture() {
 
 #[tokio::test]
 async fn enrtree_root_sig_tampered_rejected() {
-    // Flip one base64 char of the signature → recovery yields a different key
-    // → whole tree rejected.
+    // Flip one BYTE of the decoded signature (not a base64 char — that can break
+    // base64 canonical form and fail decode before verification). A byte flip keeps
+    // the sig well-formed base64 but makes recovery yield a different key → whole
+    // tree rejected with RootSignatureInvalid.
     let (mut resolver, url) = build_fixture();
     let domain = "nodes.example.org";
     let root = resolver.records.get_mut(domain).unwrap();
     let original = root[0].clone();
-    // Corrupt the last char of the sig field.
-    let mut chars: Vec<char> = original.chars().collect();
-    let last = chars.len() - 1;
-    chars[last] = if chars[last] == 'A' { 'B' } else { 'A' };
-    root[0] = chars.into_iter().collect();
+    let (content, sig_b64) = original
+        .rsplit_once(" sig=")
+        .expect("root record has a sig= field");
+    let mut sig_bytes = BASE64URL_NOPAD
+        .decode(sig_b64.as_bytes())
+        .expect("fixture sig is valid base64");
+    // Flip a byte inside r (well away from the recovery byte) → different key.
+    sig_bytes[10] ^= 0x01;
+    root[0] = format!("{content} sig={}", BASE64URL_NOPAD.encode(&sig_bytes));
 
     let err = resolve_enrtree(&url, Arc::new(resolver))
         .await
