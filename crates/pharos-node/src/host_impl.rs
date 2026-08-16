@@ -16,6 +16,7 @@
 //! - `light_client_finality_update`, `light_client_optimistic_update` (M4c).
 //! - `sync_committee_{subnet}` (6-step RSM pipeline).
 //! - `sync_committee_contribution_and_proof` (12-step RAC pipeline).
+//!
 //! See `D-lc-gossip-validation-full-node-arm` in `docs/decisions.md`.
 //!
 //! # record_attnets_change
@@ -1695,8 +1696,16 @@ where
         };
         let genesis_time_s = self.fork_choice.read().genesis_time;
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
-        let slot_start_ms = genesis_time_s * 1000 + msg_slot.0 * seconds_per_slot * 1000;
-        let slot_end_ms = slot_start_ms + seconds_per_slot * 1000;
+        // Saturating math: an attacker-supplied `slot = u64::MAX` would otherwise
+        // overflow (debug panic / release wrap). Saturating to u64::MAX makes the
+        // window check below fail cleanly → IGNORE "slot not current".
+        let slot_start_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+            msg_slot
+                .0
+                .saturating_mul(seconds_per_slot)
+                .saturating_mul(1000),
+        );
+        let slot_end_ms = slot_start_ms.saturating_add(seconds_per_slot.saturating_mul(1000));
         if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < slot_start_ms
             || slot_end_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms
         {
@@ -1808,8 +1817,15 @@ where
         };
         let genesis_time_s = self.fork_choice.read().genesis_time;
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
-        let slot_start_ms = genesis_time_s * 1000 + contrib_slot.0 * seconds_per_slot * 1000;
-        let slot_end_ms = slot_start_ms + seconds_per_slot * 1000;
+        // Saturating math (see `validate_sync_committee_message`): a crafted
+        // `slot = u64::MAX` saturates → window check fails → IGNORE, no overflow.
+        let slot_start_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+            contrib_slot
+                .0
+                .saturating_mul(seconds_per_slot)
+                .saturating_mul(1000),
+        );
+        let slot_end_ms = slot_start_ms.saturating_add(seconds_per_slot.saturating_mul(1000));
         if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < slot_start_ms
             || slot_end_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms
         {

@@ -123,7 +123,7 @@ const EXPECTED: &[&str] = &[
     "bls_to_exec: not BLS withdrawal credentials",
     "bls_to_exec: pubkey hash mismatch",
     "bls_to_exec: validator index out of range",
-    // ── sync_msg (8: 3 IGNORE + 5 REJECT) ────────────────────────────────────
+    // ── sync_msg (8: 4 IGNORE + 4 REJECT) ────────────────────────────────────
     "sync_msg: clock unavailable",
     "sync_msg: duplicate (slot, validator, subnet)",
     "sync_msg: head state unavailable",
@@ -280,7 +280,7 @@ fn verdict_strings_match_known_list() {
     );
     assert_eq!(
         sync_msg_count, 8,
-        "expected 8 sync_msg: strings (3 IGNORE + 5 REJECT)"
+        "expected 8 sync_msg: strings (4 IGNORE + 4 REJECT)"
     );
     assert_eq!(
         sync_contrib_count, 14,
