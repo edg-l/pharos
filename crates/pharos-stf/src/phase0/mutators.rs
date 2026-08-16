@@ -171,7 +171,10 @@ where
         .get(slashing_slot)
         .copied()
         .unwrap_or(Gwei(0));
-    state.set_slashing(slashing_slot, Gwei(cur_slashing.0.saturating_add(effective_balance.0)))?;
+    state.set_slashing(
+        slashing_slot,
+        Gwei(cur_slashing.0.saturating_add(effective_balance.0)),
+    )?;
 
     let penalty = Gwei(effective_balance.0 / E::MIN_SLASHING_PENALTY_QUOTIENT);
     decrease_balance::<E>(state, slashed_index, penalty);

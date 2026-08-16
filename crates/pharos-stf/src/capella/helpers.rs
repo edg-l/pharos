@@ -869,7 +869,10 @@ where
         .unwrap_or(Gwei(0));
     state.slashings = state
         .slashings
-        .with_set(slashing_slot, Gwei(cur_slashing.0.saturating_add(effective_balance.0)))
+        .with_set(
+            slashing_slot,
+            Gwei(cur_slashing.0.saturating_add(effective_balance.0)),
+        )
         .map_err(crate::error::StateTransitionError::Ssz)?;
 
     // Capella inherits bellatrix's penalty quotient.

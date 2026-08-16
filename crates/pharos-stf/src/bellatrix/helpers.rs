@@ -596,7 +596,10 @@ where
         .unwrap_or(Gwei(0));
     state.slashings = state
         .slashings
-        .with_set(slashing_slot, Gwei(cur_slashing.0.saturating_add(effective_balance.0)))
+        .with_set(
+            slashing_slot,
+            Gwei(cur_slashing.0.saturating_add(effective_balance.0)),
+        )
         .map_err(crate::error::StateTransitionError::Ssz)?;
 
     // spec line 273-274: [Modified in Bellatrix] — use MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX.

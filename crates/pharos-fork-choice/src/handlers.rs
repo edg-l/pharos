@@ -400,10 +400,7 @@ where
     // Uses `mark_payload_status_if_absent` so a `Valid`/`Invalid` verdict the
     // async engine driver may have already written for a block that raced
     // through the newPayload path before the persist worker is not clobbered.
-    store.mark_payload_status_if_absent(
-        block_root,
-        pharos_types::PayloadStatus::NotValidated,
-    );
+    store.mark_payload_status_if_absent(block_root, pharos_types::PayloadStatus::NotValidated);
 
     // Record timeliness using the caller-supplied `now` timestamp.
     // Saves `store.time` from being mutated by on_block (time is managed by on_tick).
