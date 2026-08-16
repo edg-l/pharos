@@ -3,6 +3,7 @@
 //! Conformance: `consensus-specs/tests/formats/fork_choice`.
 
 pub mod error;
+pub mod fast_confirmation;
 pub mod get_head;
 pub mod handlers;
 pub mod optimistic;
@@ -10,6 +11,9 @@ pub mod pow_block;
 pub mod store;
 
 pub use error::ForkChoiceError;
+pub use fast_confirmation::{
+    FastConfirmationStore, get_fast_confirmation_store, on_fast_confirmation,
+};
 pub use get_head::{get_checkpoint_block, get_current_slot, get_head};
 pub use handlers::{
     compute_pulled_up_tip, on_attestation, on_attestation_electra, on_attester_slashing, on_block,

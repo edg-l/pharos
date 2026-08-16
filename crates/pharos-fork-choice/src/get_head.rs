@@ -159,7 +159,10 @@ where
 /// `get_current_epoch(state)` (see `active_indices_for_justified`); callers pass
 /// it in so it is built once per `get_head` / `get_proposer_head` call rather
 /// than rebuilt per root.
-fn get_attestation_score<E: BeaconSpec>(
+///
+/// `pub` so `fast_confirmation` can use it directly with an arbitrary balance
+/// source (not necessarily the justified-checkpoint state).
+pub fn get_attestation_score<E: BeaconSpec>(
     store: &Store<E>,
     root: Root,
     state: &E::BeaconState,
@@ -268,7 +271,7 @@ where
 // ── Voting source ─────────────────────────────────────────────────────────────
 
 /// `get_voting_source` per `specs/phase0/fork-choice.md:336-353`.
-fn get_voting_source<E: BeaconSpec>(
+pub fn get_voting_source<E: BeaconSpec>(
     store: &Store<E>,
     block_root: Root,
 ) -> pharos_types::phase0::Checkpoint

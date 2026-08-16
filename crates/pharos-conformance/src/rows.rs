@@ -25,7 +25,7 @@ pub struct RowSpec {
 /// call in `lib.rs::run()`.
 const FORK_CHOICE_Q1_FOOTNOTE: &str = "Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures. Resolved by M3b (commit `784d75b`): altair containers landed so anchor states now decode and the rows show real pass counts. The skip-unknown-step-keys policy is retained for bellatrix+ step types. Decision recorded in `docs/decisions.md` (Q1).";
 
-/// All 117 conformance rows in the exact order that `lib.rs::run()` emits them.
+/// All 174 conformance rows in the exact order that `lib.rs::run()` emits them.
 ///
 /// The order here MUST match the top-to-bottom row emission in `run()`.
 /// Row 0-based index corresponds to `row_ordinal` used by `CaseTask`.
@@ -98,6 +98,9 @@ pub fn row_table() -> &'static [RowSpec] {
         // M14-Phase6: altair/networking gossip-validator fixtures.
         r("altair", "networking", "mainnet"),
         r("altair", "networking", "minimal"),
+        // M14-Phase8: altair/fast_confirmation (minimal-only; mainnet fixtures
+        // do not exist upstream).
+        r("altair", "fast_confirmation", "minimal"),
         // ── bellatrix ────────────────────────────────────────────────────────
         r("bellatrix", "transition", "mainnet"),       // 41
         r("bellatrix", "transition", "minimal"),       // 42
@@ -120,6 +123,8 @@ pub fn row_table() -> &'static [RowSpec] {
         // M14-Phase6: bellatrix/networking gossip-validator fixtures.
         r("bellatrix", "networking", "mainnet"),
         r("bellatrix", "networking", "minimal"),
+        // M14-Phase8: bellatrix/fast_confirmation (minimal-only).
+        r("bellatrix", "fast_confirmation", "minimal"),
         // ── capella (transition + ssz_static) ───────────────────────────────
         r("capella", "transition", "mainnet"), // 59
         r("capella", "transition", "minimal"), // 60
@@ -149,6 +154,8 @@ pub fn row_table() -> &'static [RowSpec] {
         // M14-Phase6: capella/networking gossip-validator fixtures.
         r("capella", "networking", "mainnet"),
         r("capella", "networking", "minimal"),
+        // M14-Phase8: capella/fast_confirmation (minimal-only).
+        r("capella", "fast_confirmation", "minimal"),
         // ── sync/optimistic ──────────────────────────────────────────────────
         r("sync", "optimistic", "mainnet"), // 81
         r("sync", "optimistic", "minimal"), // 82
@@ -179,6 +186,8 @@ pub fn row_table() -> &'static [RowSpec] {
         // M14-Phase6: deneb/networking gossip-validator fixtures.
         r("deneb", "networking", "mainnet"),
         r("deneb", "networking", "minimal"),
+        // M14-Phase8: deneb/fast_confirmation (minimal-only).
+        r("deneb", "fast_confirmation", "minimal"),
         // ── electra ──────────────────────────────────────────────────────────
         r("electra", "ssz_static", "mainnet"),       // 105
         r("electra", "ssz_static", "minimal"),       // 106
@@ -332,6 +341,8 @@ mod tests {
             // altair/networking
             ("altair", "networking", "mainnet"),
             ("altair", "networking", "minimal"),
+            // altair/fast_confirmation (minimal-only)
+            ("altair", "fast_confirmation", "minimal"),
             // bellatrix
             ("bellatrix", "transition", "mainnet"),
             ("bellatrix", "transition", "minimal"),
@@ -354,6 +365,8 @@ mod tests {
             // bellatrix/networking
             ("bellatrix", "networking", "mainnet"),
             ("bellatrix", "networking", "minimal"),
+            // bellatrix/fast_confirmation (minimal-only)
+            ("bellatrix", "fast_confirmation", "minimal"),
             // capella/transition + capella/ssz_static
             ("capella", "transition", "mainnet"),
             ("capella", "transition", "minimal"),
@@ -382,6 +395,8 @@ mod tests {
             // capella/networking
             ("capella", "networking", "mainnet"),
             ("capella", "networking", "minimal"),
+            // capella/fast_confirmation (minimal-only)
+            ("capella", "fast_confirmation", "minimal"),
             // sync/optimistic
             ("sync", "optimistic", "mainnet"),
             ("sync", "optimistic", "minimal"),
@@ -412,6 +427,8 @@ mod tests {
             // deneb/networking
             ("deneb", "networking", "mainnet"),
             ("deneb", "networking", "minimal"),
+            // deneb/fast_confirmation (minimal-only)
+            ("deneb", "fast_confirmation", "minimal"),
             // electra
             ("electra", "ssz_static", "mainnet"),
             ("electra", "ssz_static", "minimal"),
@@ -549,14 +566,13 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 170 (160 + 10 M14-Phase6 rows:
-    /// `phase0/networking` mainnet+minimal, `altair/networking` mainnet+minimal,
-    /// `bellatrix/networking` mainnet+minimal, `capella/networking` mainnet+minimal,
-    /// `deneb/networking` mainnet+minimal). The 160 base is the M13-Fulu total.
-    /// `electra/networking` and `fulu/networking` already existed; these 10 are the
-    /// remaining forks.
+    /// Total row count is exactly 174 (170 + 4 M14-Phase8 rows:
+    /// `altair/fast_confirmation` minimal, `bellatrix/fast_confirmation` minimal,
+    /// `capella/fast_confirmation` minimal, `deneb/fast_confirmation` minimal).
+    /// The 170 base is the M14-Phase6 total (160 M13-Fulu + 10 networking rows).
+    /// `electra/fast_confirmation` and `fulu/fast_confirmation` already existed.
     #[test]
-    fn row_count_is_170() {
-        assert_eq!(row_table().len(), 170);
+    fn row_count_is_174() {
+        assert_eq!(row_table().len(), 174);
     }
 }

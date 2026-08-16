@@ -32,9 +32,10 @@ use std::path::{Path, PathBuf};
 
 use pharos_fork_choice::get_head::{get_current_slot, get_proposer_head};
 use pharos_fork_choice::{
-    ForkChoiceError, HashMapPowBlockProvider, NoopPowBlockProvider, PowBlock, Store,
-    get_forkchoice_store, get_head, on_attestation, on_attestation_electra, on_attester_slashing,
-    on_block, on_tick, should_override_forkchoice_update,
+    FastConfirmationStore, ForkChoiceError, HashMapPowBlockProvider, NoopPowBlockProvider,
+    PayloadStatus, PowBlock, Store, get_fast_confirmation_store, get_forkchoice_store, get_head,
+    on_attestation, on_attestation_electra, on_attester_slashing, on_block, on_fast_confirmation,
+    on_tick, should_override_forkchoice_update,
 };
 use pharos_kzg::KzgVerifier;
 use pharos_ssz::{Decode, SszList, SszSequence, TreeHash};
@@ -345,23 +346,23 @@ pub fn enumerate_fork_choice(
     tasks
 }
 
-/// Enumerate `fulu/fast_confirmation` cases (confirmation-rule fixtures, minimal
-/// preset only — there are no mainnet `fast_confirmation` fixtures).
+/// Enumerate fast_confirmation cases for a single `(fork, preset)` row.
 ///
-/// The fast-confirmation fixtures drive a NEW confirmation rule (`is_one_confirmed`
-/// / `confirmed_root` / observed+unrealized checkpoints / per-slot heads) layered
-/// on top of LMD-GHOST, and feed standalone confirmation-rule attestations that the
-/// base `on_attestation` legitimately rejects. Pharos's `pharos-fork-choice` does
-/// NOT implement that confirmation extension — the M12 `D-electra-placeholder-
-/// categories` decision deferred `electra/fast_confirmation` for exactly this
-/// reason, and the same applies to fulu.
+/// Minimal-only: there are no mainnet `fast_confirmation` fixtures.
+/// All forks (altair..fulu) run the same FCR algorithm; the fork determines
+/// which anchor-state / block types to decode.
 ///
-/// This runner walks the fixture tree (so the row is real — it reflects the actual
-/// case count, not a hard-coded placeholder) and emits `Skip` for each case: honest
-/// about the unimplemented confirmation rule, with `fail=0`. When the fork-choice
-/// confirmation extension lands, swap the per-case body to a real driver.
+/// Per `specs/phase0/fast-confirmation.md` + `tests/formats/fast_confirmation/README.md`:
+/// - Same `steps.yaml` as `fork_choice` (`tick`/`block`/`attestation`/`checks`).
+/// - `on_fast_confirmation` is called implicitly at the start of each slot, after
+///   past-slot attestations are applied (i.e. after every `tick` that advances
+///   to a new slot).
+/// - The `checks` block includes all 6 FCR fields in addition to the standard
+///   fork-choice fields.
 ///
-/// Tree shape: `{root}/{preset}/fulu/fast_confirmation/<subcat>/pyspec_tests/<case>/`.
+/// Unknown step ⇒ Fail (per `D-fast-confirmation-dispatch-all-forks` policy).
+///
+/// Tree shape: `{root}/{preset}/{fork}/fast_confirmation/<subcat>/pyspec_tests/<case>/`.
 pub fn enumerate_fast_confirmation(
     root: &Path,
     fork: &'static str,
@@ -405,11 +406,66 @@ pub fn enumerate_fast_confirmation(
         )
         .collect();
 
-        for (_case_dir, _meta) in cases {
+        for (case_dir, _meta) in cases {
             let case_ordinal = ordinal;
             ordinal += 1;
-            // Skip: the confirmation rule is unimplemented (see fn doc).
-            let run: CaseFn = Box::new(|| CaseOutcome::Skip);
+
+            let case_name = format!(
+                "{fork}/fast_confirmation/{sub}/{preset}/{}",
+                dir_name(&case_dir)
+            );
+
+            let run: CaseFn = match (fork, preset) {
+                ("altair", _) => Box::new(move || {
+                    match run_fcr_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("bellatrix", _) => Box::new(move || {
+                    match run_fcr_bellatrix_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", _) => Box::new(move || {
+                    match run_fcr_capella_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("deneb", _) => Box::new(move || {
+                    match run_fcr_deneb_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("electra", _) => Box::new(move || {
+                    match run_fcr_electra_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("fulu", _) => Box::new(move || {
+                    match run_fcr_fulu_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                // All fast_confirmation rows are minimal-only; unreachable for mainnet.
+                (f, p) => {
+                    let msg =
+                        format!("enumerate_fast_confirmation: unexpected (fork={f}, preset={p})");
+                    Box::new(move || CaseOutcome::Fail(msg.clone()))
+                }
+            };
+
             tasks.push(CaseTask {
                 row_ordinal,
                 case_ordinal,
@@ -1320,6 +1376,13 @@ struct Checks {
     /// `should_override_forkchoice_update: { validator_is_connected: bool, result: bool }`.
     /// We only use the `result` field.
     should_override_forkchoice_update: Option<bool>,
+    // ── FCR-specific fields (present only in fast_confirmation fixtures) ──────
+    fcr_confirmed_root: Option<Root>,
+    fcr_previous_epoch_observed_justified_checkpoint: Option<Checkpoint>,
+    fcr_current_epoch_observed_justified_checkpoint: Option<Checkpoint>,
+    fcr_previous_epoch_greatest_unrealized_checkpoint: Option<Checkpoint>,
+    fcr_previous_slot_head: Option<Root>,
+    fcr_current_slot_head: Option<Root>,
 }
 
 struct HeadCheck {
@@ -1424,6 +1487,12 @@ fn parse_checks(val: &serde_yaml_ng::Value) -> Result<Checks, String> {
         proposer_boost_root: None,
         get_proposer_head: None,
         should_override_forkchoice_update: None,
+        fcr_confirmed_root: None,
+        fcr_previous_epoch_observed_justified_checkpoint: None,
+        fcr_current_epoch_observed_justified_checkpoint: None,
+        fcr_previous_epoch_greatest_unrealized_checkpoint: None,
+        fcr_previous_slot_head: None,
+        fcr_current_slot_head: None,
     };
 
     for (k, v) in map {
@@ -1449,6 +1518,25 @@ fn parse_checks(val: &serde_yaml_ng::Value) -> Result<Checks, String> {
                     .as_mapping()
                     .and_then(|m| m.get("result"))
                     .and_then(|r| r.as_bool());
+            }
+            // ── FCR fields (fast_confirmation fixtures only) ──────────────
+            "confirmed_root" => {
+                out.fcr_confirmed_root = value_as_str(v).map(|s| parse_root(&s)).transpose()?;
+            }
+            "previous_epoch_observed_justified_checkpoint" => {
+                out.fcr_previous_epoch_observed_justified_checkpoint = Some(parse_checkpoint(v)?);
+            }
+            "current_epoch_observed_justified_checkpoint" => {
+                out.fcr_current_epoch_observed_justified_checkpoint = Some(parse_checkpoint(v)?);
+            }
+            "previous_epoch_greatest_unrealized_checkpoint" => {
+                out.fcr_previous_epoch_greatest_unrealized_checkpoint = Some(parse_checkpoint(v)?);
+            }
+            "previous_slot_head" => {
+                out.fcr_previous_slot_head = value_as_str(v).map(|s| parse_root(&s)).transpose()?;
+            }
+            "current_slot_head" => {
+                out.fcr_current_slot_head = value_as_str(v).map(|s| parse_root(&s)).transpose()?;
             }
             // Silently ignored unknown keys per spec/policy:
             // `viable_for_head_roots_and_weights`, `head_payload_status`,
@@ -3629,6 +3717,1926 @@ where
             }
             Step::Unknown(_) => {
                 return CaseResult::Skip;
+            }
+        }
+    }
+
+    CaseResult::Pass
+}
+
+// ── Fast Confirmation Rule case runners ───────────────────────────────────────
+
+/// Assert the 6 FCR-specific fields from the `FastConfirmationStore`.
+///
+/// Called after the standard `run_checks`/`run_bellatrix_checks` on each
+/// `checks` step in fast_confirmation fixtures.
+fn run_fcr_checks(fcr: &FastConfirmationStore, checks: &Checks) -> Result<(), String> {
+    if let Some(want) = &checks.fcr_confirmed_root
+        && *want != fcr.confirmed_root
+    {
+        return Err(format!(
+            "confirmed_root: want {want}, got {}",
+            fcr.confirmed_root
+        ));
+    }
+    if let Some(want) = &checks.fcr_previous_epoch_observed_justified_checkpoint {
+        let got = &fcr.previous_epoch_observed_justified_checkpoint;
+        if want.epoch != got.epoch || want.root != got.root {
+            return Err(format!(
+                "previous_epoch_observed_justified_checkpoint: want {{epoch:{}, root:{}}}, got {{epoch:{}, root:{}}}",
+                want.epoch.0, want.root, got.epoch.0, got.root
+            ));
+        }
+    }
+    if let Some(want) = &checks.fcr_current_epoch_observed_justified_checkpoint {
+        let got = &fcr.current_epoch_observed_justified_checkpoint;
+        if want.epoch != got.epoch || want.root != got.root {
+            return Err(format!(
+                "current_epoch_observed_justified_checkpoint: want {{epoch:{}, root:{}}}, got {{epoch:{}, root:{}}}",
+                want.epoch.0, want.root, got.epoch.0, got.root
+            ));
+        }
+    }
+    if let Some(want) = &checks.fcr_previous_epoch_greatest_unrealized_checkpoint {
+        let got = &fcr.previous_epoch_greatest_unrealized_checkpoint;
+        if want.epoch != got.epoch || want.root != got.root {
+            return Err(format!(
+                "previous_epoch_greatest_unrealized_checkpoint: want {{epoch:{}, root:{}}}, got {{epoch:{}, root:{}}}",
+                want.epoch.0, want.root, got.epoch.0, got.root
+            ));
+        }
+    }
+    if let Some(want) = &checks.fcr_previous_slot_head
+        && *want != fcr.previous_slot_head
+    {
+        return Err(format!(
+            "previous_slot_head: want {want}, got {}",
+            fcr.previous_slot_head
+        ));
+    }
+    if let Some(want) = &checks.fcr_current_slot_head
+        && *want != fcr.current_slot_head
+    {
+        return Err(format!(
+            "current_slot_head: want {want}, got {}",
+            fcr.current_slot_head
+        ));
+    }
+    Ok(())
+}
+
+/// Altair-era fast_confirmation case driver.
+///
+/// Mirrors `run_case` but additionally initialises a `FastConfirmationStore`
+/// and calls `on_fast_confirmation` whenever the slot advances.
+/// Unknown steps are **Fail** (not Skip) per `D-fast-confirmation-dispatch-all-forks`.
+fn run_fcr_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
+where
+    E: BeaconSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixSignedBeaconBlock: SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    let anchor_state: E::BeaconState =
+        match load_altair_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+            Ok(s) => s,
+            Err(_) => match load_phase0_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                Ok(s) => s,
+                Err(_) => return CaseResult::Skip,
+            },
+        };
+    let anchor_block: E::BeaconBlock = {
+        use pharos_ssz::Decode as _;
+        let compressed = match std::fs::read(case_dir.join("anchor_block.ssz_snappy")) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        let raw = match crate::snappy::decompress_raw(&compressed) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        if let Ok(b) = E::AltairBeaconBlock::from_ssz_bytes(&raw) {
+            E::altair_into_block(b)
+        } else if let Ok(b) = E::Phase0BeaconBlock::from_ssz_bytes(&raw) {
+            E::phase0_into_block(b)
+        } else {
+            return CaseResult::Skip;
+        }
+    };
+
+    if anchor_block.state_root() != anchor_state.tree_hash_root() {
+        return CaseResult::Skip;
+    }
+    let mut store: Store<E> = get_forkchoice_store::<E>(anchor_state, anchor_block);
+    let mut fcr = get_fast_confirmation_store::<E>(&store);
+
+    let steps_path = case_dir.join("steps.yaml");
+    let steps = match parse_steps(&steps_path) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    // FCR fixtures write attestation steps BEFORE the advancing tick; we defer
+    // them and drain after the tick (matching Python next_slot() semantics).
+    let mut pending_atts: Vec<(Attestation<2048>, bool)> = Vec::new();
+
+    for step in steps {
+        match step {
+            Step::Tick { tick, .. } => {
+                let slot_before = get_current_slot::<E>(&store);
+                on_tick::<E>(&mut store, tick);
+                let slot_after = get_current_slot::<E>(&store);
+                if slot_after > slot_before {
+                    for (att, valid) in std::mem::take(&mut pending_atts) {
+                        let outcome = on_attestation::<E>(&mut store, &att, false);
+                        match outcome {
+                            Ok(()) if valid => {}
+                            Ok(()) if !valid => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: deferred on_attestation succeeded but valid=false"
+                                ));
+                            }
+                            Err(_) if !valid => {}
+                            Err(e) => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: deferred on_attestation failed but valid=true: {e}"
+                                ));
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    on_fast_confirmation::<E>(&store, &mut fcr);
+                }
+            }
+            Step::Block { block, valid, .. } => {
+                let block_file = format!("{block}.ssz_snappy");
+                let cfg = E::default_runtime_config();
+
+                if let Ok(altair_inner) = load_altair_signed_block::<E>(case_dir, &block_file) {
+                    let altair_parent_root = E::unwrap_altair_signed_block(&altair_inner)
+                        .map(|inner| inner.message().parent_root())
+                        .unwrap_or_default();
+                    let pre_state = match store.block_states.get(&altair_parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &altair_inner,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let (post_state, attestations) = match post_state_result {
+                        Ok((ps, _)) => {
+                            let atts: Vec<Attestation<2048>> =
+                                if let Some(inner) = E::unwrap_altair_signed_block(&altair_inner) {
+                                    inner.message().body().attestations().to_vec()
+                                } else {
+                                    vec![]
+                                };
+                            (ps, atts)
+                        }
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, NoopPowBlockProvider>(
+                        &mut store,
+                        &altair_inner,
+                        post_state,
+                        now,
+                        &NoopPowBlockProvider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            for att in &attestations {
+                                let _ = on_attestation::<E>(&mut store, att, true);
+                            }
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                } else {
+                    let phase0_inner: E::Phase0SignedBeaconBlock =
+                        match load_ssz_snappy(case_dir, &block_file) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                return CaseResult::Fail(format!("{case_name}: {e}"));
+                            }
+                        };
+                    let signed = E::phase0_into_signed_block(phase0_inner.clone());
+                    let pre_state = match store
+                        .block_states
+                        .get(&phase0_inner.message().parent_root())
+                        .cloned()
+                    {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &signed,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let post_state = match post_state_result {
+                        Ok((ps, _)) => ps,
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, NoopPowBlockProvider>(
+                        &mut store,
+                        &signed,
+                        post_state,
+                        now,
+                        &NoopPowBlockProvider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            for att in phase0_inner.message().body().attestations() {
+                                let _ = on_attestation::<E>(&mut store, att, true);
+                            }
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                }
+            }
+            Step::Attestation { attestation, valid } => {
+                let att: Attestation<2048> =
+                    match load_ssz_snappy(case_dir, &format!("{attestation}.ssz_snappy")) {
+                        Ok(a) => a,
+                        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+                    };
+                // FCR fixtures write attestation steps before the advancing tick; defer
+                // and apply after the next tick (matching Python next_slot() semantics).
+                pending_atts.push((att, valid));
+            }
+            Step::AttesterSlashing {
+                attester_slashing,
+                valid,
+            } => {
+                let slashing: AttesterSlashing<2048> =
+                    match load_ssz_snappy(case_dir, &format!("{attester_slashing}.ssz_snappy")) {
+                        Ok(a) => a,
+                        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+                    };
+                let outcome = on_attester_slashing::<E>(&mut store, &slashing);
+                match (outcome.is_ok(), valid) {
+                    (true, true) | (false, false) => {}
+                    (false, true) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attester_slashing({attester_slashing}) failed but valid=true"
+                        ));
+                    }
+                    (true, false) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attester_slashing({attester_slashing}) succeeded but valid=false"
+                        ));
+                    }
+                }
+            }
+            Step::Checks(checks) => {
+                if let Err(e) = run_checks::<E>(&store, &checks) {
+                    return CaseResult::Fail(format!("{case_name}: {e}"));
+                }
+                if let Err(e) = run_fcr_checks(&fcr, &checks) {
+                    return CaseResult::Fail(format!("{case_name}: {e}"));
+                }
+            }
+            Step::PowBlock(_) | Step::Unknown(_) => {
+                return CaseResult::Fail(format!(
+                    "{case_name}: unexpected step in fast_confirmation fixture"
+                ));
+            }
+        }
+    }
+
+    CaseResult::Pass
+}
+
+/// Bellatrix-era fast_confirmation case driver.
+fn run_fcr_bellatrix_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
+where
+    E: BeaconSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    let anchor_state: E::BeaconState =
+        match load_bellatrix_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+            Ok(s) => s,
+            Err(_) => match load_altair_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                Ok(s) => s,
+                Err(_) => match load_phase0_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                    Ok(s) => s,
+                    Err(_) => return CaseResult::Skip,
+                },
+            },
+        };
+    let anchor_block: E::BeaconBlock = {
+        use pharos_ssz::Decode as _;
+        let compressed = match std::fs::read(case_dir.join("anchor_block.ssz_snappy")) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        let raw = match crate::snappy::decompress_raw(&compressed) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        if let Ok(b) = E::BellatrixBeaconBlock::from_ssz_bytes(&raw) {
+            E::bellatrix_into_block(b)
+        } else if let Ok(b) = E::AltairBeaconBlock::from_ssz_bytes(&raw) {
+            E::altair_into_block(b)
+        } else if let Ok(b) = E::Phase0BeaconBlock::from_ssz_bytes(&raw) {
+            E::phase0_into_block(b)
+        } else {
+            return CaseResult::Skip;
+        }
+    };
+
+    if anchor_block.state_root() != anchor_state.tree_hash_root() {
+        return CaseResult::Skip;
+    }
+    let mut store: Store<E> = get_forkchoice_store::<E>(anchor_state, anchor_block);
+    let rtcfg = E::default_runtime_config();
+    store.set_terminal_config(
+        rtcfg.terminal_total_difficulty,
+        rtcfg.terminal_block_hash,
+        rtcfg.terminal_block_hash_activation_epoch,
+    );
+    let mut fcr = get_fast_confirmation_store::<E>(&store);
+
+    let steps_path = case_dir.join("steps.yaml");
+    let steps = match parse_steps(&steps_path) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    // FCR fixtures write attestation steps BEFORE the advancing tick; defer
+    // and drain after the tick (matching Python next_slot() semantics).
+    let mut pending_atts: Vec<(Attestation<2048>, bool)> = Vec::new();
+
+    for step in steps {
+        match step {
+            Step::Tick { tick, .. } => {
+                let slot_before = get_current_slot::<E>(&store);
+                on_tick::<E>(&mut store, tick);
+                let slot_after = get_current_slot::<E>(&store);
+                if slot_after > slot_before {
+                    for (att, valid) in std::mem::take(&mut pending_atts) {
+                        let outcome = on_attestation::<E>(&mut store, &att, false);
+                        match outcome {
+                            Ok(()) if valid => {}
+                            Ok(()) if !valid => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: deferred on_attestation succeeded but valid=false"
+                                ));
+                            }
+                            Err(_) if !valid => {}
+                            Err(e) => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: deferred on_attestation failed but valid=true: {e}"
+                                ));
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    on_fast_confirmation::<E>(&store, &mut fcr);
+                }
+            }
+            Step::Block { block, valid, .. } => {
+                let block_file = format!("{block}.ssz_snappy");
+                let cfg = E::default_runtime_config();
+
+                if let Ok(bel_inner) = load_bellatrix_signed_block::<E>(case_dir, &block_file) {
+                    let parent_root = E::unwrap_bellatrix_signed_block(&bel_inner)
+                        .map(|inner| inner.message().parent_root())
+                        .unwrap_or_default();
+                    let pre_state = match store.block_states.get(&parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &bel_inner,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let (post_state, attestations) = match post_state_result {
+                        Ok((ps, _)) => {
+                            let atts: Vec<Attestation<2048>> =
+                                if let Some(inner) = E::unwrap_bellatrix_signed_block(&bel_inner) {
+                                    inner.message().body().attestations().to_vec()
+                                } else {
+                                    vec![]
+                                };
+                            (ps, atts)
+                        }
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, NoopPowBlockProvider>(
+                        &mut store,
+                        &bel_inner,
+                        post_state,
+                        now,
+                        &NoopPowBlockProvider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            for att in &attestations {
+                                let _ = on_attestation::<E>(&mut store, att, true);
+                            }
+                            // Fixture says valid=true → execution payload is VALID.
+                            // Without this, is_one_confirmed returns false for all
+                            // execution-carrying blocks (spec MUST, line 619).
+                            let block_root = E::signed_block_message(&bel_inner).tree_hash_root();
+                            store.mark_payload_status(block_root, PayloadStatus::Valid);
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                } else if let Ok(altair_inner) =
+                    load_altair_signed_block::<E>(case_dir, &block_file)
+                {
+                    let altair_parent_root = E::unwrap_altair_signed_block(&altair_inner)
+                        .map(|inner| inner.message().parent_root())
+                        .unwrap_or_default();
+                    let pre_state = match store.block_states.get(&altair_parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &altair_inner,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let (post_state, attestations) = match post_state_result {
+                        Ok((ps, _)) => {
+                            let atts: Vec<Attestation<2048>> =
+                                if let Some(inner) = E::unwrap_altair_signed_block(&altair_inner) {
+                                    inner.message().body().attestations().to_vec()
+                                } else {
+                                    vec![]
+                                };
+                            (ps, atts)
+                        }
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, NoopPowBlockProvider>(
+                        &mut store,
+                        &altair_inner,
+                        post_state,
+                        now,
+                        &NoopPowBlockProvider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            for att in &attestations {
+                                let _ = on_attestation::<E>(&mut store, att, true);
+                            }
+                            let block_root =
+                                E::signed_block_message(&altair_inner).tree_hash_root();
+                            store.mark_payload_status(block_root, PayloadStatus::Valid);
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                } else {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: could not decode block {block}"
+                    ));
+                }
+            }
+            Step::Attestation { attestation, valid } => {
+                let att: Attestation<2048> =
+                    match load_ssz_snappy(case_dir, &format!("{attestation}.ssz_snappy")) {
+                        Ok(a) => a,
+                        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+                    };
+                // FCR fixtures write attestation steps before the advancing tick; defer
+                // and apply after the next tick (matching Python next_slot() semantics).
+                pending_atts.push((att, valid));
+            }
+            Step::AttesterSlashing {
+                attester_slashing,
+                valid,
+            } => {
+                let slashing: AttesterSlashing<2048> =
+                    match load_ssz_snappy(case_dir, &format!("{attester_slashing}.ssz_snappy")) {
+                        Ok(a) => a,
+                        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+                    };
+                let outcome = on_attester_slashing::<E>(&mut store, &slashing);
+                match (outcome.is_ok(), valid) {
+                    (true, true) | (false, false) => {}
+                    (false, true) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attester_slashing({attester_slashing}) failed but valid=true"
+                        ));
+                    }
+                    (true, false) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attester_slashing({attester_slashing}) succeeded but valid=false"
+                        ));
+                    }
+                }
+            }
+            Step::Checks(checks) => {
+                if let Err(e) = run_bellatrix_checks::<E>(&store, &checks) {
+                    return CaseResult::Fail(format!("{case_name}: {e}"));
+                }
+                if let Err(e) = run_fcr_checks(&fcr, &checks) {
+                    return CaseResult::Fail(format!("{case_name}: {e}"));
+                }
+            }
+            Step::PowBlock(_) | Step::Unknown(_) => {
+                return CaseResult::Fail(format!(
+                    "{case_name}: unexpected step in fast_confirmation fixture"
+                ));
+            }
+        }
+    }
+
+    CaseResult::Pass
+}
+
+/// Capella-era fast_confirmation case driver.
+fn run_fcr_capella_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
+where
+    E: BeaconSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    run_fcr_capella_like_case::<E>(case_dir, case_name, false)
+}
+
+/// Deneb-era fast_confirmation case driver.
+fn run_fcr_deneb_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
+where
+    E: BeaconSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    run_fcr_capella_like_case::<E>(case_dir, case_name, true)
+}
+
+/// Shared capella/deneb fast_confirmation case driver.
+///
+/// `try_deneb` selects whether to try deneb state/block decode before capella.
+fn run_fcr_capella_like_case<E>(case_dir: &Path, case_name: &str, try_deneb: bool) -> CaseResult
+where
+    E: BeaconSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    let anchor_state: E::BeaconState = if try_deneb {
+        match load_deneb_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+            Ok(s) => s,
+            Err(_) => match load_capella_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                Ok(s) => s,
+                Err(_) => match load_bellatrix_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                    Ok(s) => s,
+                    Err(_) => match load_altair_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                        Ok(s) => s,
+                        Err(_) => match load_phase0_state::<E>(case_dir, "anchor_state.ssz_snappy")
+                        {
+                            Ok(s) => s,
+                            Err(_) => return CaseResult::Skip,
+                        },
+                    },
+                },
+            },
+        }
+    } else {
+        match load_capella_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+            Ok(s) => s,
+            Err(_) => match load_bellatrix_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                Ok(s) => s,
+                Err(_) => match load_altair_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                    Ok(s) => s,
+                    Err(_) => match load_phase0_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                        Ok(s) => s,
+                        Err(_) => return CaseResult::Skip,
+                    },
+                },
+            },
+        }
+    };
+
+    let anchor_block: E::BeaconBlock = {
+        use pharos_ssz::Decode as _;
+        let compressed = match std::fs::read(case_dir.join("anchor_block.ssz_snappy")) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        let raw = match crate::snappy::decompress_raw(&compressed) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        if try_deneb {
+            if let Ok(b) = E::DenebBeaconBlock::from_ssz_bytes(&raw) {
+                E::deneb_into_block(b)
+            } else if let Ok(b) = E::CapellaBeaconBlock::from_ssz_bytes(&raw) {
+                E::capella_into_block(b)
+            } else if let Ok(b) = E::BellatrixBeaconBlock::from_ssz_bytes(&raw) {
+                E::bellatrix_into_block(b)
+            } else if let Ok(b) = E::AltairBeaconBlock::from_ssz_bytes(&raw) {
+                E::altair_into_block(b)
+            } else if let Ok(b) = E::Phase0BeaconBlock::from_ssz_bytes(&raw) {
+                E::phase0_into_block(b)
+            } else {
+                return CaseResult::Skip;
+            }
+        } else if let Ok(b) = E::CapellaBeaconBlock::from_ssz_bytes(&raw) {
+            E::capella_into_block(b)
+        } else if let Ok(b) = E::BellatrixBeaconBlock::from_ssz_bytes(&raw) {
+            E::bellatrix_into_block(b)
+        } else if let Ok(b) = E::AltairBeaconBlock::from_ssz_bytes(&raw) {
+            E::altair_into_block(b)
+        } else if let Ok(b) = E::Phase0BeaconBlock::from_ssz_bytes(&raw) {
+            E::phase0_into_block(b)
+        } else {
+            return CaseResult::Skip;
+        }
+    };
+
+    if anchor_block.state_root() != anchor_state.tree_hash_root() {
+        return CaseResult::Skip;
+    }
+    let mut store: Store<E> = get_forkchoice_store::<E>(anchor_state, anchor_block);
+    let rtcfg = E::default_runtime_config();
+    store.set_terminal_config(
+        rtcfg.terminal_total_difficulty,
+        rtcfg.terminal_block_hash,
+        rtcfg.terminal_block_hash_activation_epoch,
+    );
+    let mut fcr = get_fast_confirmation_store::<E>(&store);
+
+    let steps_path = case_dir.join("steps.yaml");
+    let steps = match parse_steps(&steps_path) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    // FCR fixtures write attestation steps BEFORE the advancing tick; defer
+    // and drain after the tick (matching Python next_slot() semantics).
+    let mut pending_atts: Vec<(Attestation<2048>, bool)> = Vec::new();
+
+    for step in steps {
+        match step {
+            Step::Tick { tick, .. } => {
+                let slot_before = get_current_slot::<E>(&store);
+                on_tick::<E>(&mut store, tick);
+                let slot_after = get_current_slot::<E>(&store);
+                if slot_after > slot_before {
+                    for (att, valid) in std::mem::take(&mut pending_atts) {
+                        let outcome = on_attestation::<E>(&mut store, &att, false);
+                        match outcome {
+                            Ok(()) if valid => {}
+                            Ok(()) if !valid => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: deferred on_attestation succeeded but valid=false"
+                                ));
+                            }
+                            Err(_) if !valid => {}
+                            Err(e) => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: deferred on_attestation failed but valid=true: {e}"
+                                ));
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    on_fast_confirmation::<E>(&store, &mut fcr);
+                }
+            }
+            Step::Block { block, valid, .. } => {
+                let block_file = format!("{block}.ssz_snappy");
+                let cfg = E::default_runtime_config();
+
+                // Try the highest available fork first, then fall back.
+                // For each fork type we load, state_transition, on_block, feed attestations.
+                // `$signed_wrapped` is the fork-enum `E::SignedBeaconBlock` (suitable
+                // for `state_transition`/`on_block`); `$parent_root` is read from the
+                // INNER block before wrapping, because `SignedBeaconBlockView::message()`
+                // is intentionally unimplemented on the fork-enum.
+                macro_rules! handle_signed_block {
+                    ($signed_wrapped:expr, $parent_root:expr, $atts:expr) => {{
+                        let parent_root = $parent_root;
+                        let pre_state = match store.block_states.get(&parent_root).cloned() {
+                            Some(s) => s,
+                            None => {
+                                if valid {
+                                    return CaseResult::Fail(format!(
+                                        "{case_name}: on_block({block}) missing parent state"
+                                    ));
+                                } else {
+                                    continue;
+                                }
+                            }
+                        };
+                        let post_result = state_transition::<E, NullExecutionEngine>(
+                            pre_state,
+                            &$signed_wrapped,
+                            &NullExecutionEngine,
+                            true,
+                            &cfg,
+                        );
+                        let (post_state, atts) = match post_result {
+                            Ok((ps, _)) => (ps, $atts),
+                            Err(e) => {
+                                if valid {
+                                    return CaseResult::Fail(format!(
+                                        "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                    ));
+                                } else {
+                                    continue;
+                                }
+                            }
+                        };
+                        let now = store.time;
+                        let outcome = on_block::<E, NoopPowBlockProvider>(
+                            &mut store,
+                            &$signed_wrapped,
+                            post_state,
+                            now,
+                            &NoopPowBlockProvider,
+                        );
+                        match (outcome, valid) {
+                            (Ok(()), true) => {
+                                for att in &atts {
+                                    let _ = on_attestation::<E>(&mut store, att, true);
+                                }
+                                // Fixture says valid=true → execution payload is VALID.
+                                // Without this, is_one_confirmed returns false for all
+                                // execution-carrying blocks (spec MUST, line 619).
+                                let block_root =
+                                    E::signed_block_message(&$signed_wrapped).tree_hash_root();
+                                store.mark_payload_status(block_root, PayloadStatus::Valid);
+                            }
+                            (Err(e), true) => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) failed but valid=true: {e}"
+                                ));
+                            }
+                            (Ok(()), false) => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) succeeded but valid=false"
+                                ));
+                            }
+                            (Err(_), false) => {}
+                        }
+                    }};
+                }
+
+                if try_deneb {
+                    if let Ok(deneb_inner) =
+                        load_ssz_snappy::<E::DenebSignedBeaconBlock>(case_dir, &block_file)
+                    {
+                        let parent_root = deneb_inner.message().parent_root();
+                        let atts: Vec<Attestation<2048>> =
+                            deneb_inner.message().body().attestations().to_vec();
+                        let wrapped = E::deneb_into_signed_block(deneb_inner);
+                        handle_signed_block!(wrapped, parent_root, atts);
+                    } else if let Ok(capella_inner) =
+                        load_ssz_snappy::<E::CapellaSignedBeaconBlock>(case_dir, &block_file)
+                    {
+                        let parent_root = capella_inner.message().parent_root();
+                        let atts: Vec<Attestation<2048>> =
+                            capella_inner.message().body().attestations().to_vec();
+                        let wrapped = E::capella_into_signed_block(capella_inner);
+                        handle_signed_block!(wrapped, parent_root, atts);
+                    } else if let Ok(bellatrix_inner) =
+                        load_bellatrix_signed_block::<E>(case_dir, &block_file)
+                    {
+                        let (parent_root, atts): (Root, Vec<Attestation<2048>>) =
+                            if let Some(inner) = E::unwrap_bellatrix_signed_block(&bellatrix_inner)
+                            {
+                                (
+                                    inner.message().parent_root(),
+                                    inner.message().body().attestations().to_vec(),
+                                )
+                            } else {
+                                (Root::default(), vec![])
+                            };
+                        handle_signed_block!(bellatrix_inner, parent_root, atts);
+                    } else if let Ok(altair_inner) =
+                        load_altair_signed_block::<E>(case_dir, &block_file)
+                    {
+                        let (parent_root, atts): (Root, Vec<Attestation<2048>>) =
+                            if let Some(inner) = E::unwrap_altair_signed_block(&altair_inner) {
+                                (
+                                    inner.message().parent_root(),
+                                    inner.message().body().attestations().to_vec(),
+                                )
+                            } else {
+                                (Root::default(), vec![])
+                            };
+                        handle_signed_block!(altair_inner, parent_root, atts);
+                    } else {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: could not decode block {block}"
+                        ));
+                    }
+                } else if let Ok(capella_inner) =
+                    load_ssz_snappy::<E::CapellaSignedBeaconBlock>(case_dir, &block_file)
+                {
+                    let parent_root = capella_inner.message().parent_root();
+                    let atts: Vec<Attestation<2048>> =
+                        capella_inner.message().body().attestations().to_vec();
+                    let wrapped = E::capella_into_signed_block(capella_inner);
+                    handle_signed_block!(wrapped, parent_root, atts);
+                } else if let Ok(bellatrix_inner) =
+                    load_bellatrix_signed_block::<E>(case_dir, &block_file)
+                {
+                    let (parent_root, atts): (Root, Vec<Attestation<2048>>) =
+                        if let Some(inner) = E::unwrap_bellatrix_signed_block(&bellatrix_inner) {
+                            (
+                                inner.message().parent_root(),
+                                inner.message().body().attestations().to_vec(),
+                            )
+                        } else {
+                            (Root::default(), vec![])
+                        };
+                    handle_signed_block!(bellatrix_inner, parent_root, atts);
+                } else if let Ok(altair_inner) =
+                    load_altair_signed_block::<E>(case_dir, &block_file)
+                {
+                    let (parent_root, atts): (Root, Vec<Attestation<2048>>) =
+                        if let Some(inner) = E::unwrap_altair_signed_block(&altair_inner) {
+                            (
+                                inner.message().parent_root(),
+                                inner.message().body().attestations().to_vec(),
+                            )
+                        } else {
+                            (Root::default(), vec![])
+                        };
+                    handle_signed_block!(altair_inner, parent_root, atts);
+                } else {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: could not decode block {block}"
+                    ));
+                }
+            }
+            Step::Attestation { attestation, valid } => {
+                let att: Attestation<2048> =
+                    match load_ssz_snappy(case_dir, &format!("{attestation}.ssz_snappy")) {
+                        Ok(a) => a,
+                        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+                    };
+                // FCR fixtures write attestation steps before the advancing tick; defer
+                // and apply after the next tick (matching Python next_slot() semantics).
+                pending_atts.push((att, valid));
+            }
+            Step::AttesterSlashing {
+                attester_slashing,
+                valid,
+            } => {
+                let slashing: AttesterSlashing<2048> =
+                    match load_ssz_snappy(case_dir, &format!("{attester_slashing}.ssz_snappy")) {
+                        Ok(a) => a,
+                        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+                    };
+                let outcome = on_attester_slashing::<E>(&mut store, &slashing);
+                match (outcome.is_ok(), valid) {
+                    (true, true) | (false, false) => {}
+                    (false, true) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attester_slashing({attester_slashing}) failed but valid=true"
+                        ));
+                    }
+                    (true, false) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attester_slashing({attester_slashing}) succeeded but valid=false"
+                        ));
+                    }
+                }
+            }
+            Step::Checks(checks) => {
+                if let Err(e) = run_bellatrix_checks::<E>(&store, &checks) {
+                    return CaseResult::Fail(format!("{case_name}: {e}"));
+                }
+                if let Err(e) = run_fcr_checks(&fcr, &checks) {
+                    return CaseResult::Fail(format!("{case_name}: {e}"));
+                }
+            }
+            Step::PowBlock(_) | Step::Unknown(_) => {
+                return CaseResult::Fail(format!(
+                    "{case_name}: unexpected step in fast_confirmation fixture"
+                ));
+            }
+        }
+    }
+
+    CaseResult::Pass
+}
+
+/// Electra-era fast_confirmation case driver.
+fn run_fcr_electra_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
+where
+    E: BeaconSpec + ElectraFcSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::ElectraBeaconBlock: Decode + BeaconBlockView,
+    E::ElectraSignedBeaconBlock: Decode,
+    E::FuluBeaconBlock: Decode,
+    E::FuluSignedBeaconBlock: Decode,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    run_fcr_electra_like_case::<E>(case_dir, case_name, DaMode::Deneb)
+}
+
+/// Fulu-era fast_confirmation case driver.
+fn run_fcr_fulu_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
+where
+    E: BeaconSpec + ElectraFcSpec,
+    E::FuluBeaconState: Decode,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::ElectraBeaconBlock: Decode + BeaconBlockView,
+    E::ElectraSignedBeaconBlock: Decode,
+    E::FuluBeaconBlock: Decode,
+    E::FuluSignedBeaconBlock: Decode,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    run_fcr_electra_like_case::<E>(case_dir, case_name, DaMode::Fulu)
+}
+
+/// Shared electra/fulu fast_confirmation case driver.
+///
+/// DA is irrelevant for fast_confirmation; `da_mode` selects the
+/// anchor-state load order (fulu state shape adds `proposer_lookahead`).
+fn run_fcr_electra_like_case<E>(case_dir: &Path, case_name: &str, da_mode: DaMode) -> CaseResult
+where
+    E: BeaconSpec + ElectraFcSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::ElectraBeaconBlock: Decode + BeaconBlockView,
+    E::ElectraSignedBeaconBlock: Decode,
+    E::FuluBeaconBlock: Decode,
+    E::FuluSignedBeaconBlock: Decode,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    let fulu_anchor: Option<E::BeaconState> = if da_mode == DaMode::Fulu {
+        load_fulu_state::<E>(case_dir, "anchor_state.ssz_snappy").ok()
+    } else {
+        None
+    };
+    let anchor_state: E::BeaconState = match fulu_anchor {
+        Some(s) => s,
+        None => match load_electra_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+            Ok(s) => s,
+            Err(_) => match load_deneb_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                Ok(s) => s,
+                Err(_) => match load_capella_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                    Ok(s) => s,
+                    Err(_) => {
+                        match load_bellatrix_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                            Ok(s) => s,
+                            Err(_) => {
+                                match load_altair_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                                    Ok(s) => s,
+                                    Err(_) => match load_phase0_state::<E>(
+                                        case_dir,
+                                        "anchor_state.ssz_snappy",
+                                    ) {
+                                        Ok(s) => s,
+                                        Err(_) => return CaseResult::Skip,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                },
+            },
+        },
+    };
+
+    let anchor_block: E::BeaconBlock = {
+        use pharos_ssz::Decode as _;
+        let compressed = match std::fs::read(case_dir.join("anchor_block.ssz_snappy")) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        let raw = match crate::snappy::decompress_raw(&compressed) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        if da_mode == DaMode::Fulu {
+            match E::FuluBeaconBlock::from_ssz_bytes(&raw) {
+                Ok(b) => E::fulu_into_block(b),
+                Err(_) => return CaseResult::Skip,
+            }
+        } else if let Ok(b) = E::ElectraBeaconBlock::from_ssz_bytes(&raw) {
+            E::electra_into_block(b)
+        } else if let Ok(b) = E::DenebBeaconBlock::from_ssz_bytes(&raw) {
+            E::deneb_into_block(b)
+        } else if let Ok(b) = E::CapellaBeaconBlock::from_ssz_bytes(&raw) {
+            E::capella_into_block(b)
+        } else if let Ok(b) = E::BellatrixBeaconBlock::from_ssz_bytes(&raw) {
+            E::bellatrix_into_block(b)
+        } else if let Ok(b) = E::AltairBeaconBlock::from_ssz_bytes(&raw) {
+            E::altair_into_block(b)
+        } else if let Ok(b) = E::Phase0BeaconBlock::from_ssz_bytes(&raw) {
+            E::phase0_into_block(b)
+        } else {
+            return CaseResult::Skip;
+        }
+    };
+
+    if anchor_block.state_root() != anchor_state.tree_hash_root() {
+        return CaseResult::Skip;
+    }
+    let mut store: Store<E> = get_forkchoice_store::<E>(anchor_state, anchor_block);
+    let rtcfg = E::default_runtime_config();
+    store.set_terminal_config(
+        rtcfg.terminal_total_difficulty,
+        rtcfg.terminal_block_hash,
+        rtcfg.terminal_block_hash_activation_epoch,
+    );
+    let mut fcr = get_fast_confirmation_store::<E>(&store);
+
+    let steps_path = case_dir.join("steps.yaml");
+    let steps = match parse_steps(&steps_path) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    // FCR fixtures write attestation steps BEFORE the advancing tick; defer
+    // and drain after the tick (matching Python next_slot() semantics).
+    // For the electra runner we buffer filenames since the type is fork-specific.
+    let mut pending_atts: Vec<(String, bool)> = Vec::new();
+
+    for step in steps {
+        match step {
+            Step::Tick { tick, .. } => {
+                let slot_before = get_current_slot::<E>(&store);
+                on_tick::<E>(&mut store, tick);
+                let slot_after = get_current_slot::<E>(&store);
+                if slot_after > slot_before {
+                    for (attestation, valid) in std::mem::take(&mut pending_atts) {
+                        let outcome = match E::run_electra_attestation_step(
+                            &mut store,
+                            case_dir,
+                            &attestation,
+                            false,
+                        ) {
+                            Ok(o) => o,
+                            Err(e) => {
+                                return CaseResult::Fail(format!("{case_name}: {e}"));
+                            }
+                        };
+                        match (outcome.is_ok(), valid) {
+                            (true, true) | (false, false) => {}
+                            (false, true) => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: deferred on_attestation({attestation}) failed but valid=true"
+                                ));
+                            }
+                            (true, false) => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: deferred on_attestation({attestation}) succeeded but valid=false"
+                                ));
+                            }
+                        }
+                    }
+                    on_fast_confirmation::<E>(&store, &mut fcr);
+                }
+            }
+            Step::Block {
+                block,
+                valid,
+                blobs: _,
+                proofs: _,
+                columns: _,
+            } => {
+                let block_file = format!("{block}.ssz_snappy");
+                let cfg = E::default_runtime_config();
+
+                if let Ok(electra_inner) =
+                    load_ssz_snappy::<E::ElectraSignedBeaconBlock>(case_dir, &block_file)
+                {
+                    let parent_root = E::electra_block_parent_root(&electra_inner);
+                    // Fulu blocks are structurally electra blocks, so they decode
+                    // through the electra arm — but the anchor/pre state is the FULU
+                    // enum variant, so the block MUST be wrapped as the Fulu variant
+                    // (not Electra) or `state_transition`'s fork-variant dispatch
+                    // returns UnsupportedFork. Re-decode the same bytes as the fulu
+                    // type rather than re-wrapping `electra_inner`.
+                    let electra_fork_block = if da_mode == DaMode::Fulu {
+                        match load_ssz_snappy::<E::FuluSignedBeaconBlock>(case_dir, &block_file) {
+                            Ok(fulu_inner) => E::fulu_into_signed_block(fulu_inner),
+                            Err(e) => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: fulu block decode {block}: {e}"
+                                ));
+                            }
+                        }
+                    } else {
+                        E::electra_into_signed_block(electra_inner.clone())
+                    };
+                    let pre_state = match store.block_states.get(&parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &electra_fork_block,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let post_state = match post_result {
+                        Ok((ps, _)) => ps,
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, NoopPowBlockProvider>(
+                        &mut store,
+                        &electra_fork_block,
+                        post_state,
+                        now,
+                        &NoopPowBlockProvider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            E::feed_electra_block_attestations(&mut store, &electra_inner);
+                            // Fixture says valid=true → execution payload is VALID.
+                            let block_root =
+                                E::signed_block_message(&electra_fork_block).tree_hash_root();
+                            store.mark_payload_status(block_root, PayloadStatus::Valid);
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                } else if let Ok(deneb_inner) =
+                    load_ssz_snappy::<E::DenebSignedBeaconBlock>(case_dir, &block_file)
+                {
+                    let parent_root = deneb_inner.message().parent_root();
+                    let deneb_fork_block = E::deneb_into_signed_block(deneb_inner.clone());
+                    let pre_state = match store.block_states.get(&parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &deneb_fork_block,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let (post_state, attestations) = match post_result {
+                        Ok((ps, _)) => {
+                            let atts: Vec<Attestation<2048>> =
+                                deneb_inner.message().body().attestations().to_vec();
+                            (ps, atts)
+                        }
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, NoopPowBlockProvider>(
+                        &mut store,
+                        &deneb_fork_block,
+                        post_state,
+                        now,
+                        &NoopPowBlockProvider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            for att in &attestations {
+                                let _ = on_attestation::<E>(&mut store, att, true);
+                            }
+                            // Fixture says valid=true → execution payload is VALID.
+                            let block_root =
+                                E::signed_block_message(&deneb_fork_block).tree_hash_root();
+                            store.mark_payload_status(block_root, PayloadStatus::Valid);
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                } else {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: could not decode block {block} as electra or deneb"
+                    ));
+                }
+            }
+            Step::Attestation { attestation, valid } => {
+                // FCR fixtures write attestation steps before the advancing tick; defer
+                // and apply after the next tick (matching Python next_slot() semantics).
+                pending_atts.push((attestation, valid));
+            }
+            Step::AttesterSlashing {
+                attester_slashing,
+                valid,
+            } => {
+                let slashing: AttesterSlashing<2048> =
+                    match load_ssz_snappy(case_dir, &format!("{attester_slashing}.ssz_snappy")) {
+                        Ok(a) => a,
+                        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+                    };
+                let outcome = on_attester_slashing::<E>(&mut store, &slashing);
+                match (outcome.is_ok(), valid) {
+                    (true, true) | (false, false) => {}
+                    (false, true) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attester_slashing({attester_slashing}) failed but valid=true"
+                        ));
+                    }
+                    (true, false) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attester_slashing({attester_slashing}) succeeded but valid=false"
+                        ));
+                    }
+                }
+            }
+            Step::Checks(checks) => {
+                if let Err(e) = run_bellatrix_checks::<E>(&store, &checks) {
+                    return CaseResult::Fail(format!("{case_name}: {e}"));
+                }
+                if let Err(e) = run_fcr_checks(&fcr, &checks) {
+                    return CaseResult::Fail(format!("{case_name}: {e}"));
+                }
+            }
+            Step::PowBlock(_) | Step::Unknown(_) => {
+                return CaseResult::Fail(format!(
+                    "{case_name}: unexpected step in fast_confirmation fixture"
+                ));
             }
         }
     }

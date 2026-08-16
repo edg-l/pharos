@@ -342,9 +342,34 @@ fn enumerate_row(
             row_ordinal,
         )),
 
-        // ── fulu/fast_confirmation ────────────────────────────────────────────
-        // Minimal-only; drives the fork-choice substrate and ignores the
-        // (unimplemented) confirmation-rule check fields.
+        // ── fast_confirmation (altair .. fulu, minimal-only) ─────────────────
+        ("altair", "fast_confirmation", preset) => Some(fork_choice::enumerate_fast_confirmation(
+            root,
+            "altair",
+            preset,
+            row_ordinal,
+        )),
+        ("bellatrix", "fast_confirmation", preset) => Some(
+            fork_choice::enumerate_fast_confirmation(root, "bellatrix", preset, row_ordinal),
+        ),
+        ("capella", "fast_confirmation", preset) => Some(fork_choice::enumerate_fast_confirmation(
+            root,
+            "capella",
+            preset,
+            row_ordinal,
+        )),
+        ("deneb", "fast_confirmation", preset) => Some(fork_choice::enumerate_fast_confirmation(
+            root,
+            "deneb",
+            preset,
+            row_ordinal,
+        )),
+        ("electra", "fast_confirmation", preset) => Some(fork_choice::enumerate_fast_confirmation(
+            root,
+            "electra",
+            preset,
+            row_ordinal,
+        )),
         ("fulu", "fast_confirmation", preset) => Some(fork_choice::enumerate_fast_confirmation(
             root,
             "fulu",
