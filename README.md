@@ -139,13 +139,15 @@ and other EL clients work as well.
 ## Cross-client devnet
 
 [`scripts/devnet/`](scripts/devnet/) brings up a hand-rolled, host-process
-devnet (no Docker): a `lighthouse` BN+VC plus an `ethrex` EL produce a chain,
-and `pharos` peers in to follow it (and, with `pharos-vc`, to propose).
+devnet (no Docker): a `lighthouse` BN+VC plus an `ethrex` EL produce a
+reference chain, and `pharos` runs alongside driving its own `ethrex` EL over
+the Engine API, peering in to follow the chain (and, with `pharos-vc`, to
+propose).
 
 ```sh
 scripts/devnet/gen-testnet.sh    # fresh genesis + testnet-dir + keys
 scripts/devnet/run-devnet.sh     # lighthouse + ethrex (reference chain)
-scripts/devnet/run-pharos.sh     # pharos + its own ethrex, peered in
+scripts/devnet/run-pharos.sh     # pharos + its own ethrex EL, peered in
 scripts/devnet/stop-devnet.sh    # tear down
 ```
 
