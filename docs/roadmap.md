@@ -268,11 +268,15 @@ what actually shipped.** Order as shipped (v0.13.0):
 | M7-BeaconAPI | Beacon REST API (axum) | DONE |
 | M8-OptimisticSync | Spec-correct optimistic sync | DONE |
 | M9-Validator | In-house validator client (`pharos-vc`) + BN production surface | DONE |
-| **M10-Deneb** | Deneb fork (KZG/blobs) | **next fork, not started** |
+| M10-Deneb | Deneb fork (KZG/blobs) | DONE |
 | Devnet dashboard | Standalone Python web dashboard for the local devnet (tooling) | **shipped** (`scripts/devnet-dashboard.py`) |
-| M11 | Productionization (entrenched bucket; parallel hardening track) | planned |
-| M12-Electra | Electra fork | planned |
-| M13-Fulu | Fulu / PeerDAS | planned |
+| **M12-Electra** | Electra fork | **in progress** (Phase 1 done: types + ssz_static green) |
+| M11 | Productionization (now a HARD GATE: complete fully **after** M12-Electra, **before** M13-Fulu) | planned |
+| M13-Fulu | Fulu / PeerDAS | planned (after M11) |
+
+**Execution order (decided): M12-Electra → M11-Productionization (full) → M13-Fulu.**
+M11 keeps its entrenched number but is no longer a parallel track — it is a
+required gate between Electra and the next fork.
 
 The detailed sections below use these corrected numbers. M5-follow,
 M-Storage, and M8-OptimisticSync have no standalone section here (they were
@@ -1087,10 +1091,13 @@ once Deneb blob/gas fields land (the script already surfaces `blob_count` /
 
 ### M11 — Productionization
 > Kept at **M11** — its entrenched number, referenced as the "deferred to M11"
-> productionization bucket throughout the codebase and `docs/decisions.md`. It is
-> a parallel hardening track, not a strict gate before the later forks (M12-Electra,
-> M13-Fulu); some items here (hot/cold DB split, forward backfill) already shipped
-> early in M-Storage / M4b.
+> productionization bucket throughout the codebase and `docs/decisions.md`.
+> **Sequencing (decided): M11 is a HARD GATE — completed FULLY after M12-Electra
+> and before M13-Fulu.** (Was previously framed as a parallel, non-gating track;
+> that is superseded.) Some items here (hot/cold DB split, forward backfill)
+> already shipped early in M-Storage / M4b and count toward completion. Plan M11
+> with the same small-phase + per-phase-verification structure used for the
+> conformance refactor and Electra.
 - **Weak subjectivity** check on checkpoint state (checkpoint sync
   itself moved to M4). Reject checkpoint older than
   `MIN_VALIDATOR_WITHDRAWABILITY_DELAY + CHURN_LIMIT_QUOTIENT / 2`
