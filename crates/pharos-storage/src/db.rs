@@ -236,6 +236,26 @@ impl RocksStore {
         Ok(result)
     }
 
+    /// Flush the WAL and all live memtables to SST files.
+    ///
+    /// Called as the final step of the graceful-shutdown sequence
+    /// (`D-graceful-shutdown-order`, M11 Phase 17) to ensure every
+    /// buffered write reaches durable storage before the process exits.
+    ///
+    /// Steps:
+    /// 1. `flush_wal(sync=true)` — syncs the WAL file to disk, making all
+    ///    recent writes durable even before memtable flush.
+    /// 2. `flush()` — flushes all live memtables across all CFs, converting
+    ///    in-memory writes to immutable SST files.
+    ///
+    /// Both calls return `rocksdb::Error` on failure, mapped to
+    /// `StorageError::RocksDb` via the `#[from]` impl.
+    pub fn fsync(&self) -> Result<(), StorageError> {
+        self.db.flush_wal(true)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
     /// Count the number of entries in the `cold-states` CF.
     ///
     /// Each entry corresponds to one restore-point state written by the freezer.

@@ -1718,16 +1718,27 @@ impl<
     /// Implements the D-shutdown-protocol ADR: best-effort Goodbye with a 500 ms
     /// bounded drain so a slow peer cannot hold up the shutdown indefinitely.
     ///
-    /// Steps:
-    /// 0. Save peer scores to disk (M11 Phase 14 hook, `D-peer-score-persist-format`).
-    /// 1. Collect connected peers.
-    /// 2. Pre-register `DisconnectReason::Goodbye(GOODBYE_CLIENT_SHUTDOWN)` for each,
+    /// Steps per `D-graceful-shutdown-order` (M11 Phase 17):
+    /// 0. Drain in-flight gossip-validation tasks (bounded 1 s timeout).
+    /// 1. Save peer scores to disk (M11 Phase 14 hook, `D-peer-score-persist-format`).
+    /// 2. Collect connected peers.
+    /// 3. Pre-register `DisconnectReason::Goodbye(GOODBYE_CLIENT_SHUTDOWN)` for each,
     ///    then send `RpcRequest::Goodbye(1)` fire-and-forget.
-    /// 3. Run `drain_outbound_requests` bounded by a 500 ms timeout.
-    /// 4. Force-disconnect each peer.
+    /// 4. Run `drain_outbound_requests` bounded by a 500 ms timeout.
+    /// 5. Force-disconnect each peer.
     ///
     /// Spec cite: `p2p-interface.md:1383-1385` (ClientShutdown = 1).
     async fn shutdown_goodbye(&mut self) {
+        // Step 0 (D-graceful-shutdown-order): drain in-flight gossip validation
+        // tasks before disconnecting.  Each task is a `spawn_blocking` BLS verify;
+        // awaiting them ensures no orphaned blocking threads outlive the shutdown.
+        // 1 s bound so a stalled BLS verify cannot block shutdown indefinitely.
+        timeout(Duration::from_secs(1), async {
+            while self.gossip_tasks.join_next().await.is_some() {}
+        })
+        .await
+        .ok();
+
         // M11 Phase 14: persist the durable peer score table before disconnecting
         // so bad-actor penalties survive restarts.  Errors are logged inside
         // `save_to_dir`; the call is best-effort and never blocks shutdown.

@@ -25,6 +25,7 @@ pub mod network_lookup_provider;
 pub mod op_pools;
 pub mod pending_blocks;
 pub mod pow_block;
+pub mod shutdown;
 pub mod slasher;
 pub mod startup;
 pub mod state_regen;

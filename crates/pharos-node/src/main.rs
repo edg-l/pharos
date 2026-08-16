@@ -41,6 +41,7 @@ use pharos_node::network_backfill_provider::NetworkHandlePeerPicker;
 use pharos_node::network_lookup_provider::NetworkLookupProvider;
 use pharos_node::pending_blocks::PendingBlocks;
 use pharos_node::pow_block::EnginePowBlockProvider;
+use pharos_node::shutdown::run_shutdown_sequence;
 use pharos_node::startup::rehydrate_fork_choice_store;
 use pharos_node::state_regen::StateRegenService;
 use pharos_node::subnet_rotation::run_subnet_rotation_loop;
@@ -1878,17 +1879,57 @@ async fn main() -> anyhow::Result<()> {
         info!("lookup loop started");
     }
 
-    // Block until Ctrl-C.
-    tokio::signal::ctrl_c()
-        .await
-        .context("ctrl_c signal handler failed")?;
+    // ── Signal handler: SIGTERM or SIGINT triggers ordered shutdown ──────────────
+    //
+    // Wait for SIGTERM (systemd stop) or SIGINT (Ctrl-C) — whichever arrives
+    // first — then drive the `D-graceful-shutdown-order` sequence (M11 Phase 17).
+    {
+        use tokio::signal::unix::{SignalKind, signal};
 
-    info!("received shutdown signal");
-    // Signal long-lived tasks (keepalive, etc.) to shut down.
+        let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("received SIGINT (Ctrl-C)");
+            }
+            _ = sigterm.recv() => {
+                info!("received SIGTERM");
+            }
+        }
+    }
+
+    info!("received shutdown signal; starting ordered shutdown sequence");
+    // Signal long-lived tasks (keepalive, backfill, freezer, etc.) to exit.
     let _ = pharos_node_shutdown_tx.send(true);
-    handle.shutdown().await;
-    info!("network shutdown complete");
 
+    // Run the ordered shutdown sequence per `D-graceful-shutdown-order`.
+    //
+    // Steps (a)+(b): `handle.shutdown()` sends `NetworkCommand::Shutdown` to
+    // the network task, which internally: drains in-flight gossip_tasks (step b),
+    // saves peer scores (step c — already in shutdown_goodbye), runs Goodbye(1)
+    // to connected peers, then exits. `drain_gossip` is a no-op future because
+    // the drain happens inside the network task.
+    //
+    // Steps (c)+(d): peer-score and ENR-seq saves happen inside the network task
+    // during `shutdown_goodbye` (Phase 14 / Phase 13 hooks). The closures here
+    // are no-ops kept for test instrumentation (the real saves run inside the
+    // network task before `handle.shutdown()` resolves).
+    let store_for_fsync = Arc::clone(&store_arc);
+    run_shutdown_sequence(
+        // (a) goodbye + (b) gossip drain — both driven inside the network task.
+        async move { handle.shutdown().await },
+        // (b) drain_gossip no-op: drained inside the network task.
+        async {},
+        // (c) save_scores no-op: done inside shutdown_goodbye (Phase 14).
+        || {},
+        // (d) save_enr no-op: ENR seq written on every mutation (Phase 13).
+        || {},
+        // (e) fsync chain DB.
+        move || store_for_fsync.fsync(),
+    )
+    .await;
+
+    info!("shutdown sequence complete");
     Ok(())
 }
 
