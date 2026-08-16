@@ -61,13 +61,13 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 ///   randao_mixes_reset, historical_summaries_update, participation_flag_updates,
 ///   sync_committee_updates
 /// - deneb (12): same as capella
-/// - electra (12, Phases 4a/4b): justification_and_finalization, inactivity_updates,
+/// - electra (15, Phases 4a/4b/4c): justification_and_finalization, inactivity_updates,
 ///   rewards_and_penalties, registry_updates (electra-native), slashings
 ///   (electra-native), pending_deposits (electra-native, Phase 4b), eth1_data_reset,
 ///   slashings_reset, randao_mixes_reset, historical_summaries_update,
-///   participation_flag_updates. `sync_committee_updates`, `pending_consolidations`,
-///   `effective_balance_updates` are NOT registered until Phase 4c adds their
-///   electra-native impls.
+///   participation_flag_updates, pending_consolidations (electra-native, Phase 4c),
+///   effective_balance_updates (electra-native, Phase 4c), sync_committee_updates
+///   (electra-native indices, Phase 4c).
 ///
 /// Supported forks: `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`,
 /// `"electra"`.
@@ -1688,9 +1688,12 @@ fn enumerate_electra_ep_subs_mainnet(
     use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
     use pharos_stf::deneb::epoch::process_rewards_and_penalties_deneb;
     use pharos_stf::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
+    use pharos_stf::electra::epoch::effective_balance_updates::process_effective_balance_updates as process_effective_balance_updates_electra;
+    use pharos_stf::electra::epoch::pending_consolidations::process_pending_consolidations as process_pending_consolidations_electra;
     use pharos_stf::electra::epoch::pending_deposits::process_pending_deposits as process_pending_deposits_electra;
     use pharos_stf::electra::epoch::registry_updates::process_registry_updates as process_registry_updates_electra;
     use pharos_stf::electra::epoch::slashings::process_slashings as process_slashings_electra;
+    use pharos_stf::electra::epoch::sync_committee_updates::process_sync_committee_updates as process_sync_committee_updates_electra;
     use pharos_stf::electra::helpers::{electra_state_to_deneb, update_electra_from_deneb};
     use pharos_types::{MainnetEthSpec as E, electra::MainnetBeaconState as S};
 
@@ -1875,12 +1878,63 @@ fn enumerate_electra_ep_subs_mainnet(
             update_electra_from_deneb(s, deneb);
             Ok(())
         }),
-        // NOTE: `sync_committee_updates` is NOT registered for electra. The spec
-        // call site is unmodified, but the underlying `get_next_sync_committee_indices`
-        // is `[Modified in Electra:EIP7251]` (16-bit random byte +
-        // `MAX_EFFECTIVE_BALANCE_ELECTRA`), so the altair delegation produces a wrong
-        // next-sync-committee. It lands in Phase 4c (Task 4c.2). See
-        // `docs/m12-electra-plan.md`.
+        ("pending_consolidations", |s| {
+            process_pending_consolidations_electra::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                134_217_728,
+                134_217_728,
+                262_144,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+        ("effective_balance_updates", |s| {
+            process_effective_balance_updates_electra::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                134_217_728,
+                134_217_728,
+                262_144,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+        ("sync_committee_updates", |s| {
+            process_sync_committee_updates_electra::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                134_217_728,
+                134_217_728,
+                262_144,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
     ];
 
     for (sub, apply_fn) in subs {
@@ -1937,9 +1991,12 @@ fn enumerate_electra_ep_subs_minimal(
     use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
     use pharos_stf::deneb::epoch::process_rewards_and_penalties_deneb;
     use pharos_stf::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
+    use pharos_stf::electra::epoch::effective_balance_updates::process_effective_balance_updates as process_effective_balance_updates_electra;
+    use pharos_stf::electra::epoch::pending_consolidations::process_pending_consolidations as process_pending_consolidations_electra;
     use pharos_stf::electra::epoch::pending_deposits::process_pending_deposits as process_pending_deposits_electra;
     use pharos_stf::electra::epoch::registry_updates::process_registry_updates as process_registry_updates_electra;
     use pharos_stf::electra::epoch::slashings::process_slashings as process_slashings_electra;
+    use pharos_stf::electra::epoch::sync_committee_updates::process_sync_committee_updates as process_sync_committee_updates_electra;
     use pharos_stf::electra::helpers::{electra_state_to_deneb, update_electra_from_deneb};
     use pharos_types::{MinimalEthSpec as E, electra::MinimalBeaconState as S};
 
@@ -2110,9 +2167,63 @@ fn enumerate_electra_ep_subs_minimal(
             update_electra_from_deneb(s, deneb);
             Ok(())
         }),
-        // NOTE: `sync_committee_updates` is NOT registered for electra (electra-delta
-        // in `get_next_sync_committee_indices`); lands in Phase 4c. See the mainnet
-        // walker for the full rationale.
+        ("pending_consolidations", |s| {
+            process_pending_consolidations_electra::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                134_217_728,
+                64,
+                64,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+        ("effective_balance_updates", |s| {
+            process_effective_balance_updates_electra::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                134_217_728,
+                64,
+                64,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+        ("sync_committee_updates", |s| {
+            process_sync_committee_updates_electra::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                134_217_728,
+                64,
+                64,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
     ];
 
     for (sub, apply_fn) in subs {

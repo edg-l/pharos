@@ -1565,6 +1565,257 @@ pub fn is_valid_deposit_signature<E: EthSpec>(
     pharos_utils::bls::verify(pubkey, signing_root.as_slice(), signature).unwrap_or(false)
 }
 
+// ── Task 4c.2: electra get_next_sync_committee_indices / get_next_sync_committee ─
+
+/// `get_next_sync_committee_indices` for Electra per
+/// `specs/electra/beacon-chain.md:679-706`.
+///
+/// `[Modified in Electra:EIP7251]` vs. altair in two ways:
+/// 1. The effective-balance filter uses a **16-bit** random value
+///    (`bytes_to_uint64(random_bytes[offset..offset+2])`, `MAX_RANDOM_VALUE =
+///    2**16 - 1`) instead of an 8-bit single byte. The seed re-hash advances
+///    every 16 candidates (`hash(seed + i // 16)`), and the byte offset within
+///    the hash is `(i % 16) * 2`.
+/// 2. The balance ceiling is `MAX_EFFECTIVE_BALANCE_ELECTRA`.
+///
+/// Mirrors `compute_proposer_index_electra` byte logic.
+#[allow(clippy::type_complexity)]
+pub fn get_next_sync_committee_indices_electra<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    E: EthSpec,
+>(
+    state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+    >,
+) -> Vec<ValidatorIndex> {
+    use crate::altair::helpers::DOMAIN_SYNC_COMMITTEE;
+
+    let current_epoch = compute_epoch_at_slot(state.slot, E::SLOTS_PER_EPOCH);
+    let epoch = Epoch(current_epoch.0 + 1);
+
+    let active_indices: Vec<ValidatorIndex> = state
+        .validators
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| {
+            if is_active_validator(v, epoch.0) {
+                Some(ValidatorIndex(i as u64))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let active_count = active_indices.len() as u64;
+    if active_count == 0 {
+        return Vec::new();
+    }
+
+    let seed = get_seed_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        E,
+    >(state, epoch, DOMAIN_SYNC_COMMITTEE);
+
+    const MAX_RANDOM_VALUE: u64 = (1 << 16) - 1;
+    let mut sync_committee_indices: Vec<ValidatorIndex> = Vec::new();
+    let mut i: u64 = 0;
+
+    while (sync_committee_indices.len() as u64) < E::SYNC_COMMITTEE_SIZE {
+        let shuffled_index = compute_shuffled_index(
+            i % active_count,
+            active_count,
+            &seed,
+            E::SHUFFLE_ROUND_COUNT,
+        );
+        let candidate_index = active_indices[shuffled_index as usize];
+        // [Modified in Electra] 16-bit random value.
+        let mut hash_input = seed.as_slice().to_vec();
+        hash_input.extend_from_slice(&uint_to_bytes(i / 16));
+        let random_bytes = pharos_utils::hash::hash(&hash_input);
+        let offset = ((i % 16) * 2) as usize;
+        let random_value = bytes_to_uint64(&random_bytes.as_slice()[offset..offset + 2]);
+        let effective_balance = state
+            .validators
+            .get(candidate_index.0 as usize)
+            .map(|v| v.effective_balance.0)
+            .unwrap_or(0);
+        if effective_balance * MAX_RANDOM_VALUE >= E::MAX_EFFECTIVE_BALANCE_ELECTRA * random_value {
+            sync_committee_indices.push(candidate_index);
+        }
+        i += 1;
+    }
+
+    sync_committee_indices
+}
+
+/// `get_seed` for a concrete electra `BeaconState`.
+///
+/// Mirrors `get_seed` from phase0 accessors but operates on the concrete electra
+/// `BeaconState.randao_mixes` directly (no `BeaconStateView` bound needed).
+#[allow(clippy::type_complexity)]
+fn get_seed_electra<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    E: EthSpec,
+>(
+    state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+    >,
+    epoch: Epoch,
+    domain_type: [u8; 4],
+) -> Hash256 {
+    let mix_epoch_raw = epoch
+        .0
+        .wrapping_add(E::EPOCHS_PER_HISTORICAL_VECTOR)
+        .wrapping_sub(E::MIN_SEED_LOOKAHEAD)
+        .wrapping_sub(1);
+    let mix_idx = (mix_epoch_raw % E::EPOCHS_PER_HISTORICAL_VECTOR) as usize;
+    let mix = state.randao_mixes.get(mix_idx).copied().unwrap_or_default();
+    let epoch_bytes = uint_to_bytes(epoch.0);
+    let mut input = [0u8; 4 + 8 + 32];
+    input[..4].copy_from_slice(&domain_type);
+    input[4..12].copy_from_slice(&epoch_bytes);
+    input[12..].copy_from_slice(mix.as_slice());
+    pharos_utils::hash::hash(&input)
+}
+
+/// `get_next_sync_committee` for Electra per `specs/altair/beacon-chain.md:297-304`,
+/// using the electra `get_next_sync_committee_indices`.
+#[allow(clippy::type_complexity)]
+pub fn get_next_sync_committee_electra<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    E: EthSpec,
+>(
+    state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+    >,
+) -> Result<pharos_types::altair::SyncCommittee<SYNC_COMMITTEE_SIZE>, StateTransitionError>
+where
+    BLSPubkey: Default + Clone,
+{
+    let indices = get_next_sync_committee_indices_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        E,
+    >(state);
+
+    let pubkeys: Vec<BLSPubkey> = indices
+        .iter()
+        .map(|idx| {
+            state
+                .validators
+                .get(idx.0 as usize)
+                .map(|v| v.pubkey)
+                .unwrap_or_default()
+        })
+        .collect();
+
+    let aggregate_pubkey = pharos_utils::bls::aggregate_pubkeys(&pubkeys)
+        .map_err(|_| StateTransitionError::InvalidBlockSignature)?;
+
+    let pubkeys_vec: pharos_ssz::SszVector<BLSPubkey, SYNC_COMMITTEE_SIZE> =
+        pharos_ssz::SszVector::from_vec(pubkeys).map_err(StateTransitionError::Ssz)?;
+
+    Ok(pharos_types::altair::SyncCommittee {
+        pubkeys: pubkeys_vec,
+        aggregate_pubkey,
+    })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

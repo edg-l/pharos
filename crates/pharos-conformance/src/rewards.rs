@@ -33,7 +33,7 @@ use pharos_utils::Gwei;
 
 use crate::fixture_walker::{
     WalkOpts, load_altair_state, load_bellatrix_state, load_capella_state, load_deneb_state,
-    load_phase0_state, load_ssz_snappy, walk_category,
+    load_electra_state, load_phase0_state, load_ssz_snappy, walk_category,
 };
 use crate::fs_util::dir_name;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
@@ -395,6 +395,102 @@ pub fn enumerate_rewards(
                         }
                     })
                 }
+                ("electra", "mainnet") => {
+                    use pharos_stf::altair::helpers::get_flag_index_deltas;
+                    use pharos_stf::deneb::helpers::{
+                        deneb_state_to_altair, get_inactivity_penalty_deltas_deneb,
+                    };
+                    use pharos_stf::electra::helpers::electra_state_to_deneb;
+                    use pharos_types::{MainnetEthSpec as E, electra::MainnetBeaconState};
+                    Box::new(move || {
+                        match run_electra_rewards_case::<E, MainnetBeaconState>(
+                            &case_dir,
+                            &case_name,
+                            |s, fi| {
+                                let d = electra_state_to_deneb(s);
+                                let a = deneb_state_to_altair(&d);
+                                get_flag_index_deltas::<
+                                    8192,
+                                    16_777_216,
+                                    2048,
+                                    1_099_511_627_776,
+                                    65536,
+                                    8192,
+                                    4,
+                                    512,
+                                    E,
+                                >(&a, fi)
+                            },
+                            |s| {
+                                let d = electra_state_to_deneb(s);
+                                get_inactivity_penalty_deltas_deneb::<
+                                    8192,
+                                    16_777_216,
+                                    2048,
+                                    1_099_511_627_776,
+                                    65536,
+                                    8192,
+                                    4,
+                                    512,
+                                    256,
+                                    32,
+                                    E,
+                                >(&d)
+                            },
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
+                ("electra", _) => {
+                    use pharos_stf::altair::helpers::get_flag_index_deltas;
+                    use pharos_stf::deneb::helpers::{
+                        deneb_state_to_altair, get_inactivity_penalty_deltas_deneb,
+                    };
+                    use pharos_stf::electra::helpers::electra_state_to_deneb;
+                    use pharos_types::{MinimalEthSpec as E, electra::MinimalBeaconState};
+                    Box::new(move || {
+                        match run_electra_rewards_case::<E, MinimalBeaconState>(
+                            &case_dir,
+                            &case_name,
+                            |s, fi| {
+                                let d = electra_state_to_deneb(s);
+                                let a = deneb_state_to_altair(&d);
+                                get_flag_index_deltas::<
+                                    64,
+                                    16_777_216,
+                                    32,
+                                    1_099_511_627_776,
+                                    64,
+                                    64,
+                                    4,
+                                    32,
+                                    E,
+                                >(&a, fi)
+                            },
+                            |s| {
+                                let d = electra_state_to_deneb(s);
+                                get_inactivity_penalty_deltas_deneb::<
+                                    64,
+                                    16_777_216,
+                                    32,
+                                    1_099_511_627_776,
+                                    64,
+                                    64,
+                                    4,
+                                    32,
+                                    256,
+                                    32,
+                                    E,
+                                >(&d)
+                            },
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
                 _ => {
                     // deneb/minimal (and any future fork defaults to deneb/minimal)
                     use pharos_stf::altair::helpers::get_flag_index_deltas;
@@ -701,6 +797,63 @@ where
     let pre_inner = match E::into_deneb_state(pre) {
         Some(s) => s,
         None => return CaseResult::Fail(format!("{case_name}: pre is not deneb state")),
+    };
+
+    macro_rules! check_flag_deltas {
+        ($flag_index:expr, $file:literal, $flag_name:literal) => {{
+            let (rewards, penalties) = get_flag_deltas(&pre_inner, $flag_index);
+            let actual = make_deltas(rewards, penalties);
+            let expected = match load_ssz_snappy::<Deltas<1_099_511_627_776u64>>(case_dir, $file) {
+                Ok(d) => d,
+                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+            };
+            if actual.as_ssz_bytes() != expected.as_ssz_bytes() {
+                return CaseResult::Fail(format!("{case_name}: {} mismatch", $flag_name));
+            }
+        }};
+    }
+
+    check_flag_deltas!(0, "source_deltas.ssz_snappy", "source_deltas");
+    check_flag_deltas!(1, "target_deltas.ssz_snappy", "target_deltas");
+    check_flag_deltas!(2, "head_deltas.ssz_snappy", "head_deltas");
+
+    let (rewards, penalties) = get_inactivity_deltas(&pre_inner);
+    let actual_inactivity = make_deltas(rewards, penalties);
+    let expected_inactivity = match load_ssz_snappy::<Deltas<1_099_511_627_776u64>>(
+        case_dir,
+        "inactivity_penalty_deltas.ssz_snappy",
+    ) {
+        Ok(d) => d,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    if actual_inactivity.as_ssz_bytes() != expected_inactivity.as_ssz_bytes() {
+        return CaseResult::Fail(format!("{case_name}: inactivity_penalty_deltas mismatch"));
+    }
+
+    CaseResult::Pass
+}
+
+/// Electra rewards: the flag/inactivity reward algorithm is unchanged from
+/// deneb, so the electra state is projected to deneb (`electra_state_to_deneb`)
+/// and the deneb-style delta closures run on the projection.
+fn run_electra_rewards_case<E, S>(
+    case_dir: &Path,
+    case_name: &str,
+    get_flag_deltas: impl Fn(&S, usize) -> (Vec<Gwei>, Vec<Gwei>),
+    get_inactivity_deltas: impl Fn(&S) -> (Vec<Gwei>, Vec<Gwei>),
+) -> CaseResult
+where
+    E: EthSpec<ElectraBeaconState = S>,
+    S: pharos_ssz::Decode,
+{
+    let pre = match load_electra_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let pre_inner = match E::into_electra_state(pre) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not electra state")),
     };
 
     macro_rules! check_flag_deltas {
