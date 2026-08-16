@@ -1382,36 +1382,7 @@ pub fn run_operations_altair_minimal(root: &Path) -> OpsResult {
 
 // ── Bellatrix operations ──────────────────────────────────────────────────────
 
-/// Run all bellatrix operation sub-categories for the mainnet preset.
-pub fn run_operations_bellatrix_mainnet(root: &Path) -> OpsResult {
-    let mut total = OpsResult::new();
-    total.merge(run_bellatrix_block_header_mainnet(root));
-    total.merge(run_bellatrix_proposer_slashing_mainnet(root));
-    total.merge(run_bellatrix_attester_slashing_mainnet(root));
-    total.merge(run_bellatrix_deposit_mainnet(root));
-    total.merge(run_bellatrix_attestation_mainnet(root));
-    total.merge(run_bellatrix_voluntary_exit_mainnet(root));
-    total.merge(run_bellatrix_sync_aggregate_mainnet(root));
-    total.merge(run_bellatrix_execution_payload_mainnet(root));
-    total
-}
-
-/// Run all bellatrix operation sub-categories for the minimal preset.
-pub fn run_operations_bellatrix_minimal(root: &Path) -> OpsResult {
-    let mut total = OpsResult::new();
-    total.merge(run_bellatrix_block_header_minimal(root));
-    total.merge(run_bellatrix_proposer_slashing_minimal(root));
-    total.merge(run_bellatrix_attester_slashing_minimal(root));
-    total.merge(run_bellatrix_deposit_minimal(root));
-    total.merge(run_bellatrix_attestation_minimal(root));
-    total.merge(run_bellatrix_voluntary_exit_minimal(root));
-    total.merge(run_bellatrix_sync_aggregate_minimal(root));
-    total.merge(run_bellatrix_execution_payload_minimal(root));
-    total
-}
-
-// ── Bellatrix helpers ─────────────────────────────────────────────────────────
-
+/// Walk options for bellatrix operation fixtures.
 fn bellatrix_ops_walk_opts() -> WalkOpts {
     WalkOpts {
         meta_required: false,
@@ -1419,1114 +1390,1126 @@ fn bellatrix_ops_walk_opts() -> WalkOpts {
     }
 }
 
-fn run_bellatrix_op_preset(
-    root: &Path,
+/// Descriptor table for bellatrix operations — mainnet preset.
+///
+/// Sub order (verified from `run_operations_bellatrix_mainnet` body):
+///   block_header, proposer_slashing, attester_slashing, deposit, attestation,
+///   voluntary_exit, sync_aggregate, execution_payload
+///
+/// block_header, sync_aggregate, and execution_payload are bespoke (concrete
+/// preset types, projection through `bellatrix_state_to_altair` /
+/// `update_bellatrix_from_altair`). The 5 shared subs operate directly on the
+/// bellatrix state. All closures return `CaseOutcome` directly.
+/// EthSpec bounds (D-apply-op-no-ethspec-bound): none on this builder; each
+/// closure names `MainnetEthSpec` directly.
+#[allow(clippy::type_complexity)]
+fn bellatrix_op_table_mainnet() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)> {
+    use pharos_types::MainnetEthSpec as E;
+    vec![
+        // block_header: bespoke — projects via bellatrix_state_to_altair, patches body_root.
+        (
+            "block_header",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_ssz::TreeHash as _;
+                use pharos_stf::altair::block::process_block_header_altair;
+                use pharos_stf::bellatrix::helpers::{
+                    bellatrix_state_to_altair, update_bellatrix_from_altair,
+                };
+                use pharos_types::bellatrix::MainnetBeaconBlock;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let block =
+                    match load_ssz_snappy::<MainnetBeaconBlock>(&case_dir, "block.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let mut altair_state = bellatrix_state_to_altair(&pre);
+                let altair_block = pharos_stf::bellatrix::bellatrix_block_to_altair_block(&block);
+                let result = process_block_header_altair::<
+                    16,
+                    2,
+                    128,
+                    16,
+                    16,
+                    2048,
+                    33,
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut altair_state, &altair_block);
+                // Patch body_root to the Bellatrix block body hash (includes execution_payload),
+                // matching what `process_block` does per spec line 214 in bellatrix/block.rs.
+                if result.is_ok() {
+                    altair_state.latest_block_header.body_root = block.body.tree_hash_root();
+                }
+                update_bellatrix_from_altair(&mut pre, altair_state);
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "block_header",
+                )
+            }),
+        ),
+        // proposer_slashing: operates directly on bellatrix state.
+        (
+            "proposer_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::bellatrix::operations::process_proposer_slashing_bellatrix;
+                use pharos_types::phase0::ProposerSlashing;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<ProposerSlashing>(
+                    &case_dir,
+                    "proposer_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_proposer_slashing_bellatrix::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "proposer_slashing",
+                )
+            }),
+        ),
+        // attester_slashing: operates directly on bellatrix state.
+        (
+            "attester_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::bellatrix::operations::process_attester_slashing_bellatrix;
+                use pharos_types::phase0::AttesterSlashing;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<AttesterSlashing<2048>>(
+                    &case_dir,
+                    "attester_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_attester_slashing_bellatrix::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attester_slashing",
+                )
+            }),
+        ),
+        // deposit: projects through bellatrix_state_to_altair.
+        (
+            "deposit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_deposit;
+                use pharos_stf::bellatrix::helpers::{
+                    bellatrix_state_to_altair, update_bellatrix_from_altair,
+                };
+                use pharos_types::phase0::Deposit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<Deposit<33>>(&case_dir, "deposit.ssz_snappy") {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = bellatrix_state_to_altair(&pre);
+                let result = process_deposit::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_bellatrix_from_altair(&mut pre, altair_state);
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "deposit")
+            }),
+        ),
+        // attestation: projects through bellatrix_state_to_altair.
+        (
+            "attestation",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_attestation;
+                use pharos_stf::bellatrix::helpers::{
+                    bellatrix_state_to_altair, update_bellatrix_from_altair,
+                };
+                use pharos_types::phase0::Attestation;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op =
+                    match load_ssz_snappy::<Attestation<2048>>(&case_dir, "attestation.ssz_snappy")
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let mut altair_state = bellatrix_state_to_altair(&pre);
+                let result = process_attestation::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_bellatrix_from_altair(&mut pre, altair_state);
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+            }),
+        ),
+        // voluntary_exit: projects through bellatrix_state_to_altair.
+        (
+            "voluntary_exit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_voluntary_exit;
+                use pharos_stf::bellatrix::helpers::{
+                    bellatrix_state_to_altair, update_bellatrix_from_altair,
+                };
+                use pharos_types::phase0::SignedVoluntaryExit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<SignedVoluntaryExit>(
+                    &case_dir,
+                    "voluntary_exit.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = bellatrix_state_to_altair(&pre);
+                let result = process_voluntary_exit::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_bellatrix_from_altair(&mut pre, altair_state);
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "voluntary_exit",
+                )
+            }),
+        ),
+        // sync_aggregate: bespoke — projects via bellatrix_state_to_altair, uses MainnetSyncAggregate.
+        (
+            "sync_aggregate",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, meta| {
+                use pharos_stf::altair::operations::process_sync_aggregate;
+                use pharos_stf::bellatrix::helpers::{
+                    bellatrix_state_to_altair, update_bellatrix_from_altair,
+                };
+                use pharos_types::altair::MainnetSyncAggregate;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<MainnetSyncAggregate>(
+                    &case_dir,
+                    "sync_aggregate.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = bellatrix_state_to_altair(&pre);
+                let result = process_sync_aggregate::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_bellatrix_from_altair(&mut pre, altair_state);
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "sync_aggregate",
+                )
+            }),
+        ),
+        // execution_payload: bespoke — uses read_execution_valid + FixedExecutionEngine.
+        (
+            "execution_payload",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::FixedExecutionEngine;
+                use pharos_stf::bellatrix::operations::process_execution_payload;
+                use pharos_types::bellatrix::MainnetBeaconBlockBody;
+
+                let execution_valid = read_execution_valid(&case_dir);
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let body =
+                    match load_ssz_snappy::<MainnetBeaconBlockBody>(&case_dir, "body.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let engine = FixedExecutionEngine(execution_valid);
+                let mut pre = pre_inner;
+                let result =
+                    process_execution_payload::<
+                        16,
+                        2,
+                        128,
+                        16,
+                        16,
+                        2048,
+                        33,
+                        512,
+                        1_073_741_824,
+                        1_048_576,
+                        8192,
+                        16_777_216,
+                        2048,
+                        1_099_511_627_776,
+                        65536,
+                        8192,
+                        4,
+                        256,
+                        32,
+                        E,
+                        FixedExecutionEngine,
+                    >(&mut pre, &body, &engine, &E::default_runtime_config());
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result.map(|_| ()),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "execution_payload",
+                )
+            }),
+        ),
+    ]
+}
+
+/// Descriptor table for bellatrix operations — minimal preset.
+///
+/// Same sub order as mainnet: block_header, proposer_slashing, attester_slashing,
+/// deposit, attestation, voluntary_exit, sync_aggregate, execution_payload.
+#[allow(clippy::type_complexity)]
+fn bellatrix_op_table_minimal() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)> {
+    use pharos_types::MinimalEthSpec as E;
+    vec![
+        // block_header: bespoke — projects via bellatrix_state_to_altair, patches body_root.
+        (
+            "block_header",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_ssz::TreeHash as _;
+                use pharos_stf::altair::block::process_block_header_altair;
+                use pharos_stf::bellatrix::helpers::{
+                    bellatrix_state_to_altair, update_bellatrix_from_altair,
+                };
+                use pharos_types::bellatrix::MinimalBeaconBlock;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let block =
+                    match load_ssz_snappy::<MinimalBeaconBlock>(&case_dir, "block.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let mut altair_state = bellatrix_state_to_altair(&pre);
+                let altair_block = pharos_stf::bellatrix::bellatrix_block_to_altair_block(&block);
+                let result = process_block_header_altair::<
+                    16,
+                    2,
+                    128,
+                    16,
+                    16,
+                    2048,
+                    33,
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut altair_state, &altair_block);
+                // Patch body_root to the Bellatrix block body hash (includes execution_payload).
+                if result.is_ok() {
+                    altair_state.latest_block_header.body_root = block.body.tree_hash_root();
+                }
+                update_bellatrix_from_altair(&mut pre, altair_state);
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "block_header",
+                )
+            }),
+        ),
+        // proposer_slashing: operates directly on bellatrix state.
+        (
+            "proposer_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::bellatrix::operations::process_proposer_slashing_bellatrix;
+                use pharos_types::phase0::ProposerSlashing;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<ProposerSlashing>(
+                    &case_dir,
+                    "proposer_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_proposer_slashing_bellatrix::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "proposer_slashing",
+                )
+            }),
+        ),
+        // attester_slashing: operates directly on bellatrix state.
+        (
+            "attester_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::bellatrix::operations::process_attester_slashing_bellatrix;
+                use pharos_types::phase0::AttesterSlashing;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<AttesterSlashing<2048>>(
+                    &case_dir,
+                    "attester_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_attester_slashing_bellatrix::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attester_slashing",
+                )
+            }),
+        ),
+        // deposit: projects through bellatrix_state_to_altair.
+        (
+            "deposit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_deposit;
+                use pharos_stf::bellatrix::helpers::{
+                    bellatrix_state_to_altair, update_bellatrix_from_altair,
+                };
+                use pharos_types::phase0::Deposit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<Deposit<33>>(&case_dir, "deposit.ssz_snappy") {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = bellatrix_state_to_altair(&pre);
+                let result =
+                    process_deposit::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                        &mut altair_state,
+                        &op,
+                        bls_verify(&meta),
+                    );
+                update_bellatrix_from_altair(&mut pre, altair_state);
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "deposit")
+            }),
+        ),
+        // attestation: projects through bellatrix_state_to_altair.
+        (
+            "attestation",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_attestation;
+                use pharos_stf::bellatrix::helpers::{
+                    bellatrix_state_to_altair, update_bellatrix_from_altair,
+                };
+                use pharos_types::phase0::Attestation;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op =
+                    match load_ssz_snappy::<Attestation<2048>>(&case_dir, "attestation.ssz_snappy")
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let mut altair_state = bellatrix_state_to_altair(&pre);
+                let result =
+                    process_attestation::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                        &mut altair_state,
+                        &op,
+                        bls_verify(&meta),
+                    );
+                update_bellatrix_from_altair(&mut pre, altair_state);
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+            }),
+        ),
+        // voluntary_exit: projects through bellatrix_state_to_altair.
+        (
+            "voluntary_exit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_voluntary_exit;
+                use pharos_stf::bellatrix::helpers::{
+                    bellatrix_state_to_altair, update_bellatrix_from_altair,
+                };
+                use pharos_types::phase0::SignedVoluntaryExit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<SignedVoluntaryExit>(
+                    &case_dir,
+                    "voluntary_exit.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = bellatrix_state_to_altair(&pre);
+                let result = process_voluntary_exit::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_bellatrix_from_altair(&mut pre, altair_state);
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "voluntary_exit",
+                )
+            }),
+        ),
+        // sync_aggregate: bespoke — projects via bellatrix_state_to_altair, uses MinimalSyncAggregate.
+        (
+            "sync_aggregate",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, meta| {
+                use pharos_stf::altair::operations::process_sync_aggregate;
+                use pharos_stf::bellatrix::helpers::{
+                    bellatrix_state_to_altair, update_bellatrix_from_altair,
+                };
+                use pharos_types::altair::MinimalSyncAggregate;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<MinimalSyncAggregate>(
+                    &case_dir,
+                    "sync_aggregate.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let mut altair_state = bellatrix_state_to_altair(&pre);
+                let result = process_sync_aggregate::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut altair_state, &op, bls_verify(&meta));
+                update_bellatrix_from_altair(&mut pre, altair_state);
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "sync_aggregate",
+                )
+            }),
+        ),
+        // execution_payload: bespoke — uses read_execution_valid + FixedExecutionEngine.
+        (
+            "execution_payload",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::FixedExecutionEngine;
+                use pharos_stf::bellatrix::operations::process_execution_payload;
+                use pharos_types::bellatrix::MinimalBeaconBlockBody;
+
+                let execution_valid = read_execution_valid(&case_dir);
+                let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::bellatrix_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let body =
+                    match load_ssz_snappy::<MinimalBeaconBlockBody>(&case_dir, "body.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let engine = FixedExecutionEngine(execution_valid);
+                let mut pre = pre_inner;
+                let result =
+                    process_execution_payload::<
+                        16,
+                        2,
+                        128,
+                        16,
+                        16,
+                        2048,
+                        33,
+                        32,
+                        1_073_741_824,
+                        1_048_576,
+                        64,
+                        16_777_216,
+                        32,
+                        1_099_511_627_776,
+                        64,
+                        64,
+                        4,
+                        256,
+                        32,
+                        E,
+                        FixedExecutionEngine,
+                    >(&mut pre, &body, &engine, &E::default_runtime_config());
+                let current_bytes = E::bellatrix_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result.map(|_| ()),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "execution_payload",
+                )
+            }),
+        ),
+    ]
+}
+
+/// Enumerate all bellatrix operation cases for one preset, returning `CaseTask`s
+/// with sequential `case_ordinal` in (sub-table-order, walk-order).
+fn enumerate_operations_bellatrix(
+    root: &std::path::Path,
     preset: &str,
-    sub: &str,
-    run_case: impl Fn(&Path, &str, bool) -> CaseResult + Sync + Send,
-) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "bellatrix",
-        "operations",
-        Some(sub),
-        bellatrix_ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "bellatrix/operations/{preset}/{sub}/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_case(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-// ── bellatrix/block_header ────────────────────────────────────────────────────
-
-fn run_bellatrix_block_header_mainnet(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(root, "mainnet", "block_header", |case_dir, case_name, _| {
-        use pharos_ssz::TreeHash as _;
-        use pharos_stf::altair::block::process_block_header_altair;
-        use pharos_stf::bellatrix::helpers::{
-            bellatrix_state_to_altair, update_bellatrix_from_altair,
-        };
-        use pharos_types::{MainnetEthSpec as E, bellatrix::MainnetBeaconBlock};
-
-        let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-            case_dir,
-            "pre.ssz_snappy",
-        ) {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-            match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                case_dir,
-                "post.ssz_snappy",
-            ) {
-                Ok(v) => Some(E::bellatrix_into_state(v)),
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            }
-        } else {
-            None
-        };
-        let block = match load_ssz_snappy::<MainnetBeaconBlock>(case_dir, "block.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let mut pre = pre_inner;
-        let mut altair_state = bellatrix_state_to_altair(&pre);
-        let altair_block = pharos_stf::bellatrix::bellatrix_block_to_altair_block(&block);
-        let result = process_block_header_altair::<
-            16,
-            2,
-            128,
-            16,
-            16,
-            2048,
-            33,
-            8192,
-            16_777_216,
-            2048,
-            1_099_511_627_776,
-            65536,
-            8192,
-            4,
-            512,
-            E,
-        >(&mut altair_state, &altair_block);
-        // Patch body_root to the Bellatrix block body hash (includes execution_payload),
-        // matching what `process_block` does per spec line 214 in bellatrix/block.rs.
-        if result.is_ok() {
-            altair_state.latest_block_header.body_root = block.body.tree_hash_root();
-        }
-        update_bellatrix_from_altair(&mut pre, altair_state);
-        cmp_bellatrix_result(
-            result,
-            E::bellatrix_into_state(pre).as_ssz_bytes(),
-            post_inner.map(|s| s.as_ssz_bytes()),
-            case_name,
-            "block_header",
-        )
-    })
-}
-
-fn run_bellatrix_block_header_minimal(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(root, "minimal", "block_header", |case_dir, case_name, _| {
-        use pharos_ssz::TreeHash as _;
-        use pharos_stf::altair::block::process_block_header_altair;
-        use pharos_stf::bellatrix::helpers::{
-            bellatrix_state_to_altair, update_bellatrix_from_altair,
-        };
-        use pharos_types::{MinimalEthSpec as E, bellatrix::MinimalBeaconBlock};
-
-        let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-            case_dir,
-            "pre.ssz_snappy",
-        ) {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-            match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                case_dir,
-                "post.ssz_snappy",
-            ) {
-                Ok(v) => Some(E::bellatrix_into_state(v)),
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            }
-        } else {
-            None
-        };
-        let block = match load_ssz_snappy::<MinimalBeaconBlock>(case_dir, "block.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-        let mut pre = pre_inner;
-        let mut altair_state = bellatrix_state_to_altair(&pre);
-        let altair_block = pharos_stf::bellatrix::bellatrix_block_to_altair_block(&block);
-        let result = process_block_header_altair::<
-            16,
-            2,
-            128,
-            16,
-            16,
-            2048,
-            33,
-            64,
-            16_777_216,
-            32,
-            1_099_511_627_776,
-            64,
-            64,
-            4,
-            32,
-            E,
-        >(&mut altair_state, &altair_block);
-        // Patch body_root to the Bellatrix block body hash (includes execution_payload).
-        if result.is_ok() {
-            altair_state.latest_block_header.body_root = block.body.tree_hash_root();
-        }
-        update_bellatrix_from_altair(&mut pre, altair_state);
-        cmp_bellatrix_result(
-            result,
-            E::bellatrix_into_state(pre).as_ssz_bytes(),
-            post_inner.map(|s| s.as_ssz_bytes()),
-            case_name,
-            "block_header",
-        )
-    })
-}
-
-// ── bellatrix/proposer_slashing ───────────────────────────────────────────────
-
-fn run_bellatrix_proposer_slashing_mainnet(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(
-        root,
-        "mainnet",
-        "proposer_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::bellatrix::operations::process_proposer_slashing_bellatrix;
-            use pharos_types::{MainnetEthSpec as E, phase0::ProposerSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::bellatrix_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing =
-                match load_ssz_snappy::<ProposerSlashing>(case_dir, "proposer_slashing.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let result = process_proposer_slashing_bellatrix::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                256,
-                32,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            cmp_bellatrix_result(
-                result,
-                E::bellatrix_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "proposer_slashing",
-            )
-        },
-    )
-}
-
-fn run_bellatrix_proposer_slashing_minimal(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(
-        root,
-        "minimal",
-        "proposer_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::bellatrix::operations::process_proposer_slashing_bellatrix;
-            use pharos_types::{MinimalEthSpec as E, phase0::ProposerSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::bellatrix_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing =
-                match load_ssz_snappy::<ProposerSlashing>(case_dir, "proposer_slashing.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let result = process_proposer_slashing_bellatrix::<
-                64,
-                16_777_216,
-                32,
-                1_099_511_627_776,
-                64,
-                64,
-                4,
-                32,
-                256,
-                32,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            cmp_bellatrix_result(
-                result,
-                E::bellatrix_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "proposer_slashing",
-            )
-        },
-    )
-}
-
-// ── bellatrix/attester_slashing ───────────────────────────────────────────────
-
-fn run_bellatrix_attester_slashing_mainnet(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(
-        root,
-        "mainnet",
-        "attester_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::bellatrix::operations::process_attester_slashing_bellatrix;
-            use pharos_types::{MainnetEthSpec as E, phase0::AttesterSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::bellatrix_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing = match load_ssz_snappy::<AttesterSlashing<2048>>(
-                case_dir,
-                "attester_slashing.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let mut pre = pre_inner;
-            let result = process_attester_slashing_bellatrix::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                256,
-                32,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            cmp_bellatrix_result(
-                result,
-                E::bellatrix_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attester_slashing",
-            )
-        },
-    )
-}
-
-fn run_bellatrix_attester_slashing_minimal(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(
-        root,
-        "minimal",
-        "attester_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::bellatrix::operations::process_attester_slashing_bellatrix;
-            use pharos_types::{MinimalEthSpec as E, phase0::AttesterSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::bellatrix_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing = match load_ssz_snappy::<AttesterSlashing<2048>>(
-                case_dir,
-                "attester_slashing.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let mut pre = pre_inner;
-            let result = process_attester_slashing_bellatrix::<
-                64,
-                16_777_216,
-                32,
-                1_099_511_627_776,
-                64,
-                64,
-                4,
-                32,
-                256,
-                32,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            cmp_bellatrix_result(
-                result,
-                E::bellatrix_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attester_slashing",
-            )
-        },
-    )
-}
-
-// ── bellatrix/deposit ─────────────────────────────────────────────────────────
-
-fn run_bellatrix_deposit_mainnet(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(
-        root,
-        "mainnet",
-        "deposit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_deposit;
-            use pharos_stf::bellatrix::helpers::{
-                bellatrix_state_to_altair, update_bellatrix_from_altair,
-            };
-            use pharos_types::{MainnetEthSpec as E, phase0::Deposit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::bellatrix_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let deposit = match load_ssz_snappy::<Deposit<33>>(case_dir, "deposit.ssz_snappy") {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let mut pre = pre_inner;
-            let mut altair_state = bellatrix_state_to_altair(&pre);
-            let result = process_deposit::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut altair_state, &deposit, verify_signatures);
-            update_bellatrix_from_altair(&mut pre, altair_state);
-            cmp_bellatrix_result(
-                result,
-                E::bellatrix_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "deposit",
-            )
-        },
-    )
-}
-
-fn run_bellatrix_deposit_minimal(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(
-        root,
-        "minimal",
-        "deposit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_deposit;
-            use pharos_stf::bellatrix::helpers::{
-                bellatrix_state_to_altair, update_bellatrix_from_altair,
-            };
-            use pharos_types::{MinimalEthSpec as E, phase0::Deposit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::bellatrix_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let deposit = match load_ssz_snappy::<Deposit<33>>(case_dir, "deposit.ssz_snappy") {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let mut pre = pre_inner;
-            let mut altair_state = bellatrix_state_to_altair(&pre);
-            let result = process_deposit::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                &mut altair_state,
-                &deposit,
-                verify_signatures,
-            );
-            update_bellatrix_from_altair(&mut pre, altair_state);
-            cmp_bellatrix_result(
-                result,
-                E::bellatrix_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "deposit",
-            )
-        },
-    )
-}
-
-// ── bellatrix/attestation ─────────────────────────────────────────────────────
-
-fn run_bellatrix_attestation_mainnet(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(
-        root,
-        "mainnet",
-        "attestation",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_attestation;
-            use pharos_stf::bellatrix::helpers::{
-                bellatrix_state_to_altair, update_bellatrix_from_altair,
-            };
-            use pharos_types::{MainnetEthSpec as E, phase0::Attestation};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::bellatrix_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let attestation =
-                match load_ssz_snappy::<Attestation<2048>>(case_dir, "attestation.ssz_snappy") {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let mut altair_state = bellatrix_state_to_altair(&pre);
-            let result = process_attestation::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut altair_state, &attestation, verify_signatures);
-            update_bellatrix_from_altair(&mut pre, altair_state);
-            cmp_bellatrix_result(
-                result,
-                E::bellatrix_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attestation",
-            )
-        },
-    )
-}
-
-fn run_bellatrix_attestation_minimal(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(
-        root,
-        "minimal",
-        "attestation",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_attestation;
-            use pharos_stf::bellatrix::helpers::{
-                bellatrix_state_to_altair, update_bellatrix_from_altair,
-            };
-            use pharos_types::{MinimalEthSpec as E, phase0::Attestation};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::bellatrix_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let attestation =
-                match load_ssz_snappy::<Attestation<2048>>(case_dir, "attestation.ssz_snappy") {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let mut altair_state = bellatrix_state_to_altair(&pre);
-            let result =
-                process_attestation::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                    &mut altair_state,
-                    &attestation,
-                    verify_signatures,
-                );
-            update_bellatrix_from_altair(&mut pre, altair_state);
-            cmp_bellatrix_result(
-                result,
-                E::bellatrix_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attestation",
-            )
-        },
-    )
-}
-
-// ── bellatrix/voluntary_exit ──────────────────────────────────────────────────
-
-fn run_bellatrix_voluntary_exit_mainnet(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(
-        root,
-        "mainnet",
-        "voluntary_exit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_voluntary_exit;
-            use pharos_stf::bellatrix::helpers::{
-                bellatrix_state_to_altair, update_bellatrix_from_altair,
-            };
-            use pharos_types::{MainnetEthSpec as E, phase0::SignedVoluntaryExit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::bellatrix_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let exit =
-                match load_ssz_snappy::<SignedVoluntaryExit>(case_dir, "voluntary_exit.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let mut altair_state = bellatrix_state_to_altair(&pre);
-            let result = process_voluntary_exit::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut altair_state, &exit, verify_signatures);
-            update_bellatrix_from_altair(&mut pre, altair_state);
-            cmp_bellatrix_result(
-                result,
-                E::bellatrix_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "voluntary_exit",
-            )
-        },
-    )
-}
-
-fn run_bellatrix_voluntary_exit_minimal(root: &Path) -> OpsResult {
-    run_bellatrix_op_preset(
-        root,
-        "minimal",
-        "voluntary_exit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_voluntary_exit;
-            use pharos_stf::bellatrix::helpers::{
-                bellatrix_state_to_altair, update_bellatrix_from_altair,
-            };
-            use pharos_types::{MinimalEthSpec as E, phase0::SignedVoluntaryExit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::bellatrix_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let exit =
-                match load_ssz_snappy::<SignedVoluntaryExit>(case_dir, "voluntary_exit.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-            let mut pre = pre_inner;
-            let mut altair_state = bellatrix_state_to_altair(&pre);
-            let result =
-                process_voluntary_exit::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                    &mut altair_state,
-                    &exit,
-                    verify_signatures,
-                );
-            update_bellatrix_from_altair(&mut pre, altair_state);
-            cmp_bellatrix_result(
-                result,
-                E::bellatrix_into_state(pre).as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "voluntary_exit",
-            )
-        },
-    )
-}
-
-// ── bellatrix/sync_aggregate ──────────────────────────────────────────────────
-
-fn run_bellatrix_sync_aggregate_mainnet(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "bellatrix",
-        "operations",
-        Some("sync_aggregate"),
-        bellatrix_ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "bellatrix/operations/mainnet/sync_aggregate/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_bellatrix_sync_aggregate_case_mainnet(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_bellatrix_sync_aggregate_case_mainnet(
-    case_dir: &Path,
-    case_name: &str,
-    verify_signatures: bool,
-) -> CaseResult {
-    use pharos_stf::altair::operations::process_sync_aggregate;
-    use pharos_stf::bellatrix::helpers::{bellatrix_state_to_altair, update_bellatrix_from_altair};
-    use pharos_types::{MainnetEthSpec as E, altair::MainnetSyncAggregate};
-
-    let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::bellatrix_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
+    row_ordinal: u32,
+) -> Vec<crate::task::CaseTask> {
+    let table = if preset == "mainnet" {
+        bellatrix_op_table_mainnet()
     } else {
-        None
+        bellatrix_op_table_minimal()
     };
-    let sync_aggregate =
-        match load_ssz_snappy::<MainnetSyncAggregate>(case_dir, "sync_aggregate.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-    let mut pre = pre_inner;
-    let mut altair_state = bellatrix_state_to_altair(&pre);
-    let result = process_sync_aggregate::<
-        8192,
-        16_777_216,
-        2048,
-        1_099_511_627_776,
-        65536,
-        8192,
-        4,
-        512,
-        E,
-    >(&mut altair_state, &sync_aggregate, verify_signatures);
-    update_bellatrix_from_altair(&mut pre, altair_state);
-    cmp_bellatrix_result(
-        result,
-        E::bellatrix_into_state(pre).as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "sync_aggregate",
-    )
-}
-
-fn run_bellatrix_sync_aggregate_minimal(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "bellatrix",
-        "operations",
-        Some("sync_aggregate"),
-        bellatrix_ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "bellatrix/operations/minimal/sync_aggregate/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_bellatrix_sync_aggregate_case_minimal(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
+    let mut case_ordinal: u32 = 0;
+    let mut tasks = Vec::new();
+    for (sub, apply) in table {
+        let apply = std::sync::Arc::new(apply);
+        let sub_tasks = enumerate_op(
+            root,
+            "bellatrix",
+            preset,
+            sub,
+            row_ordinal,
+            &mut case_ordinal,
+            bellatrix_ops_walk_opts(),
+            move |dir, name, meta| apply(dir, name, meta),
+        );
+        tasks.extend(sub_tasks);
     }
-    out
+    tasks
 }
 
-fn run_bellatrix_sync_aggregate_case_minimal(
-    case_dir: &Path,
-    case_name: &str,
-    verify_signatures: bool,
-) -> CaseResult {
-    use pharos_stf::altair::operations::process_sync_aggregate;
-    use pharos_stf::bellatrix::helpers::{bellatrix_state_to_altair, update_bellatrix_from_altair};
-    use pharos_types::{MinimalEthSpec as E, altair::MinimalSyncAggregate};
-
-    let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::bellatrix_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let sync_aggregate =
-        match load_ssz_snappy::<MinimalSyncAggregate>(case_dir, "sync_aggregate.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-    let mut pre = pre_inner;
-    let mut altair_state = bellatrix_state_to_altair(&pre);
-    let result = process_sync_aggregate::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-        &mut altair_state,
-        &sync_aggregate,
-        verify_signatures,
-    );
-    update_bellatrix_from_altair(&mut pre, altair_state);
-    cmp_bellatrix_result(
-        result,
-        E::bellatrix_into_state(pre).as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "sync_aggregate",
-    )
+/// Run all bellatrix operation sub-categories for the mainnet preset.
+pub fn run_operations_bellatrix_mainnet(root: &Path) -> OpsResult {
+    let tasks = enumerate_operations_bellatrix(root, "mainnet", 0);
+    drain_tasks_to_ops_result(tasks)
 }
 
-// ── bellatrix/execution_payload ───────────────────────────────────────────────
-
-fn run_bellatrix_execution_payload_mainnet(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "bellatrix",
-        "operations",
-        Some("execution_payload"),
-        bellatrix_ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!(
-                "bellatrix/operations/mainnet/execution_payload/{}",
-                dir_name(&case_dir)
-            );
-            run_bellatrix_execution_payload_case_mainnet(&case_dir, &case_name)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_bellatrix_execution_payload_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
-    use pharos_stf::FixedExecutionEngine;
-    use pharos_stf::bellatrix::operations::process_execution_payload;
-    use pharos_types::{MainnetEthSpec as E, bellatrix::MainnetBeaconBlockBody};
-
-    let execution_valid = read_execution_valid(case_dir);
-    let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::bellatrix::MainnetBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::bellatrix_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let body = match load_ssz_snappy::<MainnetBeaconBlockBody>(case_dir, "body.ssz_snappy") {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let engine = FixedExecutionEngine(execution_valid);
-    let mut pre = pre_inner;
-    let result = process_execution_payload::<
-        16,
-        2,
-        128,
-        16,
-        16,
-        2048,
-        33,
-        512,
-        1_073_741_824,
-        1_048_576,
-        8192,
-        16_777_216,
-        2048,
-        1_099_511_627_776,
-        65536,
-        8192,
-        4,
-        256,
-        32,
-        E,
-        FixedExecutionEngine,
-    >(&mut pre, &body, &engine, &E::default_runtime_config());
-    cmp_bellatrix_result(
-        result.map(|_| ()),
-        E::bellatrix_into_state(pre).as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "execution_payload",
-    )
-}
-
-fn run_bellatrix_execution_payload_minimal(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "bellatrix",
-        "operations",
-        Some("execution_payload"),
-        bellatrix_ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!(
-                "bellatrix/operations/minimal/execution_payload/{}",
-                dir_name(&case_dir)
-            );
-            run_bellatrix_execution_payload_case_minimal(&case_dir, &case_name)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_bellatrix_execution_payload_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
-    use pharos_stf::FixedExecutionEngine;
-    use pharos_stf::bellatrix::operations::process_execution_payload;
-    use pharos_types::{MinimalEthSpec as E, bellatrix::MinimalBeaconBlockBody};
-
-    let execution_valid = read_execution_valid(case_dir);
-    let pre_inner = match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::bellatrix::MinimalBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::bellatrix_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let body = match load_ssz_snappy::<MinimalBeaconBlockBody>(case_dir, "body.ssz_snappy") {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let engine = FixedExecutionEngine(execution_valid);
-    let mut pre = pre_inner;
-    let result = process_execution_payload::<
-        16,
-        2,
-        128,
-        16,
-        16,
-        2048,
-        33,
-        32,
-        1_073_741_824,
-        1_048_576,
-        64,
-        16_777_216,
-        32,
-        1_099_511_627_776,
-        64,
-        64,
-        4,
-        256,
-        32,
-        E,
-        FixedExecutionEngine,
-    >(&mut pre, &body, &engine, &E::default_runtime_config());
-    cmp_bellatrix_result(
-        result.map(|_| ()),
-        E::bellatrix_into_state(pre).as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "execution_payload",
-    )
+/// Run all bellatrix operation sub-categories for the minimal preset.
+pub fn run_operations_bellatrix_minimal(root: &Path) -> OpsResult {
+    let tasks = enumerate_operations_bellatrix(root, "minimal", 0);
+    drain_tasks_to_ops_result(tasks)
 }
 
 // ── Bellatrix shared helpers ──────────────────────────────────────────────────
@@ -2542,27 +2525,6 @@ fn read_execution_valid(case_dir: &Path) -> bool {
     };
     // Format: `{execution_valid: true}` or `{execution_valid: false}`.
     !text.contains("execution_valid: false")
-}
-
-fn cmp_bellatrix_result(
-    result: Result<(), pharos_stf::StateTransitionError>,
-    current_bytes: Vec<u8>,
-    post_bytes: Option<Vec<u8>>,
-    case_name: &str,
-    op: &str,
-) -> CaseResult {
-    match (result, post_bytes) {
-        (Ok(()), Some(expected)) => {
-            if current_bytes == expected {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after {op}"))
-            }
-        }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
-    }
 }
 
 // ── Capella operations ────────────────────────────────────────────────────────
