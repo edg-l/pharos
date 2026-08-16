@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use pharos_ssz::{Decode, Encode};
 use pharos_types::deneb::BlobSidecar;
+use pharos_types::fulu::MainnetDataColumnSidecar as DataColumnSidecar;
 use pharos_types::phase0::operations::SignedBeaconBlockHeader;
 use pharos_types::phase0::primitives::{Root, Slot};
 use pharos_types::{BeaconSpec, BeaconStateView, PayloadStatus};
@@ -19,10 +20,10 @@ use tracing::warn;
 
 use crate::cf::{
     CF_BLOB_SIDECARS, CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_COLD_BLOCKS, CF_COLD_STATES,
-    CF_FORKCHOICE, CF_LC_BOOTSTRAP, CF_LC_BOOTSTRAP_CAPELLA, CF_LC_BOOTSTRAP_DENEB,
-    CF_LC_BOOTSTRAP_ELECTRA, CF_LC_FINALITY_UPDATE, CF_LC_FINALITY_UPDATE_CAPELLA,
-    CF_LC_FINALITY_UPDATE_DENEB, CF_LC_FINALITY_UPDATE_ELECTRA, CF_LC_OPTIMISTIC_UPDATE,
-    CF_LC_OPTIMISTIC_UPDATE_CAPELLA, CF_LC_OPTIMISTIC_UPDATE_DENEB,
+    CF_DATA_COLUMN_SIDECARS, CF_FORKCHOICE, CF_LC_BOOTSTRAP, CF_LC_BOOTSTRAP_CAPELLA,
+    CF_LC_BOOTSTRAP_DENEB, CF_LC_BOOTSTRAP_ELECTRA, CF_LC_FINALITY_UPDATE,
+    CF_LC_FINALITY_UPDATE_CAPELLA, CF_LC_FINALITY_UPDATE_DENEB, CF_LC_FINALITY_UPDATE_ELECTRA,
+    CF_LC_OPTIMISTIC_UPDATE, CF_LC_OPTIMISTIC_UPDATE_CAPELLA, CF_LC_OPTIMISTIC_UPDATE_DENEB,
     CF_LC_OPTIMISTIC_UPDATE_ELECTRA, CF_LC_UPDATE, CF_LC_UPDATE_CAPELLA, CF_LC_UPDATE_DENEB,
     CF_LC_UPDATE_ELECTRA, CF_METADATA, CF_PAYLOAD_STATUS, CF_RESTORE_POINTS, CF_SLASHER_PROPOSERS,
     CF_SLOT_TO_BLOCK_ROOT, CF_STATE_SUMMARY, CF_STATES, LC_LATEST_KEY, all_cfs,
@@ -30,8 +31,8 @@ use crate::cf::{
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
 use crate::keys::{
-    blob_sidecar_key, parse_slot_key, root_key, slasher_proposer_key, slasher_proposer_prefix,
-    slot_key,
+    blob_sidecar_key, data_column_sidecar_key, parse_slot_key, root_key, slasher_proposer_key,
+    slasher_proposer_prefix, slot_key,
 };
 use crate::migrations::{MIGRATION_BASELINE, run_migrations};
 use crate::state_summary::StateSummary;
@@ -84,7 +85,15 @@ use crate::transition::BlockTransition;
 ///   `create_missing_column_families` and the v7→v8 migration bumps the version
 ///   stamp (no data move). The proposer index is rebuilt from scratch on each
 ///   `--slasher` replay, so an empty CF after migration is correct.
-pub(crate) const SCHEMA_VERSION: u32 = 8;
+/// - v9 (M13-Fulu Phase 4): added the `data-column-sidecars` CF for EIP-7594
+///   PeerDAS data-column sidecar storage, keyed `block_root || index_be`
+///   (mirrors `blob-sidecars`). Opening a v8 database MIGRATES forward to v9 in
+///   place: the new CF is auto-created by `create_missing_column_families` and
+///   the v8→v9 migration bumps the version stamp (no data move). Sidecars are
+///   re-fetched over the p2p network within
+///   `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS`, so an empty CF after
+///   migration is correct.
+pub(crate) const SCHEMA_VERSION: u32 = 9;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -1214,6 +1223,97 @@ impl<E: BeaconSpec> Store<E> for RocksStore {
         Ok(())
     }
 
+    // ── Data-column sidecar store (schema v9, M13-Fulu Phase 4 — PeerDAS) ──────
+
+    fn put_data_column_sidecar(
+        &self,
+        block_root: Root,
+        sidecar: &DataColumnSidecar,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_DATA_COLUMN_SIDECARS)?;
+        let key = data_column_sidecar_key(&block_root, sidecar.index);
+        self.db.put_cf(cf, key, sidecar.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_data_column_sidecar(
+        &self,
+        block_root: &Root,
+        index: u64,
+    ) -> Result<Option<DataColumnSidecar>, StorageError> {
+        let cf = self.cf_handle(CF_DATA_COLUMN_SIDECARS)?;
+        let key = data_column_sidecar_key(block_root, index);
+        match self.db.get_cf(cf, key)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let sidecar = DataColumnSidecar::from_ssz_bytes(&bytes)?;
+                Ok(Some(sidecar))
+            }
+        }
+    }
+
+    fn get_all_data_column_sidecars_by_root(
+        &self,
+        block_root: &Root,
+    ) -> Result<Vec<DataColumnSidecar>, StorageError> {
+        let cf = self.cf_handle(CF_DATA_COLUMN_SIDECARS)?;
+        // Prefix scan: all keys starting with the 32-byte block_root, in
+        // lexicographic order (= ascending column index order, big-endian suffix).
+        let prefix = root_key(block_root);
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(prefix, Direction::Forward));
+
+        let mut sidecars = Vec::new();
+        for item in iter {
+            let (k, v) = item?;
+            // Stop when the key no longer starts with block_root (32 bytes).
+            if k.len() < 32 || &k[..32] != prefix {
+                break;
+            }
+            let sidecar = DataColumnSidecar::from_ssz_bytes(&v)?;
+            sidecars.push(sidecar);
+        }
+        Ok(sidecars)
+    }
+
+    fn prune_data_column_sidecars_below_slot(&self, prune_slot: Slot) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_DATA_COLUMN_SIDECARS)?;
+        // Collect keys to delete — cannot delete while iterating the same CF.
+        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
+        let mut to_delete: Vec<Vec<u8>> = Vec::new();
+
+        for item in iter {
+            let (k, v) = item?;
+            let sidecar = match DataColumnSidecar::from_ssz_bytes(&v) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        key_len = k.len(),
+                        val_len = v.len(),
+                        error = ?e,
+                        "data-column-sidecars CF: corrupt sidecar value; skipping"
+                    );
+                    continue;
+                }
+            };
+            let slot = sidecar.signed_block_header.message.slot;
+            if slot < prune_slot {
+                to_delete.push(k.to_vec());
+            }
+        }
+
+        if !to_delete.is_empty() {
+            let mut wb = WriteBatch::default();
+            let cf = self.cf_handle(CF_DATA_COLUMN_SIDECARS)?;
+            for key in &to_delete {
+                wb.delete_cf(cf, key);
+            }
+            self.db.write(wb)?;
+        }
+        Ok(())
+    }
+
     // ── Slasher proposer index (Phase B) ──────────────────────────────────────
 
     fn put_slasher_proposer_header(
@@ -1291,7 +1391,7 @@ mod tests {
     }
 
     /// Opening a database written with schema v1 (before the `payload-status` CF was added)
-    /// must return `SchemaMismatch { found: 1, expected: 8 }` — v1 is below the
+    /// must return `SchemaMismatch { found: 1, expected: 9 }` — v1 is below the
     /// migration baseline, so it stays on the resync path.
     #[test]
     fn schema_v1_returns_mismatch() {
@@ -1339,15 +1439,15 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 1,
-                    expected: 8
+                    expected: 9
                 })
             ),
-            "expected SchemaMismatch{{found:1,expected:8}}, got {result:?}"
+            "expected SchemaMismatch{{found:1,expected:9}}, got {result:?}"
         );
     }
 
     /// Opening a database written with schema v2 (before the v3 CFs were added)
-    /// must return `SchemaMismatch { found: 2, expected: 8 }` — v2 is below the
+    /// must return `SchemaMismatch { found: 2, expected: 9 }` — v2 is below the
     /// migration baseline, so it stays on the resync path.
     #[test]
     fn schema_v2_returns_mismatch() {
@@ -1400,10 +1500,10 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 2,
-                    expected: 8
+                    expected: 9
                 })
             ),
-            "expected SchemaMismatch{{found:2,expected:8}}, got {result:?}"
+            "expected SchemaMismatch{{found:2,expected:9}}, got {result:?}"
         );
     }
 
@@ -1483,9 +1583,9 @@ mod tests {
 
     /// A v6-stamped DB must migrate forward across the whole registry: `open`
     /// succeeds and the stored version is bumped to the current
-    /// `SCHEMA_VERSION` (8, via v6→v7→v8).
+    /// `SCHEMA_VERSION` (9, via v6→v7→v8→v9).
     #[test]
-    fn migration_walk_v6_to_v8() {
+    fn migration_walk_v6_to_v9() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("chain_db_v6");
 
@@ -1499,16 +1599,15 @@ mod tests {
 
         assert_eq!(
             read_db_version(&store),
-            8,
-            "after migrating a v6 DB the stamped version must be 8"
+            9,
+            "after migrating a v6 DB the stamped version must be 9"
         );
-        assert_eq!(SCHEMA_VERSION, 8, "SCHEMA_VERSION must be 8");
+        assert_eq!(SCHEMA_VERSION, 9, "SCHEMA_VERSION must be 9");
     }
 
-    /// A v7-stamped DB must migrate forward one step to v8 (the slasher CF is
-    /// auto-created on open; the migration only bumps the version stamp).
+    /// A v7-stamped DB must migrate forward to v9 (v7→v8→v9).
     #[test]
-    fn migration_walk_v7_to_v8() {
+    fn migration_walk_v7_to_v9() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("chain_db_v7");
 
@@ -1522,9 +1621,59 @@ mod tests {
 
         assert_eq!(
             read_db_version(&store),
-            8,
-            "after migrating a v7 DB the stamped version must be 8"
+            9,
+            "after migrating a v7 DB the stamped version must be 9"
         );
+    }
+
+    /// A v8-stamped DB must migrate forward one step to v9 (the
+    /// `data-column-sidecars` CF is auto-created on open; the migration only
+    /// bumps the version stamp). After migration the new CF must be present and
+    /// usable: a put/get round-trip through the v9 column-sidecar API succeeds.
+    #[test]
+    fn migration_walk_v8_to_v9() {
+        use pharos_types::fulu::MainnetDataColumnSidecar;
+        use pharos_types::phase0::primitives::{Root, Slot};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("chain_db_v8");
+
+        stamp_db_version(&db_path, 8);
+
+        let store = RocksStore::open::<pharos_types::MainnetBeaconSpec>(RocksStoreConfig {
+            path: db_path,
+            create_if_missing: false,
+        })
+        .expect("v8 db must migrate forward and open");
+
+        assert_eq!(
+            read_db_version(&store),
+            9,
+            "after migrating a v8 DB the stamped version must be 9"
+        );
+
+        // The new `data-column-sidecars` CF must exist and be usable.
+        let block_root = Root::from([0x11u8; 32]);
+        let mut sidecar = MainnetDataColumnSidecar {
+            index: 5,
+            ..MainnetDataColumnSidecar::default()
+        };
+        sidecar.signed_block_header.message.slot = Slot(42);
+
+        <RocksStore as Store<pharos_types::MainnetBeaconSpec>>::put_data_column_sidecar(
+            &store, block_root, &sidecar,
+        )
+        .expect("put data column sidecar into newly-migrated v9 CF");
+
+        let got = <RocksStore as Store<pharos_types::MainnetBeaconSpec>>::get_data_column_sidecar(
+            &store,
+            &block_root,
+            5,
+        )
+        .expect("get data column sidecar")
+        .expect("sidecar must be present after migration");
+        assert_eq!(got.index, 5);
+        assert_eq!(got.signed_block_header.message.slot, Slot(42));
     }
 
     /// The migration registry must start at the baseline and be contiguous:
@@ -1575,10 +1724,10 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 5,
-                    expected: 8
+                    expected: 9
                 })
             ),
-            "v5 is pre-baseline: expected SchemaMismatch{{found:5,expected:8}}, got {result:?}"
+            "v5 is pre-baseline: expected SchemaMismatch{{found:5,expected:9}}, got {result:?}"
         );
     }
 
@@ -1601,10 +1750,10 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 999,
-                    expected: 8
+                    expected: 9
                 })
             ),
-            "future version must hard-error: expected SchemaMismatch{{found:999,expected:8}}, got {result:?}"
+            "future version must hard-error: expected SchemaMismatch{{found:999,expected:9}}, got {result:?}"
         );
     }
 }

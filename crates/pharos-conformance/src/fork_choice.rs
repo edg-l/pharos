@@ -50,7 +50,7 @@ use pharos_types::{
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
     load_bellatrix_state, load_capella_state, load_deneb_state, load_electra_state,
-    load_phase0_state, load_ssz_snappy, walk_category,
+    load_fulu_state, load_phase0_state, load_ssz_snappy, walk_category,
 };
 use crate::fs_util::{dir_name, read_dir_sorted};
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
@@ -173,6 +173,8 @@ impl ElectraFcSpec for MinimalBeaconSpec {
 /// - `"bellatrix"`: bellatrix case driver.
 /// - `"capella"`: capella case driver.
 /// - `"deneb"`: deneb case driver.
+/// - `"electra"`: electra case driver (EIP-7549).
+/// - `"fulu"`: fulu case driver (EIP-7594 PeerDAS column DA).
 pub fn enumerate_fork_choice(
     root: &Path,
     fork: &'static str,
@@ -294,6 +296,22 @@ pub fn enumerate_fork_choice(
                     }),
                     ("electra", _) => Box::new(move || {
                         match run_electra_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    // fulu rows → fulu case driver (EIP-7594 PeerDAS column DA;
+                    // electra-shaped attestations carry over).
+                    ("fulu", "mainnet") => Box::new(move || {
+                        match run_fulu_case::<MainnetBeaconSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("fulu", _) => Box::new(move || {
+                        match run_fulu_case::<MinimalBeaconSpec>(&case_dir, &case_name) {
                             CaseResult::Pass => CaseOutcome::Pass,
                             CaseResult::Skip => CaseOutcome::Skip,
                             CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
@@ -1191,6 +1209,13 @@ enum Step {
         blobs: Option<String>,
         /// Deneb (EIP-4844): optional byte48 hex proofs for the blobs.
         proofs: Vec<String>,
+        /// Fulu (EIP-7594): optional array of `column_<root>.ssz_snappy` file
+        /// names. `None` = field absent (`retrieve_column_sidecars` returns an
+        /// empty list → vacuously available); `Some(vec)` = the named column
+        /// sidecar files; an empty `Some(vec![])` means
+        /// `retrieve_column_sidecars` raises (not enough data sampled → not
+        /// available). Per `tests/formats/fork_choice/README.md`.
+        columns: Option<Vec<String>>,
     },
     Attestation {
         attestation: String,
@@ -1269,11 +1294,18 @@ fn parse_step(val: &serde_yaml_ng::Value) -> Result<Step, String> {
             .and_then(|v| v.as_sequence())
             .map(|seq| seq.iter().filter_map(value_as_str).collect())
             .unwrap_or_default();
+        // Fulu (EIP-7594): `columns` is an array of column-sidecar file names.
+        // Absent → `None`; present (possibly empty) → `Some`.
+        let columns = map
+            .get("columns")
+            .and_then(|v| v.as_sequence())
+            .map(|seq| seq.iter().filter_map(value_as_str).collect());
         return Ok(Step::Block {
             block,
             valid: read_valid(map),
             blobs,
             proofs,
+            columns,
         });
     }
     if let Some(attestation) = map.get("attestation").and_then(value_as_str) {
@@ -1451,6 +1483,76 @@ fn deneb_data_available(
     KzgVerifier::mainnet()
         .verify_blob_kzg_proof_batch(&blobs, &commitments, &proofs)
         .unwrap_or(false)
+}
+
+/// EIP-7594 (Fulu PeerDAS) data-availability check for the fulu fork-choice test
+/// format.
+///
+/// Mirrors the fulu `is_data_available` (`specs/fulu/fork-choice.md`): the
+/// step-provided `columns` array is what `retrieve_column_sidecars` returns.
+/// Per `tests/formats/fork_choice/README.md`:
+/// - `columns` ABSENT (`None`) → `retrieve_column_sidecars` returns an empty
+///   list, and `all([]) == True` → available.
+/// - `columns` an EMPTY array (`Some(vec![])`) → `retrieve_column_sidecars`
+///   raises (not enough data sampled) → NOT available.
+/// - `columns` non-empty → load each `column_<root>.ssz_snappy` as a
+///   `DataColumnSidecar` and require every one to pass
+///   `verify_data_column_sidecar` + `verify_data_column_sidecar_kzg_proofs`.
+///
+/// `max_blobs_per_block` is resolved from the preset's default runtime config via
+/// `get_blob_parameters` at the sidecar's own epoch (EIP-7892).
+fn fulu_data_available<E>(case_dir: &Path, columns: Option<&[String]>) -> bool
+where
+    E: BeaconSpec,
+{
+    use pharos_stf::fulu::data_columns::{
+        verify_data_column_sidecar, verify_data_column_sidecar_kzg_proofs,
+    };
+    use pharos_types::fulu::{MainnetDataColumnSidecar, get_blob_parameters};
+
+    let names = match columns {
+        // Field absent → empty retrieved list → vacuously available.
+        None => return true,
+        Some(names) => names,
+    };
+    // Empty array → retrieval raises → not available.
+    if names.is_empty() {
+        return false;
+    }
+
+    let cfg = E::default_runtime_config();
+    let kzg = KzgVerifier::mainnet();
+
+    for name in names {
+        let file = format!("{name}.ssz_snappy");
+        // Both presets alias `DataColumnSidecar<4096, 4>`, so the mainnet alias
+        // decodes either preset's fixture.
+        let sidecar: MainnetDataColumnSidecar = match load_ssz_snappy(case_dir, &file) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+
+        let epoch = pharos_types::phase0::Epoch(
+            sidecar.signed_block_header.message.slot.0 / E::SLOTS_PER_EPOCH,
+        );
+        let blob_params = get_blob_parameters(
+            epoch,
+            &cfg.blob_schedule,
+            pharos_types::phase0::Epoch(cfg.electra_fork_epoch),
+            cfg.max_blobs_per_block_electra,
+        );
+
+        if verify_data_column_sidecar::<E, 4096, 4>(&sidecar, blob_params.max_blobs_per_block)
+            .is_err()
+        {
+            return false;
+        }
+        if verify_data_column_sidecar_kzg_proofs::<4096, 4>(&sidecar, &kzg).is_err() {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn run_capella_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
@@ -2096,6 +2198,7 @@ where
                 valid,
                 blobs,
                 proofs,
+                ..
             } => {
                 let block_file = format!("{block}.ssz_snappy");
                 let cfg = E::default_runtime_config();
@@ -2540,7 +2643,197 @@ where
 /// committee-bits attester extractor). The deneb EIP-4844 data-availability
 /// gate is carried verbatim for electra blocks.
 #[allow(clippy::too_many_lines)]
+/// Data-availability mode for the shared electra/fulu fork-choice case driver.
+///
+/// Electra blocks carry blob-and-proof DA (EIP-4844); fulu blocks carry
+/// data-column-sidecar DA (EIP-7594). The driver is otherwise identical (fulu
+/// blocks are structurally electra blocks; only the anchor STATE shape and the
+/// DA gate differ).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DaMode {
+    /// EIP-4844 blob-and-proof DA (electra/deneb).
+    Deneb,
+    /// EIP-7594 data-column-sidecar DA (fulu).
+    Fulu,
+}
+
+/// Electra fork-choice case driver (EIP-4844 blob DA).
 fn run_electra_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
+where
+    E: BeaconSpec + ElectraFcSpec,
+    E::FuluBeaconState: Decode,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::ElectraBeaconBlock: Decode + BeaconBlockView,
+    E::ElectraSignedBeaconBlock: Decode,
+    E::FuluBeaconBlock: Decode,
+    E::FuluSignedBeaconBlock: Decode,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    run_electra_like_case::<E>(case_dir, case_name, DaMode::Deneb)
+}
+
+/// Fulu fork-choice case driver (EIP-7594 PeerDAS column DA). Reuses the shared
+/// electra-shaped driver with the fulu anchor-state load + column DA gate.
+fn run_fulu_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
+where
+    E: BeaconSpec + ElectraFcSpec,
+    E::FuluBeaconState: Decode,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::ElectraBeaconBlock: Decode + BeaconBlockView,
+    E::ElectraSignedBeaconBlock: Decode,
+    E::FuluBeaconBlock: Decode,
+    E::FuluSignedBeaconBlock: Decode,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    run_electra_like_case::<E>(case_dir, case_name, DaMode::Fulu)
+}
+
+/// Shared electra/fulu fork-choice case driver. `da_mode` selects the DA gate
+/// (blob-and-proof for electra, column-sidecar for fulu) and the anchor-state
+/// load order (fulu-first when `Fulu`).
+fn run_electra_like_case<E>(case_dir: &Path, case_name: &str, da_mode: DaMode) -> CaseResult
 where
     E: BeaconSpec + ElectraFcSpec,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
@@ -2617,12 +2910,22 @@ where
     E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
     E::ElectraBeaconBlock: Decode + BeaconBlockView,
     E::ElectraSignedBeaconBlock: Decode,
+    E::FuluBeaconBlock: Decode,
+    E::FuluSignedBeaconBlock: Decode,
     E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
 {
-    // Load anchor state: electra first, then deneb, capella, bellatrix, altair, phase0.
-    let anchor_state: E::BeaconState =
-        match load_electra_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+    // Load anchor state: in Fulu mode try the fulu state shape first (it adds
+    // `proposer_lookahead`, so an electra decode would misparse it); then electra,
+    // deneb, capella, bellatrix, altair, phase0.
+    let fulu_anchor: Option<E::BeaconState> = if da_mode == DaMode::Fulu {
+        load_fulu_state::<E>(case_dir, "anchor_state.ssz_snappy").ok()
+    } else {
+        None
+    };
+    let anchor_state: E::BeaconState = match fulu_anchor {
+        Some(s) => s,
+        None => match load_electra_state::<E>(case_dir, "anchor_state.ssz_snappy") {
             Ok(s) => s,
             Err(_) => match load_deneb_state::<E>(case_dir, "anchor_state.ssz_snappy") {
                 Ok(s) => s,
@@ -2647,7 +2950,8 @@ where
                     }
                 },
             },
-        };
+        },
+    };
 
     // Load anchor block: electra first, then deneb, capella, bellatrix, altair, phase0.
     let anchor_block: E::BeaconBlock = {
@@ -2660,7 +2964,14 @@ where
             Ok(b) => b,
             Err(_) => return CaseResult::Skip,
         };
-        if let Ok(b) = E::ElectraBeaconBlock::from_ssz_bytes(&raw) {
+        if da_mode == DaMode::Fulu {
+            // Fulu blocks are structurally electra; decode as the Fulu type so the
+            // anchor block variant matches the Fulu anchor state.
+            match E::FuluBeaconBlock::from_ssz_bytes(&raw) {
+                Ok(b) => E::fulu_into_block(b),
+                Err(_) => return CaseResult::Skip,
+            }
+        } else if let Ok(b) = E::ElectraBeaconBlock::from_ssz_bytes(&raw) {
             E::electra_into_block(b)
         } else if let Ok(b) = E::DenebBeaconBlock::from_ssz_bytes(&raw) {
             E::deneb_into_block(b)
@@ -2709,15 +3020,37 @@ where
                 valid,
                 blobs,
                 proofs,
+                columns,
             } => {
                 let block_file = format!("{block}.ssz_snappy");
                 let cfg = E::default_runtime_config();
 
                 // Try electra first, then deneb, capella, bellatrix, altair, phase0.
+                // (Fulu blocks are structurally electra blocks, so a fulu case's
+                // block decodes through this same electra arm.)
                 if let Ok(electra_inner) =
                     load_ssz_snappy::<E::ElectraSignedBeaconBlock>(case_dir, &block_file)
                 {
-                    let electra_wrapped = E::electra_into_signed_block(electra_inner.clone());
+                    // Fulu blocks are structurally electra blocks, so they decode
+                    // through the electra arm — but the anchor/pre state is the FULU
+                    // enum variant, so the block MUST be wrapped as the Fulu variant
+                    // (not Electra) or `state_transition`'s fork-variant dispatch
+                    // returns UnsupportedFork (`unwrap_fulu_signed_block` on an Electra
+                    // wrap). `FuluSignedBeaconBlock` and `ElectraSignedBeaconBlock` are
+                    // distinct associated types in generic code, so re-decode the same
+                    // bytes as the fulu type rather than re-wrapping `electra_inner`.
+                    let electra_wrapped = if da_mode == DaMode::Fulu {
+                        match load_ssz_snappy::<E::FuluSignedBeaconBlock>(case_dir, &block_file) {
+                            Ok(fulu_inner) => E::fulu_into_signed_block(fulu_inner),
+                            Err(e) => {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: fulu block decode {block}: {e}"
+                                ));
+                            }
+                        }
+                    } else {
+                        E::electra_into_signed_block(electra_inner.clone())
+                    };
                     let parent_root = E::electra_block_parent_root(&electra_inner);
                     let pre_state = match store.block_states.get(&parent_root).cloned() {
                         Some(s) => s,
@@ -2731,12 +3064,18 @@ where
                             }
                         }
                     };
-                    // EIP-4844 data-availability check (deneb fork-choice test
-                    // format, carried into electra): `is_data_available` runs
-                    // `verify_blob_kzg_proof_batch` over the step-provided
-                    // blobs/proofs vs the block's `blob_kzg_commitments`.
-                    let commitments = E::electra_block_commitments(&electra_inner);
-                    if !deneb_data_available(case_dir, blobs.as_deref(), &proofs, &commitments) {
+                    // Data-availability check. In Deneb mode (electra): EIP-4844
+                    // `verify_blob_kzg_proof_batch` over step blobs/proofs vs the
+                    // block's `blob_kzg_commitments`. In Fulu mode (EIP-7594):
+                    // verify the step-provided column sidecars.
+                    let data_available = match da_mode {
+                        DaMode::Deneb => {
+                            let commitments = E::electra_block_commitments(&electra_inner);
+                            deneb_data_available(case_dir, blobs.as_deref(), &proofs, &commitments)
+                        }
+                        DaMode::Fulu => fulu_data_available::<E>(case_dir, columns.as_deref()),
+                    };
+                    if !data_available {
                         if valid {
                             return CaseResult::Fail(format!(
                                 "{case_name}: block({block}) data unavailable but valid=true"

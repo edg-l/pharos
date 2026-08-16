@@ -209,7 +209,26 @@ pub const CF_LC_OPTIMISTIC_UPDATE_ELECTRA: &str = "electra-latest-optimistic-upd
 /// suffixes are a slashable proposer double-block.
 pub const CF_SLASHER_PROPOSERS: &str = "slasher-proposers";
 
-/// Returns all thirty column-family names in declaration order.
+// ── Schema v9 column families (M13-Fulu Phase 4 — PeerDAS) ────────────────────
+//
+// One new CF added for EIP-7594 PeerDAS data-column sidecar storage:
+//   `data-column-sidecars` — per-block data-column sidecar storage keyed by
+//   `block_root (32 B) || index_be (8 B)`, mirroring `blob-sidecars`.
+// Opening a v8 DB triggers the v8→v9 forward migration (the CF is auto-created
+// by `create_missing_column_families`).
+
+/// Per-block data-column sidecar store (EIP-7594 PeerDAS).
+///
+/// Per schema v9 (M13-Fulu Phase 4):
+/// key = `block_root` (32 B) `||` `index` (8 B big-endian u64),
+/// value = SSZ `DataColumnSidecar`.
+///
+/// The 32-byte `block_root` prefix enables a RocksDB prefix iterator that
+/// returns all column sidecars for a given block in column-index order
+/// (big-endian keys sort numerically). Mirrors `CF_BLOB_SIDECARS`.
+pub const CF_DATA_COLUMN_SIDECARS: &str = "data-column-sidecars";
+
+/// Returns all thirty-one column-family names in declaration order.
 ///
 /// Used when opening the database with `DB::open_cf_descriptors` so every CF
 /// is registered. The ordering does not affect correctness; RocksDB looks up
@@ -220,7 +239,10 @@ pub const CF_SLASHER_PROPOSERS: &str = "slasher-proposers";
 ///
 /// Per `D-slasher-proposer-index-cf` (v8): the `slasher-proposers` CF is appended,
 /// so a fresh v8 DB opens with all thirty CFs at first boot.
-pub fn all_cfs() -> [&'static str; 30] {
+///
+/// M13-Fulu Phase 4 (v9): the `data-column-sidecars` CF is appended, so a fresh
+/// v9 DB opens with all thirty-one CFs at first boot.
+pub fn all_cfs() -> [&'static str; 31] {
     [
         CF_DEFAULT,
         CF_BLOCKS,
@@ -252,5 +274,6 @@ pub fn all_cfs() -> [&'static str; 30] {
         CF_LC_FINALITY_UPDATE_ELECTRA,
         CF_LC_OPTIMISTIC_UPDATE_ELECTRA,
         CF_SLASHER_PROPOSERS,
+        CF_DATA_COLUMN_SIDECARS,
     ]
 }

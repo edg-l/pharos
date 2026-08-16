@@ -224,6 +224,10 @@ pub fn row_table() -> &'static [RowSpec] {
         r("fulu", "sanity", "minimal"),
         r("fulu", "random", "mainnet"),
         r("fulu", "random", "minimal"),
+        // M13-Fulu Phase 4: EIP-7594 PeerDAS fork-choice (column-sidecar DA gate;
+        // electra-shaped attestation extraction carries over).
+        r("fulu", "fork_choice", "mainnet"),
+        r("fulu", "fork_choice", "minimal"),
     ];
     TABLE
 }
@@ -403,6 +407,8 @@ mod tests {
             ("fulu", "sanity", "minimal"),
             ("fulu", "random", "mainnet"),
             ("fulu", "random", "minimal"),
+            ("fulu", "fork_choice", "mainnet"),
+            ("fulu", "fork_choice", "minimal"),
         ];
 
         let table = row_table();
@@ -482,11 +488,12 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 151 (135 + 16 M13-Fulu Phase 3b STF rows:
+    /// Total row count is exactly 153 (135 + 16 M13-Fulu Phase 3b STF rows:
     /// operations, epoch_processing, transition, rewards, finality, fork,
-    /// sanity, random — each mainnet + minimal).
+    /// sanity, random — each mainnet + minimal — plus 2 M13-Fulu Phase 4
+    /// fork_choice rows, mainnet + minimal).
     #[test]
-    fn row_count_is_151() {
-        assert_eq!(row_table().len(), 151);
+    fn row_count_is_153() {
+        assert_eq!(row_table().len(), 153);
     }
 }

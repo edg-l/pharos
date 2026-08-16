@@ -357,6 +357,18 @@ impl<
         }
     }
 
+    fn proposer_lookahead_at(&self, slots_per_epoch: u64) -> Option<ValidatorIndex> {
+        match self {
+            // EIP-7917: Fulu carries the precomputed proposer lookahead; the
+            // current-slot proposer is `proposer_lookahead[slot % SLOTS_PER_EPOCH]`.
+            BeaconState::Fulu(s) => {
+                let idx = (s.slot().0 % slots_per_epoch) as usize;
+                s.proposer_lookahead.as_slice().get(idx).copied()
+            }
+            _ => None,
+        }
+    }
+
     fn genesis_time(&self) -> u64 {
         match self {
             BeaconState::Phase0(s) => s.genesis_time(),

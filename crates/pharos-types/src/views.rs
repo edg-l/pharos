@@ -382,6 +382,13 @@ pub trait BeaconStateView {
     /// through an associated type is not permitted on stable Rust 1.85).
     fn fork_variant(&self) -> ForkVariant;
 
+    /// EIP-7917 (Fulu): the proposer index for this state's current slot, read
+    /// from the precomputed `proposer_lookahead[slot % slots_per_epoch]`. Returns
+    /// `None` for pre-Fulu states (no lookahead field). Default `None`.
+    fn proposer_lookahead_at(&self, _slots_per_epoch: u64) -> Option<ValidatorIndex> {
+        None
+    }
+
     fn genesis_time(&self) -> u64;
     fn genesis_validators_root(&self) -> Root;
     fn slot(&self) -> Slot;

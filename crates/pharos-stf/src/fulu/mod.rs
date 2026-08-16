@@ -25,6 +25,7 @@
 //! - `light_client` — fulu LC types ARE the electra LC types (re-exported).
 
 pub mod block;
+pub mod data_columns;
 pub mod epoch;
 pub mod helpers;
 pub mod light_client;

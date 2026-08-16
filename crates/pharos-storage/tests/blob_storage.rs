@@ -9,7 +9,7 @@
 //! - `blob_sidecars_in_block_transition_are_atomic`: sidecars written via
 //!   `write_block_transition` are readable immediately.
 //! - `schema_v3_db_returns_schema_mismatch`: opening a v3 DB (without the new
-//!   `blob-sidecars` CF sentinel) returns `SchemaMismatch { found: 3, expected: 8 }`
+//!   `blob-sidecars` CF sentinel) returns `SchemaMismatch { found: 3, expected: 9 }`
 //!   (v3 is below the migration baseline, so it stays resync-only).
 
 use pharos_storage::{BlockTransition, RocksStore, RocksStoreConfig, StorageError, Store};
@@ -189,7 +189,7 @@ fn blob_sidecars_in_block_transition_are_atomic() {
 }
 
 /// Opening a database that was written with schema v3 (before the `blob-sidecars`
-/// CF was added) must return `SchemaMismatch { found: 3, expected: 8 }`.
+/// CF was added) must return `SchemaMismatch { found: 3, expected: 9 }`.
 ///
 /// Per `D-schema-v4-migration`: no in-place migration — the operator must resync.
 #[test]
@@ -248,9 +248,9 @@ fn schema_v3_db_returns_schema_mismatch() {
             result,
             Err(StorageError::SchemaMismatch {
                 found: 3,
-                expected: 8
+                expected: 9
             })
         ),
-        "expected SchemaMismatch{{found:3,expected:8}}, got {result:?}"
+        "expected SchemaMismatch{{found:3,expected:9}}, got {result:?}"
     );
 }

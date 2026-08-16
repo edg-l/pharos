@@ -29,9 +29,11 @@ use crate::error::StorageError;
 
 mod v6_to_v7;
 mod v7_to_v8;
+mod v8_to_v9;
 
 use v6_to_v7::V6ToV7;
 use v7_to_v8::V7ToV8;
+use v8_to_v9::V8ToV9;
 
 /// Oldest on-disk schema version the forward migration walk can start from.
 ///
@@ -97,7 +99,11 @@ impl Step {
 /// The first entry's `from` MUST equal [`MIGRATION_BASELINE`], and each entry's
 /// `from` MUST equal the previous entry's `to` (contiguity). Both invariants are
 /// asserted by [`migration_registry_contiguous_from_baseline`] in `db.rs`.
-static MIGRATIONS: &[Step] = &[Step::of::<V6ToV7>(), Step::of::<V7ToV8>()];
+static MIGRATIONS: &[Step] = &[
+    Step::of::<V6ToV7>(),
+    Step::of::<V7ToV8>(),
+    Step::of::<V8ToV9>(),
+];
 
 /// Returns the `(from, to)` version pairs of the registered migrations, in
 /// order. Used by the contiguity/baseline assertion test in `db.rs`.

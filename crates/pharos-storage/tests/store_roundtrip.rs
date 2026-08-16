@@ -59,7 +59,7 @@ fn make_snapshot(head_slot: u64) -> ForkChoiceSnapshot {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// Opening a fresh DB writes schema_version=8; reopening reads it back.
+/// Opening a fresh DB writes schema_version=9; reopening reads it back.
 ///
 /// Version history:
 /// - v1 (M3a): initial schema.
@@ -72,8 +72,9 @@ fn make_snapshot(head_slot: u64) -> ForkChoiceSnapshot {
 /// - v7 (M11 Phase 4): seed of the forward-only migration framework (identity
 ///   migration, no new CFs).
 /// - v8 (M11 Phase 9): added `slasher-proposers` CF for the chain-replay slasher.
+/// - v9 (M13-Fulu Phase 4): added `data-column-sidecars` CF for EIP-7594 PeerDAS.
 #[test]
-fn open_empty_db_writes_schema_version_8() {
+fn open_empty_db_writes_schema_version_9() {
     let dir = tempfile::tempdir().expect("tempdir");
     {
         let _store = open(dir.path());
@@ -83,7 +84,7 @@ fn open_empty_db_writes_schema_version_8() {
     let val = <S as Store<E>>::get_metadata(&store, b"schema_version")
         .expect("get schema_version")
         .expect("schema_version must be present");
-    assert_eq!(val, 8u32.to_le_bytes(), "schema_version must be 8 LE");
+    assert_eq!(val, 9u32.to_le_bytes(), "schema_version must be 9 LE");
 }
 
 /// Store a `StateSummary`, retrieve it, assert field equality.
@@ -271,7 +272,7 @@ fn schema_mismatch_detected() {
     match result {
         Err(StorageError::SchemaMismatch { found, expected }) => {
             assert_eq!(found, 99, "found must be 99");
-            assert_eq!(expected, 8, "expected must be 8");
+            assert_eq!(expected, 9, "expected must be 9");
         }
         other => panic!("expected SchemaMismatch, got {other:?}"),
     }

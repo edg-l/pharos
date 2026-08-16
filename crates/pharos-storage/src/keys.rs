@@ -54,6 +54,20 @@ pub fn blob_sidecar_key(root: &Root, index: u64) -> [u8; 40] {
     key
 }
 
+/// Encodes a `(block_root, column_index)` pair as the 40-byte compound key used
+/// in the `data-column-sidecars` CF (EIP-7594 PeerDAS).
+///
+/// Layout: `block_root[0..32] || index.to_be_bytes()[0..8]`. Mirrors
+/// [`blob_sidecar_key`]: big-endian index gives lexicographic == numeric column
+/// order within a `block_root` prefix, so a single prefix scan returns all
+/// column sidecars in ascending column-index order.
+pub fn data_column_sidecar_key(root: &Root, index: u64) -> [u8; 40] {
+    let mut key = [0u8; 40];
+    key[..32].copy_from_slice(root.as_slice());
+    key[32..40].copy_from_slice(&index.to_be_bytes());
+    key
+}
+
 /// Encodes a `(slot, proposer_index, header_root)` triple as the 48-byte
 /// compound key used in the `slasher-proposers` CF (Phase B slasher).
 ///

@@ -9,6 +9,7 @@
 use pharos_types::BeaconSpec;
 use pharos_types::PayloadStatus;
 use pharos_types::deneb::BlobSidecar;
+use pharos_types::fulu::MainnetDataColumnSidecar as DataColumnSidecar;
 use pharos_types::phase0::operations::SignedBeaconBlockHeader;
 use pharos_types::phase0::primitives::{Root, Slot};
 
@@ -490,6 +491,47 @@ pub trait Store<E: BeaconSpec>: Send + Sync + 'static {
     /// The `slot_to_block_root` index is NOT pruned (it is navigational and
     /// must persist indefinitely per `D-blob-store-cf-keyed-by-root-index`).
     fn prune_blob_sidecars_below_slot(&self, prune_slot: Slot) -> Result<(), StorageError>;
+
+    // ── Data-column sidecar store (schema v9, M13-Fulu Phase 4 — PeerDAS) ──────
+
+    /// Store an SSZ-encoded `DataColumnSidecar` keyed by `(block_root, index)`.
+    ///
+    /// Key layout: `block_root` (32 B) `||` `index` (8 B big-endian u64).
+    /// Big-endian index ensures column sidecars are returned in ascending
+    /// column-index order by the prefix-scan
+    /// `get_all_data_column_sidecars_by_root`. Mirrors [`Self::put_blob_sidecar`].
+    fn put_data_column_sidecar(
+        &self,
+        block_root: Root,
+        sidecar: &DataColumnSidecar,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the `DataColumnSidecar` for `(block_root, index)`, if stored.
+    fn get_data_column_sidecar(
+        &self,
+        block_root: &Root,
+        index: u64,
+    ) -> Result<Option<DataColumnSidecar>, StorageError>;
+
+    /// Retrieve all `DataColumnSidecar`s for `block_root`, ordered by ascending
+    /// column index.
+    ///
+    /// Implemented via a RocksDB prefix iterator on the 32-byte `block_root`
+    /// prefix of the `data-column-sidecars` CF keys. Returns an empty vec when
+    /// no sidecars have been stored for this root.
+    fn get_all_data_column_sidecars_by_root(
+        &self,
+        block_root: &Root,
+    ) -> Result<Vec<DataColumnSidecar>, StorageError>;
+
+    /// Delete all `DataColumnSidecar`s whose block slot is strictly below
+    /// `prune_slot`.
+    ///
+    /// Implemented by scanning the `data-column-sidecars` CF, decoding the
+    /// `signed_block_header.message.slot` from each sidecar, and deleting
+    /// entries whose slot falls below the prune horizon. Mirrors
+    /// [`Self::prune_blob_sidecars_below_slot`].
+    fn prune_data_column_sidecars_below_slot(&self, prune_slot: Slot) -> Result<(), StorageError>;
 
     // ── Slasher proposer index (Phase B, --slasher) ─────────────────────────────
 

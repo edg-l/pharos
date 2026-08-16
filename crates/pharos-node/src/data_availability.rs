@@ -26,17 +26,24 @@
 //! `spawn_blocking` as the STF avoids an extra `await` and keeps the critical
 //! path tight (W7).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
 use pharos_kzg::{KzgError, KzgVerifier};
 use pharos_network::topics::GossipTopic;
+use pharos_stf::fulu::data_columns::{
+    compute_columns_for_custody_group, get_custody_groups, verify_data_column_sidecar,
+    verify_data_column_sidecar_kzg_proofs,
+};
 use pharos_storage::{RocksStore, Store as DbStore};
 use pharos_types::BeaconSpec;
+use pharos_types::config::RuntimeConfig;
 use pharos_types::deneb::KZGCommitment;
-use pharos_types::phase0::primitives::Root;
+use pharos_types::fulu::data_column_sidecar::ColumnIndex;
+use pharos_types::fulu::get_blob_parameters;
+use pharos_types::phase0::primitives::{Epoch, Root};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -229,6 +236,174 @@ impl<E: BeaconSpec> DataAvailabilityChecker<E> for NoopDataAvailabilityChecker {
         _kzg_commitments: &[KZGCommitment],
     ) -> DataAvailabilityVerdict {
         DataAvailabilityVerdict::Irrelevant
+    }
+}
+
+// ── ColumnAvailabilityChecker (EIP-7594 PeerDAS) ──────────────────────────────
+
+/// Production Fulu DA checker: reads `DataColumnSidecar`s from the store and
+/// verifies them per the Fulu `is_data_available` (`specs/fulu/fork-choice.md`).
+///
+/// The trait signature is unchanged (fork-agnostic): the caller still extracts
+/// `blob_kzg_commitments` from the block body and passes the slice. The column
+/// impl uses the commitment slice only to distinguish a no-blob block
+/// (`Irrelevant`) from one that requires data; the actual availability check
+/// reads the node's expected custody+sampling column set from the store, not
+/// "all 128 columns" (RI-1).
+///
+/// # Expected column set (RI-1)
+///
+/// Per `specs/fulu/das-core.md`, the node samples
+/// `sampling_size = max(SAMPLES_PER_SLOT, custody_group_count)` custody groups
+/// via `get_custody_groups(node_id, sampling_size)`, and the columns it must
+/// retrieve are the union of `compute_columns_for_custody_group(group)` over
+/// those groups. Custody groups are a subset of the sampling groups, so this
+/// union already includes the node's own custody columns. The set is computed
+/// once at construction (it depends only on the node id and the preset
+/// constants, which never change at runtime) and cached.
+pub struct ColumnAvailabilityChecker<E: BeaconSpec> {
+    store: Arc<RocksStore>,
+    verifier: Arc<KzgVerifier>,
+    runtime_cfg: Arc<RuntimeConfig>,
+    /// The sorted set of column indices this node must retrieve to satisfy the
+    /// DA gate (the custody+sampling union, RI-1).
+    expected_columns: BTreeSet<ColumnIndex>,
+    _marker: std::marker::PhantomData<E>,
+}
+
+impl<E: BeaconSpec> ColumnAvailabilityChecker<E> {
+    /// Construct a new checker from a shared store handle, KZG verifier, runtime
+    /// config, the local 256-bit node id (big-endian 32-byte `NodeID`), and the
+    /// node's `custody_group_count`.
+    ///
+    /// The expected-column set is computed once here:
+    /// `sampling_size = max(SAMPLES_PER_SLOT, custody_group_count)` clamped to
+    /// `NUMBER_OF_CUSTODY_GROUPS`, then the union of
+    /// `compute_columns_for_custody_group(g)` over
+    /// `get_custody_groups(node_id, sampling_size)`.
+    pub fn new(
+        store: Arc<RocksStore>,
+        verifier: Arc<KzgVerifier>,
+        runtime_cfg: Arc<RuntimeConfig>,
+        node_id: [u8; 32],
+        custody_group_count: u64,
+    ) -> Self {
+        // sampling_size = max(SAMPLES_PER_SLOT, custody_group_count), clamped to
+        // NUMBER_OF_CUSTODY_GROUPS (the spec asserts custody_group_count <=
+        // NUMBER_OF_CUSTODY_GROUPS; clamping keeps the helper assert satisfied
+        // even if a misconfigured node requested more).
+        let sampling_size = E::SAMPLES_PER_SLOT
+            .max(custody_group_count)
+            .min(E::NUMBER_OF_CUSTODY_GROUPS);
+
+        let groups = get_custody_groups::<E>(node_id, sampling_size);
+        let mut expected_columns: BTreeSet<ColumnIndex> = BTreeSet::new();
+        for group in groups {
+            for col in compute_columns_for_custody_group::<E>(group) {
+                expected_columns.insert(col);
+            }
+        }
+
+        Self {
+            store,
+            verifier,
+            runtime_cfg,
+            expected_columns,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// The sorted set of column indices this node must retrieve (custody +
+    /// sampling union, RI-1). Exposed for the column ingestion loop and tests.
+    pub fn expected_columns(&self) -> &BTreeSet<ColumnIndex> {
+        &self.expected_columns
+    }
+}
+
+impl<E: BeaconSpec> DataAvailabilityChecker<E> for ColumnAvailabilityChecker<E> {
+    /// Check data availability for `block_root` per the Fulu
+    /// `is_data_available`.
+    ///
+    /// Logic:
+    /// 1. Empty commitments → `Irrelevant` (pre-Fulu, or a Fulu block with no
+    ///    blobs: no columns to retrieve).
+    /// 2. For each expected column index (custody+sampling union, RI-1), read
+    ///    the `DataColumnSidecar` from the store. Any missing → `NotAvailable`
+    ///    (still in flight; the block parks).
+    /// 3. Each retrieved sidecar must pass `verify_data_column_sidecar` (with
+    ///    the epoch-driven `max_blobs_per_block` from `get_blob_parameters`) and
+    ///    `verify_data_column_sidecar_kzg_proofs`. All pass → `Available`; any
+    ///    failure → `NotAvailable`.
+    fn is_data_available(
+        &self,
+        block_root: Root,
+        kzg_commitments: &[KZGCommitment],
+    ) -> DataAvailabilityVerdict {
+        // No blobs → no columns to sample. DA is vacuously satisfied.
+        if kzg_commitments.is_empty() {
+            return DataAvailabilityVerdict::Irrelevant;
+        }
+
+        for &column_index in &self.expected_columns {
+            let sidecar = match <RocksStore as DbStore<E>>::get_data_column_sidecar(
+                &self.store,
+                &block_root,
+                column_index,
+            ) {
+                Ok(Some(s)) => s,
+                Ok(None) => {
+                    // Missing expected column: still in flight.
+                    return DataAvailabilityVerdict::NotAvailable;
+                }
+                Err(e) => {
+                    warn!(
+                        %block_root,
+                        column_index,
+                        error = %e,
+                        "column_da_checker: store read failed; treating as NotAvailable"
+                    );
+                    return DataAvailabilityVerdict::NotAvailable;
+                }
+            };
+
+            // Resolve the epoch-driven max-blobs-per-block (EIP-7892) from the
+            // sidecar's own slot, matching the spec's
+            // `compute_epoch_at_slot(sidecar.signed_block_header.message.slot)`.
+            let slot = sidecar.signed_block_header.message.slot;
+            let epoch = Epoch(slot.0 / E::SLOTS_PER_EPOCH);
+            let blob_params = get_blob_parameters(
+                epoch,
+                &self.runtime_cfg.blob_schedule,
+                Epoch(self.runtime_cfg.electra_fork_epoch),
+                self.runtime_cfg.max_blobs_per_block_electra,
+            );
+
+            if let Err(e) =
+                verify_data_column_sidecar::<E, 4096, 4>(&sidecar, blob_params.max_blobs_per_block)
+            {
+                warn!(
+                    %block_root,
+                    column_index,
+                    error = %e,
+                    "column_da_checker: data column sidecar invalid"
+                );
+                return DataAvailabilityVerdict::NotAvailable;
+            }
+
+            if let Err(e) =
+                verify_data_column_sidecar_kzg_proofs::<4096, 4>(&sidecar, &self.verifier)
+            {
+                warn!(
+                    %block_root,
+                    column_index,
+                    error = %e,
+                    "column_da_checker: data column sidecar KZG proof verification failed"
+                );
+                return DataAvailabilityVerdict::NotAvailable;
+            }
+        }
+
+        DataAvailabilityVerdict::Available
     }
 }
 

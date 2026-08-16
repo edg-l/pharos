@@ -231,10 +231,16 @@ where
         // 16-bit random value + `MAX_EFFECTIVE_BALANCE_ELECTRA` ceiling, so an
         // electra head-state must use the electra helper or the boost would
         // never be applied (the phase0 computation diverges).
-        let computed_proposer = if head_state.fork_variant() == ForkVariant::Electra {
-            get_beacon_proposer_index_electra::<E>(&head_state)
-        } else {
-            get_beacon_proposer_index::<E>(&head_state)
+        let computed_proposer = match head_state.fork_variant() {
+            ForkVariant::Electra => get_beacon_proposer_index_electra::<E>(&head_state),
+            // [EIP-7917] Fulu reads the precomputed `proposer_lookahead` rather than
+            // re-electing on demand; an on-demand recompute diverges once balances
+            // change, so the boost would never be applied (RI-6). Fall back to the
+            // electra election only if the lookahead is somehow absent.
+            ForkVariant::Fulu => head_state
+                .proposer_lookahead_at(E::SLOTS_PER_EPOCH)
+                .unwrap_or_else(|| get_beacon_proposer_index_electra::<E>(&head_state)),
+            _ => get_beacon_proposer_index::<E>(&head_state),
         };
         if block_proposer == computed_proposer {
             store.proposer_boost_root = root;
