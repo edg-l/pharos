@@ -25,10 +25,12 @@ async fn metrics_init_serves_help_lines() {
     let port = free_port();
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
 
-    pharos_utils::metrics::init_metrics(addr)
+    // No sync-state probe: /health will return 503, but /metrics must serve the
+    // declared metric names regardless.
+    pharos_utils::metrics::init_metrics(addr, None)
         .expect("init_metrics should succeed on a fresh process");
 
-    // Give the Prometheus HTTP server a moment to bind and start accepting.
+    // Give the HTTP server a moment to bind and start accepting.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let url = format!("http://{}:{}/metrics", Ipv4Addr::LOCALHOST, port);

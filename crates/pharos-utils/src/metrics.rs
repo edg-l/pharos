@@ -6,6 +6,10 @@
 //! every metric in the roadmap list live here; Phase 6 wires the actual emission
 //! call sites.
 //!
+//! The HTTP server serves two routes on the same port:
+//! - `GET /metrics` — Prometheus text format.
+//! - `GET /health`  — 200 when [`SyncState::Synced`], 503 otherwise.
+//!
 //! # Histogram bucket set
 //!
 //! The roadmap specifies `[0.5, 1, 5, 25, 100, 500, 2500] ms`.  Since the
@@ -14,7 +18,11 @@
 //! use `duration.as_secs_f64()` to emit values in seconds.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::get;
 use metrics_exporter_prometheus::PrometheusBuilder;
 pub use metrics_exporter_prometheus::{BuildError, PrometheusHandle};
 
@@ -48,27 +56,110 @@ pub const METRIC_ENGINE_CALL_LATENCY_SECONDS: &str = "pharos_engine_call_latency
 /// Slasher detection counter (label: `kind` = `double_vote` | `surround_vote`).
 pub const METRIC_SLASHER_DETECTIONS_TOTAL: &str = "pharos_slasher_detections_total";
 
+// ── Sync state ────────────────────────────────────────────────────────────────
+
+/// Node sync state reported by the `/health` probe on the metrics port.
+///
+/// `Synced` → HTTP 200; `Syncing` → HTTP 503.  The same source as
+/// `/eth/v1/node/health` is used (fork-choice head vs wall-clock + optimistic
+/// flag); the probe is threaded from `pharos-node` via [`init_metrics`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncState {
+    /// Node is fully synced and not optimistic.
+    Synced,
+    /// Node is syncing, optimistic, or not yet initialised.
+    Syncing,
+}
+
 // ── Registry init ─────────────────────────────────────────────────────────────
 
-/// Install the global Prometheus recorder and start the HTTP exporter on
-/// `addr` (the `/metrics` path is served automatically by the exporter).
+/// Install the global Prometheus recorder and start a two-route HTTP server on
+/// `addr` serving:
+/// - `GET /metrics` — Prometheus text output.
+/// - `GET /health`  — 200 when `probe()` returns [`SyncState::Synced`], 503
+///   otherwise.
 ///
-/// Must be called from within a Tokio runtime; `install()` internally calls
-/// `tokio::spawn` to drive the HTTP listener when a runtime is active.
+/// `probe` is an optional sync-state callback threaded from the node.  Pass
+/// `None` to serve `/health` as 503 unconditionally (useful in contexts where
+/// the sync state is unavailable, e.g. test harnesses that only exercise
+/// `/metrics`).
+///
+/// Must be called from within a Tokio runtime; the HTTP listener is spawned as
+/// a background task.
 ///
 /// # Errors
 ///
-/// Returns [`BuildError`] if the recorder is already installed, the address
-/// cannot be bound, or the bucket configuration is invalid.
-pub fn init_metrics(addr: SocketAddr) -> Result<(), BuildError> {
-    PrometheusBuilder::new()
-        .with_http_listener(addr)
+/// Returns [`BuildError`] if the recorder is already installed or the bucket
+/// configuration is invalid.  Bind errors surface asynchronously (the spawned
+/// task will log and exit).
+pub fn init_metrics(
+    addr: SocketAddr,
+    probe: Option<Arc<dyn Fn() -> SyncState + Send + Sync>>,
+) -> Result<(), BuildError> {
+    let handle = PrometheusBuilder::new()
         .set_buckets(LATENCY_BUCKETS)?
-        .install()?;
+        .install_recorder()?;
 
     describe_metrics();
     register_metrics();
+
+    // Spawn a small axum server on the metrics port serving /metrics and /health.
+    tokio::spawn(async move {
+        let app = build_router(handle, probe);
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("metrics server: failed to bind {addr}: {e}");
+            });
+        axum::serve(listener, app).await.unwrap_or_else(|e| {
+            tracing::error!(error = %e, "metrics HTTP server exited");
+        });
+    });
+
     Ok(())
+}
+
+/// Build the axum router serving `/metrics` and `/health`.
+///
+/// Exposed publicly so integration tests can spin up the server directly with
+/// a `PrometheusHandle` obtained from [`init_metrics_with_handle`], without
+/// calling [`init_metrics`] (which installs the global recorder and can only
+/// succeed once per process).
+pub fn build_router_for_test(
+    handle: PrometheusHandle,
+    probe: Option<Arc<dyn Fn() -> SyncState + Send + Sync>>,
+) -> axum::Router {
+    build_router(handle, probe)
+}
+
+/// Internal router builder.
+fn build_router(
+    handle: PrometheusHandle,
+    probe: Option<Arc<dyn Fn() -> SyncState + Send + Sync>>,
+) -> axum::Router {
+    let handle = Arc::new(handle);
+
+    let metrics_handle = Arc::clone(&handle);
+    let metrics_route = get(move || {
+        let h = Arc::clone(&metrics_handle);
+        async move { h.render() }
+    });
+
+    let health_route = get(move || {
+        let p = probe.clone();
+        async move {
+            let synced = p.as_ref().is_some_and(|f| f() == SyncState::Synced);
+            if synced {
+                StatusCode::OK.into_response()
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE.into_response()
+            }
+        }
+    });
+
+    axum::Router::new()
+        .route("/metrics", metrics_route)
+        .route("/health", health_route)
 }
 
 /// Install the global Prometheus recorder without binding an HTTP listener.

@@ -21,6 +21,8 @@ metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+axum.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

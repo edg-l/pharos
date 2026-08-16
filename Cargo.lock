@@ -3441,6 +3441,7 @@ dependencies = [
 name = "pharos-utils"
 version = "0.18.0"
 dependencies = [
+ "axum",
  "blst",
  "hex",
  "metrics",

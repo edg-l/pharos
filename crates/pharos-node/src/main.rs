@@ -333,12 +333,16 @@ async fn main() -> anyhow::Result<()> {
     pharos_utils::tracing::init_tracing(args.log_format, &args.log_level);
 
     // ── Metrics (opt-in via --metrics) ────────────────────────────────────────
-    if args.metrics {
-        let metrics_addr = SocketAddr::new(args.metrics_address, args.metrics_port);
-        pharos_utils::metrics::init_metrics(metrics_addr)
-            .with_context(|| format!("starting Prometheus metrics server on {metrics_addr}"))?;
-        info!(%metrics_addr, "Prometheus metrics server started");
-    }
+    //
+    // Deferred: the `/health` probe requires the fork-choice store to read sync
+    // state, so `init_metrics` is called after `fork_choice` is built below.
+    // The metrics address is parsed early to surface invalid-address errors
+    // before any expensive startup work.
+    let metrics_addr_opt = if args.metrics {
+        Some(SocketAddr::new(args.metrics_address, args.metrics_port))
+    } else {
+        None
+    };
 
     // Shutdown broadcast: set to `true` on Ctrl-C to signal long-lived tasks.
     let (pharos_node_shutdown_tx, pharos_node_shutdown_rx) = watch::channel(false);
@@ -632,6 +636,40 @@ async fn main() -> anyhow::Result<()> {
     fc_store_mut.runtime_cfg = runtime_cfg.clone();
 
     let fork_choice = Arc::new(RwLock::new(fc_store_mut));
+
+    // ── Metrics server (deferred, requires fork_choice for /health probe) ──────
+    //
+    // The sync-state probe is a cheap closure over the fork-choice `RwLock`; it
+    // reuses the same source as `/eth/v1/node/health` (`is_syncing` +
+    // `is_optimistic`).  Per `D-health-probe-on-metrics-port` (M11 Phase 18).
+    if let Some(metrics_addr) = metrics_addr_opt {
+        use pharos_utils::metrics::SyncState;
+
+        let fc_for_probe = Arc::clone(&fork_choice);
+        let probe: Arc<dyn Fn() -> SyncState + Send + Sync> = Arc::new(move || {
+            let fc = fc_for_probe.read();
+            let is_optimistic = pharos_fork_choice::is_optimistic_node(&fc);
+            let head_root = pharos_fork_choice::get_head(&fc);
+            let head_slot = fc.blocks.get(&head_root).map(|b| {
+                use pharos_types::views::BeaconBlockView;
+                b.slot()
+            });
+            let current = pharos_fork_choice::get_current_slot(&fc);
+            let is_syncing = match head_slot {
+                Some(s) => u64::from(s) + 1 < u64::from(current),
+                None => true,
+            };
+            if is_syncing || is_optimistic {
+                SyncState::Syncing
+            } else {
+                SyncState::Synced
+            }
+        });
+
+        pharos_utils::metrics::init_metrics(metrics_addr, Some(probe))
+            .with_context(|| format!("starting Prometheus metrics server on {metrics_addr}"))?;
+        info!(%metrics_addr, "Prometheus metrics server started (/metrics + /health)");
+    }
 
     // Slot-clock driver: advance the fork-choice store's time cursor every
     // second so `on_block`'s future-slot guard tracks wall-clock. Without this
