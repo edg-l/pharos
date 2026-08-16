@@ -123,6 +123,9 @@ pub type MainnetSyncCommittee = SyncCommittee<512>;
 /// Mainnet altair `SyncCommitteeContribution` (`SYNC_SUBCOMMITTEE_SIZE = 128`).
 pub type MainnetSyncCommitteeContribution = SyncCommitteeContribution<128>;
 
+/// Mainnet altair `ContributionAndProof` (`SYNC_SUBCOMMITTEE_SIZE = 128`).
+pub type MainnetContributionAndProof = ContributionAndProof<128>;
+
 /// Mainnet altair `LightClientBootstrap`.
 pub type MainnetLightClientBootstrap = LightClientBootstrap<512>;
 

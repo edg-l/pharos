@@ -103,19 +103,18 @@ pub fn sign_randao_reveal(sk: &BLSSecretKey, epoch: u64, fork: &ForkContext) -> 
     // `compute_signing_root` hashes with SigningData{object_root, domain} where
     // `object_root = hash_tree_root(epoch)` = SHA256(pad_to_32(epoch_le_bytes)).
     // We use a u64 wrapper that impls TreeHash for this purpose.
-    let epoch_wrapper = Epoch(epoch);
-    let signing_root = compute_signing_root(&epoch_wrapper, domain);
+    let signing_root = compute_signing_root(&U64Leaf(epoch), domain);
     sk.sign(signing_root.as_slice())
 }
 
-/// A newtype over `u64` that implements `TreeHash` as the spec's `uint64` SSZ type.
+/// A newtype over `u64` that implements `TreeHash` as the spec's `uint64` SSZ type
+/// (the encoding shared by `Slot`, `Epoch`, and other uint64 primitives).
 ///
-/// The spec's `Epoch` type SSZ-encodes as a little-endian 8-byte integer.
 /// `tree_hash_root` of a uint64 (an SSZ basic type) is the value as 8 LE bytes
 /// right-padded to a single 32-byte chunk — it is NOT hashed.
-struct Epoch(u64);
+struct U64Leaf(u64);
 
-impl TreeHash for Epoch {
+impl TreeHash for U64Leaf {
     const TREE_HASH_TYPE: pharos_ssz::TreeHashType = pharos_ssz::TreeHashType::Basic;
 
     fn tree_hash_packed_encoding(&self) -> Vec<u8> {
@@ -127,6 +126,31 @@ impl TreeHash for Epoch {
         bytes[..8].copy_from_slice(&self.0.to_le_bytes());
         pharos_utils::Hash256::from_array(bytes)
     }
+}
+
+/// Parse a `0x`-prefixed (or bare) hex string into a 32-byte root, zero-padded /
+/// truncated to 32 bytes. Lenient: malformed hex yields all-zeros (which fails
+/// downstream verification rather than panicking on bad BN input).
+pub fn root_from_hex(s: &str) -> [u8; 32] {
+    let stripped = s.strip_prefix("0x").unwrap_or(s);
+    let mut arr = [0u8; 32];
+    if let Ok(b) = hex::decode(stripped) {
+        let n = b.len().min(32);
+        arr[..n].copy_from_slice(&b[..n]);
+    }
+    arr
+}
+
+/// Parse a `0x`-prefixed (or bare) hex string into a 96-byte `BLSSignature`.
+/// Lenient like [`root_from_hex`]: malformed/short hex yields a zero signature.
+pub fn bls_signature_from_hex(s: &str) -> BLSSignature {
+    let stripped = s.strip_prefix("0x").unwrap_or(s);
+    let mut arr = [0u8; 96];
+    if let Ok(b) = hex::decode(stripped) {
+        let n = b.len().min(96);
+        arr[..n].copy_from_slice(&b[..n]);
+    }
+    BLSSignature::from_array(arr)
 }
 
 /// Sign an `AttestationData`-like object.
@@ -177,26 +201,8 @@ pub fn sign_aggregate_and_proof<T: TreeHash>(
 /// `is_aggregator` is determined externally by the caller from the modulo check.
 pub fn sign_selection_proof(sk: &BLSSecretKey, slot: u64, fork: &ForkContext) -> BLSSignature {
     let domain = domain_for(fork, DOMAIN_SELECTION_PROOF);
-    let slot_wrapper = Slot(slot);
-    let signing_root = compute_signing_root(&slot_wrapper, domain);
+    let signing_root = compute_signing_root(&U64Leaf(slot), domain);
     sk.sign(signing_root.as_slice())
-}
-
-/// A newtype over `u64` for slot, implements `TreeHash` as `uint64`.
-struct Slot(u64);
-
-impl TreeHash for Slot {
-    const TREE_HASH_TYPE: pharos_ssz::TreeHashType = pharos_ssz::TreeHashType::Basic;
-
-    fn tree_hash_packed_encoding(&self) -> Vec<u8> {
-        self.0.to_le_bytes().to_vec()
-    }
-
-    fn tree_hash_root(&self) -> pharos_utils::Hash256 {
-        let mut bytes = [0u8; 32];
-        bytes[..8].copy_from_slice(&self.0.to_le_bytes());
-        pharos_utils::Hash256::from_array(bytes)
-    }
 }
 
 /// Sign a sync committee message (`SyncCommitteeMessage.beacon_block_root`).
@@ -321,8 +327,7 @@ mod tests {
         let sig = sign_randao_reveal(&sk, 42, &fork);
         // Reconstruct the signing root in-test to confirm the sig verifies.
         let domain = domain_for(&fork, DOMAIN_RANDAO);
-        let epoch_wrapper = Epoch(42);
-        let signing_root = compute_signing_root(&epoch_wrapper, domain);
+        let signing_root = compute_signing_root(&U64Leaf(42), domain);
         // fast_aggregate_verify on a single signer.
         let agg = pharos_utils::bls::aggregate(&[sig]).expect("aggregate single sig");
         assert!(
@@ -339,8 +344,7 @@ mod tests {
         let fork = test_fork();
         let sig = sign_selection_proof(&sk, 100, &fork);
         let domain = domain_for(&fork, DOMAIN_SELECTION_PROOF);
-        let slot_wrapper = Slot(100);
-        let signing_root = compute_signing_root(&slot_wrapper, domain);
+        let signing_root = compute_signing_root(&U64Leaf(100), domain);
         let agg = pharos_utils::bls::aggregate(&[sig]).expect("aggregate");
         assert!(
             fast_aggregate_verify(&[pk], signing_root.as_slice(), &agg)

@@ -304,12 +304,19 @@ impl BnClient {
         Self { client, nodes }
     }
 
-    /// Try a GET request across all configured nodes (failover).
-    async fn get(&self, path: &str) -> Result<Response, BnError> {
+    /// Try a request across all configured nodes (failover), returning the first
+    /// success. `build` maps a per-node base URL to the request to send. A 503
+    /// from any node short-circuits to [`BnError::Unavailable`]; otherwise the
+    /// last error is reported once every node has been tried.
+    async fn send_with_failover(
+        &self,
+        path: &str,
+        build: impl Fn(Url) -> reqwest::RequestBuilder,
+    ) -> Result<Response, BnError> {
         let mut last_err = String::new();
         for base in &self.nodes {
             let url = base.join(path)?;
-            match self.client.get(url).send().await {
+            match build(url).send().await {
                 Ok(resp) => {
                     if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
                         return Err(BnError::Unavailable);
@@ -329,29 +336,16 @@ impl BnClient {
         Err(BnError::AllFailed(last_err))
     }
 
+    /// Try a GET request across all configured nodes (failover).
+    async fn get(&self, path: &str) -> Result<Response, BnError> {
+        self.send_with_failover(path, |url| self.client.get(url))
+            .await
+    }
+
     /// Try a POST request across all configured nodes (failover).
     async fn post<B: Serialize + ?Sized>(&self, path: &str, body: &B) -> Result<Response, BnError> {
-        let mut last_err = String::new();
-        for base in &self.nodes {
-            let url = base.join(path)?;
-            match self.client.post(url).json(body).send().await {
-                Ok(resp) => {
-                    if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
-                        return Err(BnError::Unavailable);
-                    }
-                    if resp.status().is_success() {
-                        return Ok(resp);
-                    }
-                    let status = resp.status().as_u16();
-                    let body = resp.text().await.unwrap_or_default();
-                    last_err = format!("HTTP {status}: {body}");
-                }
-                Err(e) => {
-                    last_err = e.to_string();
-                }
-            }
-        }
-        Err(BnError::AllFailed(last_err))
+        self.send_with_failover(path, |url| self.client.post(url).json(body))
+            .await
     }
 
     // ── Genesis ───────────────────────────────────────────────────────────────
@@ -634,34 +628,14 @@ impl BnClient {
         block: &JsonValue,
         consensus_version: &str,
     ) -> Result<(), BnError> {
-        let mut last_err = String::new();
-        for base in &self.nodes {
-            let url = base.join("eth/v2/beacon/blocks")?;
-            match self
-                .client
+        self.send_with_failover("eth/v2/beacon/blocks", |url| {
+            self.client
                 .post(url)
                 .header("Eth-Consensus-Version", consensus_version)
                 .json(block)
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
-                        return Err(BnError::Unavailable);
-                    }
-                    if resp.status().is_success() {
-                        return Ok(());
-                    }
-                    let status = resp.status().as_u16();
-                    let body = resp.text().await.unwrap_or_default();
-                    last_err = format!("HTTP {status}: {body}");
-                }
-                Err(e) => {
-                    last_err = e.to_string();
-                }
-            }
-        }
-        Err(BnError::AllFailed(last_err))
+        })
+        .await
+        .map(|_| ())
     }
 
     // ── Pool submissions ──────────────────────────────────────────────────────

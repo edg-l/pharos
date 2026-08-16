@@ -35,12 +35,48 @@ use crate::bn_client::{
 
 use crate::duties::SharedDuties;
 use crate::signing::{
-    ForkContext, sign_attestation, sign_beacon_block, sign_contribution_and_proof,
-    sign_randao_reveal, sign_selection_proof, sign_sync_committee_message,
-    sign_sync_committee_selection_proof,
+    ForkContext, bls_signature_from_hex, root_from_hex, sign_aggregate_and_proof, sign_attestation,
+    sign_beacon_block, sign_contribution_and_proof, sign_randao_reveal, sign_selection_proof,
+    sign_sync_committee_message, sign_sync_committee_selection_proof,
 };
 use crate::slashing::SlashingProtection;
+use pharos_ssz::Decode as _;
+use pharos_ssz::{Bitlist, Bitvector};
+use pharos_types::altair::{
+    MainnetContributionAndProof, MainnetSyncCommitteeContribution, SyncAggregatorSelectionData,
+};
+use pharos_types::phase0::misc::{AttestationData, Checkpoint};
+use pharos_types::phase0::primitives::{CommitteeIndex, Epoch, Root, Slot, ValidatorIndex};
+use pharos_types::phase0::{MainnetAggregateAndProof, MainnetAttestation};
 use pharos_utils::bls::BLSSecretKey;
+
+use crate::bn_client::AttestationDataDto;
+
+/// Convert a wire `AttestationDataDto` (hex/decimal strings) into the typed
+/// `AttestationData` SSZ container, so callers can sign over its real
+/// `tree_hash_root`. Unparseable fields default to zero (the BN supplies
+/// well-formed data; a zero here fails verification rather than panicking).
+fn att_data_from_dto(dto: &AttestationDataDto) -> AttestationData {
+    AttestationData {
+        slot: Slot(dto.slot.parse().unwrap_or(0)),
+        index: CommitteeIndex(dto.index.parse().unwrap_or(0)),
+        beacon_block_root: Root::from(root_from_hex(&dto.beacon_block_root)),
+        source: Checkpoint {
+            epoch: Epoch(dto.source.epoch.parse().unwrap_or(0)),
+            root: Root::from(root_from_hex(&dto.source.root)),
+        },
+        target: Checkpoint {
+            epoch: Epoch(dto.target.epoch.parse().unwrap_or(0)),
+            root: Root::from(root_from_hex(&dto.target.root)),
+        },
+    }
+}
+
+/// Decode a `0x`-prefixed (or bare) hex string into raw bytes; malformed input
+/// yields an empty vec (an SSZ decode of which fails cleanly).
+fn bytes_from_hex(s: &str) -> Vec<u8> {
+    hex::decode(s.strip_prefix("0x").unwrap_or(s)).unwrap_or_default()
+}
 
 // ── is_aggregator ─────────────────────────────────────────────────────────────
 
@@ -168,17 +204,11 @@ pub async fn run_proposer(
         }
     };
 
-    // Step 3 + 4: sign the block over its REAL hash_tree_root.
-    // Per `D-commit-before-sign`: the slashing record is atomically committed by
-    // `check_and_record_block_proposal` inside `sign_beacon_block` before the key
-    // is used. If the check fails the error propagates and we skip.
-    //
-    // The BN returns `block_ssz` (the fork-enum `BeaconBlock` SSZ, `[disc] ++
-    // message_ssz`) so we decode the typed block and pass it to
-    // `sign_beacon_block`, which signs `compute_signing_root(block, DOMAIN_BEACON_PROPOSER)`.
-    // The BN re-verifies the proposer signature over the same root on import (and
-    // peers verify it over gossip), so a placeholder root would be rejected.
-    use pharos_ssz::Decode as _;
+    // Step 3 + 4: decode the BN's `block_ssz` (fork-enum `BeaconBlock`) and sign its
+    // real `tree_hash_root` under `DOMAIN_BEACON_PROPOSER`. `sign_beacon_block`
+    // commits the slashing record before using the key (`D-commit-before-sign`);
+    // the BN and peers re-verify the signature over the same root, so a placeholder
+    // would be rejected.
     let block_ssz_hex = block_json
         .get("block_ssz")
         .and_then(|v| v.as_str())
@@ -282,34 +312,11 @@ pub async fn run_attester(
     // Build the TYPED AttestationData so we sign over its real `tree_hash_root`.
     // The STF verifies attestation signatures over
     // `compute_signing_root(AttestationData, DOMAIN_BEACON_ATTESTER)` when the
-    // attestation is packed into a block; a placeholder (JSON-hash) root would be
-    // rejected as an invalid signature. `att_hash` (= the data root) is also reused
-    // as the `attestation_data_root` for the aggregate query below.
+    // attestation is packed into a block, so a placeholder root would be rejected.
+    // `att_hash` (= the data root) is reused as the `attestation_data_root` for
+    // the aggregate query below.
     use pharos_ssz::TreeHash;
-    use pharos_types::phase0::misc::{AttestationData, Checkpoint};
-    use pharos_types::phase0::primitives::{CommitteeIndex, Epoch, Root, Slot};
-    let parse_root = |s: &str| -> Root {
-        let st = s.strip_prefix("0x").unwrap_or(s);
-        let mut arr = [0u8; 32];
-        if let Ok(b) = hex::decode(st) {
-            let n = b.len().min(32);
-            arr[..n].copy_from_slice(&b[..n]);
-        }
-        Root::from(arr)
-    };
-    let typed_att = AttestationData {
-        slot: Slot(att_data.slot.parse().unwrap_or(0)),
-        index: CommitteeIndex(att_data.index.parse().unwrap_or(0)),
-        beacon_block_root: parse_root(&att_data.beacon_block_root),
-        source: Checkpoint {
-            epoch: Epoch(source_epoch),
-            root: parse_root(&att_data.source.root),
-        },
-        target: Checkpoint {
-            epoch: Epoch(target_epoch),
-            root: parse_root(&att_data.target.root),
-        },
-    };
+    let typed_att = att_data_from_dto(&att_data);
     let att_hash = typed_att.tree_hash_root();
 
     // Step 2: Sign attestation (slashing check+record committed before signing).
@@ -404,31 +411,32 @@ pub async fn run_attester(
         }
     };
 
-    // Build and sign AggregateAndProof.
-    let agg_and_proof = AggregateAndProofDto {
-        aggregator_index: entry.index.to_string(),
-        aggregate,
-        selection_proof: selection_sig_hex.clone(),
+    // Build the TYPED `AggregateAndProof` and sign its real `tree_hash_root`.
+    // Peers and the BN recompute the SSZ signing root over the submitted
+    // `SignedAggregateAndProof`; the wire DTO carries the same fields, so signing
+    // the typed object's root yields a signature that verifies against the DTO.
+    let typed_agg = MainnetAttestation {
+        aggregation_bits: Bitlist::<2048>::from_ssz_bytes(&bytes_from_hex(
+            &aggregate.aggregation_bits,
+        ))
+        .unwrap_or_default(),
+        data: att_data_from_dto(&aggregate.data),
+        signature: bls_signature_from_hex(&aggregate.signature),
     };
-
-    let agg_bytes = serde_json::to_vec(&agg_and_proof).unwrap_or_default();
-    let agg_hash = pharos_utils::hash::hash(&agg_bytes);
-    struct AggWrapper([u8; 32]);
-    impl pharos_ssz::TreeHash for AggWrapper {
-        const TREE_HASH_TYPE: pharos_ssz::TreeHashType = pharos_ssz::TreeHashType::Basic;
-        fn tree_hash_packed_encoding(&self) -> Vec<u8> {
-            self.0.to_vec()
-        }
-        fn tree_hash_root(&self) -> pharos_utils::Hash256 {
-            pharos_utils::Hash256::from_array(self.0)
-        }
-    }
-    let agg_wrapper = AggWrapper(agg_hash.into_inner());
-    let agg_sig = crate::signing::sign_aggregate_and_proof(&entry.secret_key, &agg_wrapper, fork);
+    let typed_agg_and_proof = MainnetAggregateAndProof {
+        aggregator_index: ValidatorIndex(entry.index),
+        aggregate: typed_agg,
+        selection_proof: selection_sig,
+    };
+    let agg_sig = sign_aggregate_and_proof(&entry.secret_key, &typed_agg_and_proof, fork);
     let agg_sig_hex = format!("0x{}", hex::encode(agg_sig.as_ref()));
 
     let signed_agg = SignedAggregateAndProofDto {
-        message: agg_and_proof,
+        message: AggregateAndProofDto {
+            aggregator_index: entry.index.to_string(),
+            aggregate,
+            selection_proof: selection_sig_hex,
+        },
         signature: agg_sig_hex,
     };
 
@@ -469,40 +477,17 @@ pub async fn run_sync_committee(
     head_block_root_hex: &str,
 ) {
     // Find this validator's sync duty.
-    let my_duty = sync_duties.iter().find(|d| d.pubkey == entry.pubkey_hex);
-    let duty = match my_duty {
-        Some(d) => d,
-        None => return, // Not in this sync committee period.
+    let Some(duty) = sync_duties.iter().find(|d| d.pubkey == entry.pubkey_hex) else {
+        return; // Not in this sync committee period.
     };
 
     debug!(slot, validator = %entry.pubkey_hex, "sync committee message");
 
-    // Sign the head block root as sync message.
-    // The sync committee message signs the `beacon_block_root` of the current slot.
-    struct RootWrapper([u8; 32]);
-    impl pharos_ssz::TreeHash for RootWrapper {
-        const TREE_HASH_TYPE: pharos_ssz::TreeHashType = pharos_ssz::TreeHashType::Basic;
-        fn tree_hash_packed_encoding(&self) -> Vec<u8> {
-            self.0.to_vec()
-        }
-        fn tree_hash_root(&self) -> pharos_utils::Hash256 {
-            pharos_utils::Hash256::from_array(self.0)
-        }
-    }
-
-    // Parse head_block_root_hex → [u8; 32].
-    let root_bytes: [u8; 32] = {
-        let stripped = head_block_root_hex
-            .strip_prefix("0x")
-            .unwrap_or(head_block_root_hex);
-        let b = hex::decode(stripped).unwrap_or_else(|_| vec![0u8; 32]);
-        let mut arr = [0u8; 32];
-        let len = b.len().min(32);
-        arr[..len].copy_from_slice(&b[..len]);
-        arr
-    };
-    let root_wrapper = RootWrapper(root_bytes);
-    let sync_sig = sign_sync_committee_message(&entry.secret_key, &root_wrapper, fork);
+    // Sign the head block root as a sync-committee message. The message signs
+    // `compute_signing_root(beacon_block_root, DOMAIN_SYNC_COMMITTEE)`; the block
+    // root is a `Root` (a 32-byte basic leaf), so we sign over its `tree_hash_root`.
+    let head_root = Root::from(root_from_hex(head_block_root_hex));
+    let sync_sig = sign_sync_committee_message(&entry.secret_key, &head_root, fork);
     let sync_sig_hex = format!("0x{}", hex::encode(sync_sig.as_ref()));
 
     // Submit sync message.
@@ -537,36 +522,13 @@ pub async fn run_sync_committee(
         // = sc_idx / (512 / 4) = sc_idx / 128 on mainnet.
         let subnet_id = sc_idx / 128;
 
-        // Build selection_data = {slot, subcommittee_index} to sign.
-        struct SelectionData {
-            slot: u64,
-            subcommittee_index: u64,
-        }
-        impl pharos_ssz::TreeHash for SelectionData {
-            const TREE_HASH_TYPE: pharos_ssz::TreeHashType = pharos_ssz::TreeHashType::Container;
-            fn tree_hash_packed_encoding(&self) -> Vec<u8> {
-                // Packed encoding for basic types is not used for containers.
-                vec![]
-            }
-            fn tree_hash_root(&self) -> pharos_utils::Hash256 {
-                // Hash the concatenation of slot LE and subcommittee_index LE, each 32-byte padded.
-                let mut buf = [0u8; 64];
-                buf[..8].copy_from_slice(&self.slot.to_le_bytes());
-                buf[32..40].copy_from_slice(&self.subcommittee_index.to_le_bytes());
-                // Merkle hash of 2 chunks.
-                let left = pharos_utils::hash::hash(&buf[..32]);
-                let right = pharos_utils::hash::hash(&buf[32..]);
-                let mut combined = [0u8; 64];
-                combined[..32].copy_from_slice(left.as_slice());
-                combined[32..].copy_from_slice(right.as_slice());
-                pharos_utils::hash::hash(&combined)
-            }
-        }
-        let sel_data = SelectionData {
-            slot,
+        // Sign the typed `SyncAggregatorSelectionData{slot, subcommittee_index}`
+        // over its real `tree_hash_root` (the derived container root, NOT a
+        // hand-hashed concatenation — basic-type leaves are padded, not hashed).
+        let sel_data = SyncAggregatorSelectionData {
+            slot: Slot(slot),
             subcommittee_index: subnet_id,
         };
-
         let sel_sig = sign_sync_committee_selection_proof(&entry.secret_key, &sel_data, fork);
 
         if !is_sync_committee_aggregator(sel_sig.as_ref()) {
@@ -591,28 +553,32 @@ pub async fn run_sync_committee(
             }
         };
 
-        // Build ContributionAndProof.
+        // Build the TYPED `ContributionAndProof` and sign its real `tree_hash_root`.
+        // The wire DTO carries the same fields, so the signature verifies against it.
+        let typed_contribution = MainnetSyncCommitteeContribution {
+            slot: Slot(contribution.slot.parse().unwrap_or(0)),
+            beacon_block_root: Root::from(root_from_hex(&contribution.beacon_block_root)),
+            subcommittee_index: contribution.subcommittee_index.parse().unwrap_or(0),
+            aggregation_bits: Bitvector::<128>::from_ssz_bytes(&bytes_from_hex(
+                &contribution.aggregation_bits,
+            ))
+            .unwrap_or_default(),
+            signature: bls_signature_from_hex(&contribution.signature),
+        };
+        let typed_cap = MainnetContributionAndProof {
+            aggregator_index: ValidatorIndex(entry.index),
+            contribution: typed_contribution,
+            selection_proof: sel_sig,
+        };
+        let cap_sig = sign_contribution_and_proof(&entry.secret_key, &typed_cap, fork);
+        let cap_sig_hex = format!("0x{}", hex::encode(cap_sig.as_ref()));
+
+        // Build the wire DTO (moves `contribution`).
         let cap = ContributionAndProofDto {
             aggregator_index: entry.index.to_string(),
             contribution,
             selection_proof: sel_sig_hex,
         };
-
-        let cap_bytes = serde_json::to_vec(&cap).unwrap_or_default();
-        let cap_hash = pharos_utils::hash::hash(&cap_bytes);
-        struct CapWrapper([u8; 32]);
-        impl pharos_ssz::TreeHash for CapWrapper {
-            const TREE_HASH_TYPE: pharos_ssz::TreeHashType = pharos_ssz::TreeHashType::Basic;
-            fn tree_hash_packed_encoding(&self) -> Vec<u8> {
-                self.0.to_vec()
-            }
-            fn tree_hash_root(&self) -> pharos_utils::Hash256 {
-                pharos_utils::Hash256::from_array(self.0)
-            }
-        }
-        let cap_wrapper = CapWrapper(cap_hash.into_inner());
-        let cap_sig = sign_contribution_and_proof(&entry.secret_key, &cap_wrapper, fork);
-        let cap_sig_hex = format!("0x{}", hex::encode(cap_sig.as_ref()));
 
         contrib_and_proofs.push(SignedContributionAndProofDto {
             message: cap,

@@ -664,9 +664,8 @@ where
 /// - Bellatrix head → Bellatrix block (V1 execution payload)
 /// - Altair head → Altair block (no execution payload)
 /// - Phase0 head → `unreachable!()` (checkpoint-synced nodes always past Phase0)
-// The block-production entry point genuinely needs all of these inputs (slot,
-// randao, graffiti, fee recipient, fc-store, pools, engine, runtime cfg); a
-// param struct would add indirection without clarifying the call site.
+// Block production legitimately needs all of these inputs; a param struct would
+// add indirection without clarifying the call site.
 #[allow(clippy::too_many_arguments)]
 pub fn produce_block<E: EthSpec>(
     fc_store: &Arc<RwLock<FcStore<E>>>,

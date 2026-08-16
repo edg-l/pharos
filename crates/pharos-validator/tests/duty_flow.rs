@@ -20,6 +20,9 @@ use reqwest::Url;
 use serde_json::json;
 use tokio::net::TcpListener;
 
+use pharos_ssz::Encode;
+use pharos_types::bellatrix::MainnetBeaconBlock as BellatrixBeaconBlock;
+use pharos_types::state::MainnetBeaconBlock;
 use pharos_validator::bn_client::BnClient;
 use pharos_validator::run::{ValidatorEntry, run_proposer};
 use pharos_validator::signing::ForkContext;
@@ -50,6 +53,12 @@ async fn mock_produce_block(
     if state.produce_503 {
         return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({}))).into_response();
     }
+    // The proposer signs over the BN-supplied `block_ssz` (the fork-enum
+    // `BeaconBlock` SSZ), so the mock must return a decodable one. A default
+    // bellatrix block suffices — the test only asserts the slashing-record /
+    // publish ordering, not block contents.
+    let block_ssz =
+        MainnetBeaconBlock::Bellatrix(BellatrixBeaconBlock::default()).as_ssz_bytes();
     let body = json!({
         "version": "bellatrix",
         "data": {
@@ -58,7 +67,8 @@ async fn mock_produce_block(
             "parent_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
             "state_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
             "body": {}
-        }
+        },
+        "block_ssz": format!("0x{}", hex::encode(block_ssz)),
     });
     (StatusCode::OK, axum::Json(body)).into_response()
 }

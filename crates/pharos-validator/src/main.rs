@@ -201,6 +201,11 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Duty scheduler ────────────────────────────────────────────────────────
 
+    // Mainnet preset timing. The VC targets mainnet (block decode uses
+    // `MainnetBeaconBlock`); sourced once here rather than re-typed at each spawn.
+    const SLOTS_PER_EPOCH: u64 = 32;
+    const SLOT_DURATION_MS: u64 = 12_000;
+
     let val_indices: Vec<u64> = validators.iter().map(|e| e.index).collect();
     let pubkeys_hex: Vec<String> = validators.iter().map(|e| e.pubkey_hex.clone()).collect();
 
@@ -212,8 +217,11 @@ async fn main() -> anyhow::Result<()> {
     let duties = scheduler.duties_ref();
 
     // Epoch watch channel: duty refresh loop sends current epoch; run loop receives.
-    let startup_epoch =
-        pharos_validator::duties::current_epoch_from_wall_clock(genesis_time, 12_000, 32);
+    let startup_epoch = pharos_validator::duties::current_epoch_from_wall_clock(
+        genesis_time,
+        SLOT_DURATION_MS,
+        SLOTS_PER_EPOCH,
+    );
     let (epoch_tx, epoch_rx) = watch::channel(startup_epoch);
 
     // ── Doppelganger protection ───────────────────────────────────────────────
@@ -228,7 +236,15 @@ async fn main() -> anyhow::Result<()> {
         let idx_ddg = val_indices.clone();
         let ddg_epoch = startup_epoch;
         tokio::spawn(async move {
-            run_doppelganger_loop(true, bn_ddg, idx_ddg, ddg_epoch, 32, 12_000).await;
+            run_doppelganger_loop(
+                true,
+                bn_ddg,
+                idx_ddg,
+                ddg_epoch,
+                SLOTS_PER_EPOCH,
+                SLOT_DURATION_MS,
+            )
+            .await;
         });
     }
 
@@ -241,8 +257,8 @@ async fn main() -> anyhow::Result<()> {
                 sched,
                 epoch_tx,
                 genesis_time,
-                32,
-                12_000,
+                SLOTS_PER_EPOCH,
+                SLOT_DURATION_MS,
             )
             .await;
         });
@@ -284,8 +300,8 @@ async fn main() -> anyhow::Result<()> {
         suggested_fee_recipient: args.suggested_fee_recipient.clone(),
         graffiti: args.graffiti.clone(),
         genesis_time,
-        slots_per_epoch: 32,
-        slot_duration_ms: 12_000,
+        slots_per_epoch: SLOTS_PER_EPOCH,
+        slot_duration_ms: SLOT_DURATION_MS,
         doppelganger_protection: args.doppelganger_protection,
     });
 

@@ -127,6 +127,17 @@ fn decode_hex_field(field: &str, name: &'static str) -> Result<Vec<u8>, Keystore
     hex::decode(s).map_err(|e| KeystoreError::HexDecode(name.to_string(), e.to_string()))
 }
 
+/// Take the first 32 bytes of a derived key as the AES key, erroring if the KDF
+/// produced fewer than 32 bytes (the shared tail of both KDF branches).
+fn first_32(dk: &[u8]) -> Result<[u8; 32], KeystoreError> {
+    if dk.len() < 32 {
+        return Err(KeystoreError::InvalidKeyLength);
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&dk[..32]);
+    Ok(key)
+}
+
 /// Derive the 32-byte decryption key from the KDF module.
 fn derive_key(kdf: &KdfModule, password: &[u8]) -> Result<[u8; 32], KeystoreError> {
     match kdf.function.as_str() {
@@ -162,12 +173,7 @@ fn derive_key(kdf: &KdfModule, password: &[u8]) -> Result<[u8; 32], KeystoreErro
             scrypt(password, &salt, &scrypt_params, &mut dk)
                 .map_err(|e| KeystoreError::Scrypt(e.to_string()))?;
 
-            if dk.len() < 32 {
-                return Err(KeystoreError::InvalidKeyLength);
-            }
-            let mut key = [0u8; 32];
-            key.copy_from_slice(&dk[..32]);
-            Ok(key)
+            first_32(&dk)
         }
         "pbkdf2" => {
             let params = &kdf.params;
@@ -193,12 +199,7 @@ fn derive_key(kdf: &KdfModule, password: &[u8]) -> Result<[u8; 32], KeystoreErro
             pbkdf2::<Hmac<Sha256>>(password, &salt, c, &mut dk)
                 .map_err(|e| KeystoreError::Pbkdf2(e.to_string()))?;
 
-            if dk.len() < 32 {
-                return Err(KeystoreError::InvalidKeyLength);
-            }
-            let mut key = [0u8; 32];
-            key.copy_from_slice(&dk[..32]);
-            Ok(key)
+            first_32(&dk)
         }
         other => Err(KeystoreError::UnsupportedKdf(other.to_string())),
     }

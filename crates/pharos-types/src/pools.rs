@@ -752,12 +752,10 @@ mod tests {
         }
         // An empty sync aggregate signs as the G2 point at infinity (0xc0 || 0*95),
         // NOT all-zeros: `eth_fast_aggregate_verify` accepts empty participants only
-        // against the infinity signature (see empty_sync_committee_signature).
-        let mut infinity = [0u8; 96];
-        infinity[0] = 0xc0;
+        // against the infinity signature.
         assert_eq!(
             agg.sync_committee_signature,
-            BLSSignature::from_array(infinity)
+            empty_sync_committee_signature()
         );
     }
 
