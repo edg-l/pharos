@@ -41,6 +41,11 @@ pub struct DiscoveryConfig {
     pub fork_id: ENRForkID,
     /// Attestation subnet subscriptions embedded in the `attnets` ENR key.
     pub attnets: Bitvector<ATTESTATION_SUBNET_COUNT>,
+    /// EIP-7594 custody group count advertised in the `cgc` ENR key from boot.
+    /// `None` (or `0`) omits the key — a Fulu node must advertise a non-zero
+    /// `cgc` from startup, else lighthouse bans it as out-of-range
+    /// (`D-fulu-metadata-cgc-nonzero`).
+    pub cgc: Option<u64>,
     /// Directory for persisting the ENR sequence number across restarts
     /// (`D-enr-seq-persistence`). `None` disables persistence (tests, ephemeral
     /// nodes). When `Some`, the ENR seq is loaded on startup and saved on every
@@ -112,6 +117,7 @@ impl DiscoveryService {
             None,
             cfg.fork_id.clone(),
             cfg.attnets,
+            cfg.cgc,
             initial_seq,
         )?;
 
@@ -302,6 +308,7 @@ mod tests {
             local_key: key,
             fork_id,
             attnets,
+            cgc: None,
             network_dir: None,
         };
 

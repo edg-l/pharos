@@ -110,6 +110,11 @@ pub fn save_enr_seq(dir: &Path, seq: u64) -> io::Result<()> {
 /// `attnets` = SSZ-encoded `Bitvector<ATTESTATION_SUBNET_COUNT>` (8 bytes).
 /// `quic`  = RLP-encoded `u16` (IPv4 QUIC UDP port).
 /// `quic6` = RLP-encoded `u16` (IPv6 QUIC UDP port).
+/// `cgc`   = EIP-7594 custody group count (big-endian, no leading zeros).
+///           Only set when `Some(c)` and `c > 0`; lighthouse rejects a `cgc`
+///           of `0` (out of range) and bans the peer, so a Fulu node must
+///           advertise it from boot rather than only after the custody loop
+///           fires (`D-fulu-metadata-cgc-nonzero`).
 ///
 /// `initial_seq` is the starting ENR sequence number. When persisting ENR seq
 /// across restarts (per `D-enr-seq-persistence`), pass the value from
@@ -127,6 +132,7 @@ pub fn build_local_enr(
     quic6_port: Option<u16>,
     fork_id: ENRForkID,
     attnets: Bitvector<ATTESTATION_SUBNET_COUNT>,
+    cgc: Option<u64>,
     initial_seq: u64,
 ) -> Result<Enr, NetworkError> {
     let mut builder = discv5::enr::Enr::builder();
@@ -159,6 +165,13 @@ pub fn build_local_enr(
     }
     if let Some(port) = quic6_port {
         builder.add_value("quic6", &port);
+    }
+
+    // cgc (EIP-7594 custody group count): big-endian, no leading zeros. Skip
+    // when 0 — lighthouse treats `cgc == 0` as out-of-range and bans the peer
+    // (`D-fulu-metadata-cgc-nonzero`), so a pre-Fulu node simply omits the key.
+    if let Some(c) = cgc.filter(|c| *c != 0) {
+        builder.add_value("cgc", &encode_cgc(c).as_slice());
     }
 
     builder
@@ -358,6 +371,7 @@ mod tests {
             Some(9001),
             fork_id.clone(),
             attnets.clone(),
+            None,
             1,
         )
         .expect("build_local_enr failed");
@@ -403,6 +417,7 @@ mod tests {
             None,
             fork_id,
             attnets,
+            None,
             1,
         )
         .expect("build_local_enr failed");
@@ -471,6 +486,7 @@ mod tests {
             None,
             fork_id,
             attnets,
+            None,
             1,
         )
         .expect("build_local_enr failed");
@@ -577,6 +593,7 @@ mod tests {
             None,
             fork_id.clone(),
             attnets.clone(),
+            None,
             seq1,
         )
         .expect("build_local_enr first boot");
@@ -585,8 +602,10 @@ mod tests {
         // Second "boot": load the saved seq, build a new ENR. Its initial seq
         // must be >= the first ENR's seq (monotonic across restart).
         let seq2 = load_enr_seq(dir.path());
-        let enr2 = build_local_enr(&key, None, None, None, None, None, fork_id, attnets, seq2)
-            .expect("build_local_enr second boot");
+        let enr2 = build_local_enr(
+            &key, None, None, None, None, None, fork_id, attnets, None, seq2,
+        )
+        .expect("build_local_enr second boot");
 
         assert!(
             enr2.seq() >= enr1.seq(),
@@ -640,6 +659,7 @@ mod tests {
             None,
             fork_id,
             attnets,
+            None,
             1,
         )
         .expect("build_local_enr failed");
@@ -657,5 +677,53 @@ mod tests {
 
         assert_eq!(read_cgc_field(&enr), Some(8));
         assert_eq!(read_nfd_field(&enr), Some(nfd));
+    }
+
+    /// The startup ENR carries `cgc` from boot when `build_local_enr` is passed
+    /// `Some(c)` with `c > 0`, and omits the key for `None` / `Some(0)` so a
+    /// pre-Fulu node never advertises the banned `cgc == 0`
+    /// (`D-fulu-metadata-cgc-nonzero`).
+    #[test]
+    fn build_local_enr_sets_cgc_from_boot() {
+        let key = CombinedKey::generate_secp256k1();
+        let fork_id = test_fork_id();
+        let attnets = test_attnets();
+
+        let with_cgc = build_local_enr(
+            &key,
+            None,
+            None,
+            None,
+            None,
+            None,
+            fork_id.clone(),
+            attnets.clone(),
+            Some(4),
+            1,
+        )
+        .expect("build_local_enr with cgc");
+        assert_eq!(read_cgc_field(&with_cgc), Some(4));
+
+        // None and Some(0) both omit the key (0 would be banned by lighthouse).
+        for cgc in [None, Some(0)] {
+            let enr = build_local_enr(
+                &key,
+                None,
+                None,
+                None,
+                None,
+                None,
+                fork_id.clone(),
+                attnets.clone(),
+                cgc,
+                1,
+            )
+            .expect("build_local_enr without cgc");
+            assert_eq!(
+                read_cgc_field(&enr),
+                None,
+                "cgc={cgc:?} should omit the key"
+            );
+        }
     }
 }

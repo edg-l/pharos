@@ -2341,6 +2341,12 @@ impl<
         if let Some(ref dir) = network_dir_for_network {
             self.scorer.seed_from_dir(dir);
         }
+        // Advertise the node's custody group count in the startup ENR `cgc`
+        // key. A Fulu node MUST carry a non-zero `cgc` from boot — lighthouse
+        // bans `cgc == 0` as out-of-range (`D-fulu-metadata-cgc-nonzero`). The
+        // host returns 0 pre-Fulu, which `build_local_enr` omits; the custody
+        // loop later bumps it via `update_enr_eth2_fulu`.
+        let cgc = Some(self.host.custody_group_count()).filter(|c| *c != 0);
         let discovery = DiscoveryService::start(DiscoveryConfig {
             listen_addr: self.discv5_addr,
             tcp_port: self.tcp_listen_port,
@@ -2349,6 +2355,7 @@ impl<
             local_key: combined_key,
             fork_id,
             attnets: attnets.clone(),
+            cgc,
             network_dir: self.network_dir,
         })
         .await?;
