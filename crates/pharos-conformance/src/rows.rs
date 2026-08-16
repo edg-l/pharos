@@ -165,8 +165,9 @@ pub fn row_table() -> &'static [RowSpec] {
         r("deneb", "light_client", "mainnet"),     // 103
         r("deneb", "light_client", "minimal"),     // 104
         // ── electra ──────────────────────────────────────────────────────────
-        r("electra", "ssz_static", "-"),             // 105
-        r("electra", "operations", "mainnet"),       // 106
+        r("electra", "ssz_static", "mainnet"),       // 105
+        r("electra", "ssz_static", "minimal"),       // 106
+        r("electra", "operations", "mainnet"),       // 107
         r("electra", "operations", "minimal"),       // 107
         r("electra", "fork", "mainnet"),             // 108
         r("electra", "fork", "minimal"),             // 109
@@ -319,7 +320,8 @@ mod tests {
             ("deneb", "light_client", "mainnet"),
             ("deneb", "light_client", "minimal"),
             // electra
-            ("electra", "ssz_static", "-"),
+            ("electra", "ssz_static", "mainnet"),
+            ("electra", "ssz_static", "minimal"),
             ("electra", "operations", "mainnet"),
             ("electra", "operations", "minimal"),
             ("electra", "fork", "mainnet"),
@@ -417,9 +419,9 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 123.
+    /// Total row count is exactly 124.
     #[test]
-    fn row_count_is_123() {
-        assert_eq!(row_table().len(), 123);
+    fn row_count_is_124() {
+        assert_eq!(row_table().len(), 124);
     }
 }
