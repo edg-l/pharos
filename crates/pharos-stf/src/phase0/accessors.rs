@@ -247,8 +247,18 @@ pub fn get_total_balance<E: EthSpec>(state: &E::BeaconState, indices: &[Validato
 
 /// `get_total_active_balance` per `specs/phase0/beacon-chain.md:1147-1154`.
 pub fn get_total_active_balance<E: EthSpec>(state: &E::BeaconState) -> Gwei {
-    let active = get_active_validator_indices::<E>(state, get_current_epoch::<E>(state));
-    get_total_balance::<E>(state, &active)
+    // Fused active-filter + balance-sum in a single index-ordered pass: avoids
+    // collecting an intermediate `Vec<ValidatorIndex>` and the per-index tree
+    // re-descent in `get_total_balance`. Identical addends in identical
+    // (ascending index) order, so the sum is bit-identical to
+    // `get_total_balance(state, &get_active_validator_indices(...))`.
+    let epoch = get_current_epoch::<E>(state).0;
+    let sum: u64 = state
+        .validators_iter()
+        .filter(|v| is_active_validator(v, epoch))
+        .map(|v| v.effective_balance.0)
+        .sum();
+    Gwei(sum.max(E::EFFECTIVE_BALANCE_INCREMENT))
 }
 
 // ── Domain / crypto helpers ───────────────────────────────────────────────────

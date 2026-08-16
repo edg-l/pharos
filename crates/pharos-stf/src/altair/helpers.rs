@@ -615,29 +615,17 @@ pub(crate) fn get_total_active_balance_altair<
     >,
 ) -> Gwei {
     let current_epoch = compute_epoch_at_slot(state.slot, E::SLOTS_PER_EPOCH);
-    let active: Vec<ValidatorIndex> = state
+    // Fused active-filter + balance-sum in a single index-ordered pass: avoids
+    // collecting an intermediate `Vec<ValidatorIndex>` and the per-index tree
+    // re-descent in `get_total_balance_altair`. Identical addends in identical
+    // (ascending index) order, so the sum is bit-identical.
+    let sum: u64 = state
         .validators
         .iter()
-        .enumerate()
-        .filter_map(|(i, v)| {
-            if is_active_validator(v, current_epoch.0) {
-                Some(ValidatorIndex(i as u64))
-            } else {
-                None
-            }
-        })
-        .collect();
-    get_total_balance_altair::<
-        SLOTS_PER_HISTORICAL_ROOT,
-        HISTORICAL_ROOTS_LIMIT,
-        ETH1_DATA_VOTES_LIMIT,
-        VALIDATOR_REGISTRY_LIMIT,
-        EPOCHS_PER_HISTORICAL_VECTOR,
-        EPOCHS_PER_SLASHINGS_VECTOR,
-        JUSTIFICATION_BITS_LENGTH,
-        SYNC_COMMITTEE_SIZE,
-        E,
-    >(state, &active)
+        .filter(|v| is_active_validator(v, current_epoch.0))
+        .map(|v| v.effective_balance.0)
+        .sum();
+    Gwei(sum.max(E::EFFECTIVE_BALANCE_INCREMENT))
 }
 
 // ── Epoch deltas ──────────────────────────────────────────────────────────────
@@ -732,6 +720,14 @@ where
     >(state);
     let active_increments = total_active.0 / E::EFFECTIVE_BALANCE_INCREMENT;
 
+    // `base_reward_per_increment` is loop-invariant within this delta
+    // computation (state is not mutated), so derive it from the already-computed
+    // `total_active` instead of having `get_base_reward` rescan all validators
+    // per index. `brpi = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR /
+    // isqrt(total_active)` matches `get_base_reward_per_increment` exactly.
+    let brpi =
+        E::EFFECTIVE_BALANCE_INCREMENT * E::BASE_REWARD_FACTOR / integer_squareroot(total_active.0);
+
     let in_leak = is_in_inactivity_leak::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
@@ -759,18 +755,15 @@ where
     let unslashed_set: std::collections::HashSet<u64> = unslashed.iter().map(|v| v.0).collect();
 
     for index in &eligible {
-        let base_reward = get_base_reward::<
-            SLOTS_PER_HISTORICAL_ROOT,
-            HISTORICAL_ROOTS_LIMIT,
-            ETH1_DATA_VOTES_LIMIT,
-            VALIDATOR_REGISTRY_LIMIT,
-            EPOCHS_PER_HISTORICAL_VECTOR,
-            EPOCHS_PER_SLASHINGS_VECTOR,
-            JUSTIFICATION_BITS_LENGTH,
-            SYNC_COMMITTEE_SIZE,
-            E,
-        >(state, *index);
         let i = index.0 as usize;
+        // Inline `get_base_reward` using the hoisted `brpi`: identical to
+        // `Gwei(effective_balance_increments * brpi)`.
+        let effective_balance_increments = state
+            .validators
+            .get(i)
+            .map(|v| v.effective_balance.0 / E::EFFECTIVE_BALANCE_INCREMENT)
+            .unwrap_or(0);
+        let base_reward = Gwei(effective_balance_increments * brpi);
         if unslashed_set.contains(&index.0) {
             if !in_leak {
                 let reward_numerator = base_reward.0 * weight * unslashed_increments;

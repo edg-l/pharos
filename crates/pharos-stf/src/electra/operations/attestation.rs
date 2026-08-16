@@ -23,8 +23,8 @@ use pharos_types::{
 use pharos_utils::Gwei;
 
 use crate::altair::helpers::{
-    PROPOSER_WEIGHT, add_flag, get_attestation_participation_flag_indices, get_base_reward,
-    has_flag,
+    PROPOSER_WEIGHT, add_flag, get_attestation_participation_flag_indices,
+    get_base_reward_per_increment, has_flag,
 };
 use crate::altair::operations::attestation::get_committee_count_per_slot_altair;
 use crate::electra::helpers::{
@@ -256,6 +256,22 @@ where
     let is_current = data.target.epoch == current_epoch;
     let mut proposer_reward_numerator: u64 = 0;
 
+    // `base_reward_per_increment` is loop-invariant across the attester loop
+    // (the altair projection's effective balances / total active balance are not
+    // mutated here, only participation flags), so compute it once instead of
+    // having `get_base_reward` rescan all validators per attester.
+    let brpi = get_base_reward_per_increment::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        E,
+    >(&altair);
+
     for validator_index in &attesting_indices {
         let ep_flags: u8 = if is_current {
             altair
@@ -273,17 +289,14 @@ where
                 .unwrap_or(0)
         };
 
-        let base_reward = get_base_reward::<
-            SLOTS_PER_HISTORICAL_ROOT,
-            HISTORICAL_ROOTS_LIMIT,
-            ETH1_DATA_VOTES_LIMIT,
-            VALIDATOR_REGISTRY_LIMIT,
-            EPOCHS_PER_HISTORICAL_VECTOR,
-            EPOCHS_PER_SLASHINGS_VECTOR,
-            JUSTIFICATION_BITS_LENGTH,
-            SYNC_COMMITTEE_SIZE,
-            E,
-        >(&altair, *validator_index);
+        // Inline `get_base_reward` using the hoisted `brpi`: identical to
+        // `Gwei((effective_balance / EFFECTIVE_BALANCE_INCREMENT) * brpi.0)`.
+        let effective_balance_increments = altair
+            .validators
+            .get(validator_index.0 as usize)
+            .map(|v| v.effective_balance.0 / E::EFFECTIVE_BALANCE_INCREMENT)
+            .unwrap_or(0);
+        let base_reward = Gwei(effective_balance_increments * brpi.0);
 
         let mut new_flags = ep_flags;
         for (flag_index, weight) in E::PARTICIPATION_FLAG_WEIGHTS.iter().enumerate() {

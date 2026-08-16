@@ -34,22 +34,6 @@ use super::helpers::{
 
 // ── Small spec helpers ─────────────────────────────────────────────────────────
 
-/// `get_base_reward` per `specs/phase0/beacon-chain.md:1577-1584`.
-fn get_base_reward<E: EthSpec>(state: &E::BeaconState, index: ValidatorIndex) -> u64 {
-    let total_balance = get_total_active_balance::<E>(state).0;
-    let effective_balance = state
-        .validator(index.0 as usize)
-        .map(|v| v.effective_balance.0)
-        .unwrap_or(0);
-    effective_balance * E::BASE_REWARD_FACTOR
-        / integer_squareroot(total_balance)
-        / E::BASE_REWARDS_PER_EPOCH
-}
-
-/// `get_proposer_reward` per `specs/phase0/beacon-chain.md:1587-1589`.
-fn get_proposer_reward<E: EthSpec>(state: &E::BeaconState, attesting_index: ValidatorIndex) -> u64 {
-    get_base_reward::<E>(state, attesting_index) / E::PROPOSER_REWARD_QUOTIENT
-}
 
 /// `get_finality_delay` per `specs/phase0/beacon-chain.md:1593-1594`.
 fn get_finality_delay<E: EthSpec>(state: &E::BeaconState) -> u64 {
@@ -110,10 +94,25 @@ where
     let increment = E::EFFECTIVE_BALANCE_INCREMENT;
     let inactivity_leak = is_in_inactivity_leak::<E>(state);
 
+    // `total_balance` (the active-balance total) is loop-invariant here, so its
+    // integer square root is too. `get_base_reward` would otherwise rescan all
+    // validators (via `get_total_active_balance`) once per eligible validator;
+    // hoist the sqrt and compute the per-validator base reward inline, preserving
+    // the exact `effective_balance * BASE_REWARD_FACTOR / sqrt / BASE_REWARDS_PER_EPOCH`
+    // division order.
+    let sqrt_total_balance = integer_squareroot(total_balance.0);
+    let base_reward = |index: ValidatorIndex| -> u64 {
+        let effective_balance = state
+            .validator(index.0 as usize)
+            .map(|v| v.effective_balance.0)
+            .unwrap_or(0);
+        effective_balance * E::BASE_REWARD_FACTOR / sqrt_total_balance / E::BASE_REWARDS_PER_EPOCH
+    };
+
     for index in get_eligible_validator_indices::<E>(state) {
         let i = index.0 as usize;
         if unslashed.contains(&index) {
-            let base_reward = get_base_reward::<E>(state, index);
+            let base_reward = base_reward(index);
             if inactivity_leak {
                 // In a leak: give full base reward to optimal participants.
                 rewards[i] += base_reward;
@@ -122,7 +121,7 @@ where
                 rewards[i] += reward_numerator / (total_balance.0 / increment);
             }
         } else {
-            penalties[i] += get_base_reward::<E>(state, index);
+            penalties[i] += base_reward(index);
         }
     }
 
@@ -190,6 +189,18 @@ where
 
     let unslashed = get_unslashed_attesting_indices::<E>(state, &matching_source);
 
+    // Hoist the loop-invariant active-balance sqrt; `get_base_reward` /
+    // `get_proposer_reward` would otherwise rescan all validators (via
+    // `get_total_active_balance`) once per attester. Same division order — bit-identical.
+    let sqrt_total_balance = integer_squareroot(get_total_active_balance::<E>(state).0);
+    let base_reward = |index: ValidatorIndex| -> u64 {
+        let effective_balance = state
+            .validator(index.0 as usize)
+            .map(|v| v.effective_balance.0)
+            .unwrap_or(0);
+        effective_balance * E::BASE_REWARD_FACTOR / sqrt_total_balance / E::BASE_REWARDS_PER_EPOCH
+    };
+
     for index in unslashed {
         // Find the attestation with the smallest inclusion_delay for this validator.
         let best_att = matching_source
@@ -200,12 +211,12 @@ where
             .min_by_key(|a| a.inclusion_delay.0);
 
         if let Some(att) = best_att {
-            let proposer_reward = get_proposer_reward::<E>(state, index);
+            let base_reward = base_reward(index);
+            let proposer_reward = base_reward / E::PROPOSER_REWARD_QUOTIENT;
             let proposer_i = att.proposer_index.0 as usize;
             if proposer_i < n {
                 rewards[proposer_i] += proposer_reward;
             }
-            let base_reward = get_base_reward::<E>(state, index);
             let max_attester_reward = base_reward.saturating_sub(proposer_reward);
             let delay = att.inclusion_delay.0.max(1);
             let i = index.0 as usize;
@@ -238,10 +249,21 @@ where
 
         let finality_delay = get_finality_delay::<E>(state);
 
+        // Hoist the loop-invariant active-balance sqrt (see get_inclusion_delay_deltas).
+        let sqrt_total_balance = integer_squareroot(get_total_active_balance::<E>(state).0);
+        let base_reward = |index: ValidatorIndex| -> u64 {
+            let effective_balance = state
+                .validator(index.0 as usize)
+                .map(|v| v.effective_balance.0)
+                .unwrap_or(0);
+            effective_balance * E::BASE_REWARD_FACTOR / sqrt_total_balance
+                / E::BASE_REWARDS_PER_EPOCH
+        };
+
         for index in get_eligible_validator_indices::<E>(state) {
             let i = index.0 as usize;
-            let base_reward = get_base_reward::<E>(state, index);
-            let proposer_reward = get_proposer_reward::<E>(state, index);
+            let base_reward = base_reward(index);
+            let proposer_reward = base_reward / E::PROPOSER_REWARD_QUOTIENT;
             // Every eligible validator loses: BASE_REWARDS_PER_EPOCH * base_reward - proposer_reward.
             penalties[i] += E::BASE_REWARDS_PER_EPOCH * base_reward - proposer_reward;
             if !matching_target_attesting.contains(&index) {
