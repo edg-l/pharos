@@ -5293,9 +5293,9 @@ fn electra_ops_walk_opts() -> WalkOpts {
 
 /// Descriptor table for electra operations — mainnet preset.
 ///
-/// Phase 2b+2c: `block_header`, `proposer_slashing`, `deposit`, `voluntary_exit`,
-/// `sync_aggregate`, `attestation`, `attester_slashing` sub-ops registered.
-/// Remaining sub-ops (execution_payload, withdrawals, deposit_request,
+/// Phase 2b+2c+3a: `block_header`, `proposer_slashing`, `deposit`, `voluntary_exit`,
+/// `sync_aggregate`, `attestation`, `attester_slashing`, `deposit_request` sub-ops
+/// registered. Remaining sub-ops (execution_payload, withdrawals,
 /// withdrawal_request, consolidation_request) land in later phases.
 #[allow(clippy::type_complexity)]
 fn electra_op_table_mainnet() -> Vec<(
@@ -5312,8 +5312,9 @@ fn electra_op_table_mainnet() -> Vec<(
 )> {
     use pharos_stf::electra::operations::{
         process_attestation_electra, process_attester_slashing_electra,
-        process_block_header_electra, process_deposit_electra, process_proposer_slashing_electra,
-        process_sync_aggregate_electra, process_voluntary_exit_electra,
+        process_block_header_electra, process_deposit_electra, process_deposit_request,
+        process_proposer_slashing_electra, process_sync_aggregate_electra,
+        process_voluntary_exit_electra,
     };
     use pharos_types::MainnetEthSpec as E;
     vec![
@@ -5733,13 +5734,73 @@ fn electra_op_table_mainnet() -> Vec<(
                 )
             }),
         ),
+        // deposit_request: EIP-6110 — enqueues a PendingDeposit with slot = state.slot.
+        (
+            "deposit_request",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::{MainnetBeaconState, requests::DepositRequest};
+
+                let pre_inner =
+                    match load_ssz_snappy::<MainnetBeaconState>(&case_dir, "pre.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<MainnetBeaconState>(&case_dir, "post.ssz_snappy") {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<DepositRequest>(
+                    &case_dir,
+                    "deposit_request.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_deposit_request::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "deposit_request",
+                )
+            }),
+        ),
     ]
 }
 
 /// Descriptor table for electra operations — minimal preset.
 ///
-/// Phase 2b+2c: same sub-op set as mainnet (block_header, proposer_slashing,
-/// deposit, voluntary_exit, sync_aggregate, attestation, attester_slashing).
+/// Phase 2b+2c+3a: same sub-op set as mainnet (block_header, proposer_slashing,
+/// deposit, voluntary_exit, sync_aggregate, attestation, attester_slashing,
+/// deposit_request).
 #[allow(clippy::type_complexity)]
 fn electra_op_table_minimal() -> Vec<(
     &'static str,
@@ -5755,8 +5816,9 @@ fn electra_op_table_minimal() -> Vec<(
 )> {
     use pharos_stf::electra::operations::{
         process_attestation_electra, process_attester_slashing_electra,
-        process_block_header_electra, process_deposit_electra, process_proposer_slashing_electra,
-        process_sync_aggregate_electra, process_voluntary_exit_electra,
+        process_block_header_electra, process_deposit_electra, process_deposit_request,
+        process_proposer_slashing_electra, process_sync_aggregate_electra,
+        process_voluntary_exit_electra,
     };
     use pharos_types::MinimalEthSpec as E;
     vec![
@@ -6173,6 +6235,65 @@ fn electra_op_table_minimal() -> Vec<(
                     post_bytes,
                     &case_name,
                     "attester_slashing",
+                )
+            }),
+        ),
+        // deposit_request: EIP-6110 — enqueues a PendingDeposit with slot = state.slot.
+        (
+            "deposit_request",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::{MinimalBeaconState, requests::DepositRequest};
+
+                let pre_inner =
+                    match load_ssz_snappy::<MinimalBeaconState>(&case_dir, "pre.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<MinimalBeaconState>(&case_dir, "post.ssz_snappy") {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<DepositRequest>(
+                    &case_dir,
+                    "deposit_request.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_deposit_request::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728, // PENDING_DEPOSITS_LIMIT minimal
+                    64,          // PENDING_PARTIAL_WITHDRAWALS_LIMIT minimal
+                    64,          // PENDING_CONSOLIDATIONS_LIMIT minimal
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "deposit_request",
                 )
             }),
         ),
