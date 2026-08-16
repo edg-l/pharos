@@ -4171,3 +4171,273 @@ linked-tree domain to break cycles. A bad ROOT signature rejects the WHOLE tree
 resolved ENRs are appended to the same `bootnodes` vector that static `--bootnode` ENRs
 feed, so DNS and static bootnodes mix. A failed `--bootnode-dns` URL logs a warning and is
 skipped rather than aborting startup (other bootnodes may still succeed).
+
+## M11-Productionization decisions
+
+### D-weak-subjectivity-reject — `compute_weak_subjectivity_period` from consensus-specs; reject stale anchors
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+The spec formula (`consensus-specs/specs/phase0/weak-subjectivity.md` equations 1–4) is
+transcribed verbatim into `pharos-types/src/weak_subjectivity.rs`:
+`compute_weak_subjectivity_period(active_validator_count, total_active_balance_gwei)` and
+`is_within_weak_subjectivity_period(ws_state_epoch, current_epoch, ...)`. On checkpoint
+sync, `main.rs` loads the anchor state, derives `(active_validator_count,
+total_active_balance_gwei)`, calls `is_within_weak_subjectivity_period`, and aborts with
+a fatal log if the check fails, preventing the node from starting on a stale anchor. No
+simplified approximation is used — the plan noted the roadmap's simplified formula was
+NOT spec-correct; Phase 1 transcribes the real spec.
+
+### D-backward-state-backfill — restore-point-chained STF walk from anchor down to genesis
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`run_backward_backfill_loop` in `crates/pharos-node/src/backward_backfill.rs` fills the
+gap between genesis and the checkpoint-sync anchor. It starts from the lowest stored
+restore-point state, walks backwards through stored block roots (via
+`slot_to_block_root`, which is never pruned — see `D-prune-behind-finalized`), and
+replays blocks forward using the STF to regenerate each slot's state. A
+`BackfillProgressSignal` (`Notify`) is posted from the forward backfill loop so the
+backward loop parks until the needed blocks are on disk. State-root mismatch aborts
+with `BackwardBackfillError::BackfillStateMismatch` — no silent corruption. The loop runs
+in a detached `tokio::spawn` so it never blocks startup.
+
+### D-cold-granularity-restore-points-only — cold-states CF stores only restore-point-interval states
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+The `cold-states` CF only stores states whose slot is a multiple of
+`RESTORE_POINT_INTERVAL` (default 8 epochs). Non-restore-point slots are regenerated
+via `StateRegenService::replay_to` from the nearest earlier restore point. This is the
+correct extent of the M-Storage `D-restore-point-interval` design; Phase 3 confirmed
+empirically (`cold_state_density_equals_restore_points` test: cold-state CF count ==
+restore-point count for a 3-epoch / interval-1-epoch chain).
+
+### D-forward-only-migrations — forward-only DB migration framework from `MIGRATION_BASELINE` (v6)
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`crates/pharos-storage/src/migrations/mod.rs` implements a table-driven forward walk:
+each entry is `(from: u32, migration: &dyn Migration)`; `run_migrations(db, found,
+target)` applies the chain `found → found+1 → … → target` atomically per step. The
+baseline is `MIGRATION_BASELINE = 6` — databases below v6 still hard-error
+`SchemaMismatch` and force resync (pre-v6 layouts have no forward migration). The seed
+step `v6_to_v7` is a no-op identity migration proving the walk compiles and runs. Future
+steps extend the table without touching the walk logic. A future-schema hard-error
+(`found > target`) is retained so a node running stale code never silently processes a
+newer DB.
+
+### D-metrics-prometheus-optin — opt-in metrics recorder under `--metrics`; `pharos-utils` hosts the registry
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`pharos-utils/src/metrics.rs` provides `init_metrics(addr)` (installs the global
+`metrics` recorder via `PrometheusBuilder::install_recorder`, returns a
+`PrometheusHandle`) and `describe_metrics()` (registers units/descriptions for every
+counter/gauge/histogram declared in the workspace). The `metrics::counter!` / `gauge!`
+/ `histogram!` macros are no-ops if no recorder is installed, so crates emit freely;
+they only incur cost when `--metrics` is passed. The health probe (`D-health-probe-on-
+metrics-port`) reuses the same axum server and handle so there is one network listener
+for both `/metrics` and `/health`.
+
+### D-safe-hash-verified-ancestor — `compute_safe_block_hash` resolves `latest_verified_ancestor` of justified checkpoint
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`compute_safe_block_hash` in `crates/pharos-node/src/engine_driver.rs` was stale before
+Phase 6: it returned the justified checkpoint root directly, which could be an
+optimistically-imported (not-yet-EL-validated) block. Phase 6 added
+`latest_verified_ancestor(store, justified_root)` so the returned hash is always
+execution-valid. The finalized hash follows the same pattern via
+`compute_finalized_block_hash`. The stale deferral comments at `engine_driver.rs:508-523`
+(left from M4a) were retired.
+
+### D-json-tracing — `init_tracing(LogFormat, filter)` in pharos-utils; JSON with ENTER/EXIT span events
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`pharos-utils/src/tracing.rs` exports `init_tracing(format: LogFormat, filter: &str)`
+wiring `tracing_subscriber` with either a pretty terminal layer or a JSON layer
+configured with `FmtSpan::ENTER | FmtSpan::EXIT` so every span boundary emits a
+structured event. Both binaries (`pharos`, `pharos-vc`) accept `--log-format json|pretty`
+and `--log-level` CLI flags. Per-slot root spans (`process_slot`) and per-block child
+spans (`import_block`) are instrumented in `block_ingestion.rs` using explicit parent
+linkage so futures remain `Send` for `tokio::spawn`. Per-method `rpc_handle` spans live
+in `rpc/handler.rs`. `tracing-serde` enters the non-dev dep tree via the JSON layer,
+which triggered a type-inference ambiguity in `pharos-ssz/src/sequence.rs` that was
+fixed (explicit type annotation on `Backend::Naive`).
+
+### D-slasher-in-memory — Phase A attestation slasher in `pharos-node/src/slasher/mod.rs`; always-on, no flag
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`AttestationSlasher<E>` in `crates/pharos-node/src/slasher/mod.rs` is always-on:
+`HostImpl::validate_attestation` feeds every gossip-accepted `IndexedAttestation` through
+`AttestationSlasher::observe`, which checks the in-memory per-validator history for
+double-vote (same target epoch, different data root) and surround-vote (target epoch
+contained inside a prior vote pair). Detected slashings are pushed to `op_pools` as
+`AttesterSlashing` and increment `pharos_slasher_detections_total` (kind `double_vote` /
+`surround_vote`). The in-memory map is bounded by `MAX_ATTESTATION_HISTORY_EPOCHS` so it
+cannot grow unboundedly. No `--slasher` flag is needed; the Phase A detector costs only
+a HashMap lookup per gossip attestation.
+
+### D-real-peer-scoring — gossipsub-model additive score; `RealScorer` replaces `NoopScorer` behind `PeerScorer` trait
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`RealScorer` in `crates/pharos-network/src/scoring.rs` maintains a per-peer additive
+score (`gossip + req_resp + app`), per-peer/per-method req-resp `TokenBucket` rate
+limiters, and exponential `DialBackoff`. The model is patterned after gossipsub v1.1:
+additive component scores, a single float total, score bounds applied at connection time.
+The drop-in replaces `NoopScorer` behind `PeerScorer` in `NetworkBuilder` without
+changing the trait surface.
+
+### D-scorer-decay-lazy — lazy exponential decay on `score()` / `record()`; no explicit tick method
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+Decay is applied lazily: each `PeerState` stores `last_decay: Instant`. On every
+`score()` or `record()` call, the elapsed time since `last_decay` is used to compute
+`factor = DECAY_PER_SECOND.powf(elapsed)` and all three components are scaled in place,
+then `last_decay` is advanced to now. The alternative (explicit `tick` driven from the
+swarm loop) was considered and rejected: it would add a `tick` method to the `PeerScorer`
+trait and require the swarm loop to carry a decay-driver. Lazy decay delivers
+equivalent accuracy with no trait change and no swarm-loop complexity.
+
+### D-rpc-rate-limit-token-bucket — per-peer/per-method token bucket in `RealScorer`
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+Each `PeerState` maintains a `HashMap<RpcMethod, TokenBucket>`. A `TokenBucket` refills
+at `refill_per_second` tokens/second up to `capacity`; `try_consume` attempts to drain
+one token, returning `true` (allowed) or `false` (rate-limited). The
+`ScoreEvent::RpcRateExceeded` variant is emitted on `false` and causes a `req_resp`
+score penalty. This per-method granularity prevents one method (e.g. heavy
+`BeaconBlocksByRange` requests) from consuming the budget for others.
+
+### D-dial-backoff-exponential — exponential dial backoff in `RealScorer` via `DialBackoff`
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`DialBackoff` in `RealScorer` tracks `failures: u32` and `next_allowed: Instant`. On
+`ScoreEvent::DialFailed`, `next_allowed = now + BASE_DIAL_BACKOFF * 2^failures` (capped
+at `MAX_DIAL_BACKOFF`). `PeerScorer::can_dial(peer, now)` returns `false` while
+`now < next_allowed`. This prevents tight reconnect storms against unresponsive peers
+and is the natural dual to the `TokenBucket` on the inbound side.
+
+### D-connection-limit-prefer-high-score — inbound connections beyond `max_peers` evict the lowest-scored peer
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+When a new inbound connection would exceed `max_peers`, the `Network` looks up the
+existing peer with the lowest `PeerScorer::score` and disconnects it before accepting
+the new peer. This ensures that a high-scoring (well-behaved) peer is never displaced
+by a new arrival when the table is full — the eviction policy prefers keeping peers with
+a positive track record. CLI flags `--max-peers` and `--target-peers` wire the limits
+into `NetworkBuilder`; `PeerManager::query_interval` scales the discv5 discovery cadence
+with the peer-deficit (`target - connected`) so the node converges faster when below
+target.
+
+### D-enr-seq-persistence — ENR sequence number persisted in `<data_dir>/enr_seq`; bumped on restart
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`save_enr_seq` / `load_enr_seq` in `crates/pharos-network/src/discovery/enr.rs` persist
+the ENR sequence number as a little-endian u64 text file at `<data_dir>/enr_seq`. On
+startup, the saved seq is loaded (default 1 if absent) and passed to `build_enr` as the
+starting sequence number; after a successful ENR update the new seq is written back.
+Persisting the seq prevents EIP-778 spec violation (seq must be monotonically increasing
+across restarts); without persistence, a restarted node would reset to seq=1, breaking
+peers that cached a higher seq and expect only forward progress.
+
+### D-peer-score-persist-format — flat packed SSZ records at `<data_dir>/peer_scores.ssz`; unknown peers ignored on load
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`serialize_scores` / `deserialize_scores` in `crates/pharos-network/src/scoring.rs`
+write/read a flat array of `PeerScoreRecord` structs (each 80 bytes: 32-byte `PeerId`
+bytes + 3 × f64 components + padding). No outer length prefix or version field is needed
+— the format is self-delimiting as a multiple of `RECORD_SIZE`. On `deserialize_scores`
+the `PeerScoreRecord::peer_id` bytes are decoded into `libp2p::PeerId`; records for
+peers not currently in the scorer's map are silently ignored (peer sets differ across
+restarts, and importing a stale score for a never-seen peer would pollute the scorer).
+The file is atomic-written (`tmp → rename`) so a crash during save never produces a
+partial file.
+
+### D-web3signer-commit-before-sign — slashing-DB commit precedes every Web3Signer HTTP call
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`pharos-validator/src/web3signer.rs` implements `Web3RemoteSigner` behind the existing
+`Signer` enum. The VC's signing path in `signing.rs` already commits the slashing-DB
+record before calling `sign()` on a local key; the same `commit_before_sign` contract
+applies to the remote path: `SlashingProtectionDb::commit` is called, then
+`Web3RemoteSigner::sign`, then the VC publishes. A crash between commit and
+HTTP call leaves a slashing-DB entry but no published object — safe. A crash between
+HTTP response and publish leaves a signed-but-not-published object — also safe (the
+commitment already exists, so a retry will be rejected by the slashing DB). All six
+Web3Signer signing types (`BLOCK_V2`, `ATTESTATION`, `RANDAO_REVEAL`, `AGGREGATE_AND_PROOF`,
+`SYNC_COMMITTEE_MESSAGE`, `SYNC_COMMITTEE_SELECTION_PROOF`) are implemented; `VALIDATOR_REGISTRATION`
+is included for completeness (builder integration is out of scope).
+
+### D-graceful-shutdown-order — ordered 6-step shutdown sequence on SIGTERM/SIGINT
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`run_shutdown_sequence` in `crates/pharos-node/src/shutdown.rs` drives:
+(a) drain in-flight gossip validators (bounded `GOSSIP_DRAIN_TIMEOUT`);
+(b) send `Goodbye(1)` to all peers (existing M3a `D-shutdown-protocol`, 500 ms drain);
+(c) flush pending gossip publishes (bounded drain);
+(d) save peer scores to disk (`D-peer-score-persist-format`);
+(e) fsync chain DB (`RocksStore::flush_wal + flush`);
+(f) signal the remaining loops to exit.
+The signal handler uses `tokio::signal::ctrl_c` + `unix::signal(SIGTERM)` in `main.rs`
+and races them on a `select!`; the first arrival triggers the shutdown sequence. Steps
+are ordered so data-integrity operations (DB fsync) precede loop teardown.
+
+### D-health-probe-on-metrics-port — `/health` endpoint on the metrics axum server; 200 = Synced, 503 otherwise
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+The health probe lives on the same axum router as `/metrics` (same TCP port,
+`--metrics-addr`), not on the beacon-API port. The `/eth/v1/node/health` endpoint
+(shipped in M7) is the per-spec sync-state endpoint for clients; the `/health` probe is
+a separate operational endpoint for load-balancers and container orchestrators. `SyncState`
+(`Synced` / `Syncing`) is supplied as an `Arc<dyn Fn() -> SyncState>` closure at startup
+from `pharos-node/src/main.rs`. `None` serves 503 unconditionally (useful before the
+ingestion loop is ready). The probe is served by `start_metrics_server` in `pharos-utils`
+alongside the Prometheus scrape endpoint.
+
+### D-fuzz-harness — three `cargo-fuzz` panic-finding targets; oracle: no panics, only `Err`
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+Three fuzz targets in `fuzz/fuzz_targets/`: `ssz_decode` (arbitrary SSZ bytes into a
+`phase0::BeaconBlock<MinimalEthSpec>`), `process_block` (arbitrary block bytes applied to
+a fixed valid base state with `verify_signatures: false`), and `rpc_codec` (arbitrary
+bytes into `RpcRequest` / `RpcResponse` SSZ codec). The oracle is: no panics, only
+`Err` returns. `make fuzz-build` / `make fuzz-smoke` (30 s per target) wired in the
+Makefile. `fuzz/` is a non-workspace crate so it does not affect `cargo build --workspace`
+or the test suite. Campaign notes and overnight workflow in `docs/fuzz.md`.
+
+### D-ci-github-actions — GitHub Actions CI on stable + MSRV (1.86) matrix; fuzz-build in nightly job
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+`.github/workflows/ci.yml` runs three jobs on push/PR to master:
+(1) `fmt` — `cargo fmt --check` on stable;
+(2) `clippy` + `test` — matrix `[stable, "1.86"]` covering both the current compiler
+and the workspace MSRV declared in `Cargo.toml`; clippy runs `--deny warnings`;
+(3) `fuzz-build` — `cargo +nightly build` for each fuzz target on nightly (nightly is
+required by `libfuzzer_sys`; failures are non-blocking because fuzz targets use unstable
+features). The matrix ensures MSRV regressions are caught before merge.
+
+### D-replay-bounds-extraction — `ReplayBounds` type alias extracted to co-locate with `SignedBeaconBlockHeader`
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+A hygiene cleanup landed after Phase 20: the `(Slot, Slot)` tuple used as the inclusive
+`(start, end)` range for the chain-replay slasher was inlined at every call site. It is
+extracted to a `ReplayBounds` type alias in the same module as `SignedBeaconBlockHeader`
+usage (`pharos-node/src/slasher/mod.rs`), removing duplication and making the intent of
+the range arguments explicit.

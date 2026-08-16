@@ -552,6 +552,108 @@ the M10-DA substrate. Shipped:
   via gossip (masked by the Noop-DA lookup fallback); live-verified 6 sidecars
   persisted via gossip (was 0). Version `0.15.0` → `0.16.0`.
 
+## M11-Productionization status
+
+Closed. 21-phase plan in `docs/m11-productionization-plan.md`. Productionization pass
+covering consensus-safety primitives, observability, slasher, networking hardening,
+external signing, graceful shutdown, health probe, fuzz harness, and CI. Shipped:
+
+- **Phase 1** Weak-subjectivity check: `compute_weak_subjectivity_period` +
+  `is_within_weak_subjectivity_period` in `pharos-types/src/weak_subjectivity.rs`
+  (spec-exact formula); fatal abort in `checkpoint_sync.rs` if anchor is outside the
+  WS period.
+- **Phase 2** Backward state backfill: `run_backward_backfill_loop` in
+  `pharos-node/src/backward_backfill.rs` walks from the anchor down to genesis via
+  stored restore-point states; gated on a `BackfillProgressSignal` from the forward
+  loop; state-root mismatch aborts; runs detached.
+- **Phase 3** Pruning + hot/cold verification: `cold_state_density_equals_restore_points`
+  integration test confirms cold-state CF count == restore-point count; granularity
+  invariant comment block on `select_restore_point_states` (`D-cold-granularity-
+  restore-points-only`).
+- **Phase 4** Forward-only DB migration framework: `MIGRATION_BASELINE = 6`,
+  `run_migrations` in `pharos-storage/src/migrations/mod.rs`; seed step `v6_to_v7`
+  (identity); schema v6 → v7; pre-v6 hard-errors retained.
+- **Phase 5** Prometheus metrics infrastructure: `init_metrics` + `describe_metrics`
+  in `pharos-utils/src/metrics.rs` (`metrics-exporter-prometheus`); opt-in under
+  `--metrics`; no-op macros when recorder absent.
+- **Phase 6** Metrics emission + safe-block-hash refinement: counters/gauges for
+  block-import, gossip, RPC, STF, engine, fork-choice; `compute_safe_block_hash`
+  resolves `latest_verified_ancestor(justified_root)` (retiring M4a stale deferral
+  comments). `metrics_emission_oracle.rs` integration test.
+- **Phase 7** Structured JSON tracing: `init_tracing(LogFormat, filter)` in
+  `pharos-utils/src/tracing.rs`; `FmtSpan::ENTER | FmtSpan::EXIT` on JSON layer;
+  `--log-format json|pretty` + `--log-level` CLI flags both binaries; per-slot
+  `process_slot` + per-block `import_block` spans; per-method `rpc_handle` span.
+- **Phase 8** Slasher Phase A (always-on): `AttestationSlasher<E>` in
+  `pharos-node/src/slasher/mod.rs`; fed from `validate_attestation` gossip path;
+  double-vote + surround-vote detection; detected slashings pushed to `op_pools` +
+  `pharos_slasher_detections_total` metric.
+- **Phase 9** Slasher Phase B (opt-in `--slasher`): `ChainReplaySlasher` one-shot
+  startup replay from `anchor_slot` to wall-clock slot; `slasher-proposers` CF
+  (schema v7 → v8, `D-slasher-proposer-index-cf`); proposer double-block + historical
+  attestation detection reusing Phase A detector.
+- **Phase 10** Real peer scoring: `RealScorer` in `pharos-network/src/scoring.rs`;
+  additive `gossip + req_resp + app`; lazy exponential decay (`D-scorer-decay-lazy`);
+  per-peer/per-method `TokenBucket`; `DialBackoff` (`D-dial-backoff-exponential`).
+- **Phase 11** Scoring signal wiring: `ScoreEvent` variants emitted from gossipsub
+  `SlowPeer`/`Unsubscribed`, RPC timeout/error/rate-limit, dial-failed; peer score
+  gauge metric; `peer_scoring_e2e.rs` integration test.
+- **Phase 12** Connection limits: `--max-peers` / `--target-peers` CLI; inbound-over-
+  limit evicts lowest-scored peer (`D-connection-limit-prefer-high-score`); discv5
+  cadence scales with peer deficit; `connection_limits.rs` integration test.
+- **Phase 13** ENR persistence: `save_enr_seq` / `load_enr_seq` in
+  `discovery/enr.rs`; `<data_dir>/enr_seq` text file; seq bumped on restart
+  (`D-enr-seq-persistence`).
+- **Phase 14** Peer-score persistence: `serialize_scores` / `deserialize_scores` flat
+  packed `PeerScoreRecord` SSZ records at `<data_dir>/peer_scores.ssz`; atomic
+  `tmp → rename` write; unknown peers on load ignored (`D-peer-score-persist-format`).
+- **Phase 15** DNS bootnodes (in-house EIP-1459): `discovery/dns/mod.rs`; `hickory-
+  resolver` TXT lookups; EIP-1459 ECDSA root signature verify; `MAX_TREE_DEPTH=16` /
+  `MAX_RECORDS=1024` bounds; `--bootnode-dns enrtree://...` CLI (`D-dns-bootnode-resolver`).
+- **Phase 16** Web3Signer external signer: `Web3RemoteSigner` + `Web3SignerError` in
+  `pharos-validator/src/web3signer.rs`; all 6 signing types + `VALIDATOR_REGISTRATION`
+  (completeness); commit-before-sign contract preserved (`D-web3signer-commit-before-sign`);
+  `web3signer_mock.rs` integration test (axum mock server).
+- **Phase 17** Graceful shutdown: `run_shutdown_sequence` in `pharos-node/src/shutdown.rs`;
+  6-step ordered sequence (gossip drain → Goodbye → publish drain → score persist →
+  DB fsync → loop exit); signal handler `ctrl_c | SIGTERM` in `main.rs`
+  (`D-graceful-shutdown-order`).
+- **Phase 18** Health probe on metrics port: `SyncState` + `start_metrics_server` in
+  `pharos-utils/src/metrics.rs`; `/health` (200=Synced, 503=Syncing) + `/metrics` on
+  same axum router; `health_probe.rs` integration test (`D-health-probe-on-metrics-port`).
+- **Phase 19** Fuzz harness: three `cargo-fuzz` targets (`ssz_decode`, `process_block`,
+  `rpc_codec`) in `fuzz/fuzz_targets/`; oracle = no panics; `make fuzz-build` /
+  `make fuzz-smoke`; `docs/fuzz.md` (`D-fuzz-harness`).
+- **Phase 20** CI (GitHub Actions): `.github/workflows/ci.yml`; fmt + clippy + test on
+  `[stable, "1.86"]` matrix; fuzz-build on nightly (`D-ci-github-actions`).
+- **Phase 21 (this phase)** Version `0.18.0` → `0.19.0`; ADRs; CLAUDE.md status block.
+- **Hygiene** `ReplayBounds` type alias extracted in `slasher/mod.rs`; `SignedBeaconBlockHeader`
+  usage co-located (`D-replay-bounds-extraction`).
+
+24 ADRs in `docs/decisions.md` (M11-Productionization section):
+`D-weak-subjectivity-reject`, `D-backward-state-backfill`, `D-cold-granularity-
+restore-points-only`, `D-forward-only-migrations`, `D-metrics-prometheus-optin`,
+`D-safe-hash-verified-ancestor`, `D-json-tracing`, `D-slasher-in-memory`,
+`D-real-peer-scoring`, `D-scorer-decay-lazy`, `D-rpc-rate-limit-token-bucket`,
+`D-dial-backoff-exponential`, `D-connection-limit-prefer-high-score`,
+`D-enr-seq-persistence`, `D-peer-score-persist-format`, `D-dns-bootnode-resolver`,
+`D-web3signer-commit-before-sign`, `D-graceful-shutdown-order`,
+`D-health-probe-on-metrics-port`, `D-fuzz-harness`, `D-ci-github-actions`,
+`D-replay-bounds-extraction`,
+plus Phase 9 (already landed): `D-slasher-proposer-index-cf`,
+`D-slasher-replay-reuses-phase-a-detector`, `D-slasher-replay-att-scope`,
+`D-slasher-replay-one-shot-at-startup`,
+plus Phase 15 (already landed): `D-dns-bootnode-resolver`.
+
+Deferred: live cross-client devnet acceptance of the productionization surface
+(scoring, slasher, connection limits, metrics under load) — the Fulu live devnet
+acceptance (M13) will exercise this surface end-to-end. Differential fuzzing vs the
+Python spec (post-M11 security audit triad). Light-client consumer REST
+(M11-deferred, roadmap "Beyond"). Continuous head-watch driven slasher replay (one-shot
+startup replay is Phase B; a live head-watch loop is a later refinement). Comment
+trimming + minor scoring/metrics cosmetic cleanups (post-M11 perf/security/hygiene audit
+triad).
+
 ## M12-Electra status
 
 Closed. Full Electra (Pectra) consensus-layer fork, 7-phase plan in
