@@ -3,6 +3,7 @@
 //! Per `specs/phase0/beacon-chain.md:1370-1393` (identical interface in Capella).
 
 use pharos_ssz::{SszSequence, TreeHash};
+use pharos_types::deneb::BeaconState as DenebBeaconState;
 use pharos_types::{
     EthSpec,
     altair::BeaconState as AltairBeaconState,
@@ -19,7 +20,9 @@ use crate::altair::epoch::process_justification_and_finalization;
 use crate::bellatrix::execution_engine::{ExecutionEngine, PayloadVerificationStatus};
 use crate::capella::block::process_block;
 use crate::capella::epoch::process_epoch;
-use crate::capella::operations::withdrawals::get_expected_withdrawals;
+use crate::capella::operations::withdrawals::{
+    get_expected_withdrawals, get_expected_withdrawals_for_deneb_state,
+};
 use crate::error::{EpochProcessingError, StateTransitionError};
 use crate::phase0::helpers::DOMAIN_BEACON_PROPOSER;
 
@@ -942,6 +945,64 @@ where
 {
     fn get_expected_withdrawals_dispatch(&self) -> Vec<Withdrawal> {
         get_expected_withdrawals::<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            E,
+        >(self)
+    }
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    E,
+> GetExpectedWithdrawalsDispatch<E>
+    for DenebBeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    E: EthSpec<
+        DenebBeaconState = DenebBeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+        >,
+    >,
+{
+    fn get_expected_withdrawals_dispatch(&self) -> Vec<Withdrawal> {
+        get_expected_withdrawals_for_deneb_state::<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
             ETH1_DATA_VOTES_LIMIT,

@@ -1014,6 +1014,16 @@ where
         }
 
         // Step 4 — RAT3: attestation slot must be within propagation range.
+        //
+        // EIP-7045 (Deneb): when the current wall epoch >= DENEB_FORK_EPOCH, the
+        // acceptance window widens from "current_slot - ATTESTATION_PROPAGATION_SLOT_RANGE"
+        // to "start of the previous epoch". Attestations from the previous epoch are
+        // valid aggregation inputs even after the epoch boundary, which allows
+        // aggregators more time to collect attestations.
+        //
+        // Pre-Deneb: att must satisfy att_slot <= current_slot <= att_slot + range.
+        // Deneb:     att must satisfy start_of_prev_epoch <= att_slot <= current_slot.
+        //
         // Use saturating arithmetic: att_slot comes from gossip wire input and
         // saturating_mul prevents a crafted huge slot from wrapping around the
         // propagation-window check and reaching process_slots_fork (unbounded CPU).
@@ -1024,21 +1034,36 @@ where
         let genesis_time_s = self.fork_choice.read().genesis_time;
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
         let att_slot = att.data.slot.0;
-        let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
-        let start_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+        // Upper bound (both pre-Deneb and Deneb): att_slot must not be in the future.
+        let att_slot_start_ms = genesis_time_s.saturating_mul(1000).saturating_add(
             att_slot
                 .saturating_mul(seconds_per_slot)
                 .saturating_mul(1000),
         );
-        let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
-            (att_slot.saturating_add(range).saturating_add(1))
-                .saturating_mul(seconds_per_slot)
-                .saturating_mul(1000),
-        );
-        if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < start_time_ms
-            || end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms
-        {
+        if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < att_slot_start_ms {
             return GossipVerdict::Ignore("att: slot not in propagation range".into());
+        }
+        // Lower bound: att_slot must not be too old.
+        let wall_epoch = self.current_epoch();
+        let deneb_fork_epoch = self.fork_context.fork_schedule.deneb_fork_epoch;
+        if wall_epoch >= deneb_fork_epoch {
+            // EIP-7045: earliest = start of (wall_epoch - 1).
+            let prev_epoch = wall_epoch.0.saturating_sub(1);
+            let earliest_slot = prev_epoch.saturating_mul(E::SLOTS_PER_EPOCH);
+            if att_slot < earliest_slot {
+                return GossipVerdict::Ignore("att: slot not in propagation range".into());
+            }
+        } else {
+            // Pre-Deneb: att_slot + ATTESTATION_PROPAGATION_SLOT_RANGE + 1 > wall_slot.
+            let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
+            let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+                (att_slot.saturating_add(range).saturating_add(1))
+                    .saturating_mul(seconds_per_slot)
+                    .saturating_mul(1000),
+            );
+            if end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms {
+                return GossipVerdict::Ignore("att: slot not in propagation range".into());
+            }
         }
 
         // Step 5 — RAT4: attestation's epoch must match its target.
@@ -1185,6 +1210,10 @@ where
         }
 
         // Step 2 — RAG2: aggregate slot must be within propagation range.
+        //
+        // EIP-7045 (Deneb): same widening as validate_attestation RAT3 — when wall
+        // epoch >= DENEB_FORK_EPOCH the lower bound becomes start_of_prev_epoch.
+        //
         // Use saturating arithmetic: see C2 fix above (validate_attestation Step 4).
         let now_ms = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(d) => d.as_millis() as u64,
@@ -1193,21 +1222,36 @@ where
         let genesis_time_s = self.fork_choice.read().genesis_time;
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
         let agg_slot = agg.data.slot.0;
-        let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
-        let start_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+        // Upper bound: agg_slot must not be in the future.
+        let agg_slot_start_ms = genesis_time_s.saturating_mul(1000).saturating_add(
             agg_slot
                 .saturating_mul(seconds_per_slot)
                 .saturating_mul(1000),
         );
-        let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
-            (agg_slot.saturating_add(range).saturating_add(1))
-                .saturating_mul(seconds_per_slot)
-                .saturating_mul(1000),
-        );
-        if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < start_time_ms
-            || end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms
-        {
+        if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < agg_slot_start_ms {
             return GossipVerdict::Ignore("agg: slot not in propagation range".into());
+        }
+        // Lower bound: agg_slot must not be too old.
+        let wall_epoch = self.current_epoch();
+        let deneb_fork_epoch = self.fork_context.fork_schedule.deneb_fork_epoch;
+        if wall_epoch >= deneb_fork_epoch {
+            // EIP-7045: earliest = start of (wall_epoch - 1).
+            let prev_epoch = wall_epoch.0.saturating_sub(1);
+            let earliest_slot = prev_epoch.saturating_mul(E::SLOTS_PER_EPOCH);
+            if agg_slot < earliest_slot {
+                return GossipVerdict::Ignore("agg: slot not in propagation range".into());
+            }
+        } else {
+            // Pre-Deneb: agg_slot + ATTESTATION_PROPAGATION_SLOT_RANGE + 1 > wall_slot.
+            let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
+            let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+                (agg_slot.saturating_add(range).saturating_add(1))
+                    .saturating_mul(seconds_per_slot)
+                    .saturating_mul(1000),
+            );
+            if end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms {
+                return GossipVerdict::Ignore("agg: slot not in propagation range".into());
+            }
         }
 
         // Step 3 — RAG3: target epoch must match slot epoch.

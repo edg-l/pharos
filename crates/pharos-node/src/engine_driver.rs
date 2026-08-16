@@ -19,8 +19,9 @@ use tracing::{error, info, warn};
 use pharos_engine::{
     EngineError, EngineHandle, ForkchoiceUpdatedVersion, NewPayloadVersion, NewPayloadWire,
     types::{
-        ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceStateV1,
-        PayloadAttributesV1, PayloadAttributesV2, PayloadIdV1, WithdrawalV1,
+        BlobsBundleV1, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
+        ForkchoiceStateV1, GetPayloadV3Response, PayloadAttributesV1, PayloadAttributesV2,
+        PayloadAttributesV3, PayloadIdV1, WithdrawalV1,
     },
 };
 use pharos_fork_choice::{
@@ -300,7 +301,7 @@ pub trait PayloadToWireV2 {
 /// Decode a `0x`-prefixed hex DATA string to raw bytes.
 ///
 /// Returns `None` on any parse error.
-fn hex_data_to_bytes(s: &str) -> Option<Vec<u8>> {
+pub fn hex_data_to_bytes(s: &str) -> Option<Vec<u8>> {
     let hex = s.strip_prefix("0x")?;
     if hex.len() % 2 != 0 {
         return None;
@@ -312,7 +313,7 @@ fn hex_data_to_bytes(s: &str) -> Option<Vec<u8>> {
 }
 
 /// Encode a byte slice as `0x`-prefixed lowercase hex (DATA encoding).
-fn bytes_to_data_hex(bytes: &[u8]) -> String {
+pub fn bytes_to_data_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(2 + bytes.len() * 2);
     out.push_str("0x");
     for b in bytes {
@@ -596,6 +597,37 @@ where
     }
 }
 
+/// Build `PayloadAttributesV3` for a Deneb block proposal.
+///
+/// Extends `PayloadAttributesV2` with `parentBeaconBlockRoot`:
+/// - `timestamp`                = `state.genesis_time + slot * seconds_per_slot`
+/// - `prev_randao`              = `get_randao_mix(state, current_epoch)`
+/// - `suggested_fee_recipient`  = `fee_recipient` arg
+/// - `withdrawals`              = pre-computed withdrawal list (caller assembles via
+///   `GetExpectedWithdrawalsDispatch`)
+/// - `parent_beacon_block_root` = `hash_tree_root(state.latest_block_header)` (per deneb/validator.md)
+///
+/// Per `execution-apis/src/engine/cancun.md` `PayloadAttributesV3`.
+pub fn build_payload_attributes_v3<E: EthSpec>(
+    state: &E::BeaconState,
+    withdrawals: Vec<WithdrawalV1>,
+    slot: pharos_types::phase0::Slot,
+    fee_recipient: String,
+    parent_beacon_block_root: Hash256,
+    runtime_cfg: &RuntimeConfig,
+) -> PayloadAttributesV3 {
+    let timestamp = state.genesis_time() + slot.0 * runtime_cfg.seconds_per_slot;
+    let current_epoch = get_current_epoch::<E>(state);
+    let prev_randao = get_randao_mix::<E>(state, current_epoch);
+    PayloadAttributesV3 {
+        timestamp: format!("0x{timestamp:x}"),
+        prev_randao: bytes_to_data_hex(prev_randao.as_slice()),
+        suggested_fee_recipient: fee_recipient,
+        withdrawals,
+        parent_beacon_block_root: bytes_to_data_hex(parent_beacon_block_root.as_slice()),
+    }
+}
+
 /// Build `PayloadAttributesV1` for a Bellatrix block proposal.
 ///
 /// - `timestamp`           = `state.genesis_time + slot * seconds_per_slot`
@@ -685,6 +717,34 @@ pub fn prepare_execution_payload_bellatrix(
         .ok_or(PreparePayloadError::PayloadNotReady)?;
     let payload = engine.get_payload_blocking(pharos_engine::GetPayloadVersion::V1, payload_id)?;
     Ok(payload)
+}
+
+/// Deneb V3 payload preparation: FCU V3 with attributes → payloadId → getPayloadV3.
+///
+/// Steps:
+/// 1. Call `engine_forkchoiceUpdatedV3(fcu_state, Some(attrs))`.
+/// 2. Extract `payloadId` — if absent returns `PreparePayloadError::PayloadNotReady`.
+/// 3. Call `engine_getPayloadV3(payload_id)` and return `(ExecutionPayloadV3,
+///    BlobsBundleV1, block_value)`.
+///
+/// Per `execution-apis/src/engine/cancun.md`.
+pub fn prepare_execution_payload_v3(
+    engine: &EngineHandle,
+    fcu_state: ForkchoiceStateV1,
+    attrs: PayloadAttributesV3,
+) -> Result<(ExecutionPayloadV3, BlobsBundleV1, pharos_utils::Uint256), PreparePayloadError> {
+    let fcu_resp = engine.forkchoice_updated_v3_blocking(fcu_state, Some(attrs))?;
+    let payload_id: PayloadIdV1 = fcu_resp
+        .payload_id
+        .ok_or(PreparePayloadError::PayloadNotReady)?;
+    let GetPayloadV3Response {
+        execution_payload,
+        block_value,
+        blobs_bundle,
+        ..
+    } = engine.get_payload_v3_blocking(payload_id)?;
+    let value: pharos_utils::Uint256 = block_value.parse().unwrap_or(pharos_utils::Uint256::ZERO);
+    Ok((execution_payload, blobs_bundle, value))
 }
 
 // ── maybe_emit_head_change ────────────────────────────────────────────────────

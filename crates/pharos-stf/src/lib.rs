@@ -741,6 +741,7 @@ where
     E::AltairBeaconState: AltairProcessBlockForProduction<E>,
     E::BellatrixBeaconState: BellatrixProcessBlockForProduction<E, EE> + TreeHash,
     E::CapellaBeaconState: CapellaProcessBlockForProduction<E, EE> + TreeHash,
+    E::DenebBeaconState: DenebProcessBlockForProduction<E, EE> + TreeHash,
 {
     use pharos_types::views::ForkVariant;
 
@@ -795,11 +796,18 @@ where
             Ok(wrapped)
         }
         ForkVariant::Deneb => {
-            // Deneb block production wired in Phase 4 (deneb block assembly).
-            // For now the arm exists to avoid `unimplemented!` panics; real block
-            // production via DenebProcessBlockForProduction will replace this in Phase 4.
-            let _ = (state, block, execution_engine, runtime_cfg);
-            Err(StateTransitionError::UnsupportedFork)
+            let deneb_block =
+                E::unwrap_deneb_block(block).ok_or(StateTransitionError::UnsupportedFork)?;
+            let mut deneb_inner =
+                E::into_deneb_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+            deneb_inner.process_block_for_production_deneb(
+                deneb_block,
+                execution_engine,
+                runtime_cfg,
+            )?;
+            let mut wrapped = E::deneb_into_state(deneb_inner);
+            wrapped.invalidate_root_cache();
+            Ok(wrapped)
         }
     }
 }
@@ -1465,6 +1473,216 @@ where
             MAX_EXTRA_DATA_BYTES,
             MAX_WITHDRAWALS_PER_PAYLOAD,
             MAX_BLS_TO_EXECUTION_CHANGES,
+            E,
+            EE,
+        >(self, block, execution_engine, false, runtime_cfg)?;
+        Ok(())
+    }
+}
+
+/// Dispatch trait for production block processing on Deneb inner states.
+pub trait DenebProcessBlockForProduction<E: EthSpec, EE: ExecutionEngine>: Sized {
+    /// Apply `block` (unsigned) to `self` with `verify_signatures=false`.
+    fn process_block_for_production_deneb(
+        &mut self,
+        block: &E::DenebBeaconBlock,
+        execution_engine: &EE,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<(), StateTransitionError>;
+}
+
+impl<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
+    E,
+    EE,
+> DenebProcessBlockForProduction<E, EE>
+    for pharos_types::deneb::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >
+where
+    E: EthSpec<
+            AltairBeaconState = pharos_types::altair::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+            CapellaBeaconState = pharos_types::capella::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            DenebBeaconState = pharos_types::deneb::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            DenebBeaconBlock = pharos_types::deneb::BeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+            >,
+            AltairBeaconBlock = pharos_types::altair::BeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+        >,
+    pharos_types::altair::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    pharos_types::capella::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+    >: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    pharos_types::deneb::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+    >: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    E::AltairBeaconState: pharos_ssz::TreeHash,
+    E::AltairBeaconBlock: pharos_types::views::BeaconBlockView,
+    E::DenebBeaconState: pharos_ssz::TreeHash,
+    pharos_utils::BLSPubkey: Default + Clone,
+    EE: ExecutionEngine,
+{
+    fn process_block_for_production_deneb(
+        &mut self,
+        block: &E::DenebBeaconBlock,
+        execution_engine: &EE,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<(), StateTransitionError> {
+        deneb::block::process_block::<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS,
+            MAX_ATTESTATIONS,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+            MAX_BLS_TO_EXECUTION_CHANGES,
+            MAX_BLOB_COMMITMENTS_PER_BLOCK,
             E,
             EE,
         >(self, block, execution_engine, false, runtime_cfg)?;

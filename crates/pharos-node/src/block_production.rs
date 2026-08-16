@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 use pharos_engine::EngineHandle;
+use pharos_engine::types::BlobsBundleV1;
 use pharos_fork_choice::Store as FcStore;
 use pharos_fork_choice::{execution_block_hash_at_root, get_head};
 use pharos_ssz::{Bitvector, SszList, TreeHash};
@@ -32,8 +33,10 @@ use pharos_stf::{
     AltairProcessBlockForProduction, AltairProcessSlotsDispatch, AltairUpgradeDispatch,
     BellatrixProcessBlockForProduction, BellatrixProcessSlotsDispatch, BellatrixUpgradeDispatch,
     CapellaProcessBlockForProduction, CapellaProcessSlotsDispatch, CapellaUpgradeDispatch,
-    DenebProcessSlotsDispatch, ForkEpochs, GetExpectedWithdrawalsDispatch, Phase0UpgradeDispatch,
-    StateTransitionError, phase0::state_write::BeaconStateWrite, process_slots_fork,
+    DenebProcessBlockForProduction, DenebProcessSlotsDispatch, ForkEpochs,
+    GetExpectedWithdrawalsDispatch, Phase0UpgradeDispatch, StateTransitionError,
+    deneb::build_blob_sidecar_inclusion_proof, phase0::state_write::BeaconStateWrite,
+    process_slots_fork,
 };
 use pharos_stf::{
     compute_epoch_at_slot, compute_start_slot_at_epoch, get_active_validator_indices,
@@ -54,8 +57,10 @@ use thiserror::Error;
 
 use crate::engine_driver::{
     ExecutionEngineHandle, PreparePayloadError, build_payload_attributes_v1,
-    build_payload_attributes_v2, compute_finalized_block_hash, compute_safe_block_hash,
-    hash_to_hex, prepare_execution_payload_bellatrix, prepare_execution_payload_with_value,
+    build_payload_attributes_v2, build_payload_attributes_v3, bytes_to_data_hex,
+    compute_finalized_block_hash, compute_safe_block_hash, hash_to_hex, hex_data_to_bytes,
+    prepare_execution_payload_bellatrix, prepare_execution_payload_v3,
+    prepare_execution_payload_with_value,
 };
 use crate::op_pools::OperationPools;
 
@@ -162,6 +167,51 @@ pub trait CapellaBlockAssembler<E: EthSpec>: Sized + Default + Clone {
     fn set_state_root(&mut self, root: Root);
     fn into_signed_block(self) -> E::SignedBeaconBlock;
     fn message_clone(&self) -> E::CapellaBeaconBlock;
+}
+
+/// Assembly dispatch for Deneb inner signed blocks.
+///
+/// Extends `CapellaBlockAssembler` with `blob_kzg_commitments`: the
+/// commitments decoded from the `BlobsBundleV1` returned by `getPayloadV3`.
+pub trait DenebBlockAssembler<E: EthSpec>: Sized + Default + Clone {
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        slot: Slot,
+        proposer_index: ValidatorIndex,
+        parent_root: Root,
+        randao_reveal: BLSSignature,
+        eth1_data: Eth1Data,
+        graffiti: Bytes32,
+        proposer_slashings: Vec<ProposerSlashing>,
+        attester_slashings: Vec<AttesterSlashing<2048>>,
+        attestations: Vec<Attestation<2048>>,
+        voluntary_exits: Vec<SignedVoluntaryExit>,
+        sync_committee_bits: Vec<usize>,
+        sync_committee_signature: BLSSignature,
+        execution_payload: E::DenebExecutionPayload,
+        bls_to_execution_changes: Vec<
+            pharos_types::capella::operations::SignedBLSToExecutionChange,
+        >,
+        blob_kzg_commitments: Vec<pharos_types::deneb::KZGCommitment>,
+    ) -> Result<Self, ProduceError>;
+
+    fn set_state_root(&mut self, root: Root);
+    fn into_signed_block(self) -> E::SignedBeaconBlock;
+    fn message_clone(&self) -> E::DenebBeaconBlock;
+
+    /// Return the 12 body field `tree_hash_root()` values (field order 0..11)
+    /// for use by `build_blob_sidecars`.
+    fn body_field_hashes(&self) -> [pharos_utils::Hash256; 12];
+
+    /// Construct a `SignedBeaconBlockHeader` for this block (pre-seal).
+    ///
+    /// After `set_state_root` has been called, `body_root` is the body's
+    /// `tree_hash_root()`. The returned header carries the correct slot,
+    /// proposer_index, parent_root, state_root, and body_root fields.
+    fn signed_block_header(&self) -> pharos_types::phase0::operations::SignedBeaconBlockHeader;
+
+    /// Return the `kzg_commitments` slice from the block body.
+    fn kzg_commitments_slice(&self) -> Vec<pharos_types::deneb::KZGCommitment>;
 }
 
 /// Assembly dispatch for Bellatrix inner signed blocks.
@@ -399,6 +449,186 @@ where
 
     fn message_clone(&self) -> E::CapellaBeaconBlock {
         self.message.clone()
+    }
+}
+
+impl<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS: u64,
+    const MAX_ATTESTATIONS: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
+    E,
+> DenebBlockAssembler<E>
+    for pharos_types::deneb::SignedBeaconBlock<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS,
+        MAX_ATTESTATIONS,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+    >
+where
+    E: EthSpec<
+            DenebSignedBeaconBlock = pharos_types::deneb::SignedBeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+            >,
+            DenebBeaconBlock = pharos_types::deneb::BeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS,
+                MAX_ATTESTATIONS,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+            >,
+            DenebExecutionPayload = pharos_types::deneb::ExecutionPayload<
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+            >,
+        >,
+{
+    fn assemble(
+        slot: Slot,
+        proposer_index: ValidatorIndex,
+        parent_root: Root,
+        randao_reveal: BLSSignature,
+        eth1_data: Eth1Data,
+        graffiti: Bytes32,
+        proposer_slashings: Vec<ProposerSlashing>,
+        attester_slashings: Vec<AttesterSlashing<2048>>,
+        attestations: Vec<Attestation<2048>>,
+        voluntary_exits: Vec<SignedVoluntaryExit>,
+        sync_committee_bits: Vec<usize>,
+        sync_committee_signature: BLSSignature,
+        execution_payload: E::DenebExecutionPayload,
+        bls_to_execution_changes: Vec<
+            pharos_types::capella::operations::SignedBLSToExecutionChange,
+        >,
+        blob_kzg_commitments: Vec<pharos_types::deneb::KZGCommitment>,
+    ) -> Result<Self, ProduceError> {
+        // SAFETY: See transmute_attester_slashings / transmute_attestations docs.
+        let attester_slashings = unsafe {
+            transmute_attester_slashings::<MAX_VALIDATORS_PER_COMMITTEE>(attester_slashings)
+        };
+        let attestations =
+            unsafe { transmute_attestations::<MAX_VALIDATORS_PER_COMMITTEE>(attestations) };
+        let mut b = Self::default();
+        b.message.slot = slot;
+        b.message.proposer_index = proposer_index;
+        b.message.parent_root = parent_root;
+        b.message.body.randao_reveal = randao_reveal;
+        b.message.body.eth1_data = eth1_data;
+        b.message.body.graffiti = graffiti;
+        b.message.body.proposer_slashings =
+            SszList::from_items(proposer_slashings).unwrap_or_default();
+        b.message.body.attester_slashings =
+            SszList::from_items(attester_slashings).unwrap_or_default();
+        b.message.body.attestations = SszList::from_items(attestations).unwrap_or_default();
+        b.message.body.deposits = SszList::default();
+        b.message.body.voluntary_exits = SszList::from_items(voluntary_exits).unwrap_or_default();
+        b.message.body.sync_aggregate = build_sync_aggregate::<SYNC_COMMITTEE_SIZE>(
+            sync_committee_bits,
+            sync_committee_signature,
+        );
+        b.message.body.execution_payload = execution_payload;
+        b.message.body.bls_to_execution_changes =
+            SszList::from_items(bls_to_execution_changes).unwrap_or_default();
+        b.message.body.blob_kzg_commitments =
+            SszList::from_items(blob_kzg_commitments).unwrap_or_default();
+        Ok(b)
+    }
+
+    fn set_state_root(&mut self, root: Root) {
+        self.message.state_root = root;
+    }
+
+    fn into_signed_block(self) -> E::SignedBeaconBlock {
+        E::deneb_into_signed_block(self)
+    }
+
+    fn message_clone(&self) -> E::DenebBeaconBlock {
+        self.message.clone()
+    }
+
+    fn body_field_hashes(&self) -> [pharos_utils::Hash256; 12] {
+        let b = &self.message.body;
+        [
+            b.randao_reveal.tree_hash_root(),
+            b.eth1_data.tree_hash_root(),
+            b.graffiti.tree_hash_root(),
+            b.proposer_slashings.tree_hash_root(),
+            b.attester_slashings.tree_hash_root(),
+            b.attestations.tree_hash_root(),
+            b.deposits.tree_hash_root(),
+            b.voluntary_exits.tree_hash_root(),
+            b.sync_aggregate.tree_hash_root(),
+            b.execution_payload.tree_hash_root(),
+            b.bls_to_execution_changes.tree_hash_root(),
+            b.blob_kzg_commitments.tree_hash_root(),
+        ]
+    }
+
+    fn signed_block_header(&self) -> pharos_types::phase0::operations::SignedBeaconBlockHeader {
+        use pharos_types::phase0::operations::{BeaconBlockHeader, SignedBeaconBlockHeader};
+        SignedBeaconBlockHeader {
+            message: BeaconBlockHeader {
+                slot: self.message.slot,
+                proposer_index: self.message.proposer_index,
+                parent_root: self.message.parent_root,
+                state_root: self.message.state_root,
+                body_root: self.message.body.tree_hash_root(),
+            },
+            signature: self.signature,
+        }
+    }
+
+    fn kzg_commitments_slice(&self) -> Vec<pharos_types::deneb::KZGCommitment> {
+        self.message.body.blob_kzg_commitments.as_slice().to_vec()
     }
 }
 
@@ -690,6 +920,91 @@ where
     )
 }
 
+// ── build_blob_sidecars ───────────────────────────────────────────────────────
+
+/// Build the full `Vec<BlobSidecar>` from a `BlobsBundleV1` returned by
+/// `getPayloadV3` and the assembled, sealed Deneb signed block.
+///
+/// Each sidecar carries:
+/// - `index` — position in `blob_kzg_commitments`
+/// - `blob` — 131072-byte blob decoded from the bundle hex string
+/// - `kzg_commitment` — decoded from the bundle
+/// - `kzg_proof` — decoded from the bundle
+/// - `signed_block_header` — from the sealed block (state_root already set)
+/// - `kzg_commitment_inclusion_proof` — 17-element proof built via
+///   `build_blob_sidecar_inclusion_proof`
+///
+/// Sidecars with decode errors are silently skipped (defensive; the engine
+/// is trusted to produce well-formed hex and the commitments already passed
+/// the block assembly validation).
+pub fn build_blob_sidecars<E: EthSpec>(
+    block: &E::DenebSignedBeaconBlock,
+    blobs_bundle: BlobsBundleV1,
+) -> Vec<pharos_types::deneb::BlobSidecar>
+where
+    E::DenebSignedBeaconBlock: DenebBlockAssembler<E>,
+{
+    use pharos_ssz::SszVector;
+    use pharos_types::deneb::{BlobSidecar, blob::BYTES_PER_BLOB};
+
+    let all_commitments = block.kzg_commitments_slice();
+    let body_field_hashes = block.body_field_hashes();
+    let signed_block_header = block.signed_block_header();
+
+    let n = blobs_bundle
+        .blobs
+        .len()
+        .min(blobs_bundle.commitments.len())
+        .min(blobs_bundle.proofs.len());
+
+    let mut sidecars = Vec::with_capacity(n);
+    for i in 0..n {
+        // Decode blob bytes (131072 bytes = 262144 hex chars + "0x").
+        let blob_bytes = match hex_data_to_bytes(&blobs_bundle.blobs[i]) {
+            Some(b) if b.len() == BYTES_PER_BLOB as usize => b,
+            _ => continue,
+        };
+        let blob = match SszVector::<u8, BYTES_PER_BLOB>::from_items(blob_bytes) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // Decode KZG commitment (48 bytes).
+        let commitment = match hex_data_to_bytes(&blobs_bundle.commitments[i])
+            .and_then(|b| <[u8; 48]>::try_from(b).ok())
+        {
+            Some(arr) => pharos_types::deneb::KZGCommitment::from_array(arr),
+            None => continue,
+        };
+
+        // Decode KZG proof (48 bytes).
+        let proof = match hex_data_to_bytes(&blobs_bundle.proofs[i])
+            .and_then(|b| <[u8; 48]>::try_from(b).ok())
+        {
+            Some(arr) => pharos_types::deneb::KZGProof::from_array(arr),
+            None => continue,
+        };
+
+        // Build the 17-element inclusion proof.
+        let proof_arr = build_blob_sidecar_inclusion_proof(&all_commitments, &body_field_hashes, i);
+        let kzg_commitment_inclusion_proof = match SszVector::from_items(proof_arr.iter().copied())
+        {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        sidecars.push(BlobSidecar {
+            index: i as u64,
+            blob,
+            kzg_commitment: commitment,
+            kzg_proof: proof,
+            signed_block_header: signed_block_header.clone(),
+            kzg_commitment_inclusion_proof,
+        });
+    }
+    sidecars
+}
+
 // ── produce_block ─────────────────────────────────────────────────────────────
 
 /// Assemble a `BeaconBlock` for `slot` on top of the current fork-choice head.
@@ -712,7 +1027,7 @@ where
 /// - Phase0 head → `unreachable!()` (checkpoint-synced nodes always past Phase0)
 // Block production legitimately needs all of these inputs; a param struct would
 // add indirection without clarifying the call site.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn produce_block<E: EthSpec>(
     fc_store: &Arc<RwLock<FcStore<E>>>,
     pools: &OperationPools<E>,
@@ -722,7 +1037,15 @@ pub fn produce_block<E: EthSpec>(
     graffiti: [u8; 32],
     fee_recipient: String,
     runtime_cfg: &RuntimeConfig,
-) -> Result<(E::SignedBeaconBlock, E::BeaconState, pharos_utils::Uint256), ProduceError>
+) -> Result<
+    (
+        E::SignedBeaconBlock,
+        E::BeaconState,
+        pharos_utils::Uint256,
+        Vec<pharos_types::deneb::BlobSidecar>,
+    ),
+    ProduceError,
+>
 where
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: AltairProcessBlockForProduction<E>
@@ -737,7 +1060,10 @@ where
         + CapellaProcessSlotsDispatch<E>
         + CapellaUpgradeDispatch<E>
         + GetExpectedWithdrawalsDispatch<E>,
-    E::DenebBeaconState: DenebProcessSlotsDispatch<E>,
+    E::DenebBeaconState: DenebProcessBlockForProduction<E, ExecutionEngineHandle>
+        + TreeHash
+        + DenebProcessSlotsDispatch<E>
+        + GetExpectedWithdrawalsDispatch<E>,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -750,10 +1076,13 @@ where
     E::CapellaSignedBeaconBlock: CapellaBlockAssembler<E>,
     E::BellatrixSignedBeaconBlock: BellatrixBlockAssembler<E>,
     E::AltairSignedBeaconBlock: AltairBlockAssembler<E>,
+    E::DenebSignedBeaconBlock: DenebBlockAssembler<E>,
     E::CapellaExecutionPayload:
         TryFrom<pharos_engine::types::ExecutionPayloadV2, Error = pharos_engine::EngineError>,
     E::ExecutionPayload:
         TryFrom<pharos_engine::types::ExecutionPayloadV1, Error = pharos_engine::EngineError>,
+    E::DenebExecutionPayload:
+        TryFrom<pharos_engine::types::ExecutionPayloadV3, Error = pharos_engine::EngineError>,
 {
     // ── Step (a): Short read lock — clone head state and head root ────────────
 
@@ -866,7 +1195,12 @@ where
 
             // ── Step (i): Seal with state_root ────────────────────────────────
             block_inner.set_state_root(post_state.tree_hash_root());
-            Ok((block_inner.into_signed_block(), post_state, exec_value))
+            Ok((
+                block_inner.into_signed_block(),
+                post_state,
+                exec_value,
+                vec![],
+            ))
         }
 
         // ── Bellatrix: V1 execution payload ───────────────────────────────────
@@ -919,6 +1253,7 @@ where
                 block_inner.into_signed_block(),
                 post_state,
                 pharos_utils::Uint256::ZERO,
+                vec![],
             ))
         }
 
@@ -965,6 +1300,7 @@ where
                 block_inner.into_signed_block(),
                 post_state,
                 pharos_utils::Uint256::ZERO,
+                vec![],
             ))
         }
 
@@ -977,9 +1313,119 @@ where
             )
         }
 
-        // Deneb block production not yet implemented (M10-Deneb follow-on).
+        // ── Deneb: V3 execution payload + blob KZG commitments ───────────────
         ForkVariant::Deneb => {
-            unreachable!("Deneb block production not yet implemented")
+            // ── Step (d): Drain sync aggregate ────────────────────────────────
+            let (sync_bits, sync_sig) = pools.drain_sync_aggregate_raw(
+                sync_agg_slot,
+                parent_root,
+                &committee_pubkeys_cur,
+                validator_pubkey_fn,
+            );
+
+            // ── Step (e): Prepare execution payload (V3) ──────────────────────
+            // `parent_beacon_block_root` = hash_tree_root(state.latest_block_header)
+            // per `specs/deneb/validator.md:136`.
+            let parent_beacon_block_root = state.latest_block_header().tree_hash_root();
+            let deneb_inner = E::into_deneb_state(state.clone()).ok_or(ProduceError::WrongFork)?;
+            // Compute expected withdrawals from the deneb state. The Deneb state carries
+            // the same withdrawal fields as Capella (next_withdrawal_index,
+            // next_withdrawal_validator_index, validators, balances). We obtain the
+            // list via GetExpectedWithdrawalsDispatch on the deneb inner state.
+            let withdrawals_v1: Vec<pharos_engine::types::WithdrawalV1> = deneb_inner
+                .get_expected_withdrawals_dispatch()
+                .into_iter()
+                .map(|w| pharos_engine::types::WithdrawalV1 {
+                    index: format!("0x{:x}", w.index),
+                    validator_index: format!("0x{:x}", w.validator_index.0),
+                    address: bytes_to_data_hex(w.address.as_slice()),
+                    amount: format!("0x{:x}", w.amount.0),
+                })
+                .collect();
+            let attrs = build_payload_attributes_v3::<E>(
+                &state,
+                withdrawals_v1,
+                slot,
+                fee_recipient,
+                parent_beacon_block_root,
+                runtime_cfg,
+            );
+            let fcu_state = build_fcu_state::<E>(fc_store, head_root);
+            let (wire_payload, blobs_bundle, exec_value) =
+                prepare_execution_payload_v3(engine, fcu_state, attrs)
+                    .map_err(ProduceError::from)?;
+
+            // Decode `blob_kzg_commitments` from the BlobsBundleV1.
+            // Each commitment is a 0x-prefixed 96-hex-char (48-byte) DATA string.
+            // Fail fast on any decode error: commitments must stay in 1:1
+            // correspondence with the bundle's blobs/proofs, and a silently
+            // dropped commitment would desync sidecar inclusion-proof indexing
+            // (and panic the proof builder).
+            let blob_kzg_commitments: Vec<pharos_types::deneb::KZGCommitment> = blobs_bundle
+                .commitments
+                .iter()
+                .map(|hex| {
+                    let bytes = hex_data_to_bytes(hex).ok_or_else(|| {
+                        ProduceError::Engine(format!("bad commitment hex: {hex}"))
+                    })?;
+                    let arr: [u8; 48] = bytes
+                        .try_into()
+                        .map_err(|_| ProduceError::Engine("commitment not 48 bytes".into()))?;
+                    Ok(pharos_types::deneb::KZGCommitment::from_array(arr))
+                })
+                .collect::<Result<Vec<_>, ProduceError>>()?;
+
+            let execution_payload: E::DenebExecutionPayload = wire_payload
+                .try_into()
+                .map_err(|e: pharos_engine::EngineError| ProduceError::Engine(e.to_string()))?;
+
+            // ── Step (f): Drain operations ────────────────────────────────────
+            let block_ops = pools.drain_for_block(slot.0);
+
+            // ── Step (g): Assemble block ──────────────────────────────────────
+            let mut block_inner = E::DenebSignedBeaconBlock::assemble(
+                slot,
+                proposer_index,
+                parent_root,
+                randao_reveal,
+                eth1_data,
+                graffiti_bytes,
+                block_ops.proposer_slashings,
+                block_ops.attester_slashings,
+                block_ops.attestations,
+                block_ops.voluntary_exits,
+                sync_bits,
+                sync_sig,
+                execution_payload,
+                block_ops.bls_to_execution_changes,
+                blob_kzg_commitments,
+            )?;
+
+            // ── Step (h): Run STF ─────────────────────────────────────────────
+            let block_enum = E::deneb_into_block(block_inner.message_clone());
+            let ee = ExecutionEngineHandle::new(engine.clone());
+            let post_state = process_block_for_production::<E, ExecutionEngineHandle>(
+                state,
+                &block_enum,
+                &ee,
+                runtime_cfg,
+            )?;
+
+            // ── Step (i): Seal with state_root ────────────────────────────────
+            block_inner.set_state_root(post_state.tree_hash_root());
+
+            // ── Step (j): Build blob sidecars ─────────────────────────────────
+            // Must happen AFTER set_state_root so signed_block_header.state_root
+            // and body_root are correct in the sidecar headers.
+            let blob_sidecars = build_blob_sidecars::<E>(&block_inner, blobs_bundle);
+
+            let _ = deneb_inner; // state was consumed by process_block_for_production
+            Ok((
+                block_inner.into_signed_block(),
+                post_state,
+                exec_value,
+                blob_sidecars,
+            ))
         }
     }
 }

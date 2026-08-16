@@ -831,14 +831,17 @@ async fn main() -> anyhow::Result<()> {
 
             let pools_arc = Arc::clone(&host.op_pools);
 
-            // Per-slot cache: slot → (SSZ bytes of unsigned block, fork discriminant byte).
+            // Per-slot cache: slot → (SSZ bytes of unsigned block, fork discriminant byte,
+            // blob sidecars produced alongside the block — non-empty only for Deneb).
             //
             // The SSZ bytes are from the CONCRETE per-fork type (no discriminant prefix).
             // The discriminant maps ForkVariant to the pharos storage byte used in the
-            // state.rs fork-enum Decode impl: Phase0=0, Altair=1, Bellatrix=2, Capella=3.
+            // state.rs fork-enum Decode impl: Phase0=0, Altair=1, Bellatrix=2, Capella=3,
+            // Deneb=4.
             //
             // Shared between produce_fn (writer) and publish_fn (reader).
-            type BlockCache = Arc<Mutex<HashMap<u64, (Vec<u8>, u8)>>>;
+            type BlockCache =
+                Arc<Mutex<HashMap<u64, (Vec<u8>, u8, Vec<pharos_types::deneb::BlobSidecar>)>>>;
             let produce_cache: BlockCache = Arc::new(Mutex::new(HashMap::new()));
             let produce_cache_pub = Arc::clone(&produce_cache);
 
@@ -855,17 +858,18 @@ async fn main() -> anyhow::Result<()> {
                     // The VC can override this via POST /eth/v1/validator/prepare_beacon_proposer.
                     let fee_recipient = "0x0000000000000000000000000000000000000000".to_string();
 
-                    let (signed_block, _post_state, exec_value) = produce_block::<MainnetEthSpec>(
-                        &produce_fc,
-                        &produce_pools,
-                        &produce_engine,
-                        slot,
-                        randao_reveal,
-                        graffiti.into(),
-                        fee_recipient,
-                        &produce_cfg,
-                    )
-                    .map_err(|e| ApiError::Internal(format!("produce_block: {e}")))?;
+                    let (signed_block, _post_state, exec_value, blob_sidecars) =
+                        produce_block::<MainnetEthSpec>(
+                            &produce_fc,
+                            &produce_pools,
+                            &produce_engine,
+                            slot,
+                            randao_reveal,
+                            graffiti.into(),
+                            fee_recipient,
+                            &produce_cfg,
+                        )
+                        .map_err(|e| ApiError::Internal(format!("produce_block: {e}")))?;
 
                     // SSZ-encode the unsigned block and cache with fork discriminant.
                     // The fork-enum Decode impl expects: [disc_byte] ++ concrete_ssz.
@@ -894,8 +898,28 @@ async fn main() -> anyhow::Result<()> {
                                 .map_err(|e| ApiError::Internal(format!("DTO: {e}")))?;
                             (ssz, 3u8, json)
                         }
-                        pharos_types::state::SignedBeaconBlock::Deneb(_) => {
-                            unreachable!("Deneb block production not yet implemented")
+                        pharos_types::state::SignedBeaconBlock::Deneb(inner) => {
+                            use pharos_ssz::Encode as _;
+                            use pharos_types::views::ForkVariant;
+                            let ssz = inner.as_ssz_bytes();
+                            // Deneb-specific JSON DTO is not yet written; the VC uses
+                            // block_ssz (the SSZ hex) to compute the signing root, not
+                            // the JSON body. Return a stub JSON with slot so the VC can
+                            // read message.slot; the `block_ssz` field carries real bytes.
+                            let stub_json = pharos_api::dto::block::SignedBlockForApi {
+                                variant: ForkVariant::Deneb,
+                                ssz_bytes: ssz.clone(),
+                                attestations_json: vec![],
+                                json: serde_json::json!({
+                                    "message": {
+                                        "slot": inner.message.slot.0.to_string(),
+                                        "proposer_index": inner.message.proposer_index.0.to_string(),
+                                        "parent_root": format!("0x{}", hex::encode(inner.message.parent_root.as_slice())),
+                                        "state_root": format!("0x{}", hex::encode(inner.message.state_root.as_slice())),
+                                    }
+                                }),
+                            };
+                            (ssz, 4u8, stub_json)
                         }
                     };
 
@@ -913,7 +937,7 @@ async fn main() -> anyhow::Result<()> {
                     };
 
                     if let Ok(mut cache) = produce_cache.lock() {
-                        cache.insert(slot.0, (ssz_bytes, disc));
+                        cache.insert(slot.0, (ssz_bytes, disc, blob_sidecars));
                     }
 
                     // The handler reads `block_json.get("data").unwrap_or(&block_json)`.
@@ -998,7 +1022,7 @@ async fn main() -> anyhow::Result<()> {
                     .or_else(|| block_json["message"]["slot"].as_u64())
                     .ok_or_else(|| ApiError::BadRequest("missing message.slot".into()))?;
 
-                let (mut ssz_bytes, disc) = produce_cache_pub
+                let (mut ssz_bytes, disc, mut cached_blob_sidecars) = produce_cache_pub
                     .lock()
                     .ok()
                     .and_then(|cache| cache.get(&slot_val).cloned())
@@ -1007,6 +1031,15 @@ async fn main() -> anyhow::Result<()> {
                             "no cached block for slot {slot_val}; call produce_block first"
                         ))
                     })?;
+
+                // The cached sidecars were built before the VC signature existed,
+                // so each `signed_block_header.signature` is still zero. Patch in
+                // the real proposer signature; otherwise gossip peers `[REJECT]`
+                // the sidecars on the proposer-signature rule
+                // (`specs/deneb/p2p-interface.md` blob-sidecar validation).
+                for sc in &mut cached_blob_sidecars {
+                    sc.signed_block_header.signature = pharos_utils::BLSSignature::from(sig_bytes);
+                }
 
                 // Overlay the VC signature at bytes [4..100].
                 if ssz_bytes.len() < 100 {
@@ -1100,6 +1133,61 @@ async fn main() -> anyhow::Result<()> {
                             error = %e,
                             "VC-submitted block gossip failed"
                         );
+                    }
+
+                    // ── Blob sidecars: persist + publish ─────────────────────
+                    // For Deneb blocks, persist each sidecar to the store and
+                    // publish it on the `blob_sidecar/{subnet_id}` gossip topic.
+                    // The subnet for sidecar index `i` is `i % BLOB_SIDECAR_SUBNET_COUNT`.
+                    if !cached_blob_sidecars.is_empty() {
+                        // Derive block root from the sidecar's signed block header.
+                        // All sidecars share the same block header, so use index 0.
+                        let block_root: pharos_utils::Hash256 = {
+                            use pharos_ssz::TreeHash as _;
+                            cached_blob_sidecars[0]
+                                .signed_block_header
+                                .message
+                                .tree_hash_root()
+                        };
+                        // Persist to storage (one call per sidecar).
+                        for sidecar in &cached_blob_sidecars {
+                            if let Err(e) = <pharos_storage::RocksStore as pharos_storage::Store<
+                                MainnetEthSpec,
+                            >>::put_blob_sidecar(
+                                &store_c, block_root, sidecar.index, sidecar
+                            ) {
+                                tracing::warn!(
+                                    slot = slot_val,
+                                    index = sidecar.index,
+                                    error = %e,
+                                    "blob sidecar persist failed"
+                                );
+                            }
+                        }
+                        // Publish each sidecar on its subnet topic.
+                        // subnet_id = sidecar.index % BLOB_SIDECAR_SUBNET_COUNT (= 6 for mainnet).
+                        for sidecar in &cached_blob_sidecars {
+                            let subnet_id =
+                                sidecar.index % MainnetEthSpec::BLOB_SIDECAR_SUBNET_COUNT;
+                            let sidecar_topic = GossipTopic {
+                                fork_digest,
+                                kind: GossipTopicKind::BlobSidecar(subnet_id),
+                            };
+                            if let Err(e) = cmd_c.publish(sidecar_topic, sidecar).await {
+                                tracing::warn!(
+                                    slot = slot_val,
+                                    index = sidecar.index,
+                                    error = %e,
+                                    "blob sidecar gossip failed"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    slot = slot_val,
+                                    index = sidecar.index,
+                                    "blob sidecar published"
+                                );
+                            }
+                        }
                     }
                 });
 

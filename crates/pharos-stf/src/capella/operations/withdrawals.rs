@@ -491,3 +491,71 @@ pub fn process_withdrawals<
 
     Ok(())
 }
+
+// ── get_expected_withdrawals_for_deneb_state ──────────────────────────────────
+
+/// `get_expected_withdrawals` for a `deneb::BeaconState`.
+///
+/// Deneb inherits the withdrawal logic from Capella unchanged. The Deneb state
+/// carries the same withdrawal fields (`next_withdrawal_index`,
+/// `next_withdrawal_validator_index`, `validators`, `balances`) as the Capella
+/// state — the only difference is the `latest_execution_payload_header` type.
+/// This projects the Deneb state to a Capella state and delegates to the capella
+/// `get_expected_withdrawals`, so callers can implement
+/// `GetExpectedWithdrawalsDispatch<E>` for `deneb::BeaconState` without unsafe
+/// casts and without duplicating the sweep logic.
+pub fn get_expected_withdrawals_for_deneb_state<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    E: EthSpec,
+>(
+    state: &pharos_types::deneb::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >,
+) -> Vec<Withdrawal> {
+    // Deneb withdrawals are identical to Capella. Project the Deneb state to a
+    // Capella state and delegate, so there is a single sweep implementation and
+    // no risk of the two forks drifting apart.
+    let capella = crate::deneb::helpers::deneb_state_to_capella::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+    >(state);
+    get_expected_withdrawals::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        E,
+    >(&capella)
+}
