@@ -306,11 +306,15 @@ fn build_capella_chain(
 ) -> (Vec<MinForkSignedBlock>, Vec<Root>) {
     use pharos_stf::process_slots_fork;
 
-    // The ingestion loop uses `RuntimeConfig::default()` which is mainnet (12 s/slot).
-    // The chain builder must match so that `timestamp` and `seconds_per_slot` agree.
+    // The ingestion loop reads `seconds_per_slot` from the fork-choice store's
+    // runtime_cfg, which `get_forkchoice_store` seeds from the preset
+    // (`E::SLOT_DURATION_MS / 1000` = 6 for minimal, since commit f6f69c7). The
+    // chain builder must use the SAME value so the payload `timestamp` the STF
+    // computes (`genesis_time + slot * seconds_per_slot`) matches the fixture.
     let runtime_cfg = pharos_types::config::RuntimeConfig {
         capella_fork_version: MinimalBeaconSpec::CAPELLA_FORK_VERSION,
         capella_fork_epoch: 0,
+        seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
         ..Default::default()
     };
     let null_engine = NullExecutionEngine;
