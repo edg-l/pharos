@@ -65,6 +65,15 @@ libp2p = "0.56"
 discv5 = "0.10"
 snap = "1"
 futures = "0.3"
+# EIP-1459 DNS bootnode resolution (in-house enrtree resolver, M11 Phase 15).
+# hickory-resolver: async TXT lookups (already transitive via libp2p-dns).
+# k256: secp256k1 ECDSA recovery for the enrtree-root signature.
+# sha3: keccak256 for the signed-root content hash + subtree-hash check.
+# data-encoding: base32 (RFC4648 no-pad) pubkey/hashes + url-safe base64 sig.
+hickory-resolver = "0.25"
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic", "std"] }
+sha3 = "0.10"
+data-encoding = "2"
 
 # HTTP
 axum = "0.8"

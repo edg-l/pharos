@@ -22,7 +22,7 @@ use pharos_types::state::{BeaconBlock as ForkBeaconBlock, MainnetBeaconState};
 use pharos_types::{EthSpec, MainnetEthSpec, load_config_dir};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tokio::sync::{mpsc, watch};
-use tracing::info;
+use tracing::{info, warn};
 
 use pharos_node::ExecutionEngineHandle;
 use pharos_node::blob_ingestion::run_blob_ingestion_loop;
@@ -62,6 +62,11 @@ struct Args {
     /// Bootstrap ENR(s) for discv5 routing table initialisation (repeatable).
     #[arg(long, value_name = "ENR")]
     bootnode: Vec<String>,
+
+    /// EIP-1459 `enrtree://<base32-pubkey>@<domain>` DNS node list(s) to
+    /// resolve into bootnodes (repeatable; mixed with `--bootnode`).
+    #[arg(long, value_name = "ENRTREE_URL")]
+    bootnode_dns: Vec<String>,
 
     /// Hard cap on connected peers.
     ///
@@ -366,7 +371,7 @@ async fn main() -> anyhow::Result<()> {
         .context("--listen-addr is not a valid /ip4/<addr>/tcp/<port> multiaddr")?;
 
     // Parse --bootnode ENR strings.
-    let bootnodes: Vec<pharos_network::discovery::enr::Enr> = args
+    let mut bootnodes: Vec<pharos_network::discovery::enr::Enr> = args
         .bootnode
         .iter()
         .map(|s| {
@@ -374,6 +379,26 @@ async fn main() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("invalid bootnode ENR {s:?}: {e}"))
         })
         .collect::<anyhow::Result<_>>()?;
+
+    // Resolve --bootnode-dns enrtree:// URLs (EIP-1459) and mix the discovered
+    // ENRs into the static bootnode set.
+    if !args.bootnode_dns.is_empty() {
+        let resolver: Arc<dyn pharos_network::discovery::dns::TxtResolver> = Arc::new(
+            pharos_network::discovery::dns::HickoryTxtResolver::from_system()
+                .context("failed to initialise DNS resolver for --bootnode-dns")?,
+        );
+        for url in &args.bootnode_dns {
+            match pharos_network::discovery::dns::resolve_enrtree(url, resolver.clone()).await {
+                Ok(resolved) => {
+                    info!(url = %url, count = resolved.len(), "resolved DNS bootnodes");
+                    bootnodes.extend(resolved);
+                }
+                Err(e) => {
+                    warn!(url = %url, error = %e, "failed to resolve --bootnode-dns URL");
+                }
+            }
+        }
+    }
 
     // ── Step 1+2: Open RocksDB ─────────────────────────────────────────────
 

@@ -4134,3 +4134,40 @@ failure never takes the node down. Live (post-startup) blocks continue to be cov
 always-on Phase A gossip detector; a continuous replay loop driven off the head-watch is a
 later refinement and not required for the Phase B checkpoint (replay-detects-historical-
 double-block + proposer-double-block, flag-off-skips).
+
+## M11 Phase 15 — DNS bootnode support (in-house EIP-1459 enrtree)
+
+### D-dns-bootnode-resolver — in-house EIP-1459 resolver over hickory-resolver TXT lookups
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+The pinned `discv5` 0.10.4 ships NO enrtree/DNS support (confirmed in M11 Phase 0:
+its only features are `libp2p` and `serde`, and the source has zero `enrtree`/`dns`/`TXT`
+references). Mainnet bootnodes are published as `enrtree://` node lists (EIP-1459), so the
+Merkle-tree-over-TXT-records protocol is implemented from scratch in
+`crates/pharos-network/src/discovery/dns/mod.rs`.
+
+**DNS crate**: `hickory-resolver` 0.25 — already a transitive dep of `libp2p-dns`, so no
+new dependency edge; async-native TXT lookups (`Resolver::builder_tokio().build()` then
+`txt_lookup(name).await`). The TXT source is abstracted behind a `TxtResolver` trait so
+the resolution logic is exercised against hand-built static fixtures in tests with zero
+live-network access; `HickoryTxtResolver` is the production impl.
+
+**Crypto reuse, no new primitive deps**: the EIP-1459 root signature is a 65-byte
+recoverable secp256k1 ECDSA over keccak256 of the record content excluding `sig=`. We
+reuse `k256` (already pulled by the `enr` crate) for `VerifyingKey::recover_from_prehash`
++ compressed-SEC1 comparison against the URL pubkey, and `sha3::Keccak256` (also already
+via `enr`) for the hash. Base32 (RFC-4648 no-pad) for the pubkey + subtree hashes and
+url-safe base64 (no-pad) for the signature both come from `data-encoding` (already in the
+tree). These three are promoted from transitive to direct deps on `pharos-network`.
+
+**Bounds (DoS guard, Phase 0 decision)**: `MAX_TREE_DEPTH = 16` recursion levels and
+`MAX_RECORDS = 1024` total TXT fetches, plus a visited-set keyed on `(domain, hash)` and
+linked-tree domain to break cycles. A bad ROOT signature rejects the WHOLE tree
+(`RootSignatureInvalid`); a single subtree-hash mismatch rejects only that branch
+(logged + skipped) so one tampered branch cannot discard an otherwise-valid list.
+
+**Feed point**: `--bootnode-dns enrtree://...` (repeatable) in `pharos-node/src/main.rs`;
+resolved ENRs are appended to the same `bootnodes` vector that static `--bootnode` ENRs
+feed, so DNS and static bootnodes mix. A failed `--bootnode-dns` URL logs a warning and is
+skipped rather than aborting startup (other bootnodes may still succeed).

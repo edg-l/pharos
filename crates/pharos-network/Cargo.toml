@@ -35,8 +35,13 @@ metrics.workspace = true
 futures.workspace = true
 lru.workspace = true
 sha2.workspace = true
+sha3.workspace = true
 arc-swap.workspace = true
 async-trait = "0.1"
+# EIP-1459 DNS bootnode resolution (M11 Phase 15).
+hickory-resolver.workspace = true
+k256.workspace = true
+data-encoding.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

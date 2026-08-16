@@ -1,5 +1,6 @@
 //! discv5 peer discovery: ENR construction, ENR field readers, subnet helpers.
 
+pub mod dns;
 pub mod enr;
 pub mod handle;
 pub mod service;
