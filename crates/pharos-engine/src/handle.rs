@@ -22,7 +22,7 @@
 //! async context.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 
 use tokio::runtime::{Builder, Handle};
@@ -111,13 +111,30 @@ pub struct EngineHandle {
     /// from any context (including an async one) without panicking. The owning
     /// `Runtime` lives on the dedicated thread spawned by `spawn_engine_actor`.
     runtime: Handle,
+    /// Liveness flag for the EL endpoint, observed from every blocking engine
+    /// call. `true` while the last call reached the EL (any JSON-RPC reply,
+    /// including SYNCING); set `false` on a transport/timeout error. Backs the
+    /// `el_offline` field of `/eth/v1/node/syncing`.
+    el_online: Arc<AtomicBool>,
 }
 
 impl EngineHandle {
     /// Wrap an existing actor channel + runtime `Handle`. `spawn_engine_actor`
     /// below is the usual entry point and owns the runtime correctly.
     pub fn new(runtime: Handle, tx: mpsc::Sender<EngineRequest>) -> Self {
-        Self { runtime, tx }
+        Self {
+            runtime,
+            tx,
+            el_online: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    /// Whether the EL endpoint is currently believed unreachable, based on the
+    /// most recent blocking engine round-trip. Backs `/eth/v1/node/syncing`'s
+    /// `el_offline`. A transport or timeout error flips this to `true`; any
+    /// reply from the EL (even SYNCING) flips it back to `false`.
+    pub fn el_offline(&self) -> bool {
+        !self.el_online.load(Ordering::Acquire)
     }
 
     fn dispatch_blocking<T>(
@@ -129,9 +146,19 @@ impl EngineHandle {
         self.tx
             .blocking_send(req)
             .map_err(|_| EngineError::UnexpectedResponse("engine actor dropped".into()))?;
-        self.runtime
+        let result = self
+            .runtime
             .block_on(reply_rx)
-            .map_err(|_| EngineError::UnexpectedResponse("engine actor dropped reply".into()))?
+            .map_err(|_| EngineError::UnexpectedResponse("engine actor dropped reply".into()))?;
+        // Observe EL liveness: a transport/timeout error means the endpoint is
+        // unreachable; any other outcome (including a JSON-RPC error reply or a
+        // SYNCING status) proves the EL answered.
+        let online = !matches!(
+            result,
+            Err(EngineError::Transport(_) | EngineError::Timeout)
+        );
+        self.el_online.store(online, Ordering::Release);
+        result
     }
 
     /// Sync `engine_newPayloadV1` — Bellatrix.

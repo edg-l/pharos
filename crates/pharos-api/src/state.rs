@@ -525,6 +525,15 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
     /// Whether the node is still syncing (sync_distance > 0).
     fn is_syncing(&self) -> bool;
 
+    /// Whether the execution-layer endpoint is currently unreachable.
+    ///
+    /// Backs the `el_offline` field of `/eth/v1/node/syncing`. Default `false`
+    /// (no EL wired, e.g. test mocks); `NodeChainState` overrides with the real
+    /// engine-handle liveness flag.
+    fn el_offline(&self) -> bool {
+        false
+    }
+
     /// Read-only reference to the node identity snapshot.
     fn node_identity(&self) -> &NodeIdentityCache;
 
@@ -929,6 +938,13 @@ pub type ProduceAttDataFn = dyn Fn(
 /// Returns JSON representations of connected peers for `/eth/v1/node/peers`.
 pub type PeersFn = dyn Fn() -> Vec<JsonValue> + Send + Sync + 'static;
 
+/// Type alias for the EL-liveness callback.
+///
+/// Returns `true` when the execution-layer endpoint is currently unreachable,
+/// backing the `el_offline` field of `/eth/v1/node/syncing`. Reads a flag
+/// maintained by the engine handle from its blocking round-trips.
+pub type ElOfflineFn = dyn Fn() -> bool + Send + Sync + 'static;
+
 /// Type alias for the syncnets ENR update callback.
 ///
 /// Called by `POST /eth/v1/validator/sync_committee_subscriptions` with the
@@ -993,6 +1009,10 @@ pub struct NodeChainState<E: EthSpec> {
     /// SSZ-encoded `Bitvector[SYNC_COMMITTEE_SUBNET_COUNT]` (4 bytes).
     /// `None` when the discovery layer is not available (e.g. tests without network).
     syncnets_fn: Option<Arc<SyncnetsFn>>,
+
+    /// EL-liveness callback for `/eth/v1/node/syncing`'s `el_offline`.
+    /// `None` when no EL is wired (returns `el_offline: false`).
+    el_offline_fn: Option<Arc<ElOfflineFn>>,
 }
 
 /// Parse a 0x-prefixed 48-byte hex string into a fixed `[u8; 48]`.
@@ -1031,6 +1051,7 @@ impl<E: EthSpec> NodeChainState<E> {
             fee_recipients: Arc::new(RwLock::new(HashMap::new())),
             peers_fn: None,
             syncnets_fn: None,
+            el_offline_fn: None,
         }
     }
 
@@ -1059,6 +1080,7 @@ impl<E: EthSpec> NodeChainState<E> {
             fee_recipients: Arc::new(RwLock::new(HashMap::new())),
             peers_fn: None,
             syncnets_fn: None,
+            el_offline_fn: None,
         }
     }
 
@@ -1119,6 +1141,7 @@ impl<E: EthSpec> NodeChainState<E> {
             fee_recipients: Arc::new(RwLock::new(HashMap::new())),
             peers_fn: Some(peers),
             syncnets_fn: None,
+            el_offline_fn: None,
         }
     }
 
@@ -1130,6 +1153,15 @@ impl<E: EthSpec> NodeChainState<E> {
     /// (`D-syncnets-enr-on-subscription`)
     pub fn with_syncnets_fn(mut self, f: Arc<SyncnetsFn>) -> Self {
         self.syncnets_fn = Some(f);
+        self
+    }
+
+    /// Attach the EL-liveness callback (builder pattern).
+    ///
+    /// Called from `pharos-node/src/main.rs` with a closure reading the engine
+    /// handle's liveness flag. Enables a real `el_offline` in `/eth/v1/node/syncing`.
+    pub fn with_el_offline_fn(mut self, f: Arc<ElOfflineFn>) -> Self {
+        self.el_offline_fn = Some(f);
         self
     }
 }
@@ -1246,6 +1278,12 @@ where
             Some(s) => u64::from(s) + 1 < u64::from(current),
             None => true,
         }
+    }
+
+    fn el_offline(&self) -> bool {
+        // Real EL-liveness from the engine handle's last blocking round-trip.
+        // No callback wired (no EL) is reported as online (false).
+        self.el_offline_fn.as_ref().is_some_and(|f| f())
     }
 
     fn node_identity(&self) -> &NodeIdentityCache {

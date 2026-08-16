@@ -23,6 +23,7 @@ use crate::error::NetworkError;
 use crate::network::{NetworkCommand, NetworkEvent};
 use crate::rpc::types::{RpcRequest, RpcResponse};
 use crate::topics::GossipTopic;
+use crate::types::PeerInfo;
 
 // ── NetworkCommandSender ──────────────────────────────────────────────────────
 
@@ -101,6 +102,23 @@ impl<E: EthSpec> NetworkCommandSender<E> {
             .await
             .map_err(|_| NetworkError::Timeout)?
             .map_err(|_| NetworkError::ChannelClosed)?
+    }
+
+    /// Return a snapshot of every known peer's `PeerInfo`.
+    ///
+    /// Backs the Beacon API `/eth/v1/node/peers` and `/eth/v1/node/peer_count`
+    /// endpoints. Returns an empty vec if the network task has shut down.
+    pub async fn peers(&self) -> Vec<PeerInfo> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .0
+            .send(NetworkCommand::ListPeers { reply: reply_tx })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        reply_rx.await.unwrap_or_default()
     }
 }
 

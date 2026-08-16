@@ -195,6 +195,36 @@ fn parse_listen_addr(addr: &Multiaddr) -> anyhow::Result<(IpAddr, u16)> {
     Ok((ip, port))
 }
 
+/// Map a network-layer `PeerInfo` to the beacon-API peer JSON object for
+/// `/eth/v1/node/peers` (per `~/dev/beacon-APIs/apis/node/peers.yaml`).
+fn peer_info_to_json(info: &pharos_network::PeerInfo) -> JsonValue {
+    use pharos_network::{ConnectionDirection, PeerState};
+    let state = match info.state {
+        PeerState::Connecting | PeerState::Handshaking => "connecting",
+        PeerState::Connected => "connected",
+        PeerState::Disconnecting => "disconnecting",
+        PeerState::Banned => "disconnected",
+    };
+    let direction = match info.direction {
+        ConnectionDirection::Inbound => "inbound",
+        ConnectionDirection::Outbound => "outbound",
+    };
+    let last_seen = info
+        .addrs
+        .first()
+        .or(info.observed_addr.as_ref())
+        .map(|a| a.to_string())
+        .unwrap_or_default();
+    let enr = info.enr.as_ref().map(|e| e.to_base64()).unwrap_or_default();
+    serde_json::json!({
+        "peer_id": info.peer_id.to_string(),
+        "enr": enr,
+        "last_seen_p2p_address": last_seen,
+        "state": state,
+        "direction": direction,
+    })
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -784,6 +814,11 @@ async fn main() -> anyhow::Result<()> {
             use std::collections::HashMap;
             use std::sync::Mutex;
 
+            // Real `el_offline` for `/eth/v1/node/syncing`: read the engine
+            // handle's liveness flag (updated on every blocking engine call).
+            let el_engine = engine_h.clone();
+            chain_state = chain_state.with_el_offline_fn(Arc::new(move || el_engine.el_offline()));
+
             use pharos_api::ApiError;
             use pharos_network::host::ForkContext as _;
             use pharos_network::topics::{GossipTopic, GossipTopicKind};
@@ -1072,7 +1107,19 @@ async fn main() -> anyhow::Result<()> {
             });
 
             // ── peers_fn ─────────────────────────────────────────────────────
-            let peers_fn: Arc<pharos_api::PeersFn> = Arc::new(Vec::new);
+            // Query the live network task for connected peers and map each
+            // `PeerInfo` to the beacon-API peer JSON. `peers_fn` is invoked from
+            // the API handlers inside `spawn_blocking`, so `block_on` runs on a
+            // blocking-pool thread (never a runtime worker) and is safe.
+            let peers_cmd = handle.command_sender();
+            let peers_rt = tokio::runtime::Handle::current();
+            let peers_fn: Arc<pharos_api::PeersFn> = Arc::new(move || {
+                peers_rt
+                    .block_on(peers_cmd.peers())
+                    .iter()
+                    .map(peer_info_to_json)
+                    .collect()
+            });
 
             chain_state = chain_state.with_pools(pools_arc).with_produce_fns(
                 produce_fn,

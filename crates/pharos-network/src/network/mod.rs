@@ -118,6 +118,13 @@ pub enum NetworkCommand<E: EthSpec> {
     PickHighestHeadPeer {
         reply: oneshot::Sender<Option<PeerId>>,
     },
+    /// Return a cloned snapshot of every known peer's `PeerInfo`.
+    ///
+    /// Serves the Beacon API `/eth/v1/node/peers` and `/eth/v1/node/peer_count`
+    /// endpoints. The consumer maps `PeerInfo` to the beacon-API peer JSON.
+    ListPeers {
+        reply: oneshot::Sender<Vec<crate::types::PeerInfo>>,
+    },
 }
 
 /// Events emitted from the `Network` event loop to external consumers.
@@ -1649,6 +1656,9 @@ impl<
                     .connected_peers_with_status()
                     .max_by_key(|(_, status)| status.head_slot);
                 let _ = reply.send(best.map(|(peer_id, _)| peer_id));
+            }
+            NetworkCommand::ListPeers { reply } => {
+                let _ = reply.send(self.peer_manager.peer_infos());
             }
         }
     }

@@ -167,12 +167,13 @@ pub async fn get_syncing<E: EthSpec>(
         let sync_distance = current.saturating_sub(head_slot);
         let is_syncing = chain.is_syncing();
         let is_optimistic = chain.is_optimistic();
+        let el_offline = chain.el_offline();
         SyncingData {
             head_slot,
             sync_distance,
             is_syncing,
             is_optimistic,
-            el_offline: false,
+            el_offline,
         }
     })
     .await
@@ -189,9 +190,13 @@ pub async fn get_syncing<E: EthSpec>(
 /// - `503` — node not initialized.
 pub async fn get_health<E: EthSpec>(State(state): State<Arc<ApiState<E>>>) -> Response {
     let chain = Arc::clone(&state.chain);
-    match tokio::task::spawn_blocking(move || (chain.is_syncing(), chain.is_optimistic())).await {
-        Ok((false, false)) => StatusCode::OK.into_response(),
-        Ok(_) => StatusCode::from_u16(206).unwrap().into_response(),
+    let probe = tokio::task::spawn_blocking(move || {
+        chain.is_syncing() || chain.is_optimistic() || chain.el_offline()
+    })
+    .await;
+    match probe {
+        Ok(false) => StatusCode::OK.into_response(),
+        Ok(true) => StatusCode::from_u16(206).unwrap().into_response(),
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
@@ -248,20 +253,24 @@ pub async fn get_peer_count<E: EthSpec>(
         .await
         .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")))?;
 
-    // Count peers by state field.
-    let mut connected: u64 = 0;
+    // Count peers by state field (per beacon-API `peer_count.yaml` buckets).
+    let (mut connected, mut connecting, mut disconnecting, mut disconnected) = (0, 0, 0, 0);
     for peer in &peers {
-        if peer.get("state").and_then(|s| s.as_str()) == Some("connected") {
-            connected += 1;
+        match peer.get("state").and_then(|s| s.as_str()) {
+            Some("connected") => connected += 1,
+            Some("connecting") => connecting += 1,
+            Some("disconnecting") => disconnecting += 1,
+            Some("disconnected") => disconnected += 1,
+            _ => {}
         }
     }
 
     Ok(Json(PeerCountResponse {
         data: PeerCountData {
             connected,
-            disconnecting: 0,
-            disconnected: 0,
-            connecting: 0,
+            disconnecting,
+            disconnected,
+            connecting,
         },
     }))
 }

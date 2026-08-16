@@ -27,4 +27,4 @@ pub use network::{Network, NetworkBuilder, NetworkCommand, NetworkEvent};
 pub use rpc::types::{RpcRequest, RpcResponse};
 pub use scoring::{NoopScorer, PeerScorer, ScoreEvent};
 pub use topics::{GossipTopic, GossipTopicKind, compute_subnet_for_blob_sidecar};
-pub use types::{ConnectionDirection, DisconnectReason, ForkDigest, PeerInfo, SubnetId};
+pub use types::{ConnectionDirection, DisconnectReason, ForkDigest, PeerInfo, PeerState, SubnetId};

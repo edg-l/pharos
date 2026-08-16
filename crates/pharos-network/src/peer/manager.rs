@@ -227,6 +227,16 @@ impl<S: PeerScorer> PeerManager<S> {
             .filter_map(|info| info.last_status.as_ref().map(|s| (info.peer_id, s)))
     }
 
+    /// Returns a cloned snapshot of every known peer's `PeerInfo`.
+    ///
+    /// Used by `NetworkCommand::ListPeers` to serve the Beacon API
+    /// `/eth/v1/node/peers` and `/eth/v1/node/peer_count` endpoints. Includes
+    /// peers in every lifecycle state (the consumer maps `PeerState` to the
+    /// beacon-API state string and filters as needed).
+    pub fn peer_infos(&self) -> Vec<PeerInfo> {
+        self.peers.values().cloned().collect()
+    }
+
     /// Returns the current `PeerState` for `peer_id`, or `None` if unknown.
     pub fn peer_state(&self, peer_id: &PeerId) -> Option<PeerState> {
         self.peers.get(peer_id).map(|info| info.state)
