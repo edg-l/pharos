@@ -363,6 +363,11 @@ impl<S: PeerScorer> PeerManager<S> {
     pub fn max_peers(&self) -> usize {
         self.max_peers
     }
+
+    /// Returns the target steady-state peer count.
+    pub fn target_peers(&self) -> usize {
+        self.target_peers
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

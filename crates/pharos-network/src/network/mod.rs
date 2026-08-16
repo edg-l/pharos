@@ -41,7 +41,7 @@ use discv5::enr::EnrKey as _;
 use crate::codec::snappy_block::{decode_snappy_block, encode_snappy_block};
 use crate::discovery::enr::{Enr, enr_to_dial_multiaddr};
 use crate::discovery::handle::{DiscoveryCommand, DiscoveryHandle, discovery_channel};
-use crate::discovery::service::{DiscoveryConfig, DiscoveryService};
+use crate::discovery::service::{DiscoveryConfig, DiscoveryService, query_interval};
 use crate::discovery::subnets::compute_subscribed_subnets;
 use crate::error::NetworkError;
 use crate::gossip::config::gossipsub_behaviour;
@@ -573,7 +573,15 @@ impl<
                             tracing::debug!(addr = %addr, "dialing discovered peer");
                         }
                     }
-                    tracing::debug!(discovered, dialed, "discovery tick complete");
+
+                    // Reschedule discovery based on current deficit (M11 Phase 12
+                    // task 3): large deficit → short interval, at/above target → slow.
+                    let next = query_interval(
+                        self.peer_manager.peer_count(),
+                        self.peer_manager.target_peers(),
+                    );
+                    self.discovery_tick.reset_after(next);
+                    tracing::debug!(discovered, dialed, interval_secs = next.as_secs(), "discovery tick complete");
                 }
                 _ = self.ping_tick.tick() => {
                     self.tick_ping();
@@ -1482,6 +1490,23 @@ impl<
                 return;
             }
 
+            // Enforce max_peers on inbound connections (M11 Phase 12 task 2).
+            // Outbound connections (we dialled) are never refused here — we chose
+            // to dial them and they count against the same limit; `tick_score_prune`
+            // handles any steady-state excess via `should_prune`.
+            if !endpoint.is_dialer()
+                && self.peer_manager.peer_count() >= self.peer_manager.max_peers()
+            {
+                tracing::debug!(
+                    %peer_id,
+                    peer_count = self.peer_manager.peer_count(),
+                    max_peers = self.peer_manager.max_peers(),
+                    "rejecting inbound connection: at max_peers limit"
+                );
+                self.swarm.disconnect_peer_id(peer_id).ok();
+                return;
+            }
+
             let dir = if endpoint.is_dialer() {
                 ConnectionDirection::Outbound
             } else {
@@ -1917,6 +1942,10 @@ pub struct NetworkBuilder<E, H, S> {
     ///
     /// Default: 1024. See `event_channel_capacity` for the trade-off.
     event_channel_capacity: usize,
+    /// Hard cap on connected peers (M11 Phase 12). Default: 50.
+    max_peers: usize,
+    /// Desired steady-state connected peer count (M11 Phase 12). Default: 50.
+    target_peers: usize,
     _phantom: PhantomData<E>,
 }
 
@@ -1939,6 +1968,8 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>>
             local_key: Keypair::generate_secp256k1(),
             scorer: crate::scoring::NoopScorer,
             event_channel_capacity: 1024,
+            max_peers: 50,
+            target_peers: 50,
             _phantom: PhantomData,
         }
     }
@@ -2014,8 +2045,28 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
             local_key: self.local_key,
             scorer,
             event_channel_capacity: self.event_channel_capacity,
+            max_peers: self.max_peers,
+            target_peers: self.target_peers,
             _phantom: PhantomData,
         }
+    }
+
+    /// Set the hard cap on connected peers (default: 50).
+    ///
+    /// Inbound connections beyond this limit are rejected immediately at the
+    /// swarm level (per M11 Phase 12 `D-connection-limit-prefer-high-score`).
+    pub fn max_peers(mut self, max_peers: usize) -> Self {
+        self.max_peers = max_peers;
+        self
+    }
+
+    /// Set the desired steady-state peer count (default: 50).
+    ///
+    /// The discv5 discovery cadence scales with `target_peers - connected_peers`
+    /// (per M11 Phase 12); `tick_score_prune` prunes to this level.
+    pub fn target_peers(mut self, target_peers: usize) -> Self {
+        self.target_peers = target_peers;
+        self
     }
 
     /// Set the capacity of the outbound event channel (`Network → NetworkHandle`).
@@ -2272,7 +2323,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
         // `Network::run` loop polls and dispatches them to `DiscoveryService`.
         let (discovery_handle, discovery_cmd_rx) = discovery_channel();
 
-        let peer_manager = PeerManager::new(self.scorer, 100, 50);
+        let peer_manager = PeerManager::new(self.scorer, self.max_peers, self.target_peers);
 
         // Discovery poll interval: 30 seconds.
         let discovery_tick = interval(std::time::Duration::from_secs(30));
@@ -2455,6 +2506,24 @@ impl<
     #[doc(hidden)]
     pub fn test_peer_is_banned(&self, peer_id: &PeerId) -> bool {
         self.peer_manager.is_banned(peer_id)
+    }
+
+    /// Current connected peer count (M11 Phase 12 test seam).
+    #[doc(hidden)]
+    pub fn test_peer_count(&self) -> usize {
+        self.peer_manager.peer_count()
+    }
+
+    /// `max_peers` configured on this network (M11 Phase 12 test seam).
+    #[doc(hidden)]
+    pub fn test_max_peers(&self) -> usize {
+        self.peer_manager.max_peers()
+    }
+
+    /// `target_peers` configured on this network (M11 Phase 12 test seam).
+    #[doc(hidden)]
+    pub fn test_target_peers(&self) -> usize {
+        self.peer_manager.target_peers()
     }
 }
 

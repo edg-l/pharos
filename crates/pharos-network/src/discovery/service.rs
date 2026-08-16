@@ -193,6 +193,37 @@ impl DiscoveryService {
     }
 }
 
+// ── Phase 12: deficit-driven discovery cadence ───────────────────────────────
+
+/// Compute the FINDNODE query interval as a function of peer count vs target.
+///
+/// Formula: linear scale from `MIN_INTERVAL` (connected = 0) to `MAX_INTERVAL`
+/// (connected ≥ target), clamped to `[MIN_INTERVAL, MAX_INTERVAL]`:
+///
+/// ```text
+/// interval = max(MIN, MAX * connected / target)
+/// ```
+///
+/// - `connected = 0`      → `MIN_INTERVAL` (3 s, aggressive querying).
+/// - `connected = target`  → `MAX_INTERVAL` (30 s, slow maintenance cadence).
+/// - `connected = target/2`→ `MAX_INTERVAL / 2` (15 s, moderate cadence).
+/// - `connected > target`  → `MAX_INTERVAL` (already over target, back off).
+///
+/// Lives in this module so callers can compute the interval without constructing
+/// a `DiscoveryService` (e.g. unit tests, the `Network` run loop).
+pub fn query_interval(connected_peers: usize, target_peers: usize) -> std::time::Duration {
+    const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+    const MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+    if connected_peers >= target_peers || target_peers == 0 {
+        return MAX_INTERVAL;
+    }
+    let max_secs = MAX_INTERVAL.as_secs();
+    let secs = max_secs * connected_peers as u64 / target_peers as u64;
+    let secs = secs.max(MIN_INTERVAL.as_secs());
+    std::time::Duration::from_secs(secs)
+}
+
 // ── Task 2.7: start/stop smoke test ──────────────────────────────────────────
 
 #[cfg(test)]

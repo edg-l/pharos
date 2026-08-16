@@ -63,6 +63,24 @@ struct Args {
     #[arg(long, value_name = "ENR")]
     bootnode: Vec<String>,
 
+    /// Hard cap on connected peers.
+    ///
+    /// Inbound connections beyond this limit are rejected at the swarm level.
+    /// `tick_score_prune` and outbound dials may bring the count below this
+    /// via the target-peers mechanism; `--max-peers` is the absolute ceiling.
+    /// Per `D-connection-limit-prefer-high-score` (M11 Phase 12).
+    #[arg(long, default_value_t = 50, value_name = "N")]
+    max_peers: usize,
+
+    /// Desired steady-state connected peer count.
+    ///
+    /// The discv5 discovery cadence scales with `target_peers - connected_peers`:
+    /// large deficit → frequent FINDNODE queries; at/above target → slow maintenance
+    /// cadence. `tick_score_prune` prunes excess to this level (lowest-scoring
+    /// peers first). Per `D-connection-limit-prefer-high-score` (M11 Phase 12).
+    #[arg(long, default_value_t = 50, value_name = "N")]
+    target_peers: usize,
+
     /// Data directory for persistent state (chain DB, slashing DB, etc.).
     #[arg(long, default_value = "./data")]
     data_dir: PathBuf,
@@ -791,6 +809,11 @@ async fn main() -> anyhow::Result<()> {
         .tcp_listen_port(tcp_port)
         .discv5_addr(discv5_addr)
         .bootnodes(bootnodes)
+        // M11 Phase 12: wire CLI-provided connection limits into the builder so
+        // PeerManager enforces max_peers on inbound and target_peers drives the
+        // discv5 cadence formula (`D-connection-limit-prefer-high-score`).
+        .max_peers(args.max_peers)
+        .target_peers(args.target_peers)
         // M11 Phase 11: replace the M2 NoopScorer with the real peer scorer so
         // the swarm loop feeds live gossip/req-resp/dial signals into scoring
         // and acts on disconnect/ban/rate-limit/backoff decisions.
