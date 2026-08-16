@@ -46,6 +46,19 @@ pub struct SyncContributionQuery {
     pub subcommittee_index: u64,
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────────--
+
+/// Parse a 0x-prefixed 32-byte root from a hex string.
+fn parse_root32(s: &str) -> Result<pharos_types::phase0::primitives::Root, ApiError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let bytes =
+        hex::decode(s).map_err(|_| ApiError::BadRequest("invalid beacon_block_root hex".into()))?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| ApiError::BadRequest("beacon_block_root must be 32 bytes".into()))?;
+    Ok(pharos_types::phase0::primitives::Root::from(arr))
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 /// `GET /eth/v1/validator/sync_committee_contribution`
@@ -55,7 +68,7 @@ pub struct SyncContributionQuery {
 /// no matching contribution is available.
 pub async fn get_sync_committee_contribution<E: EthSpec>(
     State(state): State<Arc<ApiState<E>>>,
-    Query(_params): Query<SyncContributionQuery>,
+    Query(params): Query<SyncContributionQuery>,
 ) -> Response {
     let chain = Arc::clone(&state.chain);
     let result = tokio::task::spawn_blocking(move || {
@@ -64,10 +77,12 @@ pub async fn get_sync_committee_contribution<E: EthSpec>(
                 "node is syncing or optimistic; sync contribution unavailable".into(),
             ));
         }
-        // Return 404 when no matching contribution is in the pool.
-        Err::<JsonValue, _>(ApiError::NotFound(
-            "no matching sync committee contribution in pool".into(),
-        ))
+        let block_root = parse_root32(&params.beacon_block_root)?;
+        chain
+            .sync_committee_contribution(params.slot, block_root, params.subcommittee_index)
+            .ok_or_else(|| {
+                ApiError::NotFound("no matching sync committee contribution in pool".into())
+            })
     })
     .await
     .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")));

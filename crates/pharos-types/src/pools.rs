@@ -533,6 +533,46 @@ impl<E: EthSpec> OperationPools<E> {
 
         (set_bits, aggregated)
     }
+
+    /// Build one subcommittee's contribution data for `(slot, subcommittee_index,
+    /// block_root)` WITHOUT draining the pool (a contribution GET must not consume
+    /// the messages a later block drain needs). `subc_pubkeys` is the
+    /// subcommittee's slice of the full sync committee. Returns the set bit
+    /// positions WITHIN the subcommittee plus the aggregate signature, or `None`
+    /// when no message matches. Backs `GET /eth/v1/validator/sync_committee_contribution`.
+    pub fn contribution_for(
+        &self,
+        slot: Slot,
+        subcommittee_index: u64,
+        block_root: Root,
+        subc_pubkeys: &[[u8; 48]],
+        validator_pubkey: impl Fn(u64) -> Option<[u8; 48]>,
+    ) -> Option<(Vec<usize>, BLSSignature)> {
+        let key = SyncMessageKey {
+            slot,
+            subcommittee_index,
+            beacon_block_root: block_root,
+        };
+        let cache = self.sync_messages.read();
+        let msgs = cache.peek(&key)?;
+        let mut positions: Vec<usize> = Vec::new();
+        let mut sigs: Vec<BLSSignature> = Vec::new();
+        for msg in msgs.iter() {
+            let Some(pubkey) = validator_pubkey(msg.validator_index.0) else {
+                continue;
+            };
+            for (pos, pk) in subc_pubkeys.iter().enumerate() {
+                if pk == &pubkey {
+                    positions.push(pos);
+                    sigs.push(msg.signature);
+                }
+            }
+        }
+        if sigs.is_empty() {
+            return None;
+        }
+        Some((positions, aggregate(&sigs).unwrap_or_default()))
+    }
 }
 
 impl<E: EthSpec> Default for OperationPools<E> {

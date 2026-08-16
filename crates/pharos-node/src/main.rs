@@ -1121,12 +1121,47 @@ async fn main() -> anyhow::Result<()> {
                     .collect()
             });
 
-            chain_state = chain_state.with_pools(pools_arc).with_produce_fns(
-                produce_fn,
-                produce_att_data_fn,
-                publish_fn,
-                peers_fn,
+            // ── sync_contribution_fn ─────────────────────────────────────────
+            // Build a SyncCommitteeContribution for GET
+            // /eth/v1/validator/sync_committee_contribution from pooled sync
+            // messages + the head-state sync committee (non-draining).
+            let sc_fc = Arc::clone(&fork_choice);
+            let sc_pools = Arc::clone(&pools_arc);
+            let sync_contribution_fn: Arc<pharos_api::SyncContributionFn> = Arc::new(
+                move |slot: u64,
+                      block_root: pharos_types::phase0::primitives::Root,
+                      subc_idx: u64| {
+                    use pharos_node::block_production::build_sync_contribution;
+                    let (positions, sig) = build_sync_contribution::<MainnetEthSpec>(
+                        &sc_fc,
+                        &sc_pools,
+                        pharos_types::phase0::Slot(slot),
+                        block_root,
+                        subc_idx,
+                    )?;
+                    // aggregation_bits is a fixed Bitvector[SYNC_SUBCOMMITTEE_SIZE]:
+                    // no length-delimiter bit, byte i / bit i%8 little-endian.
+                    let subc_size = MainnetEthSpec::SYNC_SUBCOMMITTEE_SIZE as usize;
+                    let mut bits = vec![0u8; subc_size.div_ceil(8)];
+                    for p in positions {
+                        if p < subc_size {
+                            bits[p / 8] |= 1 << (p % 8);
+                        }
+                    }
+                    Some(serde_json::json!({
+                        "slot": slot.to_string(),
+                        "beacon_block_root": format!("0x{}", hex::encode(block_root.as_slice())),
+                        "subcommittee_index": subc_idx.to_string(),
+                        "aggregation_bits": format!("0x{}", hex::encode(&bits)),
+                        "signature": format!("0x{}", hex::encode(sig.as_slice())),
+                    }))
+                },
             );
+
+            chain_state = chain_state
+                .with_pools(pools_arc)
+                .with_produce_fns(produce_fn, produce_att_data_fn, publish_fn, peers_fn)
+                .with_sync_contribution_fn(sync_contribution_fn);
 
             info!("block-production callbacks wired into Beacon API");
         }

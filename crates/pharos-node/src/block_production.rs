@@ -667,6 +667,50 @@ where
 // Block production legitimately needs all of these inputs; a param struct would
 // add indirection without clarifying the call site.
 #[allow(clippy::too_many_arguments)]
+/// Build one subcommittee's `SyncCommitteeContribution` data from the pool for
+/// `(slot, beacon_block_root, subcommittee_index)`, using the head state's
+/// current sync committee for pubkey→position mapping. Returns the set bit
+/// positions WITHIN the subcommittee and the aggregate signature, or `None`
+/// when no pooled message matches. Non-draining (the GET must not consume
+/// messages a later block drain needs). Backs
+/// `GET /eth/v1/validator/sync_committee_contribution`.
+pub fn build_sync_contribution<E: EthSpec>(
+    fc_store: &Arc<RwLock<FcStore<E>>>,
+    pools: &OperationPools<E>,
+    slot: Slot,
+    beacon_block_root: Root,
+    subcommittee_index: u64,
+) -> Option<(Vec<usize>, BLSSignature)>
+where
+    E::BeaconState: Clone,
+{
+    let state = {
+        let store = fc_store.read();
+        let head_root = get_head::<E>(&store);
+        store.block_states.get(&head_root).cloned()?
+    };
+    let (committee_pubkeys, _) = state.sync_committee_pubkeys().unwrap_or_default();
+    if committee_pubkeys.is_empty() {
+        return None;
+    }
+    let subc_size = E::SYNC_SUBCOMMITTEE_SIZE as usize;
+    let start = subcommittee_index as usize * subc_size;
+    if start >= committee_pubkeys.len() {
+        return None;
+    }
+    let end = (start + subc_size).min(committee_pubkeys.len());
+    let subc = &committee_pubkeys[start..end];
+    let validator_pubkey =
+        |idx: u64| -> Option<[u8; 48]> { state.validator(idx as usize).map(|v| v.pubkey.into()) };
+    pools.contribution_for(
+        slot,
+        subcommittee_index,
+        beacon_block_root,
+        subc,
+        validator_pubkey,
+    )
+}
+
 pub fn produce_block<E: EthSpec>(
     fc_store: &Arc<RwLock<FcStore<E>>>,
     pools: &OperationPools<E>,

@@ -742,6 +742,19 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
         None
     }
 
+    /// Best `SyncCommitteeContribution` JSON for `(slot, beacon_block_root,
+    /// subcommittee_index)` (`GET /eth/v1/validator/sync_committee_contribution`).
+    /// Default `None` (no pool/production path); `NodeChainState` overrides via
+    /// the wired callback.
+    fn sync_committee_contribution(
+        &self,
+        _slot: u64,
+        _block_root: Root,
+        _subcommittee_index: u64,
+    ) -> Option<JsonValue> {
+        None
+    }
+
     /// Return pooled attester slashings as JSON array.
     ///
     /// Default returns an empty array.
@@ -974,6 +987,14 @@ pub type PeersFn = dyn Fn() -> Vec<JsonValue> + Send + Sync + 'static;
 /// maintained by the engine handle from its blocking round-trips.
 pub type ElOfflineFn = dyn Fn() -> bool + Send + Sync + 'static;
 
+/// Type alias for the sync-committee-contribution callback.
+///
+/// Args: `(slot, beacon_block_root, subcommittee_index)`. Returns the
+/// beacon-API `SyncCommitteeContribution` JSON object built from the pool +
+/// head-state sync committee, or `None` when none is available. Backs
+/// `GET /eth/v1/validator/sync_committee_contribution`.
+pub type SyncContributionFn = dyn Fn(u64, Root, u64) -> Option<JsonValue> + Send + Sync + 'static;
+
 /// Type alias for the syncnets ENR update callback.
 ///
 /// Called by `POST /eth/v1/validator/sync_committee_subscriptions` with the
@@ -1042,6 +1063,11 @@ pub struct NodeChainState<E: EthSpec> {
     /// EL-liveness callback for `/eth/v1/node/syncing`'s `el_offline`.
     /// `None` when no EL is wired (returns `el_offline: false`).
     el_offline_fn: Option<Arc<ElOfflineFn>>,
+
+    /// Sync-committee-contribution callback for
+    /// `/eth/v1/validator/sync_committee_contribution`. `None` when no pool /
+    /// production path is wired (endpoint returns 404).
+    sync_contribution_fn: Option<Arc<SyncContributionFn>>,
 }
 
 /// Parse a 0x-prefixed 48-byte hex string into a fixed `[u8; 48]`.
@@ -1081,6 +1107,7 @@ impl<E: EthSpec> NodeChainState<E> {
             peers_fn: None,
             syncnets_fn: None,
             el_offline_fn: None,
+            sync_contribution_fn: None,
         }
     }
 
@@ -1110,6 +1137,7 @@ impl<E: EthSpec> NodeChainState<E> {
             peers_fn: None,
             syncnets_fn: None,
             el_offline_fn: None,
+            sync_contribution_fn: None,
         }
     }
 
@@ -1171,6 +1199,7 @@ impl<E: EthSpec> NodeChainState<E> {
             peers_fn: Some(peers),
             syncnets_fn: None,
             el_offline_fn: None,
+            sync_contribution_fn: None,
         }
     }
 
@@ -1191,6 +1220,12 @@ impl<E: EthSpec> NodeChainState<E> {
     /// handle's liveness flag. Enables a real `el_offline` in `/eth/v1/node/syncing`.
     pub fn with_el_offline_fn(mut self, f: Arc<ElOfflineFn>) -> Self {
         self.el_offline_fn = Some(f);
+        self
+    }
+
+    /// Attach the sync-committee-contribution callback (builder pattern).
+    pub fn with_sync_contribution_fn(mut self, f: Arc<SyncContributionFn>) -> Self {
+        self.sync_contribution_fn = Some(f);
         self
     }
 }
@@ -1685,6 +1720,16 @@ where
         pools
             .best_aggregate_for(data_root)
             .map(|att| attestation_to_json(&att))
+    }
+
+    fn sync_committee_contribution(
+        &self,
+        slot: u64,
+        block_root: Root,
+        subcommittee_index: u64,
+    ) -> Option<JsonValue> {
+        let f = self.sync_contribution_fn.as_ref()?;
+        f(slot, block_root, subcommittee_index)
     }
 
     fn pool_attester_slashings(&self) -> Vec<JsonValue> {
