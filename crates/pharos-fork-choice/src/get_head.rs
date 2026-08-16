@@ -87,14 +87,19 @@ pub fn get_ancestor<E: EthSpec>(store: &Store<E>, root: Root, slot: Slot) -> Roo
 where
     E::BeaconBlock: BeaconBlockView,
 {
-    let block = match store.blocks.get(&root) {
-        Some(b) => b,
-        None => return root,
-    };
-    if block.slot() > slot {
-        get_ancestor(store, block.parent_root(), slot)
-    } else {
-        root
+    // Iterative walk (not recursion): this runs once per attesting validator in
+    // `get_attestation_score`, and a deep unfinalized chain would otherwise risk
+    // a stack overflow.
+    let mut cur = root;
+    loop {
+        let Some(block) = store.blocks.get(&cur) else {
+            return cur;
+        };
+        if block.slot() > slot {
+            cur = block.parent_root();
+        } else {
+            return cur;
+        }
     }
 }
 
@@ -122,18 +127,12 @@ where
     let block_slot = store.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0));
 
     let current_epoch = get_current_epoch::<E>(state);
-    let unslashed_active: Vec<_> = get_active_validator_indices::<E>(state, current_epoch)
+    // Use the borrowing `validator(idx)` accessor, NOT `validators().get(idx)`:
+    // the latter clones the entire validator registry on every call, which made
+    // this an O(n^2) hot path (run once per active validator, per get_head).
+    get_active_validator_indices::<E>(state, current_epoch)
         .into_iter()
-        .filter(|i| {
-            !state
-                .validators()
-                .get(i.0 as usize)
-                .is_none_or(|v| v.slashed)
-        })
-        .collect();
-
-    unslashed_active
-        .into_iter()
+        .filter(|i| !state.validator(i.0 as usize).is_none_or(|v| v.slashed))
         .filter(|i| {
             store.latest_messages.contains_key(i)
                 && !store.equivocating_indices.contains(i)
@@ -145,8 +144,7 @@ where
         })
         .map(|i| {
             state
-                .validators()
-                .get(i.0 as usize)
+                .validator(i.0 as usize)
                 .map(|v| v.effective_balance.0)
                 .unwrap_or(0)
         })
@@ -244,6 +242,21 @@ where
 
 // ── filter_block_tree / get_head ──────────────────────────────────────────────
 
+/// Build a `parent_root -> [child_root]` adjacency index over a block map in a
+/// single pass. `filter_block_tree` and `get_head` both need to enumerate a
+/// block's children; without this they each rescan the whole map per node,
+/// which is O(n^2) over the block set on every `get_head` call.
+fn children_index<E: EthSpec>(blocks: &HashMap<Root, E::BeaconBlock>) -> HashMap<Root, Vec<Root>>
+where
+    E::BeaconBlock: BeaconBlockView,
+{
+    let mut idx: HashMap<Root, Vec<Root>> = HashMap::new();
+    for (root, b) in blocks.iter() {
+        idx.entry(b.parent_root()).or_default().push(*root);
+    }
+    idx
+}
+
 /// `filter_block_tree` per `specs/phase0/fork-choice.md:356-405`.
 ///
 /// Returns `true` if `block_root` is a viable head.  Inserts viable blocks
@@ -254,6 +267,7 @@ pub fn filter_block_tree<E: EthSpec>(
     store: &Store<E>,
     block_root: Root,
     blocks: &mut HashMap<Root, E::BeaconBlock>,
+    children_idx: &HashMap<Root, Vec<Root>>,
 ) -> bool
 where
     E::BeaconBlock: BeaconBlockView + Clone,
@@ -285,24 +299,21 @@ where
         return false;
     }
 
-    let children: Vec<Root> = store
-        .blocks
-        .iter()
-        .filter_map(|(root, b)| {
-            if b.parent_root() == block_root {
-                Some(*root)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let children = children_idx
+        .get(&block_root)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
 
     if !children.is_empty() {
-        let results: Vec<bool> = children
-            .iter()
-            .map(|child| filter_block_tree(store, *child, blocks))
-            .collect();
-        if results.into_iter().any(|r| r) {
+        // Recurse into EVERY child: the `blocks.insert` side effect must run for
+        // all viable descendants, so this must not short-circuit (unlike `any`).
+        let mut any_viable = false;
+        for child in children {
+            if filter_block_tree(store, *child, blocks, children_idx) {
+                any_viable = true;
+            }
+        }
+        if any_viable {
             blocks.insert(block_root, block.clone());
             return true;
         }
@@ -363,8 +374,9 @@ where
     E::BeaconState: BeaconStateView,
 {
     let base = effective_base(store);
+    let children_idx = children_index::<E>(&store.blocks);
     let mut blocks = HashMap::new();
-    filter_block_tree(store, base, &mut blocks);
+    filter_block_tree(store, base, &mut blocks, &children_idx);
     blocks
 }
 
@@ -386,28 +398,28 @@ where
     E::BeaconState: BeaconStateView,
 {
     let blocks = get_filtered_block_tree(store);
+    let children_idx = children_index::<E>(&blocks);
+    // Memoize weights for the duration of this call: weights are constant within
+    // a single store snapshot, but `max_by_key` would otherwise recompute
+    // `get_weight` (itself O(validators)) once per child per descent level.
+    let mut weights: HashMap<Root, u64> = HashMap::new();
     let mut head = effective_base(store);
     loop {
-        let children: Vec<Root> = blocks
-            .iter()
-            .filter_map(|(root, b)| {
-                if b.parent_root() == head {
-                    Some(*root)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if children.is_empty() {
-            return head;
-        }
+        let Some(children) = children_idx.get(&head) else {
+            return head; // No children → head is a leaf.
+        };
 
         // Max by (weight, root) — higher root breaks ties per spec.
         head = children
-            .into_iter()
-            .max_by_key(|root| (get_weight::<E>(store, *root), *root))
-            .unwrap();
+            .iter()
+            .copied()
+            .max_by_key(|root| {
+                let w = *weights
+                    .entry(*root)
+                    .or_insert_with(|| get_weight::<E>(store, *root));
+                (w, *root)
+            })
+            .expect("children index never stores empty child lists");
     }
 }
 
