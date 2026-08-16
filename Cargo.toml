@@ -45,6 +45,10 @@ c-kzg = "2"
 sha2 = "0.11"
 hex = "0.4"
 rand_core = "0.9"
+# Constant-time byte comparison (token / checksum equality, no timing side-channel).
+subtle = "2"
+# Zeroize secret key material on drop (JWT secret).
+zeroize = "1"
 
 # EIP-2335 keystore crypto (workspace-managed so version conflicts stay impossible)
 aes = "0.8"

@@ -64,22 +64,6 @@ pub const FAR_FUTURE_EPOCH: u64 = u64::MAX;
 /// `GENESIS_EPOCH` per `specs/phase0/beacon-chain.md:191`.
 pub const GENESIS_EPOCH: u64 = 0;
 
-/// `MIN_PER_EPOCH_CHURN_LIMIT` per `specs/phase0/beacon-chain.md:348`.
-///
-/// NOTE: The actual value is preset-specific (mainnet=4, minimal=2) and lives in
-/// `EthSpec::MIN_PER_EPOCH_CHURN_LIMIT`. This constant retains the mainnet value
-/// for legacy reference only; use `E::MIN_PER_EPOCH_CHURN_LIMIT` in STF code.
-#[allow(dead_code)]
-pub const MIN_PER_EPOCH_CHURN_LIMIT: u64 = 4;
-
-/// `CHURN_LIMIT_QUOTIENT` per `specs/phase0/beacon-chain.md:349`.
-///
-/// NOTE: The actual value is preset-specific (mainnet=65536, minimal=32) and lives in
-/// `EthSpec::CHURN_LIMIT_QUOTIENT`. This constant retains the mainnet value
-/// for legacy reference only; use `E::CHURN_LIMIT_QUOTIENT` in STF code.
-#[allow(dead_code)]
-pub const CHURN_LIMIT_QUOTIENT: u64 = 65_536;
-
 // Domain type bytes per `specs/phase0/beacon-chain.md:209-215`.
 pub const DOMAIN_BEACON_PROPOSER: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 pub const DOMAIN_BEACON_ATTESTER: [u8; 4] = [0x01, 0x00, 0x00, 0x00];

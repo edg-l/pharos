@@ -74,6 +74,13 @@ use behaviour::{PharosBehaviour, PharosBehaviourEvent};
 /// from reconnecting. Mirrors the gossipsub-v1.1 graylist-recovery horizon.
 const SCORE_BAN_DURATION: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Backpressure cap on concurrent in-flight gossip-validation tasks. Each task
+/// holds a cloned `Arc<host>` plus the (up to `MAX_PAYLOAD_SIZE`) message bytes
+/// and may run a blocking BLS verify, so an unbounded `JoinSet` lets a peer-flood
+/// exhaust memory and the blocking thread pool. Over the cap we IGNORE the
+/// message (no peer penalty — the overload is ours, not the sender's).
+const MAX_INFLIGHT_GOSSIP_TASKS: usize = 1024;
+
 /// Upper bound of each peer-score gauge bucket (M11 Phase 11 task 4). Scores at
 /// or below a bound fall in that bucket; scores above the last bound fall in the
 /// overflow bucket (`ALL_SCORE_BUCKET_LABELS` last entry).
@@ -928,6 +935,26 @@ impl<
             }
         };
 
+        // Backpressure: shed load before the snappy decode + task spawn when the
+        // in-flight validation set is saturated. Report IGNORE so gossipsub stops
+        // holding the message without penalizing the (blameless) sender.
+        if self.gossip_tasks.len() >= MAX_INFLIGHT_GOSSIP_TASKS {
+            tracing::warn!(
+                inflight = self.gossip_tasks.len(),
+                "gossip validation saturated; dropping message"
+            );
+            let _ = self
+                .swarm
+                .behaviour_mut()
+                .gossipsub
+                .report_message_validation_result(
+                    &message_id,
+                    &propagation_source,
+                    MessageAcceptance::Ignore,
+                );
+            return;
+        }
+
         // Snappy-block-decompress once. The decompressed bytes are reused on
         // the Accept path for the event channel; the dispatcher sees them as
         // already-decoded SSZ. Per `p2p-interface.md:1038-1048` gossip uses
@@ -966,9 +993,11 @@ impl<
         // select loop can report the verdict without re-acquiring it.
         let host = self.host.clone();
         let topic = topic.clone();
-        let bytes = ssz_bytes.clone();
         self.gossip_tasks.spawn_blocking(move || {
-            let verdict = dispatch_gossip_message::<E, H>(host.as_ref(), &topic, &bytes);
+            // Validate from a borrow of `ssz_bytes`, then hand the same buffer
+            // back out in the completion tuple — no clone of the (up to 10 MiB)
+            // gossip payload just to echo it.
+            let verdict = dispatch_gossip_message::<E, H>(host.as_ref(), &topic, &ssz_bytes);
             (
                 verdict,
                 propagation_source,

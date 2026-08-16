@@ -538,12 +538,12 @@ impl<E: EthSpec> HostImpl<E> {
         use pharos_stf::process_slots_fork;
         use pharos_types::BeaconStateView as _;
 
-        let (head_root, mut state, fork_epochs) = {
+        // Resolve head + fork schedule under a brief read lock; defer the
+        // (multi-MB) head-state clone until AFTER the committee-cache peek so a
+        // cache hit — the steady-state common case — never clones the state.
+        let (head_root, fork_epochs) = {
             let fc = self.fork_choice.read();
-            let hr = pharos_fork_choice::get_head(&*fc);
-            let fe = fc.fork_epochs();
-            let s = fc.block_states.get(&hr)?.clone();
-            (hr, s, fe)
+            (pharos_fork_choice::get_head(&*fc), fc.fork_epochs())
         };
 
         let cache_key = (slot, index, head_root);
@@ -553,8 +553,14 @@ impl<E: EthSpec> HostImpl<E> {
             return Some(committee.clone());
         }
 
-        // Slow path: advance head state to `slot` and compute committee.
-        // `state` is already cloned from the single lock above.
+        // Slow path (cache miss): clone the head state and advance it to `slot`.
+        // If the entry was evicted between locks (finalization), bail → IGNORE.
+        let mut state = self
+            .fork_choice
+            .read()
+            .block_states
+            .get(&head_root)?
+            .clone();
         if state.slot() < slot {
             process_slots_fork::<E>(&mut state, slot, fork_epochs, &self.runtime_cfg).ok()?;
         }
@@ -833,9 +839,6 @@ where
         // old per-fork `if let` chain that silently rejected capella blocks.
         let block_msg: E::BeaconBlock = E::signed_block_message(block);
 
-        // Compute block_root once; reused by steps 8/9/10/11 cache inserts.
-        let block_root: Root = block_msg.tree_hash_root();
-
         // Step 1 — RB7: parent block is in the invalid-roots set (REJECT).
         if self
             .invalid_block_roots
@@ -879,6 +882,12 @@ where
         {
             return GossipVerdict::Ignore("block: duplicate proposer/slot".into());
         }
+
+        // Compute block_root once; reused by steps 8/9/10/11 cache inserts.
+        // Deferred to here (after the cheap parent/slot/proposer-dedup gates) so
+        // a flood of duplicate or out-of-window blocks never triggers full
+        // Merkleization — the dedup steps above use only cheap field reads.
+        let block_root: Root = block_msg.tree_hash_root();
 
         // Steps 5–7 and 8 require the fork-choice lock; acquire once and hold
         // through step 9, then drop before calling lookup_or_compute_expected_proposer.
@@ -2150,14 +2159,13 @@ where
     ///
     /// All conditions map to `[IGNORE]` (not `[REJECT]`) per the spec.
     ///
-    /// Known deviation: the spec's monotonic rule allows forwarding a
-    /// same-slot update IF its `sync_aggregate` shows supermajority participation
-    /// and the previously forwarded one did not. We currently apply the strict
-    /// `incoming > prev` rule and drop the supermajority-upgrade case;
-    /// TODO(M4c-phase2): track previous update's supermajority bit. See
-    /// `p2p-interface.md:60-65`.
-    ///
-    /// See also `D-lc-gossip-validation-full-node-arm` (docs/decisions.md).
+    /// Known deviation (accepted, not pending work): the spec's monotonic rule
+    /// allows forwarding a same-slot update IF its `sync_aggregate` shows
+    /// supermajority participation and the previously forwarded one did not. We
+    /// apply the strict `incoming > prev` rule and drop the supermajority-upgrade
+    /// case. Tracking the previous update's supermajority bit would lift this; it
+    /// is intentionally deferred per `D-lc-gossip-validation-full-node-arm`
+    /// (docs/decisions.md). See `p2p-interface.md:60-65`.
     fn validate_light_client_finality_update(
         &self,
         msg: &<E as EthSpec>::AltairLightClientFinalityUpdate,

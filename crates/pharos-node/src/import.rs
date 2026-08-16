@@ -749,7 +749,6 @@ where
         let fc_snap = Arc::clone(fc_store);
         let store_persist = Arc::clone(store);
         let signed_block_persist = signed_block.clone();
-        let post_state_persist = post_state_for_return.clone();
         let head_root_for_persist = head_change.head_root;
 
         // Determine whether this block carries a live execution payload so the
@@ -772,6 +771,15 @@ where
         // a variant (no single trait-dispatch accessor covers all forks).
         let block_slot = signed_block_slot::<E>(signed_block);
         let block_state_root = signed_block_state_root::<E>(signed_block);
+
+        // Only epoch-boundary blocks persist a full post-state (per
+        // `D-epoch-boundary-state-cadence`), so clone it only then: ~31/32 imports
+        // skip a multi-MB state clone that was previously built and dropped unused.
+        let post_state_persist = if block_slot.0 % E::SLOTS_PER_EPOCH == 0 {
+            Some(post_state_for_return.clone())
+        } else {
+            None
+        };
 
         let persist_result = tokio::task::spawn_blocking(move || {
             // Pre-seed `payload_statuses[block_root] = NotValidated` for execution
@@ -850,9 +858,10 @@ where
 
             // Write epoch-boundary full state only when slot % SLOTS_PER_EPOCH == 0.
             // This bounds the per-epoch state-write cost to one full-state encode
-            // per `D-epoch-boundary-state-cadence`.
-            if block_slot.0 % E::SLOTS_PER_EPOCH == 0 {
-                batch.state = Some((block_state_root, post_state_persist));
+            // per `D-epoch-boundary-state-cadence`. `post_state_persist` is `Some`
+            // exactly on epoch boundaries (cloned only then, above).
+            if let Some(ps) = post_state_persist {
+                batch.state = Some((block_state_root, ps));
             }
 
             // Write `head_state_root` metadata ONLY when the imported block became

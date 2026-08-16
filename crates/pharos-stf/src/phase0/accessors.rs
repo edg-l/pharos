@@ -196,8 +196,11 @@ pub fn compute_proposer_index<E: EthSpec>(
     loop {
         let shuffled_i = compute_shuffled_index(i % total, total, seed, E::SHUFFLE_ROUND_COUNT);
         let candidate_index = indices[shuffled_i as usize];
-        let mut hash_input = seed.as_slice().to_vec();
-        hash_input.extend_from_slice(&uint_to_bytes(i / 32));
+        // Stack buffer (seed[32] || uint_to_bytes(i/32)[8]) — same idiom as
+        // `get_beacon_proposer_index`, avoids a per-iteration Vec allocation.
+        let mut hash_input = [0u8; 40];
+        hash_input[..32].copy_from_slice(seed.as_slice());
+        hash_input[32..].copy_from_slice(&uint_to_bytes(i / 32));
         let random_byte = hash(&hash_input).as_slice()[(i % 32) as usize] as u64;
         let effective_balance = state
             .validator(candidate_index.0 as usize)

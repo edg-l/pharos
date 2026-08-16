@@ -26,6 +26,7 @@ arc-swap.workspace = true
 libp2p.workspace = true
 parking_lot.workspace = true
 hex.workspace = true
+subtle.workspace = true
 
 [dependencies.tower]
 version = "0.5"

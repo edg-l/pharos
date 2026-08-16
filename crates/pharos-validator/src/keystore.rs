@@ -18,6 +18,7 @@ use hmac::Hmac;
 use pbkdf2::pbkdf2;
 use scrypt::{Params as ScryptParams, scrypt};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use unicode_normalization::UnicodeNormalization;
 
 use pharos_utils::bls::{BLSSecretKey, BlsError};
@@ -232,7 +233,14 @@ pub fn decrypt_keystore(
 
     let expected_checksum =
         decode_hex_field(&keystore.crypto.checksum.message, "checksum.message")?;
-    if computed_checksum.as_slice() != expected_checksum.as_slice() {
+    // Constant-time compare for defense-in-depth: the checksum gates a
+    // password-derived decryption key, so a variable-time `!=` is a (weak,
+    // offline-only) oracle distinguishing correct vs wrong passwords.
+    if !bool::from(
+        computed_checksum
+            .as_slice()
+            .ct_eq(expected_checksum.as_slice()),
+    ) {
         return Err(KeystoreError::ChecksumMismatch);
     }
 

@@ -14,18 +14,26 @@ use crate::error::EngineError;
 /// Shared HMAC secret used by the EL/CL to authenticate Engine API calls.
 ///
 /// 32 bytes of raw key material, distributed via the EL/CL `jwt-secret` file.
+/// Backed by `Zeroizing` so the key is wiped from the heap on drop, and the
+/// `Debug` impl is redacted so the secret can never be logged.
 #[derive(Clone)]
-pub struct JwtSecret(Vec<u8>);
+pub struct JwtSecret(zeroize::Zeroizing<Vec<u8>>);
 
 impl JwtSecret {
     /// Construct from 32 raw bytes.
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes.to_vec())
+        Self(zeroize::Zeroizing::new(bytes.to_vec()))
     }
 
     /// Raw bytes (for `EncodingKey::from_secret`).
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl std::fmt::Debug for JwtSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("JwtSecret([redacted])")
     }
 }
 

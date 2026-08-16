@@ -122,7 +122,7 @@ pub async fn run_transition_config_keepalive(
     runtime_cfg_ttd: Uint256,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    // TODO(M5): remove keepalive — exchange_transition_configuration is deprecated post-Capella
+    // NOTE: keepalive is intentional per D-engine-config-keepalive; exchange_transition_configuration is deprecated post-Capella but retained for compatibility
     let mut ticker = tokio::time::interval(Duration::from_secs(60));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     ticker.tick().await; // consume immediate first tick — cold-start check in main.rs covers t=0

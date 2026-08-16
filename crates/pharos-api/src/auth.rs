@@ -16,6 +16,7 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::http::{Request, Response, header};
 use axum::response::IntoResponse;
+use subtle::ConstantTimeEq;
 use tower::{Layer, Service};
 
 use crate::error::ApiError;
@@ -92,7 +93,11 @@ where
             }
             Some(hdr) => {
                 let provided = hdr.strip_prefix("Bearer ").unwrap_or("").trim().to_string();
-                if provided == expected.as_str() {
+                // Constant-time compare so a LAN/localhost attacker cannot recover
+                // the token byte-by-byte via response-timing (the `==` short-circuits
+                // on first differing byte). Length still differs in timing, which is
+                // acceptable for a fixed-length token.
+                if provided.as_bytes().ct_eq(expected.as_bytes()).into() {
                     Box::pin(self.inner.call(req))
                 } else {
                     let resp = ApiError::Forbidden("invalid token".to_string()).into_response();
