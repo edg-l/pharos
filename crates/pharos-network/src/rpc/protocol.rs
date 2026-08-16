@@ -66,6 +66,17 @@ impl RpcMethod {
             RpcMethod::BlobSidecarsByRoot => {
                 "/eth2/beacon_chain/req/blob_sidecars_by_root/1/ssz_snappy"
             }
+            RpcMethod::DataColumnSidecarsByRange => {
+                "/eth2/beacon_chain/req/data_column_sidecars_by_range/1/ssz_snappy"
+            }
+            RpcMethod::DataColumnSidecarsByRoot => {
+                "/eth2/beacon_chain/req/data_column_sidecars_by_root/1/ssz_snappy"
+            }
+            RpcMethod::BeaconBlocksByHead => {
+                "/eth2/beacon_chain/req/beacon_blocks_by_head/1/ssz_snappy"
+            }
+            RpcMethod::StatusV2 => "/eth2/beacon_chain/req/status/2/ssz_snappy",
+            RpcMethod::MetaDataV3 => "/eth2/beacon_chain/req/metadata/3/ssz_snappy",
         }
     }
 
@@ -86,6 +97,9 @@ impl RpcMethod {
                 | RpcMethod::LightClientOptimisticUpdate
                 | RpcMethod::BlobSidecarsByRange
                 | RpcMethod::BlobSidecarsByRoot
+                | RpcMethod::DataColumnSidecarsByRange
+                | RpcMethod::DataColumnSidecarsByRoot
+                | RpcMethod::BeaconBlocksByHead
         )
     }
 }
@@ -150,6 +164,26 @@ mod tests {
             RpcMethod::BlobSidecarsByRoot.protocol_id(),
             "/eth2/beacon_chain/req/blob_sidecars_by_root/1/ssz_snappy"
         );
+        assert_eq!(
+            RpcMethod::DataColumnSidecarsByRange.protocol_id(),
+            "/eth2/beacon_chain/req/data_column_sidecars_by_range/1/ssz_snappy"
+        );
+        assert_eq!(
+            RpcMethod::DataColumnSidecarsByRoot.protocol_id(),
+            "/eth2/beacon_chain/req/data_column_sidecars_by_root/1/ssz_snappy"
+        );
+        assert_eq!(
+            RpcMethod::BeaconBlocksByHead.protocol_id(),
+            "/eth2/beacon_chain/req/beacon_blocks_by_head/1/ssz_snappy"
+        );
+        assert_eq!(
+            RpcMethod::StatusV2.protocol_id(),
+            "/eth2/beacon_chain/req/status/2/ssz_snappy"
+        );
+        assert_eq!(
+            RpcMethod::MetaDataV3.protocol_id(),
+            "/eth2/beacon_chain/req/metadata/3/ssz_snappy"
+        );
     }
 
     #[test]
@@ -178,13 +212,26 @@ mod tests {
                 "{method:?} should have context bytes"
             );
         }
+        // Fulu data-column + by-head methods have context bytes.
+        for method in [
+            RpcMethod::DataColumnSidecarsByRange,
+            RpcMethod::DataColumnSidecarsByRoot,
+            RpcMethod::BeaconBlocksByHead,
+        ] {
+            assert!(
+                method.has_context_bytes(),
+                "{method:?} should have context bytes"
+            );
+        }
         // Methods WITHOUT context bytes.
         for method in [
             RpcMethod::Status,
+            RpcMethod::StatusV2,
             RpcMethod::Goodbye,
             RpcMethod::Ping,
             RpcMethod::MetaData,
             RpcMethod::MetaDataV1,
+            RpcMethod::MetaDataV3,
         ] {
             assert!(
                 !method.has_context_bytes(),

@@ -269,6 +269,31 @@ pub struct Status {
     pub head_slot: Slot,
 }
 
+// ── StatusV2 ──────────────────────────────────────────────────────────────────
+
+/// `Status` v2 per `specs/fulu/p2p-interface.md` (`Status v2`, new in Fulu /
+/// EIP-7594). Adds `earliest_available_slot` to the v1 `Status` fields.
+///
+/// Dual-handle with v1 per `D-metadata-v2-dual-handle`: inbound v1 streams
+/// receive a `Status`; inbound v2 streams receive a `StatusV2`. The two are
+/// distinct SSZ containers (v2 is 8 bytes longer).
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct StatusV2 {
+    /// `fork_digest: ForkDigest`.
+    pub fork_digest: ForkDigest,
+    /// `finalized_root: Root`.
+    pub finalized_root: Root,
+    /// `finalized_epoch: Epoch`.
+    pub finalized_epoch: Epoch,
+    /// `head_root: Root`.
+    pub head_root: Root,
+    /// `head_slot: Slot`.
+    pub head_slot: Slot,
+    /// `earliest_available_slot: Slot` — the slot of the earliest available
+    /// block this node can serve (new in Fulu).
+    pub earliest_available_slot: Slot,
+}
+
 // ── BeaconBlocksByRangeRequest ────────────────────────────────────────────────
 
 /// `BeaconBlocksByRangeRequest` per `specs/phase0/p2p-interface.md:1413-1417`.
@@ -283,6 +308,22 @@ pub struct BeaconBlocksByRangeRequest {
     pub count: u64,
     /// `step: uint64` — `p2p-interface.md:1416` (deprecated; always 1).
     pub step: u64,
+}
+
+// ── BeaconBlocksByHeadRequest ─────────────────────────────────────────────────
+
+/// `BeaconBlocksByHead` request per `specs/fulu/p2p-interface.md`
+/// (`BeaconBlocksByHead v1`, new in Fulu).
+///
+/// SSZ-encoded as a container (the spec: "The request MUST be encoded as an
+/// SSZ-container"). Both fields are fixed-size, so this is a 40-byte fixed
+/// container.
+#[derive(Encode, Decode, TreeHash, Clone, Debug, PartialEq, Eq, Default)]
+pub struct BeaconBlocksByHeadRequest {
+    /// `beacon_root: Root` — the head block root to walk ancestry from.
+    pub beacon_root: Root,
+    /// `count: uint64` — number of blocks to return in descending slot order.
+    pub count: u64,
 }
 
 // ── BeaconBlocksByRootRequest ─────────────────────────────────────────────────

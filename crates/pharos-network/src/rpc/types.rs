@@ -5,8 +5,13 @@
 use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::deneb::{BlobSidecar, BlobSidecarsByRangeRequest, BlobSidecarsByRootRequest};
+use pharos_types::fulu::{
+    DataColumnSidecar, DataColumnSidecarsByRangeRequest, DataColumnSidecarsByRootRequest,
+    MetaDataV3,
+};
 use pharos_types::phase0::{
-    BeaconBlocksByRangeRequest, BeaconBlocksByRootRequest, ErrorMessage, MetaData, Status,
+    BeaconBlocksByHeadRequest, BeaconBlocksByRangeRequest, BeaconBlocksByRootRequest, ErrorMessage,
+    MetaData, Status, StatusV2,
 };
 
 pub use crate::codec::MAX_PAYLOAD_SIZE;
@@ -57,6 +62,21 @@ pub fn compute_max_request_blob_sidecars(is_electra: bool) -> u64 {
     }
 }
 
+/// `NUMBER_OF_COLUMNS` — the number of data columns per block (PeerDAS).
+///
+/// Per `specs/fulu/das-core.md` (Preset). 128 for both presets.
+pub const NUMBER_OF_COLUMNS: u64 = 128;
+
+/// `compute_max_request_data_column_sidecars()` per `specs/fulu/p2p-interface.md`.
+///
+/// `MAX_REQUEST_BLOCKS_DENEB * NUMBER_OF_COLUMNS = 128 * 128 = 16384`.
+pub const MAX_REQUEST_DATA_COLUMN_SIDECARS: u64 = MAX_REQUEST_BLOCKS_DENEB * NUMBER_OF_COLUMNS;
+
+/// `compute_max_request_data_column_sidecars()` per `specs/fulu/p2p-interface.md`.
+pub fn compute_max_request_data_column_sidecars() -> u64 {
+    MAX_REQUEST_DATA_COLUMN_SIDECARS
+}
+
 // ── MetaDataResponse ──────────────────────────────────────────────────────────
 
 /// A `MetaData` response carrying either v1 (Phase-0) or v2 (Altair) metadata.
@@ -72,6 +92,10 @@ pub enum MetaDataResponse {
     /// Altair metadata (adds `syncnets`) — served when the inbound stream
     /// negotiated `/eth2/beacon_chain/req/metadata/2/ssz_snappy`.
     V2(AltairMetaData),
+    /// Fulu metadata (adds `custody_group_count`) — served when the inbound
+    /// stream negotiated `/eth2/beacon_chain/req/metadata/3/ssz_snappy`.
+    /// Tri-handle per `D-metadata-v2-dual-handle` (extended to v3).
+    V3(MetaDataV3),
 }
 
 // ── LightClient request types ─────────────────────────────────────────────────
@@ -102,6 +126,9 @@ pub struct LightClientUpdatesByRangeRequest {
 pub enum RpcRequest {
     /// Status handshake — `p2p-interface.md:1321`.
     Status(Status),
+    /// Status v2 handshake (Fulu) — `specs/fulu/p2p-interface.md` (`Status v2`).
+    /// Adds `earliest_available_slot`. Dual-handle with v1.
+    StatusV2(StatusV2),
     /// Goodbye notification — `p2p-interface.md:1380`. Carries the reason code.
     Goodbye(u64),
     /// Ping — `p2p-interface.md:1408`. Carries the local `seq_number`.
@@ -110,6 +137,8 @@ pub enum RpcRequest {
     MetaData,
     /// MetaData request (v1) — legacy protocol. No body on the wire.
     MetaDataV1,
+    /// MetaData request (v3, Fulu) — `specs/fulu/p2p-interface.md`. No body.
+    MetaDataV3,
     /// Beacon blocks by slot range — `p2p-interface.md:1545`.
     BlocksByRange(BeaconBlocksByRangeRequest),
     /// Beacon blocks by block root — `p2p-interface.md:1579`.
@@ -141,6 +170,27 @@ pub enum RpcRequest {
     ///
     /// Per `specs/deneb/p2p-interface.md` (`BlobSidecarsByRoot v1`).
     BlobSidecarsByRoot(BlobSidecarsByRootRequest<MAX_REQUEST_BLOB_SIDECARS>),
+    /// Data-column sidecars by slot range (EIP-7594 PeerDAS).
+    ///
+    /// Request body is an SSZ container `{start_slot, count, columns}`.
+    ///
+    /// Per `specs/fulu/p2p-interface.md` (`DataColumnSidecarsByRange v1`).
+    DataColumnSidecarsByRange(DataColumnSidecarsByRangeRequest<NUMBER_OF_COLUMNS>),
+    /// Data-column sidecars by block root and column indices (EIP-7594).
+    ///
+    /// Request body is `List[DataColumnsByRootIdentifier, MAX_REQUEST_BLOCKS_DENEB]`
+    /// — a CONTAINER list (offset-prefixed standard SSZ), NOT a bare list.
+    ///
+    /// Per `specs/fulu/p2p-interface.md` (`DataColumnSidecarsByRoot v1`).
+    DataColumnSidecarsByRoot(
+        DataColumnSidecarsByRootRequest<MAX_REQUEST_BLOCKS_DENEB, NUMBER_OF_COLUMNS>,
+    ),
+    /// Beacon blocks along the ancestry of a head root, descending (new in Fulu).
+    ///
+    /// Request body is an SSZ container `{beacon_root, count}`.
+    ///
+    /// Per `specs/fulu/p2p-interface.md` (`BeaconBlocksByHead v1`).
+    BeaconBlocksByHead(BeaconBlocksByHeadRequest),
 }
 
 impl RpcRequest {
@@ -149,10 +199,12 @@ impl RpcRequest {
     pub fn method_name(&self) -> &'static str {
         match self {
             RpcRequest::Status(_) => "Status",
+            RpcRequest::StatusV2(_) => "StatusV2",
             RpcRequest::Goodbye(_) => "Goodbye",
             RpcRequest::Ping(_) => "Ping",
             RpcRequest::MetaData => "MetaData",
             RpcRequest::MetaDataV1 => "MetaDataV1",
+            RpcRequest::MetaDataV3 => "MetaDataV3",
             RpcRequest::BlocksByRange(_) => "BlocksByRange",
             RpcRequest::BlocksByRoot(_) => "BlocksByRoot",
             RpcRequest::LightClientBootstrap(_) => "LightClientBootstrap",
@@ -161,6 +213,9 @@ impl RpcRequest {
             RpcRequest::LightClientOptimisticUpdate => "LightClientOptimisticUpdate",
             RpcRequest::BlobSidecarsByRange(_) => "BlobSidecarsByRange",
             RpcRequest::BlobSidecarsByRoot(_) => "BlobSidecarsByRoot",
+            RpcRequest::DataColumnSidecarsByRange(_) => "DataColumnSidecarsByRange",
+            RpcRequest::DataColumnSidecarsByRoot(_) => "DataColumnSidecarsByRoot",
+            RpcRequest::BeaconBlocksByHead(_) => "BeaconBlocksByHead",
         }
     }
 }
@@ -174,6 +229,8 @@ impl RpcRequest {
 pub enum RpcResponse<E: BeaconSpec> {
     /// Status response.
     Status(Status),
+    /// Status v2 response (Fulu) — carries `earliest_available_slot`.
+    StatusV2(StatusV2),
     /// Goodbye acknowledgement — carries the echoed reason code.
     Goodbye(u64),
     /// Ping response — carries the responder's `seq_number`.
@@ -204,6 +261,15 @@ pub enum RpcResponse<E: BeaconSpec> {
     ///
     /// Per `specs/deneb/p2p-interface.md`.
     BlobSidecars(Vec<BlobSidecar>),
+    /// Data-column sidecars by range or by root — zero or more
+    /// `DataColumnSidecar` objects (EIP-7594).
+    ///
+    /// Per `specs/fulu/p2p-interface.md`.
+    DataColumnSidecars(Vec<DataColumnSidecar<4096, 4>>),
+    /// Beacon blocks along an ancestry walk (descending) — zero or more blocks.
+    ///
+    /// Per `specs/fulu/p2p-interface.md` (`BeaconBlocksByHead v1`).
+    BeaconBlocksByHead(Vec<E::SignedBeaconBlock>),
     /// Error chunk (result code 1/2/3) with an `ErrorMessage` payload.
     Error { code: u8, message: ErrorMessage },
 }
@@ -217,6 +283,7 @@ where
     fn clone(&self) -> Self {
         match self {
             Self::Status(s) => Self::Status(s.clone()),
+            Self::StatusV2(s) => Self::StatusV2(s.clone()),
             Self::Goodbye(v) => Self::Goodbye(*v),
             Self::Ping(v) => Self::Ping(*v),
             Self::MetaData(m) => Self::MetaData(m.clone()),
@@ -227,6 +294,8 @@ where
             Self::LightClientFinalityUpdate(u) => Self::LightClientFinalityUpdate(u.clone()),
             Self::LightClientOptimisticUpdate(u) => Self::LightClientOptimisticUpdate(u.clone()),
             Self::BlobSidecars(v) => Self::BlobSidecars(v.clone()),
+            Self::DataColumnSidecars(v) => Self::DataColumnSidecars(v.clone()),
+            Self::BeaconBlocksByHead(v) => Self::BeaconBlocksByHead(v.clone()),
             Self::Error { code, message } => Self::Error {
                 code: *code,
                 message: message.clone(),
@@ -242,6 +311,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Status(s) => f.debug_tuple("Status").field(s).finish(),
+            Self::StatusV2(s) => f.debug_tuple("StatusV2").field(s).finish(),
             Self::Goodbye(v) => f.debug_tuple("Goodbye").field(v).finish(),
             Self::Ping(v) => f.debug_tuple("Ping").field(v).finish(),
             Self::MetaData(m) => f.debug_tuple("MetaData").field(m).finish(),
@@ -261,6 +331,11 @@ where
                 .debug_tuple("BlobSidecars")
                 .field(&format!("[{} sidecars]", v.len()))
                 .finish(),
+            Self::DataColumnSidecars(v) => f
+                .debug_tuple("DataColumnSidecars")
+                .field(&format!("[{} sidecars]", v.len()))
+                .finish(),
+            Self::BeaconBlocksByHead(v) => f.debug_tuple("BeaconBlocksByHead").field(v).finish(),
             Self::Error { code, message } => f
                 .debug_struct("Error")
                 .field("code", code)

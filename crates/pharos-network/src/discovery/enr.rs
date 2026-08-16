@@ -194,6 +194,65 @@ pub fn read_attnets_field(enr: &Enr) -> Result<Bitvector<ATTESTATION_SUBNET_COUN
     Bitvector::<ATTESTATION_SUBNET_COUNT>::from_ssz_bytes(raw).map_err(NetworkError::Ssz)
 }
 
+// ── Fulu ENR fields: cgc + nfd ──────────────────────────────────────────────
+
+/// Encode the EIP-7594 `cgc` (custody group count) ENR value.
+///
+/// Per `specs/fulu/p2p-interface.md`: `cgc` is a `uint64` encoded big-endian
+/// with no leading zero bytes; `0` encodes to the empty byte string. This
+/// matches RLP integer canonical form (RLP forbids leading zeros and encodes
+/// `0` as the empty string).
+pub fn encode_cgc(cgc: u64) -> Vec<u8> {
+    if cgc == 0 {
+        return Vec::new();
+    }
+    let bytes = cgc.to_be_bytes();
+    let first_nonzero = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
+    bytes[first_nonzero..].to_vec()
+}
+
+/// Decode an EIP-7594 `cgc` ENR value (big-endian, no leading zeros) into a
+/// `u64`. The empty byte string decodes to `0`.
+pub fn decode_cgc(raw: &[u8]) -> u64 {
+    let mut buf = [0u8; 8];
+    if raw.len() > 8 {
+        return 0;
+    }
+    buf[8 - raw.len()..].copy_from_slice(raw);
+    u64::from_be_bytes(buf)
+}
+
+/// Read the `cgc` ENR key into a `u64` custody group count.
+///
+/// Returns `None` if the key is absent (a peer that does not advertise `cgc`).
+///
+/// `cgc` is a canonical big-endian integer byte string. RLP encodes a single
+/// byte in `[0x00, 0x7f]` as the byte itself (no `0x80` length prefix), so a
+/// `cgc` of `1..=127` is a 1-byte RLP with first byte `< 0x80`; we read it
+/// directly. Larger values and the empty string (`cgc == 0`) carry the standard
+/// `0x80 + len` prefix decoded by `rlp_decode_bytes`.
+pub fn read_cgc_field(enr: &Enr) -> Option<u64> {
+    let rlp = enr.get_raw_rlp("cgc")?;
+    let first = *rlp.first()?;
+    let raw: &[u8] = if first < 0x80 {
+        // RLP single-byte form: the value IS the byte.
+        rlp
+    } else {
+        rlp_decode_bytes(rlp)?
+    };
+    Some(decode_cgc(raw))
+}
+
+/// Read the `nfd` (next fork digest) ENR key as a 4-byte fork digest.
+///
+/// Per `specs/fulu/p2p-interface.md`: `nfd` is an SSZ `Bytes4`. Returns `None`
+/// if the key is absent or malformed.
+pub fn read_nfd_field(enr: &Enr) -> Option<[u8; 4]> {
+    let rlp = enr.get_raw_rlp("nfd")?;
+    let raw = rlp_decode_bytes(rlp)?;
+    <[u8; 4]>::try_from(raw).ok()
+}
+
 /// Decode the `quic` ENR key as a `u16` IPv4 QUIC UDP port.
 ///
 /// Returns `None` if the key is absent or malformed (QUIC is optional on
@@ -535,5 +594,68 @@ mod tests {
             enr1.seq(),
             enr2.seq()
         );
+    }
+
+    // ── Task 5.6: Fulu ENR cgc + nfd ───────────────────────────────────────────
+
+    /// `cgc` encodes big-endian with no leading zeros; `0` is the empty string;
+    /// round-trips through `decode_cgc`.
+    #[test]
+    fn cgc_encode_decode_roundtrip() {
+        // 0 → empty string.
+        assert_eq!(encode_cgc(0), Vec::<u8>::new());
+        assert_eq!(decode_cgc(&[]), 0);
+
+        // Small value: single byte, no leading zeros.
+        assert_eq!(encode_cgc(8), vec![0x08]);
+        assert_eq!(decode_cgc(&[0x08]), 8);
+
+        // 128 (NUMBER_OF_CUSTODY_GROUPS): single byte 0x80.
+        assert_eq!(encode_cgc(128), vec![0x80]);
+        assert_eq!(decode_cgc(&[0x80]), 128);
+
+        // Multi-byte value: big-endian, no leading zeros.
+        assert_eq!(encode_cgc(0x0102), vec![0x01, 0x02]);
+        assert_eq!(decode_cgc(&[0x01, 0x02]), 0x0102);
+
+        // Round-trip a range of values.
+        for c in [0u64, 1, 4, 8, 64, 127, 128, 255, 256, 4096, u64::MAX] {
+            assert_eq!(decode_cgc(&encode_cgc(c)), c, "cgc round-trip for {c}");
+        }
+    }
+
+    /// A built ENR with `cgc` + `nfd` inserted reads back via the field readers.
+    #[test]
+    fn cgc_and_nfd_enr_fields_roundtrip() {
+        let key = CombinedKey::generate_secp256k1();
+        let fork_id = test_fork_id();
+        let attnets = test_attnets();
+
+        let mut enr = build_local_enr(
+            &key,
+            Some(Ipv4Addr::new(127, 0, 0, 1)),
+            Some(9000),
+            Some(9000),
+            None,
+            None,
+            fork_id,
+            attnets,
+            1,
+        )
+        .expect("build_local_enr failed");
+
+        // No cgc/nfd yet.
+        assert_eq!(read_cgc_field(&enr), None);
+        assert_eq!(read_nfd_field(&enr), None);
+
+        // Insert cgc = 8 and nfd = 0xaabbccdd.
+        enr.insert("cgc", &encode_cgc(8).as_slice(), &key)
+            .expect("insert cgc");
+        let nfd: [u8; 4] = [0xaa, 0xbb, 0xcc, 0xdd];
+        enr.insert("nfd", &nfd.as_slice(), &key)
+            .expect("insert nfd");
+
+        assert_eq!(read_cgc_field(&enr), Some(8));
+        assert_eq!(read_nfd_field(&enr), Some(nfd));
     }
 }

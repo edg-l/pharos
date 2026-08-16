@@ -330,6 +330,11 @@ pub async fn run_bpo_migration_loop<E: BeaconSpec>(
         // crossed in one tick, e.g. on a slow startup).
         while next_idx < migrations.len() && current_epoch >= migrations[next_idx].epoch {
             let migration = migrations[next_idx].clone();
+            // The forward-looking `nfd` (next fork digest) is the digest of the
+            // NEXT BPO boundary, if any remains after this one. When this is the
+            // last scheduled BPO entry, there is no further BPO digest to
+            // advertise (`None`).
+            let next_bpo_digest = migrations.get(next_idx + 1).map(|m| m.new_digest);
             do_bpo_migration::<E>(
                 &cmd,
                 &discovery,
@@ -337,6 +342,7 @@ pub async fn run_bpo_migration_loop<E: BeaconSpec>(
                 prior_digest,
                 &migration,
                 current_epoch,
+                next_bpo_digest,
             )
             .await;
             prior_digest = migration.new_digest;
@@ -354,6 +360,7 @@ async fn do_bpo_migration<E: BeaconSpec>(
     old_digest: ForkDigest,
     migration: &BpoMigration,
     epoch: Epoch,
+    next_bpo_digest: Option<ForkDigest>,
 ) {
     let new_digest = migration.new_digest;
     let fulu_version = fork_schedule.fulu_fork_version;
@@ -366,21 +373,19 @@ async fn do_bpo_migration<E: BeaconSpec>(
         "BPO migration: crossing blob-parameter boundary (EIP-7892)"
     );
 
-    // Step 1: Update the ENR `eth2` field with the new (rotated) digest.
+    // Step 1: Update the ENR `eth2` field with the new (rotated) digest, and the
+    // `nfd` (next fork digest) field with the digest of the NEXT BPO boundary
+    // (forward-looking, additive). `cgc` is owned by the custody-adjustment loop
+    // (Phase 6a) and is left untouched here (`None`). Per `specs/fulu/p2p-interface.md`.
     let enr_fork_id = ENRForkID {
         fork_digest: new_digest,
         next_fork_version: fork_schedule.next_fork_version(epoch),
         next_fork_epoch: fork_schedule.next_fork_epoch(epoch),
     };
-    if let Err(e) = discovery.update_enr_eth2(enr_fork_id).await {
-        tracing::warn!(%e, "BPO migration: ENR eth2 update failed");
+    let nfd = next_bpo_digest.map(|d| d.into_inner());
+    if let Err(e) = discovery.update_enr_eth2_fulu(enr_fork_id, None, nfd).await {
+        tracing::warn!(%e, "BPO migration: ENR eth2/nfd update failed");
     }
-
-    // TODO(Phase 5b, task 5.6): write the rotated digest to the ENR `nfd`
-    // (next-fork-digest) field once the `nfd` ENR field lands. The `eth2`
-    // field update above keeps the active fork-digest correct in the
-    // meantime; `nfd` is the forward-looking advertisement of the NEXT BPO
-    // digest and is purely additive.
 
     // Step 2: Unsubscribe the prior-digest topics.
     let old_topics = topics_for_version::<E>(fulu_version, fork_schedule, old_digest);

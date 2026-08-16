@@ -133,6 +133,16 @@ pub enum RpcMethod {
     BlobSidecarsByRange,
     /// `blob_sidecars_by_root/1/ssz_snappy` — `specs/deneb/p2p-interface.md`.
     BlobSidecarsByRoot,
+    /// `data_column_sidecars_by_range/1/ssz_snappy` — `specs/fulu/p2p-interface.md`.
+    DataColumnSidecarsByRange,
+    /// `data_column_sidecars_by_root/1/ssz_snappy` — `specs/fulu/p2p-interface.md`.
+    DataColumnSidecarsByRoot,
+    /// `beacon_blocks_by_head/1/ssz_snappy` — `specs/fulu/p2p-interface.md`.
+    BeaconBlocksByHead,
+    /// `status/2/ssz_snappy` — Fulu `Status` v2 (`earliest_available_slot`).
+    StatusV2,
+    /// `metadata/3/ssz_snappy` — Fulu `MetaData` v3 (`custody_group_count`).
+    MetaDataV3,
 }
 
 /// Kinds of RPC error that affect scoring.
@@ -300,15 +310,20 @@ const fn rate_limit_for(method: RpcMethod) -> (f64, f64) {
     match method {
         // Cheap control-plane messages: small steady allowance.
         RpcMethod::Status
+        | RpcMethod::StatusV2
         | RpcMethod::Goodbye
         | RpcMethod::Ping
         | RpcMethod::MetaData
-        | RpcMethod::MetaDataV1 => (5.0, 1.0),
+        | RpcMethod::MetaDataV1
+        | RpcMethod::MetaDataV3 => (5.0, 1.0),
         // Bulk data requests are expensive; tighter buckets.
         RpcMethod::BlocksByRange
         | RpcMethod::BlocksByRoot
         | RpcMethod::BlobSidecarsByRange
-        | RpcMethod::BlobSidecarsByRoot => (10.0, 2.0),
+        | RpcMethod::BlobSidecarsByRoot
+        | RpcMethod::DataColumnSidecarsByRange
+        | RpcMethod::DataColumnSidecarsByRoot
+        | RpcMethod::BeaconBlocksByHead => (10.0, 2.0),
         // Light-client requests: moderate allowance.
         RpcMethod::LightClientBootstrap
         | RpcMethod::LightClientUpdatesByRange

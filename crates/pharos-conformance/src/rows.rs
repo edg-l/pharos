@@ -228,6 +228,18 @@ pub fn row_table() -> &'static [RowSpec] {
         // electra-shaped attestation extraction carries over).
         r("fulu", "fork_choice", "mainnet"),
         r("fulu", "fork_choice", "minimal"),
+        // M13-Fulu Phase 5b: networking rows. The DAS-core custody helpers
+        // (`get_custody_groups`, `compute_columns_for_custody_group`) run for
+        // real via `networking::enumerate_networking`; the gossip-validator
+        // condition fixtures (attester_slashing, bls_to_execution_change,
+        // proposer_slashing, sync_committee_*) are enumerated as skips (they
+        // need a live store + wired gossip harness, not the offline writer).
+        // The gossip validators themselves ship in Phase 5b
+        // (`validate_data_column_sidecar` + the inherited validators) and are
+        // unit-tested in `pharos-node`. NO column-sidecar / partial-column
+        // fixtures (OQ2 `D-partial-columns-deferred`).
+        r("fulu", "networking", "mainnet"),
+        r("fulu", "networking", "minimal"),
     ];
     TABLE
 }
@@ -409,6 +421,8 @@ mod tests {
             ("fulu", "random", "minimal"),
             ("fulu", "fork_choice", "mainnet"),
             ("fulu", "fork_choice", "minimal"),
+            ("fulu", "networking", "mainnet"),
+            ("fulu", "networking", "minimal"),
         ];
 
         let table = row_table();
@@ -488,12 +502,13 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 153 (135 + 16 M13-Fulu Phase 3b STF rows:
-    /// operations, epoch_processing, transition, rewards, finality, fork,
-    /// sanity, random — each mainnet + minimal — plus 2 M13-Fulu Phase 4
-    /// fork_choice rows, mainnet + minimal).
+    /// Total row count is exactly 155 (153 + 2 M13-Fulu Phase 5b networking
+    /// placeholder rows, mainnet + minimal). The 153 base is 135 + 16 M13-Fulu
+    /// Phase 3b STF rows (operations, epoch_processing, transition, rewards,
+    /// finality, fork, sanity, random — each mainnet + minimal) + 2 M13-Fulu
+    /// Phase 4 fork_choice rows (mainnet + minimal).
     #[test]
-    fn row_count_is_153() {
-        assert_eq!(row_table().len(), 153);
+    fn row_count_is_155() {
+        assert_eq!(row_table().len(), 155);
     }
 }

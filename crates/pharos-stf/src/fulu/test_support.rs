@@ -2,7 +2,7 @@
 
 use pharos_ssz::{SszList, SszVector};
 use pharos_types::{
-    BeaconSpec, eth_spec::MinimalBeaconSpec, fulu::MinimalBeaconState, phase0::Epoch, phase0::Slot,
+    BeaconSpec, eth_spec::MinimalBeaconSpec, fulu::MinimalBeaconState, phase0::Epoch,
     phase0::Validator,
 };
 use pharos_utils::{BLSPubkey, Bytes32, Gwei, Hash256};
@@ -12,8 +12,9 @@ use pharos_utils::{BLSPubkey, Bytes32, Gwei, Hash256};
 /// terminates quickly and is deterministic from the seed. The default
 /// `proposer_lookahead` (all-zero) is retained for window-shift tests.
 pub(crate) fn build_test_fulu_minimal_state() -> MinimalBeaconState {
+    // `default()` already gives slot 0; the all-zero `proposer_lookahead` is
+    // retained for the window-shift tests.
     let mut state = MinimalBeaconState::default();
-    state.slot = Slot(0);
 
     let mut validators = Vec::new();
     for i in 0..64u64 {

@@ -11,15 +11,18 @@ use libp2p::PeerId;
 use pharos_ssz::{SszList, SszSequence as _};
 use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
-use pharos_types::phase0::{ErrorMessage, MetaData as Phase0MetaData, Status};
+use pharos_types::fulu::MetaDataV3;
+use pharos_types::phase0::primitives::Root;
+use pharos_types::phase0::{ErrorMessage, MetaData as Phase0MetaData, Status, StatusV2};
 
-use crate::host::{BlobProvider, Host, LightClientProvider};
+use crate::host::{BlobProvider, DataColumnProvider, Host, LightClientProvider};
 use crate::network::rpc_method_from_request;
 use crate::peer::manager::PeerManager;
 use crate::rpc::min_epochs::compute_min_epochs_for_block_requests;
 use crate::rpc::types::{
-    MAX_REQUEST_BLOCKS, MAX_REQUEST_LIGHT_CLIENT_UPDATES, MetaDataResponse, RpcRequest,
-    RpcResponse, compute_max_request_blob_sidecars,
+    MAX_REQUEST_BLOCKS, MAX_REQUEST_BLOCKS_DENEB, MAX_REQUEST_LIGHT_CLIENT_UPDATES,
+    MetaDataResponse, NUMBER_OF_COLUMNS, RpcRequest, RpcResponse,
+    compute_max_request_blob_sidecars, compute_max_request_data_column_sidecars,
 };
 use crate::scoring::{HandshakeFailKind, PeerScorer, RpcMethod, ScoreEvent};
 use crate::types::{DisconnectReason, Fork};
@@ -42,7 +45,7 @@ pub async fn handle_request<E, H, S>(
 ) -> RpcResponse<E>
 where
     E: BeaconSpec,
-    H: Host<E> + LightClientProvider<E> + BlobProvider<E>,
+    H: Host<E> + LightClientProvider<E> + BlobProvider<E> + DataColumnProvider<E>,
     S: PeerScorer,
 {
     let method = req.method_name();
@@ -86,6 +89,38 @@ where
             RpcResponse::Status(local)
         }
 
+        // Status v2 handshake (Fulu): verify fork digest, then reply with the
+        // local v2 status (adds `earliest_available_slot`). Per
+        // `specs/fulu/p2p-interface.md` (`Status v2`). Dual-handle with v1.
+        RpcRequest::StatusV2(incoming) => {
+            let local = build_local_status(host);
+            if incoming.fork_digest != local.fork_digest {
+                peer_manager.record_event(
+                    peer,
+                    ScoreEvent::HandshakeFail {
+                        kind: HandshakeFailKind::ForkDigestMismatch,
+                    },
+                );
+                peer_manager.on_disconnecting(peer);
+                return RpcResponse::Error {
+                    code: 1,
+                    message: make_error_message("fork digest mismatch"),
+                };
+            }
+            // Advance the inbound peer through the handshake using the v1
+            // projection of the incoming v2 status (drops earliest_available_slot,
+            // which the peer manager does not track).
+            let v1 = Status {
+                fork_digest: incoming.fork_digest,
+                finalized_root: incoming.finalized_root,
+                finalized_epoch: incoming.finalized_epoch,
+                head_root: incoming.head_root,
+                head_slot: incoming.head_slot,
+            };
+            peer_manager.on_inbound_status(peer, v1);
+            RpcResponse::StatusV2(build_local_status_v2(host))
+        }
+
         RpcRequest::Goodbye(reason) => {
             tracing::debug!(%peer, reason, "received Goodbye");
             peer_manager.record_event(
@@ -108,8 +143,8 @@ where
         // MetaData v2 (altair): serve full altair::MetaData with syncnets.
         // Per `D-metadata-v2-dual-handle`: select V1 or V2 based on the
         // protocol that multistream-select negotiated for this stream.
-        RpcRequest::MetaData | RpcRequest::MetaDataV1 => {
-            handle_metadata::<E>(host_metadata, negotiated_protocol_id)
+        RpcRequest::MetaData | RpcRequest::MetaDataV1 | RpcRequest::MetaDataV3 => {
+            handle_metadata::<E, H>(host, host_metadata, negotiated_protocol_id)
         }
 
         RpcRequest::BlocksByRange(req) => {
@@ -213,7 +248,97 @@ where
             let sidecars = host.blobs_by_root(&ids);
             RpcResponse::BlobSidecars(sidecars)
         }
+
+        // Data-column sidecar req-resp methods per `specs/fulu/p2p-interface.md`.
+        //
+        // Serve what we have; the provider clamps to `data_column_serve_range`
+        // `[max(current_epoch - MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS,
+        // FULU_FORK_EPOCH), current_epoch]` and omits sidecars outside it. The
+        // count is clamped here to `count * NUMBER_OF_COLUMNS` and the total
+        // response to `compute_max_request_data_column_sidecars()`.
+        RpcRequest::DataColumnSidecarsByRange(req) => {
+            let columns: Vec<u64> = req.columns.as_slice().to_vec();
+            // Per-request cap: `count * NUMBER_OF_COLUMNS`, bounded overall by
+            // `compute_max_request_data_column_sidecars()`.
+            let per_request_cap = req.count.saturating_mul(NUMBER_OF_COLUMNS);
+            let cap = per_request_cap.min(compute_max_request_data_column_sidecars());
+            let mut sidecars = host.data_columns_by_range(req.start_slot, req.count, &columns);
+            sidecars.truncate(cap as usize);
+            RpcResponse::DataColumnSidecars(sidecars)
+        }
+
+        RpcRequest::DataColumnSidecarsByRoot(req) => {
+            // No more than `compute_max_request_data_column_sidecars()` columns
+            // may be requested. Reject over-sized requests (code 1 InvalidRequest).
+            let requested: u64 = req
+                .ids
+                .as_slice()
+                .iter()
+                .map(|r| r.columns.as_slice().len() as u64)
+                .sum();
+            if requested > compute_max_request_data_column_sidecars() {
+                return RpcResponse::Error {
+                    code: 1, // InvalidRequest
+                    message: make_error_message(
+                        "request exceeds compute_max_request_data_column_sidecars",
+                    ),
+                };
+            }
+            let ids: Vec<(Root, Vec<u64>)> = req
+                .ids
+                .as_slice()
+                .iter()
+                .map(|r| (r.block_root, r.columns.as_slice().to_vec()))
+                .collect();
+            let sidecars = host.data_columns_by_root(&ids);
+            RpcResponse::DataColumnSidecars(sidecars)
+        }
+
+        // BeaconBlocksByHead per `specs/fulu/p2p-interface.md` (`BeaconBlocksByHead v1`):
+        // walk the ancestry of `beacon_root` in DESCENDING slot order, inclusive
+        // of the block at `beacon_root`, stopping after `min(count,
+        // MAX_REQUEST_BLOCKS_DENEB)` blocks or when an ancestor falls outside the
+        // historical serve window.
+        RpcRequest::BeaconBlocksByHead(req) => {
+            let count = req.count.min(MAX_REQUEST_BLOCKS_DENEB);
+            let blocks = blocks_by_head::<E, H>(host, req.beacon_root, count);
+            RpcResponse::BeaconBlocksByHead(blocks)
+        }
     }
+}
+
+/// Walk the ancestry of `beacon_root` in descending slot order, inclusive of
+/// the block at `beacon_root`, returning up to `count` blocks.
+///
+/// Stops when `count` blocks are collected, an ancestor is unknown, or the next
+/// ancestor falls outside the historical serve window (the provider returns
+/// `None` for pruned/unknown roots). Per `specs/fulu/p2p-interface.md`
+/// (`BeaconBlocksByHead v1`).
+fn blocks_by_head<E, H>(host: &H, beacon_root: Root, count: u64) -> Vec<E::SignedBeaconBlock>
+where
+    E: BeaconSpec,
+    H: Host<E>,
+{
+    use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
+
+    let mut out: Vec<E::SignedBeaconBlock> = Vec::new();
+    let mut next = beacon_root;
+    while (out.len() as u64) < count {
+        let block = match host.block_by_root(next) {
+            Some(b) => b,
+            None => break,
+        };
+        let parent_root = block.message().parent_root();
+        // The genesis block is its own ancestor terminus (parent_root == 0 once
+        // we reach slot 0); include it, then stop.
+        let is_genesis = block.message().slot().0 == 0;
+        out.push(block);
+        if is_genesis {
+            break;
+        }
+        next = parent_root;
+    }
+    out
 }
 
 // ── MetaData dual-handle ──────────────────────────────────────────────────────
@@ -226,12 +351,14 @@ where
 ///
 /// The v1 view is derived from the v2 local metadata by copying `seq_number`
 /// and `attnets` and discarding `syncnets`.
-fn handle_metadata<E>(
+fn handle_metadata<E, H>(
+    host: &H,
     host_metadata: &Arc<ArcSwap<AltairMetaData>>,
     negotiated_protocol_id: &str,
 ) -> RpcResponse<E>
 where
     E: BeaconSpec,
+    H: Host<E>,
 {
     // Read live metadata from the ArcSwap cache so peers see updates issued
     // by the subnet rotation driver (NetworkCommand::UpdateMetaData).
@@ -243,6 +370,15 @@ where
             attnets: md.attnets,
         };
         RpcResponse::MetaData(MetaDataResponse::V1(v1))
+    } else if negotiated_protocol_id == crate::scoring::RpcMethod::MetaDataV3.protocol_id() {
+        // v3 peer (Fulu): serve full metadata + custody_group_count.
+        let v3 = MetaDataV3 {
+            seq_number: md.seq_number,
+            attnets: md.attnets,
+            syncnets: md.syncnets,
+            custody_group_count: host.custody_group_count(),
+        };
+        RpcResponse::MetaData(MetaDataResponse::V3(v3))
     } else {
         // v2 (or any other negotiation): serve full altair MetaData.
         RpcResponse::MetaData(MetaDataResponse::V2(md))
@@ -267,6 +403,24 @@ where
     }
 }
 
+/// Build the local Fulu `Status` v2, adding `earliest_available_slot` to the v1
+/// fields. Per `specs/fulu/p2p-interface.md` (`Status v2`).
+fn build_local_status_v2<E, H>(host: &H) -> StatusV2
+where
+    E: BeaconSpec,
+    H: Host<E>,
+{
+    let v1 = build_local_status(host);
+    StatusV2 {
+        fork_digest: v1.fork_digest,
+        finalized_root: v1.finalized_root,
+        finalized_epoch: v1.finalized_epoch,
+        head_root: v1.head_root,
+        head_slot: v1.head_slot,
+        earliest_available_slot: host.earliest_available_slot(),
+    }
+}
+
 /// Build an `ErrorMessage` from a string slice (truncated to 256 bytes).
 pub fn make_error_message(s: &str) -> ErrorMessage {
     let bytes = s.as_bytes();
@@ -282,7 +436,8 @@ pub fn make_error_message(s: &str) -> ErrorMessage {
 mod tests {
     use super::*;
     use crate::host::{
-        BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
+        BlockProvider, DataColumnProvider, ForkContext, GossipValidator, GossipVerdict,
+        LightClientProvider,
     };
     use crate::peer::manager::PeerManager;
     use crate::scoring::NoopScorer;
@@ -519,6 +674,23 @@ mod tests {
             &self,
             _ids: &[(pharos_types::phase0::primitives::Root, u64)],
         ) -> Vec<pharos_types::deneb::BlobSidecar> {
+            Vec::new()
+        }
+    }
+
+    impl DataColumnProvider<MainnetBeaconSpec> for MockHost {
+        fn data_columns_by_range(
+            &self,
+            _start_slot: pharos_types::phase0::primitives::Slot,
+            _count: u64,
+            _columns: &[u64],
+        ) -> Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>> {
+            Vec::new()
+        }
+        fn data_columns_by_root(
+            &self,
+            _ids: &[(pharos_types::phase0::primitives::Root, Vec<u64>)],
+        ) -> Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>> {
             Vec::new()
         }
     }

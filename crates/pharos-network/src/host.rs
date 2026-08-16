@@ -15,6 +15,7 @@ use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::capella::operations::SignedBLSToExecutionChange;
 use pharos_types::deneb::BlobSidecar;
 use pharos_types::electra::attestation::SingleAttestation;
+use pharos_types::fulu::DataColumnSidecar;
 use pharos_types::phase0::primitives::ForkDigest;
 use pharos_types::phase0::{
     Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing, Root,
@@ -100,6 +101,26 @@ pub trait ForkContext: Send + Sync + 'static {
     fn custody_columns(&self, node_id: [u8; 32]) -> Vec<u64> {
         let _ = node_id;
         Vec::new()
+    }
+
+    /// The slot of the earliest available block (`SignedBeaconBlock`) this node
+    /// can serve, for the Fulu `Status` v2 `earliest_available_slot` field.
+    ///
+    /// Per `specs/fulu/p2p-interface.md` (`Status v2`). The default returns
+    /// `Slot(0)` (genesis) so non-Fulu test mocks compile unchanged; HostImpl
+    /// overrides it with the anchor / split slot.
+    fn earliest_available_slot(&self) -> Slot {
+        Slot::default()
+    }
+
+    /// The node's custody group count (`cgc`) for the Fulu `MetaData` v3
+    /// `custody_group_count` field and the ENR `cgc` field.
+    ///
+    /// Per `specs/fulu/p2p-interface.md` (`MetaData`). The default returns
+    /// `0` so non-Fulu test mocks compile unchanged; HostImpl overrides it
+    /// with the node's current (sticky-high) custody group count.
+    fn custody_group_count(&self) -> u64 {
+        0
     }
 }
 
@@ -247,6 +268,26 @@ pub trait GossipValidator<E: BeaconSpec>: Send + Sync + 'static {
     /// `subnet` is the subnet id extracted from the topic string.
     /// All 14 validation rules per `specs/deneb/p2p-interface.md:497-585`.
     fn validate_blob_sidecar(&self, subnet: SubnetId, sidecar: &BlobSidecar) -> GossipVerdict;
+
+    // ── Fulu gossip topics (EIP-7594 PeerDAS) ─────────────────────────────────
+    //
+    // Per `specs/fulu/p2p-interface.md` (`validate_data_column_sidecar_gossip`).
+
+    /// Validate a `data_column_sidecar_{subnet_id}` message.
+    ///
+    /// `subnet` is the subnet id extracted from the topic string. All 13
+    /// validation rules per `specs/fulu/p2p-interface.md`.
+    ///
+    /// The default body returns `Ignore`; concrete fulu hosts override it. This
+    /// lets non-fulu test mocks compile unchanged.
+    fn validate_data_column_sidecar(
+        &self,
+        subnet: SubnetId,
+        sidecar: &DataColumnSidecar<4096, 4>,
+    ) -> GossipVerdict {
+        let _ = (subnet, sidecar);
+        GossipVerdict::Ignore("data column sidecar validator not implemented".to_string())
+    }
 
     // ── Electra gossip topics (EIP-7549) ──────────────────────────────────────
     //
@@ -464,6 +505,57 @@ where
     }
 }
 
+// ── DataColumnProvider ──────────────────────────────────────────────────────
+
+/// Storage-backed retrieval of data-column sidecars for the EIP-7594 PeerDAS
+/// req-resp handlers (`DataColumnSidecarsByRange` / `DataColumnSidecarsByRoot`).
+///
+/// Mirrors `BlobProvider<E>`: the network crate does not read storage directly;
+/// it delegates through this trait boundary to `pharos-storage`. Implemented by
+/// `HostImpl<E>` in `pharos-node`.
+///
+/// Per `specs/fulu/p2p-interface.md` (`DataColumnSidecarsByRange v1` /
+/// `DataColumnSidecarsByRoot v1`).
+pub trait DataColumnProvider<E: BeaconSpec>: Send + Sync + 'static {
+    /// Retrieve column sidecars for the slots `[start_slot, start_slot + count)`
+    /// restricted to the requested `columns`, in `(slot, column_index)` order.
+    ///
+    /// May return fewer than requested when slots have no columns or fall
+    /// outside the `data_column_serve_range`. The caller clamps the response to
+    /// `compute_max_request_data_column_sidecars()`.
+    fn data_columns_by_range(
+        &self,
+        start_slot: Slot,
+        count: u64,
+        columns: &[u64],
+    ) -> Vec<DataColumnSidecar<4096, 4>>;
+
+    /// Retrieve column sidecars by `(block_root, columns)` identifiers.
+    ///
+    /// For each identifier, the matching sidecars present in the local store are
+    /// included (in column order); unknown identifiers/columns are omitted.
+    fn data_columns_by_root(&self, ids: &[(Root, Vec<u64>)]) -> Vec<DataColumnSidecar<4096, 4>>;
+}
+
+impl<T, E> DataColumnProvider<E> for Arc<T>
+where
+    T: DataColumnProvider<E> + ?Sized,
+    E: BeaconSpec,
+{
+    fn data_columns_by_range(
+        &self,
+        start_slot: Slot,
+        count: u64,
+        columns: &[u64],
+    ) -> Vec<DataColumnSidecar<4096, 4>> {
+        (**self).data_columns_by_range(start_slot, count, columns)
+    }
+
+    fn data_columns_by_root(&self, ids: &[(Root, Vec<u64>)]) -> Vec<DataColumnSidecar<4096, 4>> {
+        (**self).data_columns_by_root(ids)
+    }
+}
+
 // ── Host ──────────────────────────────────────────────────────────────────────
 
 /// Combined host trait: a single bound for `ForkContext + BlockProvider<E> + GossipValidator<E>`.
@@ -518,6 +610,14 @@ where
 
     fn custody_columns(&self, node_id: [u8; 32]) -> Vec<u64> {
         (**self).custody_columns(node_id)
+    }
+
+    fn earliest_available_slot(&self) -> Slot {
+        (**self).earliest_available_slot()
+    }
+
+    fn custody_group_count(&self) -> u64 {
+        (**self).custody_group_count()
     }
 }
 
@@ -621,6 +721,14 @@ where
 
     fn validate_blob_sidecar(&self, subnet: SubnetId, sidecar: &BlobSidecar) -> GossipVerdict {
         (**self).validate_blob_sidecar(subnet, sidecar)
+    }
+
+    fn validate_data_column_sidecar(
+        &self,
+        subnet: SubnetId,
+        sidecar: &DataColumnSidecar<4096, 4>,
+    ) -> GossipVerdict {
+        (**self).validate_data_column_sidecar(subnet, sidecar)
     }
 
     fn validate_single_attestation(

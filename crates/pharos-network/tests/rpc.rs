@@ -143,6 +143,7 @@ async fn metadata_round_trip() {
             let seq = match &meta {
                 MetaDataResponse::V2(m) => m.seq_number,
                 MetaDataResponse::V1(m) => m.seq_number,
+                MetaDataResponse::V3(m) => m.seq_number,
             };
             assert_eq!(seq, 0, "expected default seq_number 0");
         }

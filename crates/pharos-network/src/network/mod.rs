@@ -51,7 +51,8 @@ use crate::gossip::{
 };
 use crate::handle::NetworkHandle;
 use crate::host::{
-    BlobProvider, GOSSIP_REASON_PARENT_UNSEEN, GossipVerdict, Host, LightClientProvider,
+    BlobProvider, DataColumnProvider, GOSSIP_REASON_PARENT_UNSEEN, GossipVerdict, Host,
+    LightClientProvider,
 };
 use crate::peer::manager::PeerManager;
 use crate::rpc::handler::handle_request;
@@ -279,6 +280,20 @@ pub enum NetworkEvent {
         peer: PeerId,
         data: Vec<u8>,
     },
+
+    /// A validated `data_column_sidecar_{subnet_id}` gossip message (EIP-7594).
+    ///
+    /// Emitted after `validate_data_column_sidecar` returns `Accept`. The
+    /// consumer persists the sidecar and re-injects the parent block when the
+    /// custody/sampling column set for a block is complete.
+    ///
+    /// `subnet` is the gossip subnet the message arrived on.
+    /// `data` is the snappy-decompressed SSZ bytes of the `DataColumnSidecar`.
+    GossipDataColumnSidecar {
+        subnet: crate::types::SubnetId,
+        peer: PeerId,
+        data: Vec<u8>,
+    },
 }
 
 impl NetworkEvent {
@@ -301,6 +316,7 @@ impl NetworkEvent {
             Self::ExternalAddrConfirmed { .. } => "ExternalAddrConfirmed",
             Self::UnknownParentBlock { .. } => "UnknownParentBlock",
             Self::GossipBlobSidecar { .. } => "GossipBlobSidecar",
+            Self::GossipDataColumnSidecar { .. } => "GossipDataColumnSidecar",
         }
     }
 }
@@ -324,7 +340,7 @@ const DIAL_PENDING_TTL: Duration = Duration::from_secs(30);
 /// `NetworkHandle` or by dropping the handle's `shutdown_tx`.
 pub struct Network<
     E: BeaconSpec,
-    H: Host<E> + LightClientProvider<E> + BlobProvider<E>,
+    H: Host<E> + LightClientProvider<E> + BlobProvider<E> + DataColumnProvider<E>,
     S: PeerScorer,
 > {
     swarm: Swarm<PharosBehaviour<E>>,
@@ -432,7 +448,13 @@ pub struct Network<
 
 impl<
     E: BeaconSpec,
-    H: Host<E> + LightClientProvider<E> + BlobProvider<E> + Send + Sync + 'static,
+    H: Host<E>
+        + LightClientProvider<E>
+        + BlobProvider<E>
+        + DataColumnProvider<E>
+        + Send
+        + Sync
+        + 'static,
     S: PeerScorer,
 > Network<E, H, S>
 {
@@ -668,6 +690,15 @@ impl<
                                             data: ssz_bytes,
                                         })
                                         .await;
+                                    } else if let GossipTopicKind::DataColumnSidecar(subnet) =
+                                        topic.kind
+                                    {
+                                        self.emit_event(NetworkEvent::GossipDataColumnSidecar {
+                                            subnet,
+                                            peer: propagation_source,
+                                            data: ssz_bytes,
+                                        })
+                                        .await;
                                     } else {
                                         self.emit_event(NetworkEvent::GossipMessage {
                                             topic,
@@ -787,6 +818,32 @@ impl<
                 rr_event,
             )) => {
                 self.on_request_response_event(rr_event, RpcMethod::BlobSidecarsByRoot)
+                    .await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(
+                PharosBehaviourEvent::RpcDataColumnSidecarsByRange(rr_event),
+            ) => {
+                self.on_request_response_event(rr_event, RpcMethod::DataColumnSidecarsByRange)
+                    .await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(
+                PharosBehaviourEvent::RpcDataColumnSidecarsByRoot(rr_event),
+            ) => {
+                self.on_request_response_event(rr_event, RpcMethod::DataColumnSidecarsByRoot)
+                    .await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcBeaconBlocksByHead(
+                rr_event,
+            )) => {
+                self.on_request_response_event(rr_event, RpcMethod::BeaconBlocksByHead)
+                    .await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcStatusV2(rr_event)) => {
+                self.on_request_response_event(rr_event, RpcMethod::StatusV2)
+                    .await;
+            }
+            libp2p::swarm::SwarmEvent::Behaviour(PharosBehaviourEvent::RpcMetaDataV3(rr_event)) => {
+                self.on_request_response_event(rr_event, RpcMethod::MetaDataV3)
                     .await;
             }
             libp2p::swarm::SwarmEvent::ConnectionEstablished {
@@ -1039,7 +1096,8 @@ impl<
                         None
                     };
                     // Track whether this is an inbound Status before moving `request`.
-                    let is_inbound_status = matches!(request, RpcRequest::Status(_));
+                    let is_inbound_status =
+                        matches!(request, RpcRequest::Status(_) | RpcRequest::StatusV2(_));
 
                     // Derive the negotiated protocol ID from the request variant so the
                     // handler can select MetaData v1 vs v2 per `D-metadata-v2-dual-handle`.
@@ -1074,7 +1132,9 @@ impl<
                     // `Connected` iff the fork digest matches. Emit here before sending the
                     // response so consumers see the peer as ready before the remote sees
                     // the Status reply.
-                    if is_inbound_status && matches!(response, RpcResponse::Status(_)) {
+                    if is_inbound_status
+                        && matches!(response, RpcResponse::Status(_) | RpcResponse::StatusV2(_))
+                    {
                         self.emit_event(NetworkEvent::PeerConnected(peer)).await;
                         self.peer_manager.record_event(
                             peer,
@@ -1137,6 +1197,24 @@ impl<
                                 .rpc_blob_sidecars_by_root
                                 .0
                                 .send_response(channel, response),
+                            RpcMethod::DataColumnSidecarsByRange => b
+                                .rpc_data_column_sidecars_by_range
+                                .0
+                                .send_response(channel, response),
+                            RpcMethod::DataColumnSidecarsByRoot => b
+                                .rpc_data_column_sidecars_by_root
+                                .0
+                                .send_response(channel, response),
+                            RpcMethod::BeaconBlocksByHead => b
+                                .rpc_beacon_blocks_by_head
+                                .0
+                                .send_response(channel, response),
+                            RpcMethod::StatusV2 => {
+                                b.rpc_status_v2.0.send_response(channel, response)
+                            }
+                            RpcMethod::MetaDataV3 => {
+                                b.rpc_metadata_v3.0.send_response(channel, response)
+                            }
                         }
                     };
                     if send_err.is_err() {
@@ -1272,6 +1350,8 @@ impl<
         let b = self.swarm.behaviour_mut();
         match &req {
             RpcRequest::Status(_) => b.rpc_status.0.send_request(peer, req),
+            RpcRequest::StatusV2(_) => b.rpc_status_v2.0.send_request(peer, req),
+            RpcRequest::MetaDataV3 => b.rpc_metadata_v3.0.send_request(peer, req),
             RpcRequest::Goodbye(_) => b.rpc_goodbye.0.send_request(peer, req),
             RpcRequest::Ping(_) => b.rpc_ping.0.send_request(peer, req),
             RpcRequest::MetaData => b.rpc_metadata.0.send_request(peer, req),
@@ -1295,6 +1375,16 @@ impl<
             }
             RpcRequest::BlobSidecarsByRoot(_) => {
                 b.rpc_blob_sidecars_by_root.0.send_request(peer, req)
+            }
+            RpcRequest::DataColumnSidecarsByRange(_) => b
+                .rpc_data_column_sidecars_by_range
+                .0
+                .send_request(peer, req),
+            RpcRequest::DataColumnSidecarsByRoot(_) => {
+                b.rpc_data_column_sidecars_by_root.0.send_request(peer, req)
+            }
+            RpcRequest::BeaconBlocksByHead(_) => {
+                b.rpc_beacon_blocks_by_head.0.send_request(peer, req)
             }
         }
     }
@@ -1371,6 +1461,10 @@ impl<
             let phase0_meta = match meta_resp {
                 MetaDataResponse::V1(m) => m.clone(),
                 MetaDataResponse::V2(m) => pharos_types::phase0::MetaData {
+                    seq_number: m.seq_number,
+                    attnets: m.attnets.clone(),
+                },
+                MetaDataResponse::V3(m) => pharos_types::phase0::MetaData {
                     seq_number: m.seq_number,
                     attnets: m.attnets.clone(),
                 },
@@ -1952,10 +2046,12 @@ impl<
 pub(crate) fn rpc_method_from_request(req: &RpcRequest) -> RpcMethod {
     match req {
         RpcRequest::Status(_) => RpcMethod::Status,
+        RpcRequest::StatusV2(_) => RpcMethod::StatusV2,
         RpcRequest::Goodbye(_) => RpcMethod::Goodbye,
         RpcRequest::Ping(_) => RpcMethod::Ping,
         RpcRequest::MetaData => RpcMethod::MetaData,
         RpcRequest::MetaDataV1 => RpcMethod::MetaDataV1,
+        RpcRequest::MetaDataV3 => RpcMethod::MetaDataV3,
         RpcRequest::BlocksByRange(_) => RpcMethod::BlocksByRange,
         RpcRequest::BlocksByRoot(_) => RpcMethod::BlocksByRoot,
         RpcRequest::LightClientBootstrap(_) => RpcMethod::LightClientBootstrap,
@@ -1964,6 +2060,9 @@ pub(crate) fn rpc_method_from_request(req: &RpcRequest) -> RpcMethod {
         RpcRequest::LightClientOptimisticUpdate => RpcMethod::LightClientOptimisticUpdate,
         RpcRequest::BlobSidecarsByRange(_) => RpcMethod::BlobSidecarsByRange,
         RpcRequest::BlobSidecarsByRoot(_) => RpcMethod::BlobSidecarsByRoot,
+        RpcRequest::DataColumnSidecarsByRange(_) => RpcMethod::DataColumnSidecarsByRange,
+        RpcRequest::DataColumnSidecarsByRoot(_) => RpcMethod::DataColumnSidecarsByRoot,
+        RpcRequest::BeaconBlocksByHead(_) => RpcMethod::BeaconBlocksByHead,
     }
 }
 
@@ -2011,7 +2110,7 @@ pub struct NetworkBuilder<E, H, S> {
     _phantom: PhantomData<E>,
 }
 
-impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>>
+impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E> + DataColumnProvider<E>>
     NetworkBuilder<E, H, crate::scoring::NoopScorer>
 {
     /// Create a new builder wrapping `host` with default settings.
@@ -2038,8 +2137,11 @@ impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>>
     }
 }
 
-impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerScorer>
-    NetworkBuilder<E, H, S>
+impl<
+    E: BeaconSpec,
+    H: Host<E> + LightClientProvider<E> + BlobProvider<E> + DataColumnProvider<E>,
+    S: PeerScorer,
+> NetworkBuilder<E, H, S>
 {
     /// Override the TCP listen port (default: 9000).
     pub fn tcp_listen_port(mut self, port: u16) -> Self {
@@ -2095,7 +2197,7 @@ impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: Pe
     /// Substitute a peer scorer, changing the `S` type parameter.
     pub fn scorer<T: PeerScorer>(self, scorer: T) -> NetworkBuilder<E, H, T>
     where
-        H: Host<E> + LightClientProvider<E> + BlobProvider<E>,
+        H: Host<E> + LightClientProvider<E> + BlobProvider<E> + DataColumnProvider<E>,
     {
         NetworkBuilder {
             host: self.host,
@@ -2253,11 +2355,13 @@ impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: Pe
         use crate::rpc::protocol::RpcProtocol;
         use crate::scoring::RpcMethod as M;
         use behaviour::{
-            RpcBlobSidecarsByRangeBehaviour, RpcBlobSidecarsByRootBehaviour,
-            RpcBlocksByRangeBehaviour, RpcBlocksByRootBehaviour, RpcGoodbyeBehaviour,
-            RpcLcBootstrapBehaviour, RpcLcFinalityUpdateBehaviour, RpcLcOptimisticUpdateBehaviour,
-            RpcLcUpdatesByRangeBehaviour, RpcMetaDataBehaviour, RpcMetaDataV1Behaviour,
-            RpcPingBehaviour, RpcStatusBehaviour,
+            RpcBeaconBlocksByHeadBehaviour, RpcBlobSidecarsByRangeBehaviour,
+            RpcBlobSidecarsByRootBehaviour, RpcBlocksByRangeBehaviour, RpcBlocksByRootBehaviour,
+            RpcDataColumnSidecarsByRangeBehaviour, RpcDataColumnSidecarsByRootBehaviour,
+            RpcGoodbyeBehaviour, RpcLcBootstrapBehaviour, RpcLcFinalityUpdateBehaviour,
+            RpcLcOptimisticUpdateBehaviour, RpcLcUpdatesByRangeBehaviour, RpcMetaDataBehaviour,
+            RpcMetaDataV1Behaviour, RpcMetaDataV3Behaviour, RpcPingBehaviour, RpcStatusBehaviour,
+            RpcStatusV2Behaviour,
         };
 
         // Fork-context codec: used for methods that carry context bytes
@@ -2321,6 +2425,20 @@ impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: Pe
                 rpc_blob_sidecars_by_root: RpcBlobSidecarsByRootBehaviour(mk_rr_ctx(
                     M::BlobSidecarsByRoot,
                 )),
+                // Fulu data-column-sidecar + by-head behaviours use the
+                // context-bytes codec (fork digest prefix per chunk).
+                rpc_data_column_sidecars_by_range: RpcDataColumnSidecarsByRangeBehaviour(
+                    mk_rr_ctx(M::DataColumnSidecarsByRange),
+                ),
+                rpc_data_column_sidecars_by_root: RpcDataColumnSidecarsByRootBehaviour(mk_rr_ctx(
+                    M::DataColumnSidecarsByRoot,
+                )),
+                rpc_beacon_blocks_by_head: RpcBeaconBlocksByHeadBehaviour(mk_rr_ctx(
+                    M::BeaconBlocksByHead,
+                )),
+                // Status v2 + MetaData v3 are control-plane (no context bytes).
+                rpc_status_v2: RpcStatusV2Behaviour(mk_rr(M::StatusV2)),
+                rpc_metadata_v3: RpcMetaDataV3Behaviour(mk_rr(M::MetaDataV3)),
                 identify,
                 ping,
             })
@@ -2525,7 +2643,13 @@ impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: Pe
 
 impl<
     E: BeaconSpec,
-    H: Host<E> + LightClientProvider<E> + BlobProvider<E> + Send + Sync + 'static,
+    H: Host<E>
+        + LightClientProvider<E>
+        + BlobProvider<E>
+        + DataColumnProvider<E>
+        + Send
+        + Sync
+        + 'static,
     S: PeerScorer,
 > Network<E, H, S>
 {
@@ -2884,6 +3008,24 @@ mod tests {
             &self,
             _ids: &[(pharos_types::phase0::primitives::Root, u64)],
         ) -> Vec<pharos_types::deneb::BlobSidecar> {
+            vec![]
+        }
+    }
+
+    impl DataColumnProvider<MainnetBeaconSpec> for MockHost {
+        fn data_columns_by_range(
+            &self,
+            _start_slot: pharos_types::phase0::primitives::Slot,
+            _count: u64,
+            _columns: &[u64],
+        ) -> Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>> {
+            vec![]
+        }
+
+        fn data_columns_by_root(
+            &self,
+            _ids: &[(pharos_types::phase0::primitives::Root, Vec<u64>)],
+        ) -> Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>> {
             vec![]
         }
     }

@@ -266,8 +266,9 @@ fn bytes_to_uint64_le(bytes: &[u8]) -> u64 {
 ///
 /// `node_id` is the 256-bit `NodeID` as a 32-byte big-endian array. Returns the
 /// sorted set of custody-group indices this node is responsible for. The walk
-/// hashes `uint_to_bytes(current_id)` (big-endian 32-byte encoding of the
-/// uint256) and takes the first 8 bytes (little-endian) mod
+/// hashes `uint_to_bytes(current_id)` — the SSZ little-endian 32-byte encoding
+/// of the uint256 (`ENDIANNESS = "little"`), so the BE input is reversed before
+/// hashing — and takes the first 8 bytes (little-endian) mod
 /// `NUMBER_OF_CUSTODY_GROUPS`, incrementing `current_id` (with UINT256_MAX
 /// wraparound) until `custody_group_count` distinct groups are collected.
 ///
@@ -287,12 +288,18 @@ pub fn get_custody_groups<E: BeaconSpec>(
         return (0..E::NUMBER_OF_CUSTODY_GROUPS).collect();
     }
 
-    // `current_id` is a big-endian uint256 (matches `uint_to_bytes` encoding).
+    // `current_id` is the `NodeID` uint256 held as a 32-byte BIG-endian array
+    // (the discv5 canonical form). The spec hashes `uint_to_bytes(current_id)`,
+    // which is the SSZ (`ENDIANNESS = "little"`) encoding of the uint256, so we
+    // reverse the BE bytes to LE before hashing. Incrementing stays on the BE
+    // representation (a numerically-correct uint256 += 1).
     let mut current_id = node_id;
     let mut custody_groups: Vec<CustodyIndex> = Vec::with_capacity(custody_group_count as usize);
 
     while (custody_groups.len() as u64) < custody_group_count {
-        let digest = hash(&current_id);
+        let mut le_id = current_id;
+        le_id.reverse();
+        let digest = hash(&le_id);
         let custody_group = bytes_to_uint64_le(digest.as_slice()) % E::NUMBER_OF_CUSTODY_GROUPS;
         if !custody_groups.contains(&custody_group) {
             custody_groups.push(custody_group);

@@ -3,7 +3,9 @@
 //! Used by the codec to reject payloads whose declared SSZ length is outside
 //! the expected range before reading the compressed body.
 
-use crate::rpc::types::{MAX_REQUEST_BLOB_SIDECARS, MAX_REQUEST_BLOCKS};
+use crate::rpc::types::{
+    MAX_REQUEST_BLOB_SIDECARS, MAX_REQUEST_BLOCKS, MAX_REQUEST_BLOCKS_DENEB, NUMBER_OF_COLUMNS,
+};
 use crate::scoring::RpcMethod;
 
 /// Returns `(min_ssz_bytes, max_ssz_bytes)` for a req-resp method's payload.
@@ -45,6 +47,25 @@ pub fn type_size_bounds(method: &RpcMethod) -> (usize, usize) {
         // BlobIdentifier SSZ: block_root(32) + index(8) = 40 bytes each.
         // 0 to MAX_REQUEST_BLOB_SIDECARS entries.
         RpcMethod::BlobSidecarsByRoot => (0, (MAX_REQUEST_BLOB_SIDECARS as usize) * 40),
+        // DataColumnSidecarsByRange request (SSZ container):
+        // start_slot(8) + count(8) + offset(4) for the variable `columns` list = 20 min;
+        // max adds NUMBER_OF_COLUMNS * 8 (ColumnIndex = u64) column entries.
+        RpcMethod::DataColumnSidecarsByRange => (20, 20 + (NUMBER_OF_COLUMNS as usize) * 8),
+        // DataColumnSidecarsByRoot request:
+        // List[DataColumnsByRootIdentifier, MAX_REQUEST_BLOCKS_DENEB] — a list of
+        // VARIABLE-size containers, so it is offset-prefixed. Each identifier is
+        // block_root(32) + offset(4) + up to NUMBER_OF_COLUMNS * 8 (columns); plus
+        // one 4-byte outer offset per element. 0 entries = 0 bytes.
+        RpcMethod::DataColumnSidecarsByRoot => (
+            0,
+            (MAX_REQUEST_BLOCKS_DENEB as usize) * (4 + 32 + 4 + (NUMBER_OF_COLUMNS as usize) * 8),
+        ),
+        // BeaconBlocksByHead request (SSZ container): beacon_root(32) + count(8) = 40 bytes.
+        RpcMethod::BeaconBlocksByHead => (40, 40),
+        // Status v2 request: v1 fields (84) + earliest_available_slot(8) = 92 bytes.
+        RpcMethod::StatusV2 => (92, 92),
+        // MetaData v3 has no request body.
+        RpcMethod::MetaDataV3 => (0, 0),
     }
 }
 
@@ -61,6 +82,15 @@ pub const MAX_LIGHT_CLIENT_OBJECT_SSZ_BYTES: usize = 64 * 1024;
 /// Total: ~131072 (blob) + 48 (kzg_commitment) + 48 (kzg_proof) + ~200 (header+proof) ≈ 132 KiB.
 /// 200 KiB provides a safe ceiling.
 pub const MAX_BLOB_SIDECAR_SSZ_BYTES: usize = 200 * 1024;
+
+/// Upper bound on a single `DataColumnSidecar` SSZ encoding (EIP-7594).
+///
+/// A column carries one `Cell` (2048 bytes) per blob plus one `KZGCommitment`
+/// (48) and one `KZGProof` (48) per blob, a `SignedBeaconBlockHeader`, and a
+/// depth-4 inclusion proof. With the practical blob ceiling far below the
+/// `MAX_BLOB_COMMITMENTS_PER_BLOCK` SSZ bound, real columns are a few hundred
+/// KiB; 10 MiB provides a generous ceiling against the theoretical list bound.
+pub const MAX_DATA_COLUMN_SIDECAR_SSZ_BYTES: usize = 10 * 1024 * 1024;
 
 /// Conservative upper bound on a Phase-0 `SignedBeaconBlock` SSZ encoding.
 ///

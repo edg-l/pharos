@@ -40,6 +40,18 @@ pub(crate) enum DiscoveryCommand {
         syncnets: Bitvector<{ SYNC_COMMITTEE_SUBNET_COUNT }>,
         reply: oneshot::Sender<Result<(), NetworkError>>,
     },
+    /// Update the Fulu ENR fields in a single mutation: `eth2` (fork id), and
+    /// optionally `cgc` (custody group count) + `nfd` (next fork digest).
+    ///
+    /// Per `specs/fulu/p2p-interface.md` (ENR `cgc` + `nfd`). Used by the
+    /// BPO-boundary / custody-adjustment drivers so peers observe the updated
+    /// fork identity, custody count, and next-fork digest together.
+    UpdateFuluEnr {
+        fork_id: ENRForkID,
+        cgc: Option<u64>,
+        nfd: Option<[u8; 4]>,
+        reply: oneshot::Sender<Result<(), NetworkError>>,
+    },
     /// Read the current local ENR. Used by tests and operational diagnostics
     /// to confirm field updates landed.
     LocalEnr { reply: oneshot::Sender<Enr> },
@@ -78,6 +90,31 @@ impl DiscoveryHandle {
         self.cmd_tx
             .send(DiscoveryCommand::UpdateEth2 {
                 fork_id,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NetworkError::ChannelClosed)?;
+        reply_rx.await.map_err(|_| NetworkError::ChannelClosed)?
+    }
+
+    /// Update the Fulu ENR fields (`eth2` + optional `cgc` + optional `nfd`).
+    ///
+    /// `cgc` is the EIP-7594 custody group count; `nfd` is the next fork digest
+    /// (regular fork boundary OR the next BPO-boundary digest). Writing all
+    /// three in one ENR mutation bumps the sequence number once and re-signs.
+    /// Per `specs/fulu/p2p-interface.md` (ENR `cgc` + `nfd`).
+    pub async fn update_enr_eth2_fulu(
+        &self,
+        fork_id: ENRForkID,
+        cgc: Option<u64>,
+        nfd: Option<[u8; 4]>,
+    ) -> Result<(), NetworkError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(DiscoveryCommand::UpdateFuluEnr {
+                fork_id,
+                cgc,
+                nfd,
                 reply: reply_tx,
             })
             .await
@@ -145,6 +182,46 @@ impl DiscoveryService {
                     .enr_insert("eth2", &bytes.as_slice())
                     .map(|_| ())
                     .map_err(|e| NetworkError::Discv5(e.to_string()));
+                if result.is_ok() {
+                    self.persist_enr_seq();
+                }
+                let _ = reply.send(result);
+            }
+            DiscoveryCommand::UpdateFuluEnr {
+                fork_id,
+                cgc,
+                nfd,
+                reply,
+            } => {
+                use crate::discovery::enr::encode_cgc;
+                // eth2 first.
+                let eth2_bytes = fork_id.as_ssz_bytes();
+                let mut result = self
+                    .discv5
+                    .enr_insert("eth2", &eth2_bytes.as_slice())
+                    .map(|_| ())
+                    .map_err(|e| NetworkError::Discv5(e.to_string()));
+                // cgc (custody group count): big-endian, no leading zeros.
+                if result.is_ok()
+                    && let Some(c) = cgc
+                {
+                    let cgc_bytes = encode_cgc(c);
+                    result = self
+                        .discv5
+                        .enr_insert("cgc", &cgc_bytes.as_slice())
+                        .map(|_| ())
+                        .map_err(|e| NetworkError::Discv5(e.to_string()));
+                }
+                // nfd (next fork digest): SSZ Bytes4 (4 raw bytes).
+                if result.is_ok()
+                    && let Some(digest) = nfd
+                {
+                    result = self
+                        .discv5
+                        .enr_insert("nfd", &digest.as_slice())
+                        .map(|_| ())
+                        .map_err(|e| NetworkError::Discv5(e.to_string()));
+                }
                 if result.is_ok() {
                     self.persist_enr_seq();
                 }

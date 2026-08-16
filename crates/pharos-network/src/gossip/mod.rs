@@ -27,6 +27,7 @@ use pharos_types::altair::SyncCommitteeMessage;
 use pharos_types::capella::operations::SignedBLSToExecutionChange;
 use pharos_types::deneb::BlobSidecar;
 use pharos_types::electra::attestation::SingleAttestation;
+use pharos_types::fulu::DataColumnSidecar;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::phase0::{
     Attestation, AttesterSlashing, ProposerSlashing, SignedAggregateAndProof, SignedVoluntaryExit,
@@ -443,16 +444,15 @@ pub fn dispatch_gossip_message<E: BeaconSpec, H: Host<E>>(
             Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
         },
         // ── Fulu topics ──────────────────────────────────────────────────────
-        // Per `specs/fulu/p2p-interface.md` (EIP-7594 PeerDAS). The
-        // `data_column_sidecar_{subnet}` gossip topic exists as network
-        // substrate from Phase 5a; the 13-rule `validate_data_column_sidecar`
-        // validation body (with KZG + BLS in spawn_blocking) lands in Phase 5b
-        // (plan task 5.4). Until then, decoded sidecars are IGNORED (no
-        // propagation, no peer penalty) rather than dispatched to a
-        // not-yet-implemented validator.
-        GossipTopicKind::DataColumnSidecar(_subnet) => GossipVerdict::Ignore(
-            "data column sidecar validator not implemented (Phase 5b)".to_string(),
-        ),
+        // Per `specs/fulu/p2p-interface.md` (EIP-7594 PeerDAS). KZG + BLS
+        // verify in `validate_data_column_sidecar` are sync/CPU-bound; the
+        // caller runs this in `spawn_blocking` (D-bls-on-hot-path).
+        GossipTopicKind::DataColumnSidecar(subnet) => {
+            match DataColumnSidecar::<4096, 4>::from_ssz_bytes(ssz_bytes) {
+                Ok(sidecar) => host.validate_data_column_sidecar(*subnet, &sidecar),
+                Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+            }
+        }
     }
 }
 

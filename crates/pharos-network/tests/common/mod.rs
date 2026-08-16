@@ -13,8 +13,8 @@ use libp2p::{Multiaddr, PeerId};
 pub use pharos_network::NetworkEvent;
 use pharos_network::discovery::enr::Enr;
 use pharos_network::host::{
-    BlobProvider, BlockProvider, ForkContext, GOSSIP_REASON_PARENT_UNSEEN, GossipValidator,
-    GossipVerdict, LightClientProvider,
+    BlobProvider, BlockProvider, DataColumnProvider, ForkContext, GOSSIP_REASON_PARENT_UNSEEN,
+    GossipValidator, GossipVerdict, LightClientProvider,
 };
 use pharos_network::scoring::{PeerScorer, ScoreEvent};
 use pharos_network::types::{Fork, SubnetId};
@@ -197,8 +197,9 @@ impl ForkContext for TestHost {
             Fork::Phase0 => self.fork_digest,
             Fork::Altair => self.altair_fork_digest.unwrap_or(self.fork_digest),
             Fork::Bellatrix => self.bellatrix_fork_digest.unwrap_or(self.fork_digest),
-            // Tests don't have a capella/deneb/electra digest; fall back to bellatrix if available.
-            Fork::Capella | Fork::Deneb | Fork::Electra => {
+            // Tests don't have a capella/deneb/electra/fulu digest; fall back to
+            // bellatrix if available.
+            Fork::Capella | Fork::Deneb | Fork::Electra | Fork::Fulu => {
                 self.bellatrix_fork_digest.unwrap_or(self.fork_digest)
             }
         }
@@ -493,6 +494,23 @@ impl BlobProvider<MainnetBeaconSpec> for TestHost {
         Vec::new()
     }
     fn blobs_by_root(&self, _ids: &[(Root, u64)]) -> Vec<pharos_types::deneb::BlobSidecar> {
+        Vec::new()
+    }
+}
+
+impl DataColumnProvider<MainnetBeaconSpec> for TestHost {
+    fn data_columns_by_range(
+        &self,
+        _start_slot: Slot,
+        _count: u64,
+        _columns: &[u64],
+    ) -> Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>> {
+        Vec::new()
+    }
+    fn data_columns_by_root(
+        &self,
+        _ids: &[(Root, Vec<u64>)],
+    ) -> Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>> {
         Vec::new()
     }
 }

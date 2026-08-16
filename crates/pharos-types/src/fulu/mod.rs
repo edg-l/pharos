@@ -24,6 +24,7 @@ pub mod data_column_sidecar;
 pub mod execution_payload;
 pub mod light_client;
 pub mod matrix;
+pub mod metadata;
 pub mod partial_column;
 pub mod requests;
 pub mod state;
@@ -41,8 +42,10 @@ pub use block::{
 };
 pub use body::{BeaconBlockBody, MainnetBeaconBlockBody, MinimalBeaconBlockBody};
 pub use das_identifier::{
-    DataColumnsByRootIdentifier, MainnetDataColumnsByRootIdentifier,
-    MinimalDataColumnsByRootIdentifier,
+    DataColumnSidecarsByRangeRequest, DataColumnSidecarsByRootRequest, DataColumnsByRootIdentifier,
+    MainnetDataColumnSidecarsByRangeRequest, MainnetDataColumnSidecarsByRootRequest,
+    MainnetDataColumnsByRootIdentifier, MinimalDataColumnSidecarsByRangeRequest,
+    MinimalDataColumnSidecarsByRootRequest, MinimalDataColumnsByRootIdentifier,
 };
 pub use data_column_sidecar::{
     BYTES_PER_CELL, Cell, ColumnIndex, CustodyIndex, DataColumnSidecar, DataColumnSidecarView,
@@ -61,6 +64,7 @@ pub use light_client::{
     MinimalLightClientHeader, MinimalLightClientOptimisticUpdate, MinimalLightClientUpdate,
 };
 pub use matrix::MatrixEntry;
+pub use metadata::MetaData as MetaDataV3;
 pub use partial_column::{
     MainnetPartialDataColumnHeader, MainnetPartialDataColumnPartsMetadata,
     MainnetPartialDataColumnSidecar, MinimalPartialDataColumnHeader,

@@ -22,19 +22,25 @@ use pharos_ssz::{Decode, Encode};
 use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::deneb::{BlobSidecar, BlobSidecarsByRangeRequest, BlobSidecarsByRootRequest};
+use pharos_types::fulu::{
+    DataColumnSidecar, DataColumnSidecarsByRangeRequest, DataColumnSidecarsByRootRequest,
+    MetaDataV3,
+};
 use pharos_types::phase0::{
-    BeaconBlocksByRangeRequest, BeaconBlocksByRootRequest, ErrorMessage, MetaData, Status,
+    BeaconBlocksByHeadRequest, BeaconBlocksByRangeRequest, BeaconBlocksByRootRequest, ErrorMessage,
+    MetaData, Status, StatusV2,
 };
 
 use crate::codec::snappy_frame::encode_snappy_frame;
 use crate::host::ForkContext;
 use crate::rpc::protocol::RpcProtocol;
 use crate::rpc::size_bounds::{
-    MAX_BLOB_SIDECAR_SSZ_BYTES, MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES, type_size_bounds,
+    MAX_BLOB_SIDECAR_SSZ_BYTES, MAX_DATA_COLUMN_SIDECAR_SSZ_BYTES,
+    MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES, type_size_bounds,
 };
 use crate::rpc::types::{
     LightClientBootstrapRequest, LightClientUpdatesByRangeRequest, MAX_REQUEST_BLOB_SIDECARS,
-    MAX_REQUEST_BLOCKS, MetaDataResponse, RpcRequest, RpcResponse,
+    MAX_REQUEST_BLOCKS, MAX_REQUEST_BLOCKS_DENEB, MetaDataResponse, RpcRequest, RpcResponse,
     compute_max_request_blob_sidecars,
 };
 use crate::rpc::varint::{read_varint, write_varint};
@@ -103,6 +109,9 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
         if matches!(method, RpcMethod::MetaDataV1) {
             return Ok(RpcRequest::MetaDataV1);
         }
+        if matches!(method, RpcMethod::MetaDataV3) {
+            return Ok(RpcRequest::MetaDataV3);
+        }
         // Light-client methods with no request body.
         if matches!(method, RpcMethod::LightClientFinalityUpdate) {
             return Ok(RpcRequest::LightClientFinalityUpdate);
@@ -138,6 +147,8 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
         let mut blocks: Vec<E::SignedBeaconBlock> = Vec::new();
         let mut lc_updates: Vec<E::AltairLightClientUpdate> = Vec::new();
         let mut blob_sidecars: Vec<BlobSidecar> = Vec::new();
+        let mut data_column_sidecars: Vec<DataColumnSidecar<4096, 4>> = Vec::new();
+        let mut by_head_blocks: Vec<E::SignedBeaconBlock> = Vec::new();
         let mut first_response: Option<RpcResponse<E>> = None;
 
         loop {
@@ -197,6 +208,15 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
                         "blob sidecar chunk has non-deneb context bytes",
                     ));
                 }
+                // For data-column sidecar methods, context bytes MUST be Fulu
+                // (EIP-7594 columns only exist from Fulu). Per `specs/fulu/p2p-interface.md`.
+                RpcMethod::DataColumnSidecarsByRange | RpcMethod::DataColumnSidecarsByRoot
+                    if !matches!(chunk_fork, Some(Fork::Fulu)) =>
+                {
+                    return Err(io::Error::other(
+                        "data column sidecar chunk has non-fulu context bytes",
+                    ));
+                }
                 _ => {}
             }
 
@@ -206,6 +226,12 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
                     let s = read_ssz_snappy_payload::<_, Status>(io, 84).await?;
                     first_response = Some(RpcResponse::Status(s));
                     break; // single-response method
+                }
+                // Status v2 (Fulu): v1 fields + earliest_available_slot(8) = 92 bytes.
+                RpcMethod::StatusV2 => {
+                    let s = read_ssz_snappy_payload::<_, StatusV2>(io, 92).await?;
+                    first_response = Some(RpcResponse::StatusV2(s));
+                    break;
                 }
                 RpcMethod::Goodbye => {
                     let v = read_ssz_snappy_payload::<_, u64>(io, 8).await?;
@@ -230,6 +256,13 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
                 RpcMethod::MetaDataV1 => {
                     let m = read_ssz_snappy_payload::<_, MetaData>(io, 16).await?;
                     first_response = Some(RpcResponse::MetaData(MetaDataResponse::V1(m)));
+                    break;
+                }
+                // MetaData v3 (fulu): v2 fields + custody_group_count(8). Altair
+                // MetaData minimum is 17 bytes; v3 adds 8 → up to 64-byte ceiling.
+                RpcMethod::MetaDataV3 => {
+                    let m = read_ssz_snappy_payload::<_, MetaDataV3>(io, 64).await?;
+                    first_response = Some(RpcResponse::MetaData(MetaDataResponse::V3(m)));
                     break;
                 }
                 RpcMethod::BlocksByRange | RpcMethod::BlocksByRoot => {
@@ -372,6 +405,96 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
                     blob_sidecars.push(sidecar);
                     // Continue reading chunks.
                 }
+                // Data-column sidecar streaming: each success chunk is one
+                // DataColumnSidecar. Context bytes MUST be Fulu (validated above).
+                // Per `specs/fulu/p2p-interface.md`.
+                RpcMethod::DataColumnSidecarsByRange | RpcMethod::DataColumnSidecarsByRoot => {
+                    if data_column_sidecars.len()
+                        >= crate::rpc::types::MAX_REQUEST_DATA_COLUMN_SIDECARS as usize
+                    {
+                        return Err(io::Error::other(
+                            "response exceeds MAX_REQUEST_DATA_COLUMN_SIDECARS",
+                        ));
+                    }
+                    let sidecar = read_ssz_snappy_payload::<_, DataColumnSidecar<4096, 4>>(
+                        io,
+                        MAX_DATA_COLUMN_SIDECAR_SSZ_BYTES,
+                    )
+                    .await?;
+                    data_column_sidecars.push(sidecar);
+                    // Continue reading chunks.
+                }
+                // BeaconBlocksByHead streaming: each success chunk is one
+                // SignedBeaconBlock, decoded per the chunk's fork context bytes.
+                // Per `specs/fulu/p2p-interface.md` (`BeaconBlocksByHead v1`).
+                RpcMethod::BeaconBlocksByHead => {
+                    if by_head_blocks.len() >= MAX_REQUEST_BLOCKS_DENEB as usize {
+                        return Err(io::Error::other(
+                            "response exceeds MAX_REQUEST_BLOCKS_DENEB",
+                        ));
+                    }
+                    let block = match chunk_fork {
+                        Some(Fork::Fulu) => {
+                            let inner = read_ssz_snappy_payload::<_, E::FuluSignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::fulu_into_signed_block(inner)
+                        }
+                        Some(Fork::Electra) => {
+                            let inner = read_ssz_snappy_payload::<_, E::ElectraSignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::electra_into_signed_block(inner)
+                        }
+                        Some(Fork::Deneb) => {
+                            let inner = read_ssz_snappy_payload::<_, E::DenebSignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::deneb_into_signed_block(inner)
+                        }
+                        Some(Fork::Capella) => {
+                            let inner = read_ssz_snappy_payload::<_, E::CapellaSignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::capella_into_signed_block(inner)
+                        }
+                        Some(Fork::Bellatrix) => {
+                            let inner =
+                                read_ssz_snappy_payload::<_, E::BellatrixSignedBeaconBlock>(
+                                    io,
+                                    MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                                )
+                                .await?;
+                            E::bellatrix_into_signed_block(inner)
+                        }
+                        Some(Fork::Altair) => {
+                            let inner = read_ssz_snappy_payload::<_, E::AltairSignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::altair_into_signed_block(inner)
+                        }
+                        Some(Fork::Phase0) | None => {
+                            let inner = read_ssz_snappy_payload::<_, E::Phase0SignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::phase0_into_signed_block(inner)
+                        }
+                    };
+                    by_head_blocks.push(block);
+                    // Continue reading chunks.
+                }
             }
         }
 
@@ -389,6 +512,10 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
             RpcMethod::BlobSidecarsByRange | RpcMethod::BlobSidecarsByRoot => {
                 Ok(RpcResponse::BlobSidecars(blob_sidecars))
             }
+            RpcMethod::DataColumnSidecarsByRange | RpcMethod::DataColumnSidecarsByRoot => {
+                Ok(RpcResponse::DataColumnSidecars(data_column_sidecars))
+            }
+            RpcMethod::BeaconBlocksByHead => Ok(RpcResponse::BeaconBlocksByHead(by_head_blocks)),
             _ => {
                 // Single-response method with zero chunks.
                 Err(io::Error::other(
@@ -414,6 +541,7 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
             method,
             RpcMethod::MetaData
                 | RpcMethod::MetaDataV1
+                | RpcMethod::MetaDataV3
                 | RpcMethod::LightClientFinalityUpdate
                 | RpcMethod::LightClientOptimisticUpdate
         ) {
@@ -445,6 +573,10 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
                 io.write_all(&[0]).await?;
                 write_ssz_snappy(io, &s.as_ssz_bytes()).await?;
             }
+            RpcResponse::StatusV2(s) => {
+                io.write_all(&[0]).await?;
+                write_ssz_snappy(io, &s.as_ssz_bytes()).await?;
+            }
             RpcResponse::Goodbye(v) => {
                 io.write_all(&[0]).await?;
                 write_ssz_snappy(io, &v.as_ssz_bytes()).await?;
@@ -462,6 +594,9 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
                     }
                     MetaDataResponse::V2(v2) => {
                         write_ssz_snappy(io, &v2.as_ssz_bytes()).await?;
+                    }
+                    MetaDataResponse::V3(v3) => {
+                        write_ssz_snappy(io, &v3.as_ssz_bytes()).await?;
                     }
                 }
             }
@@ -547,6 +682,51 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
                     io.write_all(&fc.fork_digest_for(Fork::Deneb).into_inner())
                         .await?;
                     write_ssz_snappy(io, &sidecar.as_ssz_bytes()).await?;
+                }
+            }
+            // Data-column sidecars: each is one success chunk with Fulu context
+            // bytes (columns only exist from Fulu). Per `specs/fulu/p2p-interface.md`.
+            RpcResponse::DataColumnSidecars(sidecars) => {
+                let fc = self.fork_context.as_deref().ok_or_else(|| {
+                    io::Error::other("missing fork context: cannot encode context bytes")
+                })?;
+                for sidecar in &sidecars {
+                    io.write_all(&[0]).await?;
+                    io.write_all(&fc.fork_digest_for(Fork::Fulu).into_inner())
+                        .await?;
+                    write_ssz_snappy(io, &sidecar.as_ssz_bytes()).await?;
+                }
+            }
+            // BeaconBlocksByHead: each block is one success chunk with the
+            // block's own fork context bytes (mirrors BlocksByRange/Root).
+            // Per `specs/fulu/p2p-interface.md` (`BeaconBlocksByHead v1`).
+            RpcResponse::BeaconBlocksByHead(blocks) => {
+                let fc = self.fork_context.as_deref().ok_or_else(|| {
+                    io::Error::other("missing fork context: cannot encode context bytes")
+                })?;
+                for block in &blocks {
+                    let (fork, ssz) = if let Some(inner) = E::unwrap_fulu_signed_block(block) {
+                        (Fork::Fulu, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_electra_signed_block(block) {
+                        (Fork::Electra, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_deneb_signed_block(block) {
+                        (Fork::Deneb, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_capella_signed_block(block) {
+                        (Fork::Capella, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(block) {
+                        (Fork::Bellatrix, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_altair_signed_block(block) {
+                        (Fork::Altair, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_phase0_signed_block(block) {
+                        (Fork::Phase0, inner.as_ssz_bytes())
+                    } else {
+                        return Err(io::Error::other(
+                            "cannot encode context bytes: block variant has no known fork",
+                        ));
+                    };
+                    io.write_all(&[0]).await?;
+                    io.write_all(&fc.fork_digest_for(fork).into_inner()).await?;
+                    write_ssz_snappy(io, &ssz).await?;
                 }
             }
         }
@@ -691,9 +871,10 @@ async fn write_ssz_snappy<W: AsyncWrite + Unpin>(w: &mut W, ssz: &[u8]) -> io::R
 fn encode_request_ssz(req: RpcRequest) -> io::Result<Vec<u8>> {
     Ok(match req {
         RpcRequest::Status(s) => s.as_ssz_bytes(),
+        RpcRequest::StatusV2(s) => s.as_ssz_bytes(),
         RpcRequest::Goodbye(v) => v.as_ssz_bytes(),
         RpcRequest::Ping(v) => v.as_ssz_bytes(),
-        RpcRequest::MetaData | RpcRequest::MetaDataV1 => Vec::new(),
+        RpcRequest::MetaData | RpcRequest::MetaDataV1 | RpcRequest::MetaDataV3 => Vec::new(),
         RpcRequest::BlocksByRange(r) => r.as_ssz_bytes(),
         RpcRequest::BlocksByRoot(r) => r.as_ssz_bytes(),
         // LightClientBootstrap carries a Root (32 bytes) as the request body.
@@ -714,6 +895,12 @@ fn encode_request_ssz(req: RpcRequest) -> io::Result<Vec<u8>> {
         RpcRequest::BlobSidecarsByRange(r) => r.as_ssz_bytes(),
         // BlobSidecarsByRoot: bare List[BlobIdentifier, N] (transparent SSZ, no offset).
         RpcRequest::BlobSidecarsByRoot(r) => r.as_ssz_bytes(),
+        // DataColumnSidecarsByRange: SSZ container {start_slot, count, columns}.
+        RpcRequest::DataColumnSidecarsByRange(r) => r.as_ssz_bytes(),
+        // DataColumnSidecarsByRoot: List[DataColumnsByRootIdentifier, N] (container list, offset-prefixed).
+        RpcRequest::DataColumnSidecarsByRoot(r) => r.as_ssz_bytes(),
+        // BeaconBlocksByHead: SSZ container {beacon_root, count} = 40 bytes.
+        RpcRequest::BeaconBlocksByHead(r) => r.as_ssz_bytes(),
     })
 }
 
@@ -735,8 +922,14 @@ fn decode_request(method: &RpcMethod, bytes: &[u8]) -> io::Result<RpcRequest> {
                 .map_err(|e| io::Error::other(format!("ssz decode u64: {e}")))?;
             Ok(RpcRequest::Ping(v))
         }
+        RpcMethod::StatusV2 => {
+            let s = StatusV2::from_ssz_bytes(bytes)
+                .map_err(|e| io::Error::other(format!("ssz decode StatusV2: {e}")))?;
+            Ok(RpcRequest::StatusV2(s))
+        }
         RpcMethod::MetaData => Ok(RpcRequest::MetaData),
         RpcMethod::MetaDataV1 => Ok(RpcRequest::MetaDataV1),
+        RpcMethod::MetaDataV3 => Ok(RpcRequest::MetaDataV3),
         RpcMethod::BlocksByRange => {
             let r = BeaconBlocksByRangeRequest::from_ssz_bytes(bytes)
                 .map_err(|e| io::Error::other(format!("ssz decode BlocksByRange: {e}")))?;
@@ -788,6 +981,30 @@ fn decode_request(method: &RpcMethod, bytes: &[u8]) -> io::Result<RpcRequest> {
             let r = BlobSidecarsByRootRequest::<MAX_REQUEST_BLOB_SIDECARS>::from_ssz_bytes(bytes)
                 .map_err(|e| io::Error::other(format!("ssz decode BlobSidecarsByRoot: {e}")))?;
             Ok(RpcRequest::BlobSidecarsByRoot(r))
+        }
+        // DataColumnSidecarsByRange: SSZ container {start_slot, count, columns}.
+        RpcMethod::DataColumnSidecarsByRange => {
+            let r =
+                DataColumnSidecarsByRangeRequest::<{ crate::rpc::types::NUMBER_OF_COLUMNS }>::from_ssz_bytes(bytes)
+                    .map_err(|e| {
+                        io::Error::other(format!("ssz decode DataColumnSidecarsByRange: {e}"))
+                    })?;
+            Ok(RpcRequest::DataColumnSidecarsByRange(r))
+        }
+        // DataColumnSidecarsByRoot: List[DataColumnsByRootIdentifier, N] (container list).
+        RpcMethod::DataColumnSidecarsByRoot => {
+            let r = DataColumnSidecarsByRootRequest::<
+                MAX_REQUEST_BLOCKS_DENEB,
+                { crate::rpc::types::NUMBER_OF_COLUMNS },
+            >::from_ssz_bytes(bytes)
+            .map_err(|e| io::Error::other(format!("ssz decode DataColumnSidecarsByRoot: {e}")))?;
+            Ok(RpcRequest::DataColumnSidecarsByRoot(r))
+        }
+        // BeaconBlocksByHead: SSZ container {beacon_root, count} = 40 bytes.
+        RpcMethod::BeaconBlocksByHead => {
+            let r = BeaconBlocksByHeadRequest::from_ssz_bytes(bytes)
+                .map_err(|e| io::Error::other(format!("ssz decode BeaconBlocksByHead: {e}")))?;
+            Ok(RpcRequest::BeaconBlocksByHead(r))
         }
     }
 }

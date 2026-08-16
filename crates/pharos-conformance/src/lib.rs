@@ -22,6 +22,7 @@ pub mod genesis;
 pub mod kzg;
 pub mod light_client;
 pub mod merkle_proof;
+pub mod networking;
 pub mod operations;
 pub mod optimistic;
 pub mod random;
@@ -333,6 +334,17 @@ fn enumerate_row(
 
         // ── fulu/kzg ──────────────────────────────────────────────────────────
         ("fulu", "kzg", "-") => Some(fulu_kzg::enumerate_fulu_kzg(root, row_ordinal)),
+
+        // ── fulu/networking ───────────────────────────────────────────────────
+        // Runs the DAS-core custody helpers (`get_custody_groups`,
+        // `compute_columns_for_custody_group`) for real; gossip-validator
+        // condition fixtures are enumerated as skips (need a live harness).
+        ("fulu", "networking", preset) => Some(networking::enumerate_networking(
+            root,
+            "fulu",
+            preset,
+            row_ordinal,
+        )),
 
         // ── not yet implemented / future placeholder ──────────────────────────
         // Returning None keeps the row as Row::placeholder in the report.

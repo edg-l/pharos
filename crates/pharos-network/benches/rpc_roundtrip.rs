@@ -15,7 +15,8 @@ use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
 
 use pharos_network::host::{
-    BlobProvider, BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
+    BlobProvider, BlockProvider, DataColumnProvider, ForkContext, GossipValidator, GossipVerdict,
+    LightClientProvider,
 };
 use pharos_network::scoring::NoopScorer;
 use pharos_network::types::{Fork, SubnetId};
@@ -246,6 +247,23 @@ impl BlobProvider<E> for BenchHost {
         Vec::new()
     }
     fn blobs_by_root(&self, _ids: &[(Root, u64)]) -> Vec<pharos_types::deneb::BlobSidecar> {
+        Vec::new()
+    }
+}
+
+impl DataColumnProvider<E> for BenchHost {
+    fn data_columns_by_range(
+        &self,
+        _start_slot: Slot,
+        _count: u64,
+        _columns: &[u64],
+    ) -> Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>> {
+        Vec::new()
+    }
+    fn data_columns_by_root(
+        &self,
+        _ids: &[(Root, Vec<u64>)],
+    ) -> Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>> {
         Vec::new()
     }
 }

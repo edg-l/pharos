@@ -167,6 +167,19 @@ rpc_behaviour_wrapper!(RpcLcOptimisticUpdateBehaviour, RpcLcOptimisticUpdateEven
 // Deneb blob-sidecar req-resp behaviours per `specs/deneb/p2p-interface.md`.
 rpc_behaviour_wrapper!(RpcBlobSidecarsByRangeBehaviour, RpcBlobSidecarsByRangeEvent);
 rpc_behaviour_wrapper!(RpcBlobSidecarsByRootBehaviour, RpcBlobSidecarsByRootEvent);
+// Fulu data-column-sidecar + by-head req-resp behaviours per `specs/fulu/p2p-interface.md`.
+rpc_behaviour_wrapper!(
+    RpcDataColumnSidecarsByRangeBehaviour,
+    RpcDataColumnSidecarsByRangeEvent
+);
+rpc_behaviour_wrapper!(
+    RpcDataColumnSidecarsByRootBehaviour,
+    RpcDataColumnSidecarsByRootEvent
+);
+rpc_behaviour_wrapper!(RpcBeaconBlocksByHeadBehaviour, RpcBeaconBlocksByHeadEvent);
+// Fulu Status v2 + MetaData v3 control-plane behaviours (dual/tri-handle).
+rpc_behaviour_wrapper!(RpcStatusV2Behaviour, RpcStatusV2Event);
+rpc_behaviour_wrapper!(RpcMetaDataV3Behaviour, RpcMetaDataV3Event);
 
 // ── PharosBehaviourEvent ──────────────────────────────────────────────────────
 
@@ -190,6 +203,11 @@ where
     RpcLcOptimisticUpdate(request_response::Event<RpcRequest, RpcResponse<E>>),
     RpcBlobSidecarsByRange(request_response::Event<RpcRequest, RpcResponse<E>>),
     RpcBlobSidecarsByRoot(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcDataColumnSidecarsByRange(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcDataColumnSidecarsByRoot(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcBeaconBlocksByHead(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcStatusV2(request_response::Event<RpcRequest, RpcResponse<E>>),
+    RpcMetaDataV3(request_response::Event<RpcRequest, RpcResponse<E>>),
     /// Boxed to keep the enum size reasonable (`identify::Event` is large).
     Identify(Box<identify::Event>),
     Ping(ping::Event),
@@ -321,6 +339,51 @@ where
     }
 }
 
+impl<E: BeaconSpec> From<RpcDataColumnSidecarsByRangeEvent<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcDataColumnSidecarsByRangeEvent<E>) -> Self {
+        PharosBehaviourEvent::RpcDataColumnSidecarsByRange(e.0)
+    }
+}
+
+impl<E: BeaconSpec> From<RpcDataColumnSidecarsByRootEvent<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcDataColumnSidecarsByRootEvent<E>) -> Self {
+        PharosBehaviourEvent::RpcDataColumnSidecarsByRoot(e.0)
+    }
+}
+
+impl<E: BeaconSpec> From<RpcBeaconBlocksByHeadEvent<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcBeaconBlocksByHeadEvent<E>) -> Self {
+        PharosBehaviourEvent::RpcBeaconBlocksByHead(e.0)
+    }
+}
+
+impl<E: BeaconSpec> From<RpcStatusV2Event<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcStatusV2Event<E>) -> Self {
+        PharosBehaviourEvent::RpcStatusV2(e.0)
+    }
+}
+
+impl<E: BeaconSpec> From<RpcMetaDataV3Event<E>> for PharosBehaviourEvent<E>
+where
+    RpcResponse<E>: std::fmt::Debug,
+{
+    fn from(e: RpcMetaDataV3Event<E>) -> Self {
+        PharosBehaviourEvent::RpcMetaDataV3(e.0)
+    }
+}
+
 impl<E: BeaconSpec> From<identify::Event> for PharosBehaviourEvent<E>
 where
     RpcResponse<E>: std::fmt::Debug,
@@ -379,6 +442,14 @@ where
     /// Deneb blob-sidecar req-resp behaviours per `specs/deneb/p2p-interface.md`.
     pub rpc_blob_sidecars_by_range: RpcBlobSidecarsByRangeBehaviour<E>,
     pub rpc_blob_sidecars_by_root: RpcBlobSidecarsByRootBehaviour<E>,
+    /// Fulu data-column-sidecar + by-head req-resp behaviours per
+    /// `specs/fulu/p2p-interface.md`.
+    pub rpc_data_column_sidecars_by_range: RpcDataColumnSidecarsByRangeBehaviour<E>,
+    pub rpc_data_column_sidecars_by_root: RpcDataColumnSidecarsByRootBehaviour<E>,
+    pub rpc_beacon_blocks_by_head: RpcBeaconBlocksByHeadBehaviour<E>,
+    /// Fulu Status v2 + MetaData v3 control-plane behaviours (dual/tri-handle).
+    pub rpc_status_v2: RpcStatusV2Behaviour<E>,
+    pub rpc_metadata_v3: RpcMetaDataV3Behaviour<E>,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
 }

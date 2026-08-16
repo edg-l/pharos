@@ -22,9 +22,15 @@ pub use discovery::handle::DiscoveryHandle;
 pub use discv5::enr::NodeId;
 pub use error::NetworkError;
 pub use handle::{NetworkCommandSender, NetworkHandle};
-pub use host::{BlobProvider, BlockProvider, ForkContext, GossipValidator, GossipVerdict, Host};
+pub use host::{
+    BlobProvider, BlockProvider, DataColumnProvider, ForkContext, GossipValidator, GossipVerdict,
+    Host,
+};
 pub use network::{Network, NetworkBuilder, NetworkCommand, NetworkEvent};
 pub use rpc::types::{RpcRequest, RpcResponse};
 pub use scoring::{NoopScorer, PeerScorer, RealScorer, ScoreEvent};
-pub use topics::{GossipTopic, GossipTopicKind, compute_subnet_for_blob_sidecar};
+pub use topics::{
+    GossipTopic, GossipTopicKind, compute_subnet_for_blob_sidecar,
+    compute_subnet_for_data_column_sidecar,
+};
 pub use types::{ConnectionDirection, DisconnectReason, ForkDigest, PeerInfo, PeerState, SubnetId};
