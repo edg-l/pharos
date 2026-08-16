@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use pharos_types::{
     BeaconStateView, EthSpec, PayloadStatus,
-    phase0::{Epoch, Root, Slot},
+    phase0::{Epoch, Root, Slot, ValidatorIndex},
     views::BeaconBlockView,
 };
 use pharos_utils::metrics::METRIC_FORK_CHOICE_GET_HEAD_SECONDS;
@@ -116,23 +116,52 @@ where
 
 // ── Attestation score / proposer score ───────────────────────────────────────
 
-/// `get_attestation_score` per `specs/phase0/fork-choice.md:280-299`.
-fn get_attestation_score<E: EthSpec>(store: &Store<E>, root: Root, state: &E::BeaconState) -> u64
+/// The active-validator index set for the justified-checkpoint state.
+///
+/// This set is invariant within a single `get_head` / `get_proposer_head` call:
+/// every weight helper resolves the SAME `state =
+/// store.checkpoint_states[store.justified_checkpoint]`, so both the epoch
+/// (`get_current_epoch(state)`) and the resulting active set depend only on that
+/// one state and never vary by `root`. Computing it once and reusing it across
+/// roots avoids rebuilding an O(validators) `Vec` per weighed root.
+fn active_indices_for_justified<E: EthSpec>(store: &Store<E>) -> Vec<ValidatorIndex>
 where
     E::BeaconState: BeaconStateView,
-    E::BeaconBlock: BeaconBlockView,
 {
     use pharos_stf::phase0::accessors::get_active_validator_indices;
     use pharos_stf::phase0::accessors::get_current_epoch;
 
+    let state = match store.checkpoint_states.get(&store.justified_checkpoint) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let current_epoch = get_current_epoch::<E>(state);
+    get_active_validator_indices::<E>(state, current_epoch)
+}
+
+/// `get_attestation_score` per `specs/phase0/fork-choice.md:280-299`.
+///
+/// `active_indices` MUST be the active-validator index set of `state` for
+/// `get_current_epoch(state)` (see `active_indices_for_justified`); callers pass
+/// it in so it is built once per `get_head` / `get_proposer_head` call rather
+/// than rebuilt per root.
+fn get_attestation_score<E: EthSpec>(
+    store: &Store<E>,
+    root: Root,
+    state: &E::BeaconState,
+    active_indices: &[ValidatorIndex],
+) -> u64
+where
+    E::BeaconState: BeaconStateView,
+    E::BeaconBlock: BeaconBlockView,
+{
     let block_slot = store.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0));
 
-    let current_epoch = get_current_epoch::<E>(state);
     // Use the borrowing `validator(idx)` accessor, NOT `validators().get(idx)`:
     // the latter clones the entire validator registry on every call, which made
     // this an O(n^2) hot path (run once per active validator, per get_head).
-    get_active_validator_indices::<E>(state, current_epoch)
-        .into_iter()
+    active_indices
+        .iter()
         .filter(|i| !state.validator(i.0 as usize).is_none_or(|v| v.slashed))
         .filter(|i| {
             store.latest_messages.contains_key(i)
@@ -182,11 +211,30 @@ where
     E::BeaconState: BeaconStateView,
     E::BeaconBlock: BeaconBlockView,
 {
+    let active_indices = active_indices_for_justified(store);
+    get_weight_with(store, root, &active_indices)
+}
+
+/// `get_weight` with the active-validator index set hoisted by the caller.
+///
+/// Identical result to `get_weight`; `active_indices` MUST be
+/// `active_indices_for_justified(store)`. Splitting it out lets a single
+/// `get_proposer_head` call build the active set once and reuse it across the
+/// (head, parent) roots it weighs.
+fn get_weight_with<E: EthSpec>(
+    store: &Store<E>,
+    root: Root,
+    active_indices: &[ValidatorIndex],
+) -> u64
+where
+    E::BeaconState: BeaconStateView,
+    E::BeaconBlock: BeaconBlockView,
+{
     let state = match store.checkpoint_states.get(&store.justified_checkpoint) {
         Some(s) => s,
         None => return 0,
     };
-    let attestation_score = get_attestation_score(store, root, state);
+    let attestation_score = get_attestation_score(store, root, state, active_indices);
 
     if store.proposer_boost_root == Root::default() {
         return attestation_score;
@@ -402,6 +450,10 @@ where
 
     let blocks = get_filtered_block_tree(store);
     let children_idx = children_index::<E>(&blocks);
+    // Hoist the active-validator index set once: it is invariant across every
+    // weighed root within this call (see `active_indices_for_justified`), so
+    // `get_weight` need not rebuild it per child.
+    let active_indices = active_indices_for_justified(store);
     // Memoize weights for the duration of this call: weights are constant within
     // a single store snapshot, but `max_by_key` would otherwise recompute
     // `get_weight` (itself O(validators)) once per child per descent level.
@@ -419,7 +471,7 @@ where
             .max_by_key(|root| {
                 let w = *weights
                     .entry(*root)
-                    .or_insert_with(|| get_weight::<E>(store, *root));
+                    .or_insert_with(|| get_weight_with::<E>(store, *root, &active_indices));
                 (w, *root)
             })
             .expect("children index never stores empty child lists");
@@ -507,17 +559,53 @@ where
     E::BeaconState: BeaconStateView,
     E::BeaconBlock: BeaconBlockView,
 {
+    let active_indices = active_indices_for_justified(store);
+    let mut weights = HashMap::new();
+    is_head_weak_with(store, head_root, &active_indices, &mut weights)
+}
+
+/// `is_head_weak` with the active-validator set hoisted and a per-call weight
+/// memo threaded by the caller. Identical result to `is_head_weak`.
+fn is_head_weak_with<E: EthSpec>(
+    store: &Store<E>,
+    head_root: Root,
+    active_indices: &[ValidatorIndex],
+    weights: &mut HashMap<Root, u64>,
+) -> bool
+where
+    E::BeaconState: BeaconStateView,
+    E::BeaconBlock: BeaconBlockView,
+{
     let state = match store.checkpoint_states.get(&store.justified_checkpoint) {
         Some(s) => s,
         None => return false,
     };
     let reorg_threshold = calculate_committee_fraction::<E>(state, REORG_HEAD_WEIGHT_THRESHOLD);
-    let head_weight = get_weight::<E>(store, head_root);
+    let head_weight = *weights
+        .entry(head_root)
+        .or_insert_with(|| get_weight_with::<E>(store, head_root, active_indices));
     head_weight < reorg_threshold
 }
 
 /// `is_parent_strong` per `specs/phase0/fork-choice.md:586-592`.
 pub fn is_parent_strong<E: EthSpec>(store: &Store<E>, root: Root) -> bool
+where
+    E::BeaconState: BeaconStateView,
+    E::BeaconBlock: BeaconBlockView,
+{
+    let active_indices = active_indices_for_justified(store);
+    let mut weights = HashMap::new();
+    is_parent_strong_with(store, root, &active_indices, &mut weights)
+}
+
+/// `is_parent_strong` with the active-validator set hoisted and a per-call
+/// weight memo threaded by the caller. Identical result to `is_parent_strong`.
+fn is_parent_strong_with<E: EthSpec>(
+    store: &Store<E>,
+    root: Root,
+    active_indices: &[ValidatorIndex],
+    weights: &mut HashMap<Root, u64>,
+) -> bool
 where
     E::BeaconState: BeaconStateView,
     E::BeaconBlock: BeaconBlockView,
@@ -531,7 +619,9 @@ where
         Some(b) => b.parent_root(),
         None => return false,
     };
-    let parent_weight = get_weight::<E>(store, parent_root);
+    let parent_weight = *weights
+        .entry(parent_root)
+        .or_insert_with(|| get_weight_with::<E>(store, parent_root, active_indices));
     parent_weight > parent_threshold
 }
 
@@ -593,8 +683,15 @@ where
         return head_root;
     }
 
-    let head_weak = is_head_weak::<E>(store, head_root);
-    let parent_strong = is_parent_strong::<E>(store, head_root);
+    // Hoist the active-validator index set once (invariant across both weighed
+    // roots — see `active_indices_for_justified`) and share a per-call weight
+    // memo across the two weight-consuming predicates. `is_head_weak` weighs
+    // `head_root`; `is_parent_strong` weighs `parent_root`; without sharing,
+    // each rebuilds the O(validators) active set and recomputes its weight.
+    let active_indices = active_indices_for_justified(store);
+    let mut weights: HashMap<Root, u64> = HashMap::new();
+    let head_weak = is_head_weak_with::<E>(store, head_root, &active_indices, &mut weights);
+    let parent_strong = is_parent_strong_with::<E>(store, head_root, &active_indices, &mut weights);
     let proposer_equivocation = is_proposer_equivocation::<E>(store, head_root);
 
     // Standard proposer re-org.
