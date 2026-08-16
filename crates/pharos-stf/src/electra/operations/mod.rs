@@ -7,6 +7,7 @@ pub mod block_header;
 pub mod consolidation_request;
 pub mod deposit;
 pub mod deposit_request;
+pub mod execution_payload;
 pub mod proposer_slashing;
 pub mod sync_aggregate;
 pub mod voluntary_exit;
@@ -20,6 +21,7 @@ pub use consolidation_request::{
 };
 pub use deposit::process_deposit_electra;
 pub use deposit_request::process_deposit_request;
+pub use execution_payload::process_execution_payload as process_execution_payload_electra;
 pub use proposer_slashing::process_proposer_slashing_electra;
 pub use sync_aggregate::process_sync_aggregate_electra;
 pub use voluntary_exit::process_voluntary_exit_electra;

@@ -179,6 +179,45 @@ pub trait ExecutionEngine: Send + Sync + 'static {
         })
     }
 
+    /// `notify_new_payload` for Electra payloads (with versioned hashes, parent root,
+    /// and execution requests per EIP-7685).
+    ///
+    /// **CONSENSUS-SAFETY WARNING**: any `ExecutionEngine` that talks to a REAL
+    /// execution client MUST override this method to call `engine_newPayloadV4`
+    /// with the full Electra payload INCLUDING `execution_requests`. The default
+    /// ignores `execution_requests` and delegates to `notify_new_payload_deneb`.
+    /// The default is only safe for test/null engines. The production
+    /// `ExecutionEngineHandle` in `pharos-node` overrides this for Electra (M12-Engine).
+    fn notify_new_payload_electra<
+        const MAX_BYTES_PER_TRANSACTION: u64,
+        const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+        const BYTES_PER_LOGS_BLOOM: u64,
+        const MAX_EXTRA_DATA_BYTES: u64,
+        const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+        const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
+        const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,
+        const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64,
+    >(
+        &self,
+        payload: &DenebExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+        >,
+        versioned_hashes: &[[u8; 32]],
+        parent_beacon_block_root: Root,
+        _execution_requests: &pharos_types::electra::requests::ExecutionRequests<
+            MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+            MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+            MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+        >,
+    ) -> PayloadVerificationStatus {
+        // Default: ignore execution_requests, delegate to Deneb V3.
+        self.notify_new_payload_deneb(payload, versioned_hashes, parent_beacon_block_root)
+    }
+
     /// Retrieve blob data from the local EL blob pool for the given versioned hashes.
     ///
     /// Returns `None` for each missing blob (preserves request order).  Used as a

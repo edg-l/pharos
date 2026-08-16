@@ -5293,10 +5293,10 @@ fn electra_ops_walk_opts() -> WalkOpts {
 
 /// Descriptor table for electra operations — mainnet preset.
 ///
-/// Phase 2b+2c+3a: `block_header`, `proposer_slashing`, `deposit`, `voluntary_exit`,
-/// `sync_aggregate`, `attestation`, `attester_slashing`, `deposit_request` sub-ops
-/// registered. Remaining sub-ops (execution_payload, withdrawals,
-/// withdrawal_request, consolidation_request) land in later phases.
+/// Phase 2b+2c+3a+3b+3c+3d+3e: `block_header`, `proposer_slashing`, `deposit`,
+/// `voluntary_exit`, `sync_aggregate`, `attestation`, `attester_slashing`,
+/// `deposit_request`, `withdrawal_request`, `consolidation_request`,
+/// `withdrawals`, `execution_payload` sub-ops registered.
 #[allow(clippy::type_complexity)]
 fn electra_op_table_mainnet() -> Vec<(
     &'static str,
@@ -5313,7 +5313,8 @@ fn electra_op_table_mainnet() -> Vec<(
     use pharos_stf::electra::operations::{
         process_attestation_electra, process_attester_slashing_electra,
         process_block_header_electra, process_consolidation_request, process_deposit_electra,
-        process_deposit_request, process_proposer_slashing_electra, process_sync_aggregate_electra,
+        process_deposit_request, process_execution_payload_electra,
+        process_proposer_slashing_electra, process_sync_aggregate_electra,
         process_voluntary_exit_electra, process_withdrawal_request,
     };
     use pharos_types::MainnetEthSpec as E;
@@ -5911,6 +5912,90 @@ fn electra_op_table_mainnet() -> Vec<(
                 )
             }),
         ),
+        // execution_payload: EIP-7691 blob-count cap + EIP-7685 execution_requests.
+        (
+            "execution_payload",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::FixedExecutionEngine;
+                use pharos_types::electra::MainnetBeaconBlockBody;
+
+                let execution_valid = read_execution_valid(&case_dir);
+                let pre_inner = match load_ssz_snappy::<pharos_types::electra::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::electra::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let body =
+                    match load_ssz_snappy::<MainnetBeaconBlockBody>(&case_dir, "body.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let engine = FixedExecutionEngine(execution_valid);
+                let mut pre = pre_inner;
+                let result =
+                    process_execution_payload_electra::<
+                        16,                // MAX_PROPOSER_SLASHINGS
+                        1,                 // MAX_ATTESTER_SLASHINGS_ELECTRA
+                        8,                 // MAX_ATTESTATIONS_ELECTRA
+                        16,                // MAX_DEPOSITS
+                        16,                // MAX_VOLUNTARY_EXITS
+                        2048,              // MAX_VALIDATORS_PER_COMMITTEE
+                        33,                // DEPOSIT_PROOF_LENGTH
+                        512,               // SYNC_COMMITTEE_SIZE mainnet
+                        1_073_741_824,     // MAX_BYTES_PER_TRANSACTION
+                        1_048_576,         // MAX_TRANSACTIONS_PER_PAYLOAD
+                        256,               // BYTES_PER_LOGS_BLOOM
+                        32,                // MAX_EXTRA_DATA_BYTES
+                        16,                // MAX_WITHDRAWALS_PER_PAYLOAD mainnet
+                        16,                // MAX_BLS_TO_EXECUTION_CHANGES
+                        4096,              // MAX_BLOB_COMMITMENTS_PER_BLOCK
+                        131072,            // MAX_AGGREGATION_BITS (2048 * 64) mainnet
+                        64,                // MAX_COMMITTEES_PER_SLOT mainnet
+                        8192,              // MAX_DEPOSIT_REQUESTS_PER_PAYLOAD
+                        16,                // MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD
+                        2,                 // MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD
+                        8192,              // SLOTS_PER_HISTORICAL_ROOT
+                        16_777_216,        // HISTORICAL_ROOTS_LIMIT
+                        2048,              // ETH1_DATA_VOTES_LIMIT
+                        1_099_511_627_776, // VALIDATOR_REGISTRY_LIMIT
+                        65536,             // EPOCHS_PER_HISTORICAL_VECTOR
+                        8192,              // EPOCHS_PER_SLASHINGS_VECTOR
+                        4,                 // JUSTIFICATION_BITS_LENGTH
+                        134_217_728,       // PENDING_DEPOSITS_LIMIT
+                        134_217_728,       // PENDING_PARTIAL_WITHDRAWALS_LIMIT mainnet
+                        262_144,           // PENDING_CONSOLIDATIONS_LIMIT mainnet
+                        E,
+                        FixedExecutionEngine,
+                    >(&mut pre, &body, &engine, &E::default_runtime_config());
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result.map(|_| ()),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "execution_payload",
+                )
+            }),
+        ),
         // withdrawals: EIP-7251 — partial-queue sweep + regular validator sweep.
         (
             "withdrawals",
@@ -5975,9 +6060,10 @@ fn electra_op_table_mainnet() -> Vec<(
 
 /// Descriptor table for electra operations — minimal preset.
 ///
-/// Phase 2b+2c+3a: same sub-op set as mainnet (block_header, proposer_slashing,
-/// deposit, voluntary_exit, sync_aggregate, attestation, attester_slashing,
-/// deposit_request).
+/// Phase 2b+2c+3a+3b+3c+3d+3e: same sub-op set as mainnet (block_header,
+/// proposer_slashing, deposit, voluntary_exit, sync_aggregate, attestation,
+/// attester_slashing, deposit_request, withdrawal_request, consolidation_request,
+/// withdrawals, execution_payload).
 #[allow(clippy::type_complexity)]
 fn electra_op_table_minimal() -> Vec<(
     &'static str,
@@ -5994,7 +6080,8 @@ fn electra_op_table_minimal() -> Vec<(
     use pharos_stf::electra::operations::{
         process_attestation_electra, process_attester_slashing_electra,
         process_block_header_electra, process_consolidation_request, process_deposit_electra,
-        process_deposit_request, process_proposer_slashing_electra, process_sync_aggregate_electra,
+        process_deposit_request, process_execution_payload_electra,
+        process_proposer_slashing_electra, process_sync_aggregate_electra,
         process_voluntary_exit_electra, process_withdrawal_request,
     };
     use pharos_types::MinimalEthSpec as E;
@@ -6589,6 +6676,90 @@ fn electra_op_table_minimal() -> Vec<(
                     post_bytes,
                     &case_name,
                     "consolidation_request",
+                )
+            }),
+        ),
+        // execution_payload: EIP-7691 blob-count cap + EIP-7685 execution_requests.
+        (
+            "execution_payload",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::FixedExecutionEngine;
+                use pharos_types::electra::MinimalBeaconBlockBody;
+
+                let execution_valid = read_execution_valid(&case_dir);
+                let pre_inner = match load_ssz_snappy::<pharos_types::electra::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::electra::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let body =
+                    match load_ssz_snappy::<MinimalBeaconBlockBody>(&case_dir, "body.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let engine = FixedExecutionEngine(execution_valid);
+                let mut pre = pre_inner;
+                let result =
+                    process_execution_payload_electra::<
+                        16,                // MAX_PROPOSER_SLASHINGS
+                        1,                 // MAX_ATTESTER_SLASHINGS_ELECTRA
+                        8,                 // MAX_ATTESTATIONS_ELECTRA
+                        16,                // MAX_DEPOSITS
+                        16,                // MAX_VOLUNTARY_EXITS
+                        2048,              // MAX_VALIDATORS_PER_COMMITTEE
+                        33,                // DEPOSIT_PROOF_LENGTH
+                        32,                // SYNC_COMMITTEE_SIZE minimal
+                        1_073_741_824,     // MAX_BYTES_PER_TRANSACTION
+                        1_048_576,         // MAX_TRANSACTIONS_PER_PAYLOAD
+                        256,               // BYTES_PER_LOGS_BLOOM
+                        32,                // MAX_EXTRA_DATA_BYTES
+                        4,                 // MAX_WITHDRAWALS_PER_PAYLOAD minimal
+                        16,                // MAX_BLS_TO_EXECUTION_CHANGES
+                        4096,              // MAX_BLOB_COMMITMENTS_PER_BLOCK
+                        8192,              // MAX_AGGREGATION_BITS (2048 * 4) minimal
+                        4,                 // MAX_COMMITTEES_PER_SLOT minimal
+                        8192,              // MAX_DEPOSIT_REQUESTS_PER_PAYLOAD
+                        16,                // MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD
+                        2,                 // MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD
+                        64,                // SLOTS_PER_HISTORICAL_ROOT minimal
+                        16_777_216,        // HISTORICAL_ROOTS_LIMIT
+                        32,                // ETH1_DATA_VOTES_LIMIT minimal
+                        1_099_511_627_776, // VALIDATOR_REGISTRY_LIMIT
+                        64,                // EPOCHS_PER_HISTORICAL_VECTOR minimal
+                        64,                // EPOCHS_PER_SLASHINGS_VECTOR minimal
+                        4,                 // JUSTIFICATION_BITS_LENGTH
+                        134_217_728,       // PENDING_DEPOSITS_LIMIT
+                        64,                // PENDING_PARTIAL_WITHDRAWALS_LIMIT minimal
+                        64,                // PENDING_CONSOLIDATIONS_LIMIT minimal
+                        E,
+                        FixedExecutionEngine,
+                    >(&mut pre, &body, &engine, &E::default_runtime_config());
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result.map(|_| ()),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "execution_payload",
                 )
             }),
         ),
