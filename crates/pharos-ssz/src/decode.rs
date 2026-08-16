@@ -167,12 +167,10 @@ impl<'a> SszDecoder<'a> {
     /// programming errors (missing `decode_next` calls) without paying for
     /// the check in release builds.
     pub fn finish(&self) -> Result<(), SszError> {
-        debug_assert_eq!(
-            self.decode_index,
-            self.slots.len(),
-            "SszDecoder::finish called with {} slots remaining",
-            self.slots.len() - self.decode_index
-        );
+        let remaining = self.slots.len().saturating_sub(self.decode_index);
+        if remaining > 0 {
+            return Err(SszError::IncompleteDecode { remaining });
+        }
         Ok(())
     }
 

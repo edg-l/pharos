@@ -644,29 +644,8 @@ where
     }
 }
 
-// ── produce_block ─────────────────────────────────────────────────────────────
+// ── build_sync_contribution ─────────────────────────────────────────────────
 
-/// Assemble a `BeaconBlock` for `slot` on top of the current fork-choice head.
-///
-/// The produced block's `state_root` is the `tree_hash_root()` of the post-STF
-/// state — i.e. the block is self-consistent. It does NOT carry a valid BLS
-/// block signature (the caller signs it after obtaining the `state_root`).
-///
-/// # Lock ordering
-///
-/// The fc_store read lock is held ONLY for the initial head snapshot (clone of
-/// state + root) and the brief FCU-state read (execution hashes). Both locks
-/// are released BEFORE the engine calls (`D-engine-head-driver` lock-ordering rule).
-///
-/// # Fork dispatch (Task 4.6)
-///
-/// - Capella head → Capella block (V2 execution payload)
-/// - Bellatrix head → Bellatrix block (V1 execution payload)
-/// - Altair head → Altair block (no execution payload)
-/// - Phase0 head → `unreachable!()` (checkpoint-synced nodes always past Phase0)
-// Block production legitimately needs all of these inputs; a param struct would
-// add indirection without clarifying the call site.
-#[allow(clippy::too_many_arguments)]
 /// Build one subcommittee's `SyncCommitteeContribution` data from the pool for
 /// `(slot, beacon_block_root, subcommittee_index)`, using the head state's
 /// current sync committee for pubkey→position mapping. Returns the set bit
@@ -711,6 +690,29 @@ where
     )
 }
 
+// ── produce_block ─────────────────────────────────────────────────────────────
+
+/// Assemble a `BeaconBlock` for `slot` on top of the current fork-choice head.
+///
+/// The produced block's `state_root` is the `tree_hash_root()` of the post-STF
+/// state — i.e. the block is self-consistent. It does NOT carry a valid BLS
+/// block signature (the caller signs it after obtaining the `state_root`).
+///
+/// # Lock ordering
+///
+/// The fc_store read lock is held ONLY for the initial head snapshot (clone of
+/// state + root) and the brief FCU-state read (execution hashes). Both locks
+/// are released BEFORE the engine calls (`D-engine-head-driver` lock-ordering rule).
+///
+/// # Fork dispatch (Task 4.6)
+///
+/// - Capella head → Capella block (V2 execution payload)
+/// - Bellatrix head → Bellatrix block (V1 execution payload)
+/// - Altair head → Altair block (no execution payload)
+/// - Phase0 head → `unreachable!()` (checkpoint-synced nodes always past Phase0)
+// Block production legitimately needs all of these inputs; a param struct would
+// add indirection without clarifying the call site.
+#[allow(clippy::too_many_arguments)]
 pub fn produce_block<E: EthSpec>(
     fc_store: &Arc<RwLock<FcStore<E>>>,
     pools: &OperationPools<E>,

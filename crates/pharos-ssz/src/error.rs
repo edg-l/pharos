@@ -56,6 +56,12 @@ pub enum SszError {
     #[error("bitvector has out-of-range bits set in its last byte")]
     InvalidBitvector,
 
+    /// The decoder was finalized before all slots were consumed (derive-macro
+    /// programming error — caller did not call `decode_next` the right number
+    /// of times).
+    #[error("incomplete decode: {remaining} slot(s) not consumed")]
+    IncompleteDecode { remaining: usize },
+
     /// A custom error message for one-off conditions.
     #[error("{0}")]
     Custom(String),

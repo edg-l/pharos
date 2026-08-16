@@ -667,7 +667,7 @@ impl<E: EthSpec> Store<E> for RocksStore {
     ) -> Result<(), StorageError> {
         let cf = self.cf_handle(CF_LC_UPDATE)?;
         self.db
-            .put_cf(cf, period.to_le_bytes(), update.as_ssz_bytes())?;
+            .put_cf(cf, period.to_be_bytes(), update.as_ssz_bytes())?;
         Ok(())
     }
 
@@ -676,7 +676,7 @@ impl<E: EthSpec> Store<E> for RocksStore {
         period: u64,
     ) -> Result<Option<E::AltairLightClientUpdate>, StorageError> {
         let cf = self.cf_handle(CF_LC_UPDATE)?;
-        match self.db.get_cf(cf, period.to_le_bytes())? {
+        match self.db.get_cf(cf, period.to_be_bytes())? {
             None => Ok(None),
             Some(bytes) => {
                 let update = E::AltairLightClientUpdate::from_ssz_bytes(&bytes)?;
@@ -693,7 +693,7 @@ impl<E: EthSpec> Store<E> for RocksStore {
         let cf = self.cf_handle(CF_LC_UPDATE)?;
         let mut updates = Vec::new();
         for period in start_period..start_period.saturating_add(count) {
-            match self.db.get_cf(cf, period.to_le_bytes())? {
+            match self.db.get_cf(cf, period.to_be_bytes())? {
                 None => {}
                 Some(bytes) => {
                     let update = E::AltairLightClientUpdate::from_ssz_bytes(&bytes)?;
@@ -782,7 +782,7 @@ impl<E: EthSpec> Store<E> for RocksStore {
     ) -> Result<(), StorageError> {
         let cf = self.cf_handle(CF_LC_UPDATE_CAPELLA)?;
         self.db
-            .put_cf(cf, period.to_le_bytes(), update.as_ssz_bytes())?;
+            .put_cf(cf, period.to_be_bytes(), update.as_ssz_bytes())?;
         Ok(())
     }
 
@@ -791,7 +791,7 @@ impl<E: EthSpec> Store<E> for RocksStore {
         period: u64,
     ) -> Result<Option<E::CapellaLightClientUpdate>, StorageError> {
         let cf = self.cf_handle(CF_LC_UPDATE_CAPELLA)?;
-        match self.db.get_cf(cf, period.to_le_bytes())? {
+        match self.db.get_cf(cf, period.to_be_bytes())? {
             None => Ok(None),
             Some(bytes) => {
                 let update = E::CapellaLightClientUpdate::from_ssz_bytes(&bytes)?;

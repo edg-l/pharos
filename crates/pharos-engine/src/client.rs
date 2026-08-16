@@ -153,6 +153,11 @@ impl EngineClient {
             }
         })?;
 
+        // NOTE: non-standard ELs might embed payload status (e.g. INVALID)
+        // in `error.data` rather than `result`. geth/reth/ethrex put
+        // INVALID in `result`, so we do not parse `error.data`. If an
+        // EL that embeds status in error.data is encountered, add an
+        // EngineError::PayloadStatus variant and inspect error.data here.
         if let Some(err) = envelope.get("error") {
             let code = err.get("code").and_then(Value::as_i64).unwrap_or(0);
             let message = err

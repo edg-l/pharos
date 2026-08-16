@@ -121,7 +121,7 @@ pub fn get_validators_sweep_withdrawals<
     let withdrawals_limit = E::MAX_WITHDRAWALS_PER_PAYLOAD;
 
     // spec: assert len(prior_withdrawals) < withdrawals_limit
-    assert!(
+    debug_assert!(
         (prior_withdrawals.len() as u64) < withdrawals_limit,
         "prior_withdrawals must be less than withdrawals_limit"
     );
