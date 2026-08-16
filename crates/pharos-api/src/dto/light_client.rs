@@ -21,6 +21,10 @@ use pharos_types::{
         LightClientFinalityUpdate as CapellaFinalityUpdate,
         LightClientOptimisticUpdate as CapellaOptimisticUpdate, LightClientUpdate as CapellaUpdate,
     },
+    deneb::light_client::{
+        LightClientBootstrap as DenebBootstrap, LightClientFinalityUpdate as DenebFinalityUpdate,
+        LightClientOptimisticUpdate as DenebOptimisticUpdate, LightClientUpdate as DenebUpdate,
+    },
     views::ForkVariant,
 };
 
@@ -289,6 +293,114 @@ impl<const N: u64, const B: u64, const X: u64> LcApiSerializer
     fn to_lc_json(&self) -> Result<serde_json::Value, ApiError> {
         Ok(serde_json::json!({
             "attested_header": capella_lc_header_json(&self.attested_header),
+            "sync_aggregate": sync_aggregate_json(&self.sync_aggregate),
+            "signature_slot": q(self.signature_slot.0),
+        }))
+    }
+    fn to_ssz_bytes(&self) -> Vec<u8> {
+        self.as_ssz_bytes()
+    }
+    fn attested_slot(&self) -> u64 {
+        self.attested_header.beacon.slot.0
+    }
+}
+
+// ── Deneb impls ───────────────────────────────────────────────────────────────
+
+fn deneb_lc_header_json<const B: u64, const X: u64>(
+    h: &pharos_types::deneb::light_client::LightClientHeader<B, X>,
+) -> serde_json::Value {
+    // Deneb ExecutionPayloadHeader adds blob_gas_used and excess_blob_gas vs Capella.
+    let ep = &h.execution;
+    let exec_json = serde_json::json!({
+        "parent_hash": hex_bytes(ep.parent_hash.as_slice()),
+        "fee_recipient": hex_bytes(ep.fee_recipient.as_slice()),
+        "state_root": hex_bytes(ep.state_root.as_slice()),
+        "receipts_root": hex_bytes(ep.receipts_root.as_slice()),
+        "logs_bloom": hex_bytes(ep.logs_bloom.as_slice()),
+        "prev_randao": hex_bytes(ep.prev_randao.as_slice()),
+        "block_number": q(ep.block_number),
+        "gas_limit": q(ep.gas_limit),
+        "gas_used": q(ep.gas_used),
+        "timestamp": q(ep.timestamp),
+        "extra_data": hex_bytes(ep.extra_data.as_slice()),
+        "base_fee_per_gas": serde_json::Value::String(ep.base_fee_per_gas.to_string()),
+        "block_hash": hex_bytes(ep.block_hash.as_slice()),
+        "transactions_root": hex_bytes(ep.transactions_root.as_slice()),
+        "withdrawals_root": hex_bytes(ep.withdrawals_root.as_slice()),
+        "blob_gas_used": q(ep.blob_gas_used),
+        "excess_blob_gas": q(ep.excess_blob_gas),
+    });
+    let branch_json: Vec<serde_json::Value> = h
+        .execution_branch
+        .iter()
+        .map(|b| serde_json::Value::String(hex_bytes(b.as_slice())))
+        .collect();
+    serde_json::json!({
+        "beacon": beacon_block_header_json(&h.beacon),
+        "execution": exec_json,
+        "execution_branch": branch_json,
+    })
+}
+
+impl<const N: u64, const B: u64, const X: u64> LcApiSerializer for DenebBootstrap<N, B, X> {
+    fn to_lc_json(&self) -> Result<serde_json::Value, ApiError> {
+        Ok(serde_json::json!({
+            "header": deneb_lc_header_json(&self.header),
+            "current_sync_committee": sync_committee_json(&self.current_sync_committee),
+            "current_sync_committee_branch": branch_json(&self.current_sync_committee_branch),
+        }))
+    }
+    fn to_ssz_bytes(&self) -> Vec<u8> {
+        self.as_ssz_bytes()
+    }
+    fn attested_slot(&self) -> u64 {
+        self.header.beacon.slot.0
+    }
+}
+
+impl<const N: u64, const B: u64, const X: u64> LcApiSerializer for DenebUpdate<N, B, X> {
+    fn to_lc_json(&self) -> Result<serde_json::Value, ApiError> {
+        Ok(serde_json::json!({
+            "attested_header": deneb_lc_header_json(&self.attested_header),
+            "next_sync_committee": sync_committee_json(&self.next_sync_committee),
+            "next_sync_committee_branch": branch_json(&self.next_sync_committee_branch),
+            "finalized_header": deneb_lc_header_json(&self.finalized_header),
+            "finality_branch": branch_json(&self.finality_branch),
+            "sync_aggregate": sync_aggregate_json(&self.sync_aggregate),
+            "signature_slot": q(self.signature_slot.0),
+        }))
+    }
+    fn to_ssz_bytes(&self) -> Vec<u8> {
+        self.as_ssz_bytes()
+    }
+    fn attested_slot(&self) -> u64 {
+        self.attested_header.beacon.slot.0
+    }
+}
+
+impl<const N: u64, const B: u64, const X: u64> LcApiSerializer for DenebFinalityUpdate<N, B, X> {
+    fn to_lc_json(&self) -> Result<serde_json::Value, ApiError> {
+        Ok(serde_json::json!({
+            "attested_header": deneb_lc_header_json(&self.attested_header),
+            "finalized_header": deneb_lc_header_json(&self.finalized_header),
+            "finality_branch": branch_json(&self.finality_branch),
+            "sync_aggregate": sync_aggregate_json(&self.sync_aggregate),
+            "signature_slot": q(self.signature_slot.0),
+        }))
+    }
+    fn to_ssz_bytes(&self) -> Vec<u8> {
+        self.as_ssz_bytes()
+    }
+    fn attested_slot(&self) -> u64 {
+        self.attested_header.beacon.slot.0
+    }
+}
+
+impl<const N: u64, const B: u64, const X: u64> LcApiSerializer for DenebOptimisticUpdate<N, B, X> {
+    fn to_lc_json(&self) -> Result<serde_json::Value, ApiError> {
+        Ok(serde_json::json!({
+            "attested_header": deneb_lc_header_json(&self.attested_header),
             "sync_aggregate": sync_aggregate_json(&self.sync_aggregate),
             "signature_slot": q(self.signature_slot.0),
         }))

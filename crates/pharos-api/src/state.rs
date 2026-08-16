@@ -1236,6 +1236,7 @@ where
     E::AltairSignedBeaconBlock: BlockApiSerializer,
     E::BellatrixSignedBeaconBlock: BlockApiSerializer,
     E::CapellaSignedBeaconBlock: BlockApiSerializer,
+    E::DenebSignedBeaconBlock: BlockApiSerializer,
     E::AltairLightClientBootstrap: LcApiSerializer,
     E::AltairLightClientUpdate: LcApiSerializer,
     E::AltairLightClientFinalityUpdate: LcApiSerializer,
@@ -1244,6 +1245,10 @@ where
     E::CapellaLightClientUpdate: LcApiSerializer,
     E::CapellaLightClientFinalityUpdate: LcApiSerializer,
     E::CapellaLightClientOptimisticUpdate: LcApiSerializer,
+    E::DenebLightClientBootstrap: LcApiSerializer,
+    E::DenebLightClientUpdate: LcApiSerializer,
+    E::DenebLightClientFinalityUpdate: LcApiSerializer,
+    E::DenebLightClientOptimisticUpdate: LcApiSerializer,
 {
     fn head_root(&self) -> Root {
         let fc = self.fork_choice.read();
@@ -1524,6 +1529,8 @@ where
             header_from!(inner)
         } else if let Some(inner) = E::unwrap_capella_signed_block(&signed) {
             header_from!(inner)
+        } else if let Some(inner) = E::unwrap_deneb_signed_block(&signed) {
+            header_from!(inner)
         } else {
             None
         }
@@ -1571,7 +1578,11 @@ where
         if let Some(b) = E::unwrap_capella_signed_block(&block) {
             return Ok(Some(b.to_block_for_api()?));
         }
-        // All four forks are exhaustive — reaching here indicates a new unknown fork.
+        if let Some(b) = E::unwrap_deneb_signed_block(&block) {
+            return Ok(Some(b.to_block_for_api()?));
+        }
+        // All five forks (phase0/altair/bellatrix/capella/deneb) are exhaustive.
+        // Reaching here indicates a new unknown fork variant not yet handled.
         unreachable!("unknown fork variant in SignedBeaconBlock — update block_by_root_for_api")
     }
 
@@ -1912,6 +1923,12 @@ where
                 let for_api = b.to_block_for_api()?;
                 serde_json::json!({ "version": "capella", "data": for_api.json })
             }
+            "deneb" => {
+                let b = E::DenebSignedBeaconBlock::from_ssz_bytes(&bytes)
+                    .map_err(|e| ApiError::BadRequest(format!("SSZ decode (deneb): {e:?}")))?;
+                let for_api = b.to_block_for_api()?;
+                serde_json::json!({ "version": "deneb", "data": for_api.json })
+            }
             other => {
                 return Err(ApiError::BadRequest(format!(
                     "unknown fork in Eth-Consensus-Version: {other}"
@@ -2024,10 +2041,14 @@ where
     // ── Light-client REST endpoint overrides ──────────────────────────────────
 
     fn light_client_bootstrap(&self, block_root: Root) -> Result<Option<LcEnvelope>, ApiError> {
-        // Capella CF first; STF writes exactly ONE CF per root (altair XOR capella),
-        // so this try-then-fallback is the correct probe order. Per `D-api-lc-bridge`
-        // and the STF mutual-exclusion invariant in
-        // `pharos-stf/src/altair/light_client_dispatch.rs`.
+        // Probe deneb first (newest), then capella, then altair. STF writes exactly
+        // ONE CF per root, so only one will return Some. Per `D-api-lc-bridge`.
+        let deneb =
+            <RocksStore as DbStore<E>>::get_light_client_bootstrap_deneb(&self.store, &block_root)
+                .map_err(|e| ApiError::Internal(format!("lc bootstrap deneb read: {e}")))?;
+        if let Some(b) = deneb {
+            return Ok(Some(make_lc_envelope(&b, &self.runtime_cfg)?));
+        }
         let capella = <RocksStore as DbStore<E>>::get_light_client_bootstrap_capella(
             &self.store,
             &block_root,
@@ -2081,10 +2102,31 @@ where
             }
         }
 
+        // Probe deneb per-period; deneb overwrites capella for the same period.
+        for i in 0..count {
+            let period = start_period.saturating_add(i);
+            match <RocksStore as DbStore<E>>::get_light_client_update_deneb(&self.store, period) {
+                Ok(Some(upd)) => {
+                    by_period.insert(period, make_lc_envelope(&upd, &self.runtime_cfg)?);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(ApiError::Internal(format!(
+                        "lc update deneb period {period}: {e}"
+                    )));
+                }
+            }
+        }
+
         Ok(by_period.into_values().collect())
     }
 
     fn light_client_finality_update(&self) -> Result<Option<LcEnvelope>, ApiError> {
+        let deneb = <RocksStore as DbStore<E>>::get_light_client_finality_update_deneb(&self.store)
+            .map_err(|e| ApiError::Internal(format!("lc finality deneb read: {e}")))?;
+        if let Some(u) = deneb {
+            return Ok(Some(make_lc_envelope(&u, &self.runtime_cfg)?));
+        }
         let capella =
             <RocksStore as DbStore<E>>::get_light_client_finality_update_capella(&self.store)
                 .map_err(|e| ApiError::Internal(format!("lc finality capella read: {e}")))?;
@@ -2099,6 +2141,12 @@ where
     }
 
     fn light_client_optimistic_update(&self) -> Result<Option<LcEnvelope>, ApiError> {
+        let deneb =
+            <RocksStore as DbStore<E>>::get_light_client_optimistic_update_deneb(&self.store)
+                .map_err(|e| ApiError::Internal(format!("lc optimistic deneb read: {e}")))?;
+        if let Some(u) = deneb {
+            return Ok(Some(make_lc_envelope(&u, &self.runtime_cfg)?));
+        }
         let capella =
             <RocksStore as DbStore<E>>::get_light_client_optimistic_update_capella(&self.store)
                 .map_err(|e| ApiError::Internal(format!("lc optimistic capella read: {e}")))?;

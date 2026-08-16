@@ -78,6 +78,11 @@ pub async fn get_fork_schedule<E: EthSpec>(
                 current_version: cfg.capella_fork_version,
                 epoch: cfg.capella_fork_epoch,
             },
+            ForkDto {
+                previous_version: cfg.capella_fork_version,
+                current_version: cfg.deneb_fork_version,
+                epoch: cfg.deneb_fork_epoch,
+            },
         ]
     })
     .await;

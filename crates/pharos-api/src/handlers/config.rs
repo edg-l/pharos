@@ -307,6 +307,22 @@ pub async fn get_spec<E: EthSpec>(
             cfg.capella_fork_epoch.to_string(),
         );
 
+        // ── Deneb preset constants ────────────────────────────────────────────
+        data.insert(
+            "MAX_BLOB_COMMITMENTS_PER_BLOCK".into(),
+            E::MAX_BLOB_COMMITMENTS_PER_BLOCK.to_string(),
+        );
+        data.insert(
+            "FIELD_ELEMENTS_PER_BLOB".into(),
+            E::FIELD_ELEMENTS_PER_BLOB.to_string(),
+        );
+        data.insert(
+            "KZG_COMMITMENT_INCLUSION_PROOF_DEPTH".into(),
+            E::KZG_COMMITMENT_INCLUSION_PROOF_DEPTH.to_string(),
+        );
+        data.insert("DENEB_FORK_VERSION".into(), hex4(E::DENEB_FORK_VERSION));
+        data.insert("DENEB_FORK_EPOCH".into(), cfg.deneb_fork_epoch.to_string());
+
         // ── Runtime config (dynamic, overridden by --config-dir) ─────────────
         data.insert("SECONDS_PER_SLOT".into(), cfg.seconds_per_slot.to_string());
         data.insert(

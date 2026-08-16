@@ -543,6 +543,86 @@ pub fn capella_execution_payload_dto<
     }
 }
 
+// ── Deneb execution payload ───────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct DenebExecutionPayloadDto {
+    #[serde(serialize_with = "serialize_hex32")]
+    pub parent_hash: [u8; 32],
+    #[serde(with = "hex_bytes")]
+    pub fee_recipient: Vec<u8>,
+    #[serde(serialize_with = "serialize_hex32")]
+    pub state_root: [u8; 32],
+    #[serde(serialize_with = "serialize_hex32")]
+    pub receipts_root: [u8; 32],
+    #[serde(with = "hex_bytes")]
+    pub logs_bloom: Vec<u8>,
+    #[serde(serialize_with = "serialize_hex32")]
+    pub prev_randao: [u8; 32],
+    #[serde(with = "quoted_u64")]
+    pub block_number: u64,
+    #[serde(with = "quoted_u64")]
+    pub gas_limit: u64,
+    #[serde(with = "quoted_u64")]
+    pub gas_used: u64,
+    #[serde(with = "quoted_u64")]
+    pub timestamp: u64,
+    #[serde(with = "hex_bytes")]
+    pub extra_data: Vec<u8>,
+    pub base_fee_per_gas: String,
+    #[serde(serialize_with = "serialize_hex32")]
+    pub block_hash: [u8; 32],
+    pub transactions: Vec<String>,
+    pub withdrawals: Vec<WithdrawalDto>,
+    #[serde(with = "quoted_u64")]
+    pub blob_gas_used: u64,
+    #[serde(with = "quoted_u64")]
+    pub excess_blob_gas: u64,
+}
+
+pub fn deneb_execution_payload_dto<
+    const T: u64,
+    const M: u64,
+    const B: u64,
+    const X: u64,
+    const W: u64,
+>(
+    ep: &pharos_types::deneb::ExecutionPayload<T, M, B, X, W>,
+) -> DenebExecutionPayloadDto {
+    DenebExecutionPayloadDto {
+        parent_hash: ep.parent_hash.into(),
+        fee_recipient: ep.fee_recipient.as_slice().to_vec(),
+        state_root: ep.state_root.into(),
+        receipts_root: ep.receipts_root.into(),
+        logs_bloom: ep.logs_bloom.iter().copied().collect(),
+        prev_randao: ep.prev_randao.into(),
+        block_number: ep.block_number,
+        gas_limit: ep.gas_limit,
+        gas_used: ep.gas_used,
+        timestamp: ep.timestamp,
+        extra_data: ep.extra_data.iter().copied().collect(),
+        base_fee_per_gas: uint256_to_quoted_dec(&ep.base_fee_per_gas),
+        block_hash: ep.block_hash.into(),
+        transactions: ep
+            .transactions
+            .iter()
+            .map(|tx| format!("0x{}", hex::encode(tx.iter().copied().collect::<Vec<u8>>())))
+            .collect(),
+        withdrawals: ep
+            .withdrawals
+            .iter()
+            .map(|w| WithdrawalDto {
+                index: w.index,
+                validator_index: u64::from(w.validator_index),
+                address: w.address.as_slice().to_vec(),
+                amount: w.amount.into(),
+            })
+            .collect(),
+        blob_gas_used: ep.blob_gas_used,
+        excess_blob_gas: ep.excess_blob_gas,
+    }
+}
+
 // ── SignedBLSToExecutionChange ─────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -597,6 +677,46 @@ pub struct CapellaBlockDto {
 #[derive(Serialize)]
 pub struct CapellaSignedBlockDto {
     pub message: CapellaBlockDto,
+    #[serde(serialize_with = "serialize_hex96")]
+    pub signature: [u8; 96],
+}
+
+// ── Deneb body ────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct DenebBlockBodyDto {
+    #[serde(serialize_with = "serialize_hex96")]
+    pub randao_reveal: [u8; 96],
+    pub eth1_data: Eth1DataDto,
+    #[serde(serialize_with = "serialize_hex32")]
+    pub graffiti: [u8; 32],
+    pub proposer_slashings: Vec<ProposerSlashingDto>,
+    pub attester_slashings: Vec<AttesterSlashingDto>,
+    pub attestations: Vec<AttestationDto>,
+    pub deposits: Vec<DepositDto>,
+    pub voluntary_exits: Vec<SignedVoluntaryExitDto>,
+    pub sync_aggregate: SyncAggregateDto,
+    pub execution_payload: DenebExecutionPayloadDto,
+    pub bls_to_execution_changes: Vec<SignedBLSToExecutionChangeDto>,
+    pub blob_kzg_commitments: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct DenebBlockDto {
+    #[serde(with = "quoted_u64")]
+    pub slot: u64,
+    #[serde(with = "quoted_u64")]
+    pub proposer_index: u64,
+    #[serde(serialize_with = "serialize_hex32")]
+    pub parent_root: [u8; 32],
+    #[serde(serialize_with = "serialize_hex32")]
+    pub state_root: [u8; 32],
+    pub body: DenebBlockBodyDto,
+}
+
+#[derive(Serialize)]
+pub struct DenebSignedBlockDto {
+    pub message: DenebBlockDto,
     #[serde(serialize_with = "serialize_hex96")]
     pub signature: [u8; 96],
 }
@@ -897,6 +1017,98 @@ pub fn capella_signed_block_to_api<
     })
 }
 
+/// Convert a Deneb `SignedBeaconBlock` to API data.
+pub fn deneb_signed_block_to_api<
+    const P: u64,
+    const A: u64,
+    const M: u64,
+    const D: u64,
+    const V: u64,
+    const C: u64,
+    const DP: u64,
+    const S: u64,
+    const T: u64,
+    const TX: u64,
+    const B: u64,
+    const X: u64,
+    const W: u64,
+    const BL: u64,
+    const KC: u64,
+>(
+    blk: &pharos_types::deneb::SignedBeaconBlock<P, A, M, D, V, C, DP, S, T, TX, B, X, W, BL, KC>,
+) -> Result<SignedBlockForApi, ApiError> {
+    let msg = &blk.message;
+    let dto = DenebSignedBlockDto {
+        signature: blk.signature.into(),
+        message: DenebBlockDto {
+            slot: u64::from(msg.slot),
+            proposer_index: u64::from(msg.proposer_index),
+            parent_root: msg.parent_root.into(),
+            state_root: msg.state_root.into(),
+            body: DenebBlockBodyDto {
+                randao_reveal: msg.body.randao_reveal.into(),
+                eth1_data: (&msg.body.eth1_data).into(),
+                graffiti: msg.body.graffiti.into(),
+                proposer_slashings: msg
+                    .body
+                    .proposer_slashings
+                    .iter()
+                    .map(proposer_slashing_dto)
+                    .collect(),
+                attester_slashings: msg
+                    .body
+                    .attester_slashings
+                    .iter()
+                    .map(attester_slashing_dto)
+                    .collect(),
+                attestations: msg.body.attestations.iter().map(attestation_dto).collect(),
+                deposits: msg.body.deposits.iter().map(deposit_dto).collect(),
+                voluntary_exits: msg.body.voluntary_exits.iter().map(|e| e.into()).collect(),
+                sync_aggregate: sync_aggregate_dto(&msg.body.sync_aggregate),
+                execution_payload: deneb_execution_payload_dto(&msg.body.execution_payload),
+                bls_to_execution_changes: msg
+                    .body
+                    .bls_to_execution_changes
+                    .iter()
+                    .map(|sc| SignedBLSToExecutionChangeDto {
+                        message: BLSToExecutionChangeDto {
+                            validator_index: u64::from(sc.message.validator_index),
+                            from_bls_pubkey: sc.message.from_bls_pubkey.into(),
+                            to_execution_address: sc
+                                .message
+                                .to_execution_address
+                                .as_slice()
+                                .to_vec(),
+                        },
+                        signature: sc.signature.into(),
+                    })
+                    .collect(),
+                blob_kzg_commitments: msg
+                    .body
+                    .blob_kzg_commitments
+                    .iter()
+                    .map(|c| format!("0x{}", hex::encode(c.as_slice())))
+                    .collect(),
+            },
+        },
+    };
+    let attestations_json = msg
+        .body
+        .attestations
+        .iter()
+        .map(|a| serde_json::to_value(attestation_dto(a)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ser_err)?;
+    let mut ssz = Vec::new();
+    blk.ssz_append(&mut ssz);
+    Ok(SignedBlockForApi {
+        variant: ForkVariant::Deneb,
+        json: serde_json::to_value(dto).map_err(ser_err)?,
+        ssz_bytes: ssz,
+        attestations_json,
+    })
+}
+
 // ── BlockApiSerializer implementations ───────────────────────────────────────
 
 // Phase0 — mainnet and minimal share the same const params.
@@ -1014,5 +1226,55 @@ impl BlockApiSerializer
 {
     fn to_block_for_api(&self) -> Result<SignedBlockForApi, ApiError> {
         capella_signed_block_to_api(self)
+    }
+}
+
+// Deneb — distinct SYNC_COMMITTEE_SIZE and MAX_WITHDRAWALS_PER_PAYLOAD.
+
+impl BlockApiSerializer
+    for pharos_types::deneb::SignedBeaconBlock<
+        16,
+        2,
+        128,
+        16,
+        16,
+        2048,
+        33,
+        512,
+        1_073_741_824,
+        1_048_576,
+        256,
+        32,
+        16,
+        16,
+        4096,
+    >
+{
+    fn to_block_for_api(&self) -> Result<SignedBlockForApi, ApiError> {
+        deneb_signed_block_to_api(self)
+    }
+}
+
+impl BlockApiSerializer
+    for pharos_types::deneb::SignedBeaconBlock<
+        16,
+        2,
+        128,
+        16,
+        16,
+        2048,
+        33,
+        32,
+        1_073_741_824,
+        1_048_576,
+        256,
+        32,
+        4,
+        16,
+        4096,
+    >
+{
+    fn to_block_for_api(&self) -> Result<SignedBlockForApi, ApiError> {
+        deneb_signed_block_to_api(self)
     }
 }

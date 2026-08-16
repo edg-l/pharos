@@ -268,5 +268,6 @@ mod tests {
         assert_eq!(fork_variant_str(ForkVariant::Altair), "altair");
         assert_eq!(fork_variant_str(ForkVariant::Bellatrix), "bellatrix");
         assert_eq!(fork_variant_str(ForkVariant::Capella), "capella");
+        assert_eq!(fork_variant_str(ForkVariant::Deneb), "deneb");
     }
 }

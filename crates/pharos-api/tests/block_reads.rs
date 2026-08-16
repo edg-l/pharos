@@ -474,13 +474,13 @@ async fn header_by_block_id() {
 // ── Config fork_schedule ──────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn fork_schedule_returns_four_entries() {
+async fn fork_schedule_returns_five_entries() {
     let router = make_router();
     let (status, json, _) = get_json(&router, "/eth/v1/config/fork_schedule").await;
     assert_eq!(status, StatusCode::OK);
     let data = json["data"].as_array().unwrap();
-    // Phase0, Altair, Bellatrix, Capella.
-    assert_eq!(data.len(), 4);
+    // Phase0, Altair, Bellatrix, Capella, Deneb.
+    assert_eq!(data.len(), 5);
     // First entry (Phase0): epoch "0".
     assert_eq!(data[0]["epoch"].as_str().unwrap(), "0");
     // All fork version fields are 0x-hex.
