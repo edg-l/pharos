@@ -736,6 +736,63 @@ Deferred: `electra/networking` conformance (M13, requires running p2p stack);
 `electra/fast_confirmation` conformance (M13, pharos-fork-choice extension);
 cross-committee `compute_on_chain_aggregate` merging (perf concern, M-perf/M11).
 
+## M13-Fulu status
+
+In progress (code + conformance + ADRs + version bump done; live devnet acceptance
+pending). Fulu (Fusaka/Osaka) consensus-layer fork — an Electra sibling. Mainnet
+activated Fulu at epoch 411392 (Dec 3, 2025), so this is the live production fork.
+EIPs: 7594 (PeerDAS column sidecars), 7892 (BPO hardforks / blob schedule), 7917
+(deterministic proposer lookahead). 7-phase plan in `docs/m13-fulu-plan.md`. Shipped:
+- **Phase 1** fork plumbing + `pharos-types/fulu` containers (incl. `DataColumnSidecar`,
+  `MatrixEntry`, `DataColumnsByRootIdentifier`, partial-column types) + `proposer_lookahead`
+  `BeaconState` field + `BlobParameters`/`BLOB_SCHEDULE` + `compute_fork_digest_for_epoch`;
+  `fulu/ssz_static` fail=0 both presets. Commit `feb2838`.
+- **Phase 2** KZG cell-sampling wrappers over c-kzg 2.1.7 (`compute_cells`,
+  `compute_cells_and_kzg_proofs`, `verify_cell_kzg_proof_batch`,
+  `recover_cells_and_kzg_proofs`); `fulu/kzg` green. Commit `d4850f6`.
+- **Phase 3** full fulu STF (electra sibling): `process_proposer_lookahead`,
+  epoch-driven blob limit, `process_operations` deposit-assert, `upgrade_to_fulu` +
+  `initialize_proposer_lookahead`; 8 conformance categories fail=0 both presets. Commit `b6c4b34`.
+- **Phase 4** fork-choice column DA gate + `ColumnAvailabilityChecker` (custody+sampling
+  union, RI-1) + `CF_DATA_COLUMN_SIDECARS` schema v8→v9; `fulu/fork_choice` fail=0. Commit `ff3b63c`.
+- **Phase 5a** network substrate: fulu fork-digest + context-bytes + BPO-boundary
+  migration loop (`run_bpo_migration_loop`, fork-digest rotates within fulu at each
+  blob-schedule epoch) + `data_column_sidecar_{subnet}` topics + custody-gated
+  subscription. Commit `fd5687e`.
+- **Phase 5b** `validate_data_column_sidecar` (13 rules, spawn_blocking) +
+  `DataColumnSidecarsByRange/ByRoot` + `BeaconBlocksByHead` req-resp + `StatusV2`
+  (earliest_available_slot) + `MetaDataV3` (custody_group_count) + ENR `cgc`/`nfd`;
+  real `fulu/networking` custody-helper conformance runner (pass=16 fail=0). Caught + fixed
+  a `get_custody_groups` big-endian-vs-SSZ-little-endian node-id bug
+  (`D-custody-uint-to-bytes-little-endian`). Commit `3a8c285`.
+- **Phase 6a** `FuluBlockAssembler` + `get_data_column_sidecars` (128 sidecars, depth-4
+  inclusion proof) + `engine_getPayloadV5`/`BlobsBundleV2` + engine-driver V5 selection +
+  custody adjustment loop (sticky-high `cgc`). Commit `1c2d4fb`.
+- **Phase 6b** column ingestion/prune loops + checkpoint-sync fulu anchor + warm-restart
+  GVR + node dispatch arms + beacon-API fulu arms (`proposer_lookahead` endpoint + duties
+  read the lookahead, RI-6) + fulu LC snapshot writes + `fulu_pipeline.rs` integration
+  test; `fulu/{light_client,merkle_proof}` + `sync/optimistic` fail=0, `fast_confirmation`
+  honest skips. Commit `bc3d942`.
+- **Fork-aware live DA checker** (`ForkAwareDataAvailabilityChecker`): a live Electra→Fulu
+  node would gate fulu blocks against never-arriving blob sidecars and park forever;
+  delegates to both blob + column checkers (`D-fork-aware-live-da-checker`). Commit `568485a`.
+- **Phase 7** full conformance regen (all fulu fail=0, pre-fulu byte-identical), M13-Fulu
+  ADRs in `docs/decisions.md`, version `0.19.0` → `0.20.0`.
+
+ADRs (`docs/decisions.md`, M13-Fulu section): `D-fulu-stf-delegates-to-electra`,
+`D-eip7594-column-sidecar-shape`, `D-eip7594-da-checker-column-impl`,
+`D-custody-uint-to-bytes-little-endian`, `D-fulu-networking-custody-runner`,
+`D-eip7892-blob-schedule-config`, `D-eip7892-bpo-fork-digest-rotation`,
+`D-fulu-fork-digest-migration`, `D-eip7917-proposer-lookahead`,
+`D-kzg-cell-sampling-wrappers`, `D-data-column-sidecar-storage`, `D-schema-v9-migration`,
+`D-fork-aware-live-da-checker`, `D-engine-v5-getpayload`, `D-cgc-enr-field`,
+`D-nfd-enr-field`, `D-partial-columns-deferred`, `D-fulu-lc-uses-block-state-root`.
+
+Deferred: live Fulu-transition devnet acceptance (Phase 7-devnet, next); partial columns
+(`D-partial-columns-deferred`, needs a libp2p Partial Message Extension upgrade);
+`engine_getBlobsV2`/`V3` distributed blob publishing; supernode mode; historical column
+backfill beyond the serve window.
+
 ## Reference repos (cloned in `~/dev/`)
 
 - `consensus-specs/` — Python specs + reference tests (test fixtures live

@@ -4441,3 +4441,171 @@ A hygiene cleanup landed after Phase 20: the `(Slot, Slot)` tuple used as the in
 extracted to a `ReplayBounds` type alias in the same module as `SignedBeaconBlockHeader`
 usage (`pharos-node/src/slasher/mod.rs`), removing duplication and making the intent of
 the range arguments explicit.
+
+## M13-Fulu decisions
+
+Fulu (Fusaka/Osaka) consensus-layer fork — an Electra sibling. EIP-7594 (PeerDAS),
+EIP-7892 (BPO hardforks), EIP-7917 (deterministic proposer lookahead). Mainnet activated
+Fulu at epoch 411392 (Dec 3, 2025), so this is the live production fork. Plan in
+`docs/m13-fulu-plan.md`. All ADRs Accepted, date 2026-06-25 unless noted.
+
+### D-fulu-stf-delegates-to-electra — fulu STF is an electra sibling that projects state
+
+The `crates/pharos-stf/src/fulu/` STF delegates unchanged steps to electra via
+`fulu_state_to_electra` / `update_fulu_from_electra` projection helpers, mirroring the
+electra→deneb pattern. The only new state field is `proposer_lookahead`
+(EIP-7917); `process_epoch` adds `process_proposer_lookahead` as the final step;
+`process_operations` asserts `len(body.deposits) == 0` and drops the legacy
+`process_deposit` path (deposits arrive only via `process_deposit_request`). Per
+`specs/fulu/beacon-chain.md`.
+
+### D-eip7594-column-sidecar-shape — `DataColumnSidecar` + DAS containers in `pharos-types/fulu`
+
+`DataColumnSidecar { index, column: List[Cell, MAX_BLOB_COMMITMENTS_PER_BLOCK],
+kzg_commitments, kzg_proofs, signed_block_header, kzg_commitments_inclusion_proof:
+Vector[Bytes32, 4] }` per `specs/fulu/das-core.md`. `Cell = ByteVector<2048>`
+(SSZ type owned by `pharos-types`, not `pharos-kzg`). The inclusion proof is a fixed
+`Vector[_, 4]` (NOT a `List`), gindex `16 + 11 = 27` (field 11 of `BeaconBlockBody`),
+depth `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH = 4`, validated by `fulu/merkle_proof`.
+
+### D-eip7594-da-checker-column-impl — `ColumnAvailabilityChecker` over the fork-agnostic trait
+
+`ColumnAvailabilityChecker<E>` implements the unchanged `DataAvailabilityChecker<E>`
+trait. The expected-column set is the custody+sampling union: `sampling_size =
+max(SAMPLES_PER_SLOT, custody_group_count)` clamped to `NUMBER_OF_CUSTODY_GROUPS`, then
+the union of `compute_columns_for_custody_group(g)` over
+`get_custody_groups(node_id, sampling_size)` (RI-1 — NOT all 128 columns). Missing any
+expected column → `NotAvailable` (the block parks; the column ingestion loop re-injects
+on set completion).
+
+### D-custody-uint-to-bytes-little-endian — `get_custody_groups` hashes the SSZ (LE) node id
+
+`get_custody_groups` (`pharos-stf/src/fulu/data_columns.rs`) holds the `NodeID` as a
+32-byte big-endian array (discv5 canonical form) but the spec hashes
+`uint_to_bytes(current_id)`, which is the SSZ encoding (`ENDIANNESS = "little"`,
+`specs/phase0/beacon-chain.md:652`). The initial implementation hashed the big-endian
+bytes directly — a bug caught by the new `fulu/networking` custody conformance vectors
+(`got [11], want [65]` for `node_id=1048576, cgc=1`). Fix: reverse the BE bytes to LE
+before `hash()`; the increment stays on the BE buffer (a numerically-correct uint256
+`+= 1`). On a live node a wrong custody set means failing PeerDAS sampling against real
+peers, so this was a true correctness bug, not cosmetic.
+
+### D-fulu-networking-custody-runner — real conformance runner for the DAS custody helpers
+
+`fulu/networking` is not a blanket placeholder (unlike `electra/networking`,
+`D-electra-placeholder-categories`). The two pure-function handlers
+(`get_custody_groups`, `compute_columns_for_custody_group`) have trivial
+`node_id/custody_group → result:[...]` `meta.yaml` fixtures and pharos already ships the
+functions, so `crates/pharos-conformance/src/networking.rs` runs them for real
+(pass=16 fail=0 both presets). The gossip-validator handlers (attester_slashing,
+bls_to_execution_change, proposer_slashing, sync_committee_*) are enumerated as skips
+(they need a live store + wired gossip harness). `node_id` is read as raw decimal digits
+from the fixture text because it can be `2**256 - 1` (serde parses it lossily as `f64`).
+
+### D-eip7892-blob-schedule-config — `BLOB_SCHEDULE` + `get_blob_parameters`
+
+`RuntimeConfig` gains `blob_schedule: Vec<BlobScheduleEntry { epoch, max_blobs_per_block }>`.
+`get_blob_parameters(epoch, blob_schedule, electra_fork_epoch,
+max_blobs_per_block_electra)` walks the schedule reverse-sorted by epoch (first entry
+with `epoch <= given`), falling back to the electra limit. The fulu
+`process_execution_payload` blob-commitment limit is epoch-driven via this helper, not a
+fixed const. Per `specs/fulu/beacon-chain.md`.
+
+### D-eip7892-bpo-fork-digest-rotation — fork digest rotates WITHIN fulu at BPO boundaries
+
+`compute_fork_digest_for_epoch(version, gvr, epoch, blob_schedule)` returns the plain
+digest for `epoch < FULU_FORK_EPOCH` and, for fulu epochs, XORs the base digest with the
+first 4 bytes of `hash(uint_to_bytes(epoch) ++ uint_to_bytes(max_blobs_per_block))`
+(SHA256 of 16 LE bytes per `beacon-chain.md:216-246` — NOT SSZ `hash_tree_root` of the
+`BlobParameters` container; the two differ). The digest changes at every BPO boundary,
+making it a new mid-fork migration surface (`D-fulu-fork-digest-migration`).
+
+### D-fulu-fork-digest-migration — BPO-boundary migration loop distinct from fork boundaries
+
+`run_bpo_migration_loop` (`pharos-node/src/fork_migration.rs`) schedules a migration at
+each `BLOB_SCHEDULE` entry's epoch (distinct from the regular fork-boundary migration).
+At each boundary it recomputes the fork digest, unsubscribes the old-digest topics,
+subscribes the new-digest topics, and updates ENR `eth2` + `nfd`. The fulu fork version
+itself does NOT change at a BPO boundary — only the blob params and hence the digest.
+
+### D-eip7917-proposer-lookahead — `proposer_lookahead` state field; every site reads it
+
+`BeaconState` gains `proposer_lookahead: Vector[ValidatorIndex, LOOKAHEAD_WINDOW]`.
+`get_beacon_proposer_index` reads `proposer_lookahead[slot % SLOTS_PER_EPOCH]` instead of
+computing on demand; `process_proposer_lookahead` shifts the window each epoch;
+`initialize_proposer_lookahead` seeds it in `upgrade_to_fulu`. RI-6: every
+proposer-selection site reads the lookahead — block production
+(`block_production.rs` `produce_block` fulu arm), the proposer-duties endpoint
+(`pharos-api/src/handlers/validator_duties.rs`), and the
+`/states/{id}/proposer_lookahead` endpoint (`handlers/states.rs`). This is the M12
+16-bit-proposer gotcha's fulu analogue; all three sites were audited.
+
+### D-kzg-cell-sampling-wrappers — thin c-kzg cell wrappers, no fulu/kzg conformance dir
+
+`pharos-kzg` adds `compute_cells`, `compute_cells_and_kzg_proofs`,
+`verify_cell_kzg_proof_batch`, `recover_cells_and_kzg_proofs` over c-kzg 2.1.7 (no
+version bump, no new crypto). There is no `fulu/kzg` fixture dir; cell KZG is covered by
+`general/fulu/kzg/*` (the existing `fulu_kzg` runner) and c-kzg's own vectors.
+
+### D-data-column-sidecar-storage — `CF_DATA_COLUMN_SIDECARS` keyed `root || index_be`
+
+Column sidecars persist in `CF_DATA_COLUMN_SIDECARS` keyed `block_root (32 B) ||
+index_be (8 B)`, mirroring the M10-DA blob CF (`D-blob-store-cf-keyed-by-root-index`).
+`run_column_ingestion_loop` persists on gossip accept and re-injects on set completion;
+`run_column_prune_loop` prunes at `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS = 4096`
+epochs behind head.
+
+### D-schema-v9-migration — schema bump 8 → 9 for the column-sidecar CF
+
+`SCHEMA_VERSION = 9`; `v8_to_v9` opens the new `CF_DATA_COLUMN_SIDECARS` column family.
+Opening a v8 DB returns `SchemaMismatch` → resync (mirror `D-schema-v4-migration`).
+
+### D-fork-aware-live-da-checker — live node delegates DA to both blob + column checkers
+
+A long-running node spans Electra→Fulu and imports both blob-carrying (pre-Fulu) and
+column-carrying (Fulu+) blocks. The `DataAvailabilityChecker` trait is fork-agnostic
+(sees only `(block_root, kzg_commitments)`, never the slot), so a static
+`BlobAvailabilityChecker` would gate Fulu blocks against blob sidecars that never arrive
+post-Fulu and park them forever. `ForkAwareDataAvailabilityChecker`
+(`pharos-node/src/data_availability.rs`) delegates to BOTH sub-checkers and combines:
+`Available` if either is, `Irrelevant` only if both are (empty commitments), else
+`NotAvailable`. Each sub-checker returns `Available` only when ITS sidecar type is
+present, and a node only ingests the fork-correct sidecar type for a given block, so the
+combine is exact. Column is checked first (Fulu is the active mainnet fork) so the common
+path short-circuits without a redundant blob-store scan. Surfaced by the Phase 6b
+implementer as an out-of-scope live-correctness gap; fixed before the devnet phase.
+
+### D-engine-v5-getpayload — `engine_getPayloadV5` for production; `newPayloadV4` on import
+
+Fulu block production uses `engine_getPayloadV5` (returns `BlobsBundleV2` with
+`CELLS_PER_EXT_BLOB * len(blobs)` cell proofs); the import path keeps `newPayloadV4`.
+This matches ethrex's actual Osaka gating: getPayloadV4 returns `UnsupportedFork(Osaka)`
+for Osaka-timestamp blocks (must use V5), while newPayloadV4 covers Prague+Osaka and
+newPayloadV5 is the *Amsterdam* (BAL) variant, not Osaka. FCU stays V3 (no V4/V5 FCU
+exists). `engine_getBlobsV2`/`V3` (distributed blob publishing) are deferred. Per
+`~/dev/execution-apis/src/engine/osaka.md` + ethrex `crates/networking/rpc/engine/payload.rs`.
+
+### D-cgc-enr-field / D-nfd-enr-field — custody-group-count + next-fork-digest ENR fields
+
+ENR gains `cgc` (custody group count, uint64 big-endian, no leading zeros, 0 = empty
+string) and `nfd` (next fork digest, SSZ Bytes4 — regular + BPO aware). Written via
+`DiscoveryHandle::update_enr_eth2_fulu`. The custody adjustment loop
+(`pharos-node/src/custody.rs`) is sticky-high on `cgc`: increases update the ENR + the
+custody subscription set immediately; decreases keep the highest `cgc` seen and persist
+across restarts. `get_validators_custody_requirement` per `specs/fulu/validator.md`.
+
+### D-partial-columns-deferred — full DataColumnSidecar gossip only; partial columns deferred
+
+libp2p-gossipsub 0.49.4 has no Partial Message Extension (PR #685), so
+`specs/fulu/partial-columns/p2p-interface.md` cannot be implemented. Partial-column types
+(`PartialDataColumnSidecar`, `PartialDataColumnHeader`,
+`PartialDataColumnPartsMetadata`) are defined for `ssz_static` but carry NO gossip
+wiring. The `fulu/networking` conformance gate does not require partial columns. A libp2p
+upgrade is the prerequisite for full mainnet partial-columns participation (RI-3).
+
+### D-fulu-lc-uses-block-state-root — fulu LC header uses the STF-verified `block.state_root`
+
+Fulu light-client snapshot writes (`pharos-stf/src/fulu/light_client.rs`, dispatched from
+the ingestion loop) use the STF-verified `block.state_root` for the LC header, not a
+recomputed root over a projected state (the M4c `D-bellatrix-lc-header-uses-state-root`
+invariant carried forward). Fulu LC containers reuse the electra shape.
