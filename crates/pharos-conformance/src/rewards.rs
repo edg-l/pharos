@@ -14,7 +14,7 @@
 //! Sub-categories `basic`, `leak`, `random` are walked as three separate sweeps
 //! that contribute to a single tallied result.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pharos_ssz::{Decode, Encode, SszList};
 use pharos_stf::phase0::{
@@ -38,6 +38,423 @@ use crate::fixture_walker::{
     load_phase0_state, load_ssz_snappy, walk_category,
 };
 use crate::fs_util::dir_name;
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per rewards test case for a single `(fork, preset)` row,
+/// in the same walk-order as the corresponding `run_rewards_*` function.
+/// Called by the Phase 7 flat work-pool.
+///
+/// Sub-sweep order: basic cases fully, then leak, then random (matches dispatcher order).
+///
+/// Supported forks: `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`.
+pub fn enumerate_rewards(
+    root: &Path,
+    fork: &'static str,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    let mut tasks: Vec<CaseTask> = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    for sub in ["basic", "leak", "random"] {
+        let cases: Vec<(PathBuf, _)> = walk_category(
+            root,
+            preset,
+            fork,
+            "rewards",
+            Some(sub),
+            WalkOpts {
+                meta_required: false,
+                inner_dir: Some("pyspec_tests"),
+            },
+        )
+        .collect();
+
+        for (case_dir, _meta) in cases {
+            let case_ordinal = ordinal;
+            ordinal += 1;
+            let case_name = format!("{fork}/rewards/{sub}/{preset}/{}", dir_name(&case_dir));
+
+            let run: CaseFn = match (fork, preset) {
+                ("phase0", "mainnet") => Box::new(move || {
+                    match run_rewards_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("phase0", _) => Box::new(move || {
+                    match run_rewards_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("altair", "mainnet") => {
+                    use pharos_stf::altair::helpers::{
+                        get_flag_index_deltas, get_inactivity_penalty_deltas,
+                    };
+                    use pharos_types::{MainnetEthSpec as E, altair::MainnetBeaconState};
+                    Box::new(move || {
+                        match run_altair_rewards_case_mainnet::<E, MainnetBeaconState>(
+                            &case_dir,
+                            &case_name,
+                            |s, fi| {
+                                get_flag_index_deltas::<
+                                    8192,
+                                    16_777_216,
+                                    2048,
+                                    1_099_511_627_776,
+                                    65536,
+                                    8192,
+                                    4,
+                                    512,
+                                    E,
+                                >(s, fi)
+                            },
+                            |s| {
+                                get_inactivity_penalty_deltas::<
+                                    8192,
+                                    16_777_216,
+                                    2048,
+                                    1_099_511_627_776,
+                                    65536,
+                                    8192,
+                                    4,
+                                    512,
+                                    E,
+                                >(s)
+                            },
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
+                ("altair", _) => {
+                    use pharos_stf::altair::helpers::{
+                        get_flag_index_deltas, get_inactivity_penalty_deltas,
+                    };
+                    use pharos_types::{MinimalEthSpec as E, altair::MinimalBeaconState};
+                    Box::new(move || {
+                        match run_altair_rewards_case_mainnet::<E, MinimalBeaconState>(
+                            &case_dir,
+                            &case_name,
+                            |s, fi| {
+                                get_flag_index_deltas::<
+                                    64,
+                                    16_777_216,
+                                    32,
+                                    1_099_511_627_776,
+                                    64,
+                                    64,
+                                    4,
+                                    32,
+                                    E,
+                                >(s, fi)
+                            },
+                            |s| {
+                                get_inactivity_penalty_deltas::<
+                                    64,
+                                    16_777_216,
+                                    32,
+                                    1_099_511_627_776,
+                                    64,
+                                    64,
+                                    4,
+                                    32,
+                                    E,
+                                >(s)
+                            },
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
+                ("bellatrix", "mainnet") => {
+                    use pharos_stf::altair::helpers::get_flag_index_deltas;
+                    use pharos_stf::bellatrix::helpers::{
+                        bellatrix_state_to_altair, get_inactivity_penalty_deltas_bellatrix,
+                    };
+                    use pharos_types::{MainnetEthSpec as E, bellatrix::MainnetBeaconState};
+                    Box::new(move || {
+                        match run_bellatrix_rewards_case::<E, MainnetBeaconState>(
+                            &case_dir,
+                            &case_name,
+                            |s, fi| {
+                                let a = bellatrix_state_to_altair(s);
+                                get_flag_index_deltas::<
+                                    8192,
+                                    16_777_216,
+                                    2048,
+                                    1_099_511_627_776,
+                                    65536,
+                                    8192,
+                                    4,
+                                    512,
+                                    E,
+                                >(&a, fi)
+                            },
+                            |s| {
+                                get_inactivity_penalty_deltas_bellatrix::<
+                                    8192,
+                                    16_777_216,
+                                    2048,
+                                    1_099_511_627_776,
+                                    65536,
+                                    8192,
+                                    4,
+                                    512,
+                                    256,
+                                    32,
+                                    E,
+                                >(s)
+                            },
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
+                ("bellatrix", _) => {
+                    use pharos_stf::altair::helpers::get_flag_index_deltas;
+                    use pharos_stf::bellatrix::helpers::{
+                        bellatrix_state_to_altair, get_inactivity_penalty_deltas_bellatrix,
+                    };
+                    use pharos_types::{MinimalEthSpec as E, bellatrix::MinimalBeaconState};
+                    Box::new(move || {
+                        match run_bellatrix_rewards_case::<E, MinimalBeaconState>(
+                            &case_dir,
+                            &case_name,
+                            |s, fi| {
+                                let a = bellatrix_state_to_altair(s);
+                                get_flag_index_deltas::<
+                                    64,
+                                    16_777_216,
+                                    32,
+                                    1_099_511_627_776,
+                                    64,
+                                    64,
+                                    4,
+                                    32,
+                                    E,
+                                >(&a, fi)
+                            },
+                            |s| {
+                                get_inactivity_penalty_deltas_bellatrix::<
+                                    64,
+                                    16_777_216,
+                                    32,
+                                    1_099_511_627_776,
+                                    64,
+                                    64,
+                                    4,
+                                    32,
+                                    256,
+                                    32,
+                                    E,
+                                >(s)
+                            },
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
+                ("capella", "mainnet") => {
+                    use pharos_stf::altair::helpers::get_flag_index_deltas;
+                    use pharos_stf::capella::helpers::{
+                        capella_state_to_altair, get_inactivity_penalty_deltas_capella,
+                    };
+                    use pharos_types::{MainnetEthSpec as E, capella::MainnetBeaconState};
+                    Box::new(move || {
+                        match run_capella_rewards_case::<E, MainnetBeaconState>(
+                            &case_dir,
+                            &case_name,
+                            |s, fi| {
+                                let a = capella_state_to_altair(s);
+                                get_flag_index_deltas::<
+                                    8192,
+                                    16_777_216,
+                                    2048,
+                                    1_099_511_627_776,
+                                    65536,
+                                    8192,
+                                    4,
+                                    512,
+                                    E,
+                                >(&a, fi)
+                            },
+                            |s| {
+                                get_inactivity_penalty_deltas_capella::<
+                                    8192,
+                                    16_777_216,
+                                    2048,
+                                    1_099_511_627_776,
+                                    65536,
+                                    8192,
+                                    4,
+                                    512,
+                                    256,
+                                    32,
+                                    E,
+                                >(s)
+                            },
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
+                ("capella", _) => {
+                    use pharos_stf::altair::helpers::get_flag_index_deltas;
+                    use pharos_stf::capella::helpers::{
+                        capella_state_to_altair, get_inactivity_penalty_deltas_capella,
+                    };
+                    use pharos_types::{MinimalEthSpec as E, capella::MinimalBeaconState};
+                    Box::new(move || {
+                        match run_capella_rewards_case::<E, MinimalBeaconState>(
+                            &case_dir,
+                            &case_name,
+                            |s, fi| {
+                                let a = capella_state_to_altair(s);
+                                get_flag_index_deltas::<
+                                    64,
+                                    16_777_216,
+                                    32,
+                                    1_099_511_627_776,
+                                    64,
+                                    64,
+                                    4,
+                                    32,
+                                    E,
+                                >(&a, fi)
+                            },
+                            |s| {
+                                get_inactivity_penalty_deltas_capella::<
+                                    64,
+                                    16_777_216,
+                                    32,
+                                    1_099_511_627_776,
+                                    64,
+                                    64,
+                                    4,
+                                    32,
+                                    256,
+                                    32,
+                                    E,
+                                >(s)
+                            },
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
+                ("deneb", "mainnet") => {
+                    use pharos_stf::altair::helpers::get_flag_index_deltas;
+                    use pharos_stf::deneb::helpers::{
+                        deneb_state_to_altair, get_inactivity_penalty_deltas_deneb,
+                    };
+                    use pharos_types::{MainnetEthSpec as E, deneb::MainnetBeaconState};
+                    Box::new(move || {
+                        match run_deneb_rewards_case::<E, MainnetBeaconState>(
+                            &case_dir,
+                            &case_name,
+                            |s, fi| {
+                                let a = deneb_state_to_altair(s);
+                                get_flag_index_deltas::<
+                                    8192,
+                                    16_777_216,
+                                    2048,
+                                    1_099_511_627_776,
+                                    65536,
+                                    8192,
+                                    4,
+                                    512,
+                                    E,
+                                >(&a, fi)
+                            },
+                            |s| {
+                                get_inactivity_penalty_deltas_deneb::<
+                                    8192,
+                                    16_777_216,
+                                    2048,
+                                    1_099_511_627_776,
+                                    65536,
+                                    8192,
+                                    4,
+                                    512,
+                                    256,
+                                    32,
+                                    E,
+                                >(s)
+                            },
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
+                _ => {
+                    // deneb/minimal (and any future fork defaults to deneb/minimal)
+                    use pharos_stf::altair::helpers::get_flag_index_deltas;
+                    use pharos_stf::deneb::helpers::{
+                        deneb_state_to_altair, get_inactivity_penalty_deltas_deneb,
+                    };
+                    use pharos_types::{MinimalEthSpec as E, deneb::MinimalBeaconState};
+                    Box::new(move || {
+                        match run_deneb_rewards_case::<E, MinimalBeaconState>(
+                            &case_dir,
+                            &case_name,
+                            |s, fi| {
+                                let a = deneb_state_to_altair(s);
+                                get_flag_index_deltas::<
+                                    64,
+                                    16_777_216,
+                                    32,
+                                    1_099_511_627_776,
+                                    64,
+                                    64,
+                                    4,
+                                    32,
+                                    E,
+                                >(&a, fi)
+                            },
+                            |s| {
+                                get_inactivity_penalty_deltas_deneb::<
+                                    64,
+                                    16_777_216,
+                                    32,
+                                    1_099_511_627_776,
+                                    64,
+                                    64,
+                                    4,
+                                    32,
+                                    256,
+                                    32,
+                                    E,
+                                >(s)
+                            },
+                        ) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    })
+                }
+            };
+
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+
+    tasks
+}
 
 /// Result tally for a single rewards preset run.
 pub struct RewardsResult {
@@ -1050,4 +1467,55 @@ where
     }
 
     CaseResult::Pass
+}
+
+// ── Parity tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+    use crate::task::CaseOutcome;
+
+    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
+        let mut pass = 0u64;
+        let mut fail = 0u64;
+        let mut skip = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => pass += 1,
+                CaseOutcome::Fail(_) => fail += 1,
+                CaseOutcome::Skip => skip += 1,
+            }
+        }
+        (pass, fail, skip)
+    }
+
+    #[test]
+    fn enumerate_rewards_parity_phase0_mainnet() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let run_result = run_rewards_mainnet(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_rewards(&root, "phase0", "mainnet", 0));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_rewards phase0/mainnet counts differ from run_rewards_mainnet"
+        );
+    }
+
+    #[test]
+    fn enumerate_rewards_parity_altair_minimal() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let run_result = run_rewards_altair_minimal(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_rewards(&root, "altair", "minimal", 0));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_rewards altair/minimal counts differ from run_rewards_altair_minimal"
+        );
+    }
 }
