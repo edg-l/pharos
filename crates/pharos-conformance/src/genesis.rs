@@ -16,86 +16,9 @@ use pharos_stf::phase0::{
 };
 use pharos_types::{EthSpec, MinimalEthSpec, phase0::Deposit};
 
-use rayon::prelude::*;
-
 use crate::fixture_walker::{WalkOpts, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
-
-/// Result of running all genesis tests for one preset.
-pub struct GenesisResult {
-    pub pass: u64,
-    pub fail: u64,
-    pub skip: u64,
-    pub failures: Vec<String>,
-}
-
-/// Run genesis/initialization and genesis/validity tests for the minimal preset.
-pub fn run_genesis_minimal(root: &Path) -> GenesisResult {
-    // ── initialization ────────────────────────────────────────────────────────
-    let init_cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "phase0",
-        "genesis",
-        Some("initialization"),
-        WalkOpts::default(),
-    )
-    .collect();
-    let init_outcomes: Vec<CaseResult> = init_cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "phase0/genesis/minimal/initialization/{}",
-                dir_name(&case_dir)
-            );
-            run_initialization_case::<MinimalEthSpec>(&case_dir, &case_name, meta)
-        })
-        .collect();
-
-    // ── validity ──────────────────────────────────────────────────────────────
-    let validity_cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "phase0",
-        "genesis",
-        Some("validity"),
-        WalkOpts::default(),
-    )
-    .collect();
-    let validity_outcomes: Vec<CaseResult> = validity_cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("phase0/genesis/minimal/validity/{}", dir_name(&case_dir));
-            run_validity_case::<MinimalEthSpec>(&case_dir, &case_name)
-        })
-        .collect();
-
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-
-    for outcome in init_outcomes.into_iter().chain(validity_outcomes) {
-        match outcome {
-            CaseResult::Pass => pass += 1,
-            CaseResult::Fail(msg) => {
-                fail += 1;
-                failures.push(msg);
-            }
-            CaseResult::Skip => skip += 1,
-        }
-    }
-
-    GenesisResult {
-        pass,
-        fail,
-        skip,
-        failures,
-    }
-}
-
-// ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
 /// Produce one `CaseTask` per genesis test case in the same walk-order as
 /// `run_genesis_minimal` (initialization sub then validity sub). Called by the
@@ -178,35 +101,6 @@ pub fn enumerate_genesis(
     }
 
     tasks
-}
-
-// ── Altair entry points ───────────────────────────────────────────────────────
-//
-// No altair genesis fixtures exist in the upstream consensus-spec-tests
-// (the genesis sub-category is phase0-only through at least v1.6.1).
-// These entry points are provided to satisfy the conformance table; they
-// walk the non-existent directories and return zero counts, which lets the
-// `run` dispatcher present them as "0 pass / 0 fail / 0 skip" (placeholder
-// semantics) rather than generating a compile error.
-
-/// Run altair genesis tests for the mainnet preset (no fixtures; returns zero counts).
-pub fn run_genesis_altair_mainnet(_root: &Path) -> GenesisResult {
-    GenesisResult {
-        pass: 0,
-        fail: 0,
-        skip: 0,
-        failures: Vec::new(),
-    }
-}
-
-/// Run altair genesis tests for the minimal preset (no fixtures; returns zero counts).
-pub fn run_genesis_altair_minimal(_root: &Path) -> GenesisResult {
-    GenesisResult {
-        pass: 0,
-        fail: 0,
-        skip: 0,
-        failures: Vec::new(),
-    }
 }
 
 // ── Case runners ─────────────────────────────────────────────────────────────
@@ -377,31 +271,6 @@ fn load_raw_ssz_snappy(dir: &Path, name: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
     use crate::fixtures::fixtures_root;
-    use crate::task::CaseOutcome;
-
-    #[test]
-    fn enumerate_genesis_parity_phase0_minimal() {
-        let Some(root) = fixtures_root() else {
-            return; // skip cleanly when fixtures absent
-        };
-        let run_result = run_genesis_minimal(&root);
-        let tasks = enumerate_genesis(&root, "phase0", "minimal", 6);
-        let mut ep = 0u64;
-        let mut ef = 0u64;
-        let mut es = 0u64;
-        for task in tasks {
-            match (task.run)() {
-                CaseOutcome::Pass => ep += 1,
-                CaseOutcome::Fail(_) => ef += 1,
-                CaseOutcome::Skip => es += 1,
-            }
-        }
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_genesis phase0/minimal counts differ from run_genesis_minimal"
-        );
-    }
 
     #[test]
     fn enumerate_genesis_altair_is_empty() {

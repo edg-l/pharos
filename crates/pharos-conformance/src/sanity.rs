@@ -37,8 +37,6 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
 
-use rayon::prelude::*;
-
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
     load_bellatrix_state, load_capella_signed_block, load_capella_state, load_deneb_signed_block,
@@ -48,32 +46,6 @@ use crate::fixture_walker::{
 };
 use crate::fs_util::dir_name;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
-
-/// Result tally for a single sanity preset run.
-pub struct SanityResult {
-    pub pass: u64,
-    pub fail: u64,
-    pub skip: u64,
-    pub failures: Vec<String>,
-}
-
-impl SanityResult {
-    fn new() -> Self {
-        SanityResult {
-            pass: 0,
-            fail: 0,
-            skip: 0,
-            failures: Vec::new(),
-        }
-    }
-
-    fn merge(&mut self, other: SanityResult) {
-        self.pass += other.pass;
-        self.fail += other.fail;
-        self.skip += other.skip;
-        self.failures.extend(other.failures);
-    }
-}
 
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
@@ -380,122 +352,6 @@ pub fn enumerate_sanity(
     tasks
 }
 
-// ── Public entry points ───────────────────────────────────────────────────────
-
-/// Run all sanity sub-categories for the mainnet preset.
-pub fn run_sanity_mainnet(root: &Path) -> SanityResult {
-    run_sanity_preset::<MainnetEthSpec>(root, "mainnet")
-}
-
-/// Run all sanity sub-categories for the minimal preset.
-pub fn run_sanity_minimal(root: &Path) -> SanityResult {
-    run_sanity_preset::<MinimalEthSpec>(root, "minimal")
-}
-
-/// Run all sanity sub-categories for a single preset.
-pub fn run_sanity_preset<E>(root: &Path, preset: &'static str) -> SanityResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState:
-        pharos_stf::AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let mut total = SanityResult::new();
-    total.merge(run_blocks_preset::<E>(root, preset));
-    total.merge(run_slots_preset::<E>(root, preset));
-    total
-}
-
-// ── blocks sub-sweep ──────────────────────────────────────────────────────────
-
-fn run_blocks_preset<E>(root: &Path, preset: &'static str) -> SanityResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState:
-        pharos_stf::AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "phase0",
-        "sanity",
-        Some("blocks"),
-        WalkOpts::default(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("phase0/sanity/blocks/{preset}/{}", dir_name(&case_dir));
-
-            // blocks_count is required for the blocks sub-category.
-            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-                Some(n) => n,
-                None => return CaseResult::Skip,
-            };
-
-            // bls_setting == 2 → skip BLS verification; anything else → verify.
-            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
-            run_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
-        })
-        .collect();
-
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
 fn run_blocks_case<E>(
     case_dir: &Path,
     case_name: &str,
@@ -581,50 +437,6 @@ where
     }
 }
 
-// ── slots sub-sweep ───────────────────────────────────────────────────────────
-
-fn run_slots_preset<E>(root: &Path, preset: &'static str) -> SanityResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
-    E::Phase0BeaconState: pharos_ssz::Decode,
-    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
-{
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "phase0",
-        "sanity",
-        Some("slots"),
-        WalkOpts {
-            meta_required: false,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("phase0/sanity/slots/{preset}/{}", dir_name(&case_dir));
-            run_slots_case::<E>(&case_dir, &case_name)
-        })
-        .collect();
-
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
 fn run_slots_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
     E: EthSpec,
@@ -677,95 +489,6 @@ fn read_u64_yaml(path: &Path) -> Result<u64, String> {
         .map_err(|e| format!("yaml parse {}: {e}", path.display()))?;
     val.as_u64()
         .ok_or_else(|| format!("{}: expected integer, got {:?}", path.display(), val))
-}
-
-// ── Altair entry points ───────────────────────────────────────────────────────
-
-/// Run all altair sanity sub-categories for the mainnet preset.
-pub fn run_sanity_altair_mainnet(root: &Path) -> SanityResult {
-    let mut total = SanityResult::new();
-    total.merge(run_altair_blocks_preset::<MainnetEthSpec>(root, "mainnet"));
-    total.merge(run_altair_slots_preset_mainnet(root));
-    total
-}
-
-/// Run all altair sanity sub-categories for the minimal preset.
-pub fn run_sanity_altair_minimal(root: &Path) -> SanityResult {
-    let mut total = SanityResult::new();
-    total.merge(run_altair_blocks_preset::<MinimalEthSpec>(root, "minimal"));
-    total.merge(run_altair_slots_preset_minimal(root));
-    total
-}
-
-// ── altair/sanity/blocks ──────────────────────────────────────────────────────
-
-fn run_altair_blocks_preset<E>(root: &Path, preset: &'static str) -> SanityResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + AltairProcessSlotsDispatch<E>
-        + AltairUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::AltairSignedBeaconBlock: pharos_ssz::Decode,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "altair",
-        "sanity",
-        Some("blocks"),
-        WalkOpts::default(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("altair/sanity/blocks/{preset}/{}", dir_name(&case_dir));
-
-            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-                Some(n) => n,
-                None => return CaseResult::Skip,
-            };
-
-            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
-            run_altair_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
-        })
-        .collect();
-
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
 }
 
 fn run_altair_blocks_case<E>(
@@ -852,80 +575,6 @@ where
     }
 }
 
-// ── altair/sanity/slots ───────────────────────────────────────────────────────
-
-fn run_altair_slots_preset_mainnet(root: &Path) -> SanityResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "altair",
-        "sanity",
-        Some("slots"),
-        WalkOpts {
-            meta_required: false,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("altair/sanity/slots/mainnet/{}", dir_name(&case_dir));
-            run_altair_slots_case_mainnet(&case_dir, &case_name)
-        })
-        .collect();
-
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
-fn run_altair_slots_preset_minimal(root: &Path) -> SanityResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "altair",
-        "sanity",
-        Some("slots"),
-        WalkOpts {
-            meta_required: false,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("altair/sanity/slots/minimal/{}", dir_name(&case_dir));
-            run_altair_slots_case_minimal(&case_dir, &case_name)
-        })
-        .collect();
-
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
 fn run_altair_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_types::MainnetEthSpec as E;
     let slots_path = case_dir.join("slots.yaml");
@@ -994,100 +643,6 @@ fn run_altair_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult
     } else {
         CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
     }
-}
-
-// ── Bellatrix entry points ────────────────────────────────────────────────────
-
-/// Run all bellatrix sanity sub-categories for the mainnet preset.
-pub fn run_sanity_bellatrix_mainnet(root: &Path) -> SanityResult {
-    let mut total = SanityResult::new();
-    total.merge(run_bellatrix_blocks_preset::<MainnetEthSpec>(
-        root, "mainnet",
-    ));
-    total.merge(run_bellatrix_slots_preset_mainnet(root));
-    total
-}
-
-/// Run all bellatrix sanity sub-categories for the minimal preset.
-pub fn run_sanity_bellatrix_minimal(root: &Path) -> SanityResult {
-    let mut total = SanityResult::new();
-    total.merge(run_bellatrix_blocks_preset::<MinimalEthSpec>(
-        root, "minimal",
-    ));
-    total.merge(run_bellatrix_slots_preset_minimal(root));
-    total
-}
-
-// ── bellatrix/sanity/blocks ───────────────────────────────────────────────────
-
-fn run_bellatrix_blocks_preset<E>(root: &Path, preset: &'static str) -> SanityResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + AltairProcessSlotsDispatch<E>
-        + AltairUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::BellatrixSignedBeaconBlock: pharos_ssz::Decode,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "bellatrix",
-        "sanity",
-        Some("blocks"),
-        WalkOpts::default(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("bellatrix/sanity/blocks/{preset}/{}", dir_name(&case_dir));
-
-            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-                Some(n) => n,
-                None => return CaseResult::Skip,
-            };
-
-            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
-            run_bellatrix_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
-        })
-        .collect();
-
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
 }
 
 fn run_bellatrix_blocks_case<E>(
@@ -1173,80 +728,6 @@ where
             CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
         }
     }
-}
-
-// ── bellatrix/sanity/slots ────────────────────────────────────────────────────
-
-fn run_bellatrix_slots_preset_mainnet(root: &Path) -> SanityResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "bellatrix",
-        "sanity",
-        Some("slots"),
-        WalkOpts {
-            meta_required: false,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("bellatrix/sanity/slots/mainnet/{}", dir_name(&case_dir));
-            run_bellatrix_slots_case_mainnet(&case_dir, &case_name)
-        })
-        .collect();
-
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
-fn run_bellatrix_slots_preset_minimal(root: &Path) -> SanityResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "bellatrix",
-        "sanity",
-        Some("slots"),
-        WalkOpts {
-            meta_required: false,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("bellatrix/sanity/slots/minimal/{}", dir_name(&case_dir));
-            run_bellatrix_slots_case_minimal(&case_dir, &case_name)
-        })
-        .collect();
-
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
 }
 
 fn run_bellatrix_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
@@ -1338,96 +819,8 @@ fn run_bellatrix_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseRes
 enum CaseResult {
     Pass,
     Fail(String),
+    #[allow(dead_code)]
     Skip,
-}
-
-// ── Capella entry points ──────────────────────────────────────────────────────
-
-/// Run all capella sanity sub-categories for the mainnet preset.
-pub fn run_sanity_capella_mainnet(root: &Path) -> SanityResult {
-    let mut total = SanityResult::new();
-    total.merge(run_capella_blocks_preset::<MainnetEthSpec>(root, "mainnet"));
-    total.merge(run_capella_slots_preset_mainnet(root));
-    total
-}
-
-/// Run all capella sanity sub-categories for the minimal preset.
-pub fn run_sanity_capella_minimal(root: &Path) -> SanityResult {
-    let mut total = SanityResult::new();
-    total.merge(run_capella_blocks_preset::<MinimalEthSpec>(root, "minimal"));
-    total.merge(run_capella_slots_preset_minimal(root));
-    total
-}
-
-// ── capella/sanity/blocks ─────────────────────────────────────────────────────
-
-fn run_capella_blocks_preset<E>(root: &Path, preset: &'static str) -> SanityResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + AltairProcessSlotsDispatch<E>
-        + AltairUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::CapellaSignedBeaconBlock: pharos_ssz::Decode,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "capella",
-        "sanity",
-        Some("blocks"),
-        WalkOpts::default(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("capella/sanity/blocks/{preset}/{}", dir_name(&case_dir));
-            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-                Some(n) => n,
-                None => return CaseResult::Skip,
-            };
-            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
-            run_capella_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
-        })
-        .collect();
-
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
 }
 
 fn run_capella_blocks_case<E>(
@@ -1516,42 +909,6 @@ where
     }
 }
 
-// ── capella/sanity/slots ──────────────────────────────────────────────────────
-
-fn run_capella_slots_preset_mainnet(root: &Path) -> SanityResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "capella",
-        "sanity",
-        Some("slots"),
-        WalkOpts {
-            meta_required: false,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("capella/sanity/slots/mainnet/{}", dir_name(&case_dir));
-            run_capella_slots_case_mainnet(&case_dir, &case_name)
-        })
-        .collect();
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
 fn run_capella_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::capella::state_transition::process_slots_capella;
     use pharos_types::MainnetEthSpec as E;
@@ -1597,41 +954,6 @@ fn run_capella_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResul
         CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
     }
 }
-
-fn run_capella_slots_preset_minimal(root: &Path) -> SanityResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "capella",
-        "sanity",
-        Some("slots"),
-        WalkOpts {
-            meta_required: false,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("capella/sanity/slots/minimal/{}", dir_name(&case_dir));
-            run_capella_slots_case_minimal(&case_dir, &case_name)
-        })
-        .collect();
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
 fn run_capella_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::capella::state_transition::process_slots_capella;
     use pharos_types::MinimalEthSpec as E;
@@ -1668,96 +990,6 @@ fn run_capella_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResul
     } else {
         CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
     }
-}
-
-// ── Deneb entry points ────────────────────────────────────────────────────────
-
-/// Run all deneb sanity sub-categories for the mainnet preset.
-pub fn run_sanity_deneb_mainnet(root: &Path) -> SanityResult {
-    let mut total = SanityResult::new();
-    total.merge(run_deneb_blocks_preset::<MainnetEthSpec>(root, "mainnet"));
-    total.merge(run_deneb_slots_preset_mainnet(root));
-    total
-}
-
-/// Run all deneb sanity sub-categories for the minimal preset.
-pub fn run_sanity_deneb_minimal(root: &Path) -> SanityResult {
-    let mut total = SanityResult::new();
-    total.merge(run_deneb_blocks_preset::<MinimalEthSpec>(root, "minimal"));
-    total.merge(run_deneb_slots_preset_minimal(root));
-    total
-}
-
-// ── deneb/sanity/blocks ───────────────────────────────────────────────────────
-
-fn run_deneb_blocks_preset<E>(root: &Path, preset: &'static str) -> SanityResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + AltairProcessSlotsDispatch<E>
-        + AltairUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + BellatrixProcessSlotsDispatch<E>
-        + BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + CapellaProcessSlotsDispatch<E>
-        + CapellaUpgradeDispatch<E>
-        + pharos_ssz::Decode,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + DenebProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash
-        + pharos_ssz::Decode,
-    E::DenebSignedBeaconBlock: pharos_ssz::Decode,
-    E::Phase0BeaconState: pharos_ssz::Decode + Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock:
-        pharos_ssz::Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-{
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "deneb",
-        "sanity",
-        Some("blocks"),
-        WalkOpts::default(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("deneb/sanity/blocks/{preset}/{}", dir_name(&case_dir));
-            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-                Some(n) => n,
-                None => return CaseResult::Skip,
-            };
-            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
-            run_deneb_blocks_case::<E>(&case_dir, &case_name, blocks_count, validate_result)
-        })
-        .collect();
-
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
 }
 
 fn run_deneb_blocks_case<E>(
@@ -1847,42 +1079,6 @@ where
     }
 }
 
-// ── deneb/sanity/slots ────────────────────────────────────────────────────────
-
-fn run_deneb_slots_preset_mainnet(root: &Path) -> SanityResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "deneb",
-        "sanity",
-        Some("slots"),
-        WalkOpts {
-            meta_required: false,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("deneb/sanity/slots/mainnet/{}", dir_name(&case_dir));
-            run_deneb_slots_case_mainnet(&case_dir, &case_name)
-        })
-        .collect();
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
 fn run_deneb_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::deneb::state_transition::process_slots_deneb;
     use pharos_types::MainnetEthSpec as E;
@@ -1929,40 +1125,6 @@ fn run_deneb_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult 
     }
 }
 
-fn run_deneb_slots_preset_minimal(root: &Path) -> SanityResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "deneb",
-        "sanity",
-        Some("slots"),
-        WalkOpts {
-            meta_required: false,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("deneb/sanity/slots/minimal/{}", dir_name(&case_dir));
-            run_deneb_slots_case_minimal(&case_dir, &case_name)
-        })
-        .collect();
-    let mut out = SanityResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
 fn run_deneb_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
     use pharos_stf::deneb::state_transition::process_slots_deneb;
     use pharos_types::MinimalEthSpec as E;
@@ -1998,54 +1160,5 @@ fn run_deneb_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult 
         CaseResult::Pass
     } else {
         CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fixtures::fixtures_root;
-    use crate::task::CaseOutcome;
-
-    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
-        let mut pass = 0u64;
-        let mut fail = 0u64;
-        let mut skip = 0u64;
-        for task in tasks {
-            match (task.run)() {
-                CaseOutcome::Pass => pass += 1,
-                CaseOutcome::Fail(_) => fail += 1,
-                CaseOutcome::Skip => skip += 1,
-            }
-        }
-        (pass, fail, skip)
-    }
-
-    #[test]
-    fn enumerate_sanity_parity_phase0_mainnet() {
-        let Some(root) = fixtures_root() else {
-            return; // skip cleanly when fixtures absent
-        };
-        let run_result = run_sanity_mainnet(&root);
-        let (ep, ef, es) = drain_tasks(enumerate_sanity(&root, "phase0", "mainnet", 10));
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_sanity phase0/mainnet counts differ from run_sanity_mainnet"
-        );
-    }
-
-    #[test]
-    fn enumerate_sanity_parity_phase0_minimal() {
-        let Some(root) = fixtures_root() else {
-            return; // skip cleanly when fixtures absent
-        };
-        let run_result = run_sanity_minimal(&root);
-        let (ep, ef, es) = drain_tasks(enumerate_sanity(&root, "phase0", "minimal", 11));
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_sanity phase0/minimal counts differ from run_sanity_minimal"
-        );
     }
 }

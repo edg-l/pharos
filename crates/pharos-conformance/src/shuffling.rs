@@ -9,75 +9,11 @@
 
 use std::path::{Path, PathBuf};
 
-use pharos_stf::phase0::shuffling::compute_shuffled_permutation;
-use pharos_utils::Hash256;
-use rayon::prelude::*;
-
 use crate::fixture_walker::{WalkOpts, walk_category};
 use crate::fs_util::dir_name;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
-
-/// Result of running all shuffling tests for one preset.
-pub struct ShufflingResult {
-    pub pass: u64,
-    pub fail: u64,
-    pub skip: u64,
-    pub failures: Vec<String>,
-}
-
-/// Run shuffling tests for a given preset and `SHUFFLE_ROUND_COUNT`.
-///
-/// Called with mainnet round count (90) and minimal round count (10).
-pub fn run_shuffling_preset(root: &Path, preset: &str, round_count: u64) -> ShufflingResult {
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-
-    // S4 exception: no pyspec_tests level, no meta.yaml.
-    let opts = WalkOpts {
-        meta_required: false,
-        inner_dir: None,
-    };
-
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "phase0",
-        "shuffling",
-        Some("core/shuffle"),
-        opts,
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("phase0/shuffling/{}/{}", preset, dir_name(&case_dir));
-            run_shuffling_case(&case_dir, &case_name, round_count)
-        })
-        .collect();
-
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => pass += 1,
-            CaseResult::Fail(msg) => {
-                fail += 1;
-                failures.push(msg);
-            }
-            CaseResult::Skip => skip += 1,
-        }
-    }
-
-    ShufflingResult {
-        pass,
-        fail,
-        skip,
-        failures,
-    }
-}
-
-// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+use pharos_stf::phase0::shuffling::compute_shuffled_permutation;
+use pharos_utils::Hash256;
 
 /// Produce one `CaseTask` per shuffling test case in the same walk-order as
 /// `run_shuffling_preset`. Called by the Phase 7 flat work-pool.
@@ -214,57 +150,4 @@ fn parse_hash256(s: &str) -> Result<Hash256, String> {
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     Ok(Hash256::from_array(arr))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fixtures::fixtures_root;
-    use crate::task::CaseOutcome;
-
-    fn run_enumerate(preset: &'static str, row_ordinal: u32) -> (u64, u64, u64) {
-        let Some(root) = fixtures_root() else {
-            return (0, 0, 0);
-        };
-        let tasks = enumerate_shuffling(&root, preset, row_ordinal);
-        let mut pass = 0u64;
-        let mut fail = 0u64;
-        let mut skip = 0u64;
-        for task in tasks {
-            match (task.run)() {
-                CaseOutcome::Pass => pass += 1,
-                CaseOutcome::Fail(_) => fail += 1,
-                CaseOutcome::Skip => skip += 1,
-            }
-        }
-        (pass, fail, skip)
-    }
-
-    #[test]
-    fn enumerate_shuffling_parity_mainnet() {
-        let Some(root) = fixtures_root() else {
-            return; // skip cleanly when fixtures absent
-        };
-        let run_result = run_shuffling_preset(&root, "mainnet", 90);
-        let (ep, ef, es) = run_enumerate("mainnet", 4);
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_shuffling mainnet counts differ from run_shuffling_preset"
-        );
-    }
-
-    #[test]
-    fn enumerate_shuffling_parity_minimal() {
-        let Some(root) = fixtures_root() else {
-            return; // skip cleanly when fixtures absent
-        };
-        let run_result = run_shuffling_preset(&root, "minimal", 10);
-        let (ep, ef, es) = run_enumerate("minimal", 5);
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_shuffling minimal counts differ from run_shuffling_preset"
-        );
-    }
 }

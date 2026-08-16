@@ -48,7 +48,6 @@ use pharos_types::{
     phase0::{Epoch, Slot},
     views::BeaconStateView,
 };
-use rayon::prelude::*;
 
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
@@ -58,25 +57,6 @@ use crate::fixture_walker::{
 use crate::fs_util::dir_name;
 use crate::snappy::decompress_raw;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
-
-/// Result tally for a single transition preset run.
-pub struct TransitionResult {
-    pub pass: u64,
-    pub fail: u64,
-    pub skip: u64,
-    pub failures: Vec<String>,
-}
-
-impl TransitionResult {
-    fn new() -> Self {
-        TransitionResult {
-            pass: 0,
-            fail: 0,
-            skip: 0,
-            failures: Vec::new(),
-        }
-    }
-}
 
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
@@ -222,130 +202,6 @@ pub fn enumerate_transition(
             }
         })
         .collect()
-}
-
-// ── Public entry points ───────────────────────────────────────────────────────
-
-/// Run altair transition tests for the mainnet preset.
-pub fn run_transition_mainnet(root: &Path) -> TransitionResult {
-    run_transition_impl(root, "mainnet", &run_case_mainnet)
-}
-
-/// Run altair transition tests for the minimal preset.
-pub fn run_transition_minimal(root: &Path) -> TransitionResult {
-    run_transition_impl(root, "minimal", &run_case_minimal)
-}
-
-/// Run bellatrix transition tests for the mainnet preset.
-pub fn run_transition_bellatrix_mainnet(root: &Path) -> TransitionResult {
-    run_bellatrix_transition_impl(root, "mainnet", &run_bellatrix_case_mainnet)
-}
-
-/// Run bellatrix transition tests for the minimal preset.
-pub fn run_transition_bellatrix_minimal(root: &Path) -> TransitionResult {
-    run_bellatrix_transition_impl(root, "minimal", &run_bellatrix_case_minimal)
-}
-
-// ── Internal runner ───────────────────────────────────────────────────────────
-
-fn run_transition_impl(
-    root: &Path,
-    preset: &'static str,
-    run_case: &(dyn Fn(&Path, &str, Epoch, u64) -> CaseResult + Sync),
-) -> TransitionResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "altair",
-        "transition",
-        Some("core"),
-        WalkOpts {
-            meta_required: true,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("altair/transition/core/{preset}/{}", dir_name(&case_dir));
-
-            let fork_epoch = match meta.as_ref().and_then(|m| m.fork_epoch) {
-                Some(e) => Epoch(e),
-                None => return CaseResult::Skip,
-            };
-            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-                Some(n) => n,
-                None => return CaseResult::Skip,
-            };
-
-            run_case(&case_dir, &case_name, fork_epoch, blocks_count)
-        })
-        .collect();
-
-    let mut out = TransitionResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
-fn run_bellatrix_transition_impl(
-    root: &Path,
-    preset: &'static str,
-    run_case: &(dyn Fn(&Path, &str, Epoch, u64) -> CaseResult + Sync),
-) -> TransitionResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "bellatrix",
-        "transition",
-        Some("core"),
-        WalkOpts {
-            meta_required: true,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("bellatrix/transition/core/{preset}/{}", dir_name(&case_dir));
-
-            let fork_epoch = match meta.as_ref().and_then(|m| m.fork_epoch) {
-                Some(e) => Epoch(e),
-                None => return CaseResult::Skip,
-            };
-            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-                Some(n) => n,
-                None => return CaseResult::Skip,
-            };
-
-            run_case(&case_dir, &case_name, fork_epoch, blocks_count)
-        })
-        .collect();
-
-    let mut out = TransitionResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
 }
 
 // ── Slot-peek helper ──────────────────────────────────────────────────────────
@@ -939,66 +795,6 @@ enum CaseResult {
     Skip,
 }
 
-// ── Capella transition entry points ──────────────────────────────────────────
-
-/// Run capella transition tests for the mainnet preset.
-pub fn run_transition_capella_mainnet(root: &Path) -> TransitionResult {
-    run_capella_transition_impl(root, "mainnet", &run_capella_case_mainnet)
-}
-
-/// Run capella transition tests for the minimal preset.
-pub fn run_transition_capella_minimal(root: &Path) -> TransitionResult {
-    run_capella_transition_impl(root, "minimal", &run_capella_case_minimal)
-}
-
-fn run_capella_transition_impl(
-    root: &Path,
-    preset: &'static str,
-    run_case: &(dyn Fn(&Path, &str, Epoch, u64) -> CaseResult + Sync),
-) -> TransitionResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "capella",
-        "transition",
-        Some("core"),
-        WalkOpts {
-            meta_required: true,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("capella/transition/core/{preset}/{}", dir_name(&case_dir));
-            let fork_epoch = match meta.as_ref().and_then(|m| m.fork_epoch) {
-                Some(e) => Epoch(e),
-                None => return CaseResult::Skip,
-            };
-            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-                Some(n) => n,
-                None => return CaseResult::Skip,
-            };
-            run_case(&case_dir, &case_name, fork_epoch, blocks_count)
-        })
-        .collect();
-
-    let mut out = TransitionResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
 fn run_capella_case_mainnet(
     case_dir: &Path,
     case_name: &str,
@@ -1260,66 +1056,6 @@ where
     }
 }
 
-// ── Deneb transition entry points ─────────────────────────────────────────────
-
-/// Run deneb transition tests for the mainnet preset.
-pub fn run_transition_deneb_mainnet(root: &Path) -> TransitionResult {
-    run_deneb_transition_impl(root, "mainnet", &run_deneb_case_mainnet)
-}
-
-/// Run deneb transition tests for the minimal preset.
-pub fn run_transition_deneb_minimal(root: &Path) -> TransitionResult {
-    run_deneb_transition_impl(root, "minimal", &run_deneb_case_minimal)
-}
-
-fn run_deneb_transition_impl(
-    root: &Path,
-    preset: &'static str,
-    run_case: &(dyn Fn(&Path, &str, Epoch, u64) -> CaseResult + Sync),
-) -> TransitionResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "deneb",
-        "transition",
-        Some("core"),
-        WalkOpts {
-            meta_required: true,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("deneb/transition/core/{preset}/{}", dir_name(&case_dir));
-            let fork_epoch = match meta.as_ref().and_then(|m| m.fork_epoch) {
-                Some(e) => Epoch(e),
-                None => return CaseResult::Skip,
-            };
-            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
-                Some(n) => n,
-                None => return CaseResult::Skip,
-            };
-            run_case(&case_dir, &case_name, fork_epoch, blocks_count)
-        })
-        .collect();
-
-    let mut out = TransitionResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-            CaseResult::Skip => out.skip += 1,
-        }
-    }
-    out
-}
-
 fn run_deneb_case_mainnet(
     case_dir: &Path,
     case_name: &str,
@@ -1579,54 +1315,5 @@ where
         CaseResult::Fail(format!(
             "{case_name}: state mismatch after deneb transition"
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fixtures::fixtures_root;
-    use crate::task::CaseOutcome;
-
-    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
-        let mut pass = 0u64;
-        let mut fail = 0u64;
-        let mut skip = 0u64;
-        for task in tasks {
-            match (task.run)() {
-                CaseOutcome::Pass => pass += 1,
-                CaseOutcome::Fail(_) => fail += 1,
-                CaseOutcome::Skip => skip += 1,
-            }
-        }
-        (pass, fail, skip)
-    }
-
-    #[test]
-    fn enumerate_transition_parity_altair_mainnet() {
-        let Some(root) = fixtures_root() else {
-            return;
-        };
-        let run_result = run_transition_mainnet(&root);
-        let (ep, ef, es) = drain_tasks(enumerate_transition(&root, "altair", "mainnet", 0));
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_transition altair/mainnet counts differ from run_transition_mainnet"
-        );
-    }
-
-    #[test]
-    fn enumerate_transition_parity_altair_minimal() {
-        let Some(root) = fixtures_root() else {
-            return;
-        };
-        let run_result = run_transition_minimal(&root);
-        let (ep, ef, es) = drain_tasks(enumerate_transition(&root, "altair", "minimal", 1));
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_transition altair/minimal counts differ from run_transition_minimal"
-        );
     }
 }

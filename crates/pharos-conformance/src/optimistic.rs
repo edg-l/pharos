@@ -45,6 +45,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::fixture_walker::{
+    WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_state,
+    load_capella_state, load_phase0_state, load_ssz_snappy, walk_category,
+};
+use crate::fs_util::dir_name;
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
 use pharos_fork_choice::{
     HashMapPowBlockProvider, PayloadStatus, Store, apply_invalid_payload, get_forkchoice_store,
     get_head, is_optimistic, on_attestation, on_block, on_tick, promote_valid_ancestors,
@@ -58,15 +64,6 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
 use pharos_utils::Hash256;
-use rayon::prelude::*;
-
-use crate::fixture_walker::{
-    WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_state,
-    load_capella_state, load_phase0_state, load_ssz_snappy, walk_category,
-};
-use crate::fork_choice::ForkChoiceResult;
-use crate::fs_util::dir_name;
-use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
@@ -124,133 +121,6 @@ pub fn enumerate_optimistic(root: &Path, preset: &'static str, row_ordinal: u32)
     }
 
     tasks
-}
-
-// ── Public entry points ───────────────────────────────────────────────────────
-
-pub fn run_optimistic_mainnet(root: &Path) -> ForkChoiceResult {
-    let mut total = ForkChoiceResult::new();
-    for fork in ["bellatrix", "capella"] {
-        total.merge(run_optimistic_fork_preset::<MainnetEthSpec>(
-            root, "mainnet", fork,
-        ));
-    }
-    total
-}
-
-pub fn run_optimistic_minimal(root: &Path) -> ForkChoiceResult {
-    let mut total = ForkChoiceResult::new();
-    for fork in ["bellatrix", "capella"] {
-        total.merge(run_optimistic_fork_preset::<MinimalEthSpec>(
-            root, "minimal", fork,
-        ));
-    }
-    total
-}
-
-// ── Per-fork driver ───────────────────────────────────────────────────────────
-
-fn run_optimistic_fork_preset<E>(
-    root: &Path,
-    preset: &'static str,
-    fork: &'static str,
-) -> ForkChoiceResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
-    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
-        + pharos_stf::AltairJaFDispatch<E>
-        + pharos_stf::AltairProcessSlotsDispatch<E>
-        + pharos_stf::AltairUpgradeDispatch<E>
-        + Decode,
-    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::BellatrixJaFDispatch<E>
-        + pharos_stf::BellatrixProcessSlotsDispatch<E>
-        + pharos_stf::BellatrixUpgradeDispatch<E>
-        + pharos_ssz::TreeHash
-        + Decode,
-    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::CapellaJaFDispatch<E>
-        + pharos_stf::CapellaProcessSlotsDispatch<E>
-        + pharos_stf::CapellaUpgradeDispatch<E>
-        + Decode,
-    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
-        + pharos_stf::DenebJaFDispatch<E>
-        + pharos_stf::DenebProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
-    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
-    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
-    E::Phase0BeaconBlockBody: TreeHash
-        + BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
-    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
-    E::AltairBeaconBlockBody: BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
-    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody> + TreeHash,
-    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::BellatrixSignedBeaconBlock:
-        Decode + Clone + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
-    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody> + TreeHash,
-    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
-            Attestation = Attestation<2048>,
-            AttesterSlashing = AttesterSlashing<2048>,
-            Deposit = Deposit<33>,
-        >,
-    E::CapellaSignedBeaconBlock:
-        Decode + Clone + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
-    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
-    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
-{
-    let base = root.join(preset).join(fork).join("sync").join("optimistic");
-    if !base.is_dir() {
-        return ForkChoiceResult::new();
-    }
-
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        fork,
-        "sync/optimistic",
-        None,
-        WalkOpts {
-            meta_required: false,
-            inner_dir: Some("pyspec_tests"),
-        },
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!("{fork}/sync/optimistic/{preset}/{}", dir_name(&case_dir));
-            run_optimistic_case::<E>(&case_dir, &case_name)
-        })
-        .collect();
-
-    let mut out = ForkChoiceResult::new();
-    for outcome in outcomes {
-        match outcome {
-            CaseResult::Pass => out.pass += 1,
-            CaseResult::Skip => out.skip += 1,
-            CaseResult::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-        }
-    }
-    out
 }
 
 // ── Case outcome ──────────────────────────────────────────────────────────────
@@ -962,53 +832,4 @@ fn parse_hash256(s: &str) -> Result<Hash256, String> {
 
 fn value_as_str(v: &serde_yaml_ng::Value) -> Option<String> {
     v.as_str().map(|s| s.to_owned())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fixtures::fixtures_root;
-    use crate::task::CaseOutcome;
-
-    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
-        let mut pass = 0u64;
-        let mut fail = 0u64;
-        let mut skip = 0u64;
-        for task in tasks {
-            match (task.run)() {
-                CaseOutcome::Pass => pass += 1,
-                CaseOutcome::Fail(_) => fail += 1,
-                CaseOutcome::Skip => skip += 1,
-            }
-        }
-        (pass, fail, skip)
-    }
-
-    #[test]
-    fn enumerate_optimistic_parity_mainnet() {
-        let Some(root) = fixtures_root() else {
-            return; // skip cleanly when fixtures absent
-        };
-        let run_result = run_optimistic_mainnet(&root);
-        let (ep, ef, es) = drain_tasks(enumerate_optimistic(&root, "mainnet", 81));
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_optimistic mainnet counts differ from run_optimistic_mainnet"
-        );
-    }
-
-    #[test]
-    fn enumerate_optimistic_parity_minimal() {
-        let Some(root) = fixtures_root() else {
-            return; // skip cleanly when fixtures absent
-        };
-        let run_result = run_optimistic_minimal(&root);
-        let (ep, ef, es) = drain_tasks(enumerate_optimistic(&root, "minimal", 82));
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_optimistic minimal counts differ from run_optimistic_minimal"
-        );
-    }
 }

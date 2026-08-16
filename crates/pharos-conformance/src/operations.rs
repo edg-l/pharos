@@ -32,30 +32,8 @@ use pharos_types::{
     views::{BeaconBlockBodyView, BeaconBlockView},
 };
 
-use rayon::prelude::*;
-
 use crate::fixture_walker::{WalkOpts, load_pre_post_phase0_state, load_ssz_snappy, walk_category};
 use crate::fs_util::dir_name;
-
-/// Result of running all operation tests for a single operation sub-category
-/// and preset.
-pub struct OpsResult {
-    pub pass: u64,
-    pub fail: u64,
-    pub skip: u64,
-    pub failures: Vec<String>,
-}
-
-impl OpsResult {
-    fn new() -> Self {
-        OpsResult {
-            pass: 0,
-            fail: 0,
-            skip: 0,
-            failures: Vec::new(),
-        }
-    }
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -355,43 +333,6 @@ where
         tasks.extend(sub_tasks);
     }
     tasks
-}
-
-/// Run all six operation sub-categories for the mainnet preset.
-pub fn run_operations_mainnet(root: &Path) -> OpsResult {
-    let tasks = enumerate_operations_phase0::<MainnetEthSpec>(root, "mainnet", 0);
-    drain_tasks_to_ops_result(tasks)
-}
-
-/// Run all six operation sub-categories for the minimal preset.
-pub fn run_operations_minimal(root: &Path) -> OpsResult {
-    let tasks = enumerate_operations_phase0::<MinimalEthSpec>(root, "minimal", 0);
-    drain_tasks_to_ops_result(tasks)
-}
-
-/// Drain a `Vec<CaseTask>` via ONE `into_par_iter`, sort by `case_ordinal`, and
-/// repack into `OpsResult` in `case_ordinal` order. This is the single relocated
-/// rayon drain per preset entry-point (migration invariant: one per fork-preset
-/// until the flat-pool flip in Phase 7).
-fn drain_tasks_to_ops_result(tasks: Vec<crate::task::CaseTask>) -> OpsResult {
-    let mut outcomes: Vec<(u32, crate::task::CaseOutcome)> = tasks
-        .into_par_iter()
-        .map(|t| (t.case_ordinal, (t.run)()))
-        .collect();
-    outcomes.sort_by_key(|(co, _)| *co);
-
-    let mut out = OpsResult::new();
-    for (_, outcome) in outcomes {
-        match outcome {
-            crate::task::CaseOutcome::Pass => out.pass += 1,
-            crate::task::CaseOutcome::Skip => out.skip += 1,
-            crate::task::CaseOutcome::Fail(msg) => {
-                out.fail += 1;
-                out.failures.push(msg);
-            }
-        }
-    }
-    out
 }
 
 // ── Altair operations ─────────────────────────────────────────────────────────
@@ -1341,18 +1282,6 @@ fn enumerate_operations_altair(
         tasks.extend(sub_tasks);
     }
     tasks
-}
-
-/// Run all altair operation sub-categories for the mainnet preset.
-pub fn run_operations_altair_mainnet(root: &Path) -> OpsResult {
-    let tasks = enumerate_operations_altair(root, "mainnet", 0);
-    drain_tasks_to_ops_result(tasks)
-}
-
-/// Run all altair operation sub-categories for the minimal preset.
-pub fn run_operations_altair_minimal(root: &Path) -> OpsResult {
-    let tasks = enumerate_operations_altair(root, "minimal", 0);
-    drain_tasks_to_ops_result(tasks)
 }
 
 // ── Bellatrix operations ──────────────────────────────────────────────────────
@@ -2473,18 +2402,6 @@ fn enumerate_operations_bellatrix(
         tasks.extend(sub_tasks);
     }
     tasks
-}
-
-/// Run all bellatrix operation sub-categories for the mainnet preset.
-pub fn run_operations_bellatrix_mainnet(root: &Path) -> OpsResult {
-    let tasks = enumerate_operations_bellatrix(root, "mainnet", 0);
-    drain_tasks_to_ops_result(tasks)
-}
-
-/// Run all bellatrix operation sub-categories for the minimal preset.
-pub fn run_operations_bellatrix_minimal(root: &Path) -> OpsResult {
-    let tasks = enumerate_operations_bellatrix(root, "minimal", 0);
-    drain_tasks_to_ops_result(tasks)
 }
 
 // ── Bellatrix shared helpers ──────────────────────────────────────────────────
@@ -3865,18 +3782,6 @@ fn enumerate_operations_capella(
         tasks.extend(sub_tasks);
     }
     tasks
-}
-
-/// Run all capella operation sub-categories for the mainnet preset.
-pub fn run_operations_capella_mainnet(root: &Path) -> OpsResult {
-    let tasks = enumerate_operations_capella(root, "mainnet", 0);
-    drain_tasks_to_ops_result(tasks)
-}
-
-/// Run all capella operation sub-categories for the minimal preset.
-pub fn run_operations_capella_minimal(root: &Path) -> OpsResult {
-    let tasks = enumerate_operations_capella(root, "minimal", 0);
-    drain_tasks_to_ops_result(tasks)
 }
 
 // ── Deneb operations ──────────────────────────────────────────────────────────
@@ -5377,14 +5282,32 @@ fn enumerate_operations_deneb(
     tasks
 }
 
-/// Run all deneb operation sub-categories for the mainnet preset.
-pub fn run_operations_deneb_mainnet(root: &Path) -> OpsResult {
-    let tasks = enumerate_operations_deneb(root, "mainnet", 0);
-    drain_tasks_to_ops_result(tasks)
-}
-
-/// Run all deneb operation sub-categories for the minimal preset.
-pub fn run_operations_deneb_minimal(root: &Path) -> OpsResult {
-    let tasks = enumerate_operations_deneb(root, "minimal", 0);
-    drain_tasks_to_ops_result(tasks)
+/// Public dispatch: enumerate all operation cases for a given `(fork, preset)` pair.
+///
+/// Called by the flat-pool driver in `lib.rs::run()`. Returns a `Vec<CaseTask>`
+/// with `row_ordinal` set to `row_ordinal` and `case_ordinal`s assigned in
+/// sub-table order × fixture-walk order.
+pub fn enumerate_operations(
+    root: &Path,
+    fork: &str,
+    preset: &str,
+    row_ordinal: u32,
+) -> Vec<crate::task::CaseTask> {
+    match (fork, preset) {
+        ("phase0", "mainnet") => {
+            enumerate_operations_phase0::<MainnetEthSpec>(root, "mainnet", row_ordinal)
+        }
+        ("phase0", "minimal") => {
+            enumerate_operations_phase0::<MinimalEthSpec>(root, "minimal", row_ordinal)
+        }
+        ("altair", "mainnet") => enumerate_operations_altair(root, "mainnet", row_ordinal),
+        ("altair", "minimal") => enumerate_operations_altair(root, "minimal", row_ordinal),
+        ("bellatrix", "mainnet") => enumerate_operations_bellatrix(root, "mainnet", row_ordinal),
+        ("bellatrix", "minimal") => enumerate_operations_bellatrix(root, "minimal", row_ordinal),
+        ("capella", "mainnet") => enumerate_operations_capella(root, "mainnet", row_ordinal),
+        ("capella", "minimal") => enumerate_operations_capella(root, "minimal", row_ordinal),
+        ("deneb", "mainnet") => enumerate_operations_deneb(root, "mainnet", row_ordinal),
+        ("deneb", "minimal") => enumerate_operations_deneb(root, "minimal", row_ordinal),
+        _ => Vec::new(),
+    }
 }

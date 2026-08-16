@@ -17,7 +17,7 @@ pub struct Args {
     pub filter: Filter,
     /// If true, write `docs/conformance.md` after running.
     pub write: bool,
-    /// If true, stop on first failing test case with non-zero exit.
+    /// If true, run all tests and exit non-zero if any failed.
     pub bail: bool,
 }
 
@@ -133,7 +133,7 @@ Options:
                          Patterns combine as logical OR. No regex, no globs.
                          Mutually exclusive with --fork/--category/--preset.
                          Example: --filter phase0/ssz_static,altair/fork_choice
-  --bail                 Stop on first failing test case and exit non-zero.
+  --bail                 Run all tests; exit non-zero if any failed.
   --write                Write pass/fail/skip counts to docs/conformance.md
   --help, -h             Show this help message and exit
 

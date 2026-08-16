@@ -89,21 +89,11 @@ use pharos_types::phase0::{
 };
 use pharos_utils::Hash256;
 
-use rayon::prelude::*;
-
 use crate::error::ConformanceError;
 use crate::fs_util::{dir_name, read_dir_sorted};
 use crate::snappy::decompress_raw;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
 use crate::yaml_util::read_root_from_file;
-
-/// Result of running all ssz_static tests for one preset.
-pub struct StaticResult {
-    pub pass: u64,
-    pub fail: u64,
-    pub skip: u64,
-    pub failures: Vec<String>,
-}
 
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
@@ -118,7 +108,6 @@ pub struct StaticResult {
 /// - `Ok(true)`  → `CaseOutcome::Pass`
 /// - `Ok(false)` → `CaseOutcome::Skip`
 /// - `Err(e)`    → `CaseOutcome::Fail("`{case_label}`: {e}")`
-#[allow(dead_code)]
 pub fn enumerate_ssz_static(
     root: &Path,
     fork: &'static str,
@@ -182,10 +171,8 @@ pub fn enumerate_ssz_static(
 
 /// Route a single case to the correct per-fork dispatch function.
 ///
-/// Mirrors the logic in the various `run_*_static_case` fns, which all read
-/// `serialized.ssz_snappy` + `roots.yaml` and then call the relevant
+/// Reads `serialized.ssz_snappy` + `roots.yaml` and calls the relevant
 /// `dispatch_*` function.
-#[allow(dead_code)]
 fn dispatch_for_fork(
     fork: &str,
     preset: &str,
@@ -225,97 +212,7 @@ fn dispatch_for_fork(
 /// Run all phase0 ssz_static tests for a given preset.
 ///
 /// `preset_dir`: the top-level directory for this preset (e.g. `<root>/mainnet`).
-pub fn run_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResult {
-    let base = preset_dir.join("phase0/ssz_static");
-    if !base.is_dir() {
-        eprintln!("ssz_static/{preset_name} dir not found: {}", base.display());
-        return StaticResult {
-            pass: 0,
-            fail: 0,
-            skip: 0,
-            failures: vec![],
-        };
-    }
-
-    let type_dirs = read_dir_sorted(&base).unwrap_or_default();
-
-    // Collect all (type_name, case_dir, case_label) tuples first.
-    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
-    for type_dir in type_dirs {
-        let type_name = dir_name(&type_dir);
-        let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
-        for suite_dir in suite_dirs {
-            let suite_name = dir_name(&suite_dir);
-            let case_dirs = read_dir_sorted(&suite_dir).unwrap_or_default();
-            for case_dir in case_dirs {
-                let case_name = dir_name(&case_dir);
-                let case_label =
-                    format!("{preset_name}/phase0/ssz_static/{type_name}/{suite_name}/{case_name}");
-                all_cases.push((type_name.clone(), case_dir, case_label));
-            }
-        }
-    }
-
-    let results: Vec<(bool, Option<String>)> = all_cases
-        .into_par_iter()
-        .map(|(type_name, case_dir, case_label)| {
-            let result = run_static_case(preset_name, &type_name, &case_dir, &case_label);
-            match result {
-                Ok(true) => (true, None),
-                Ok(false) => (false, None),
-                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
-            }
-        })
-        .collect();
-
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-    for (passed, err) in results {
-        match (passed, err) {
-            (true, _) => pass += 1,
-            (false, None) => skip += 1,
-            (false, Some(msg)) => {
-                fail += 1;
-                failures.push(msg);
-            }
-        }
-    }
-
-    StaticResult {
-        pass,
-        fail,
-        skip,
-        failures,
-    }
-}
-
 /// Run a single ssz_static case. Returns `Ok(true)` = pass, `Ok(false)` = skip.
-fn run_static_case(
-    preset: &str,
-    type_name: &str,
-    case_dir: &Path,
-    case_label: &str,
-) -> Result<bool, ConformanceError> {
-    let ssz_snappy = case_dir.join("serialized.ssz_snappy");
-    if !ssz_snappy.exists() {
-        return Ok(false);
-    }
-    let roots_yaml = case_dir.join("roots.yaml");
-    if !roots_yaml.exists() {
-        return Ok(false);
-    }
-
-    let compressed = std::fs::read(&ssz_snappy)?;
-    let ssz_bytes = decompress_raw(&compressed)?;
-    let expected_root = read_root_from_file(&roots_yaml)?;
-
-    // Dispatch on (preset, type_name) to the matching monomorphized type.
-    // Returns Ok(true) = pass, Ok(false) = skip (unknown type).
-    dispatch(preset, type_name, &ssz_bytes, &expected_root, case_label)
-}
-
 /// Core SSZ round-trip + hash assertion for any type.
 ///
 /// Returns `Ok(true)` on success.
@@ -485,97 +382,6 @@ fn dispatch_minimal(
             Ok(false)
         }
     }
-}
-
-// ── Altair ssz_static runner ──────────────────────────────────────────────────
-
-/// Run all altair ssz_static tests for a given preset.
-///
-/// `preset_dir`: the top-level directory for this preset (e.g. `<root>/mainnet`).
-pub fn run_altair_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResult {
-    let base = preset_dir.join("altair/ssz_static");
-    if !base.is_dir() {
-        return StaticResult {
-            pass: 0,
-            fail: 0,
-            skip: 0,
-            failures: vec![],
-        };
-    }
-
-    let type_dirs = read_dir_sorted(&base).unwrap_or_default();
-
-    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
-    for type_dir in type_dirs {
-        let type_name = dir_name(&type_dir);
-        let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
-        for suite_dir in suite_dirs {
-            let suite_name = dir_name(&suite_dir);
-            let case_dirs = read_dir_sorted(&suite_dir).unwrap_or_default();
-            for case_dir in case_dirs {
-                let case_name = dir_name(&case_dir);
-                let case_label =
-                    format!("{preset_name}/altair/ssz_static/{type_name}/{suite_name}/{case_name}");
-                all_cases.push((type_name.clone(), case_dir, case_label));
-            }
-        }
-    }
-
-    let results: Vec<(bool, Option<String>)> = all_cases
-        .into_par_iter()
-        .map(|(type_name, case_dir, case_label)| {
-            let result = run_altair_static_case(preset_name, &type_name, &case_dir, &case_label);
-            match result {
-                Ok(true) => (true, None),
-                Ok(false) => (false, None),
-                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
-            }
-        })
-        .collect();
-
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-    for (passed, err) in results {
-        match (passed, err) {
-            (true, _) => pass += 1,
-            (false, None) => skip += 1,
-            (false, Some(msg)) => {
-                fail += 1;
-                failures.push(msg);
-            }
-        }
-    }
-
-    StaticResult {
-        pass,
-        fail,
-        skip,
-        failures,
-    }
-}
-
-fn run_altair_static_case(
-    preset: &str,
-    type_name: &str,
-    case_dir: &Path,
-    case_label: &str,
-) -> Result<bool, ConformanceError> {
-    let ssz_snappy = case_dir.join("serialized.ssz_snappy");
-    if !ssz_snappy.exists() {
-        return Ok(false);
-    }
-    let roots_yaml = case_dir.join("roots.yaml");
-    if !roots_yaml.exists() {
-        return Ok(false);
-    }
-
-    let compressed = std::fs::read(&ssz_snappy)?;
-    let ssz_bytes = decompress_raw(&compressed)?;
-    let expected_root = read_root_from_file(&roots_yaml)?;
-
-    dispatch_altair(preset, type_name, &ssz_bytes, &expected_root, case_label)
 }
 
 fn dispatch_altair(
@@ -770,105 +576,6 @@ fn dispatch_altair_minimal(
     }
 }
 
-// ── Bellatrix ssz_static runner ───────────────────────────────────────────────
-
-/// Run all bellatrix ssz_static tests for the mainnet preset.
-pub fn run_ssz_static_bellatrix_mainnet(root: &Path) -> StaticResult {
-    run_bellatrix_ssz_static_preset(&root.join("mainnet"), "mainnet")
-}
-
-/// Run all bellatrix ssz_static tests for the minimal preset.
-pub fn run_ssz_static_bellatrix_minimal(root: &Path) -> StaticResult {
-    run_bellatrix_ssz_static_preset(&root.join("minimal"), "minimal")
-}
-
-fn run_bellatrix_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResult {
-    let base = preset_dir.join("bellatrix/ssz_static");
-    if !base.is_dir() {
-        return StaticResult {
-            pass: 0,
-            fail: 0,
-            skip: 0,
-            failures: vec![],
-        };
-    }
-
-    let type_dirs = read_dir_sorted(&base).unwrap_or_default();
-
-    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
-    for type_dir in type_dirs {
-        let type_name = dir_name(&type_dir);
-        let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
-        for suite_dir in suite_dirs {
-            let suite_name = dir_name(&suite_dir);
-            let case_dirs = read_dir_sorted(&suite_dir).unwrap_or_default();
-            for case_dir in case_dirs {
-                let case_name = dir_name(&case_dir);
-                let case_label = format!(
-                    "{preset_name}/bellatrix/ssz_static/{type_name}/{suite_name}/{case_name}"
-                );
-                all_cases.push((type_name.clone(), case_dir, case_label));
-            }
-        }
-    }
-
-    let results: Vec<(bool, Option<String>)> = all_cases
-        .into_par_iter()
-        .map(|(type_name, case_dir, case_label)| {
-            let result = run_bellatrix_static_case(preset_name, &type_name, &case_dir, &case_label);
-            match result {
-                Ok(true) => (true, None),
-                Ok(false) => (false, None),
-                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
-            }
-        })
-        .collect();
-
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-    for (passed, err) in results {
-        match (passed, err) {
-            (true, _) => pass += 1,
-            (false, None) => skip += 1,
-            (false, Some(msg)) => {
-                fail += 1;
-                failures.push(msg);
-            }
-        }
-    }
-
-    StaticResult {
-        pass,
-        fail,
-        skip,
-        failures,
-    }
-}
-
-fn run_bellatrix_static_case(
-    preset: &str,
-    type_name: &str,
-    case_dir: &Path,
-    case_label: &str,
-) -> Result<bool, ConformanceError> {
-    let ssz_snappy = case_dir.join("serialized.ssz_snappy");
-    if !ssz_snappy.exists() {
-        return Ok(false);
-    }
-    let roots_yaml = case_dir.join("roots.yaml");
-    if !roots_yaml.exists() {
-        return Ok(false);
-    }
-
-    let compressed = std::fs::read(&ssz_snappy)?;
-    let ssz_bytes = decompress_raw(&compressed)?;
-    let expected_root = read_root_from_file(&roots_yaml)?;
-
-    dispatch_bellatrix(preset, type_name, &ssz_bytes, &expected_root, case_label)
-}
-
 fn dispatch_bellatrix(
     preset: &str,
     type_name: &str,
@@ -1049,105 +756,6 @@ fn dispatch_bellatrix_minimal(
             Ok(false)
         }
     }
-}
-
-// ── Capella ssz_static runner ─────────────────────────────────────────────────
-
-/// Run all capella ssz_static tests for the mainnet preset.
-pub fn run_ssz_static_capella_mainnet(root: &Path) -> StaticResult {
-    run_capella_ssz_static_preset(&root.join("mainnet"), "mainnet")
-}
-
-/// Run all capella ssz_static tests for the minimal preset.
-pub fn run_ssz_static_capella_minimal(root: &Path) -> StaticResult {
-    run_capella_ssz_static_preset(&root.join("minimal"), "minimal")
-}
-
-fn run_capella_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResult {
-    let base = preset_dir.join("capella/ssz_static");
-    if !base.is_dir() {
-        return StaticResult {
-            pass: 0,
-            fail: 0,
-            skip: 0,
-            failures: vec![],
-        };
-    }
-
-    let type_dirs = read_dir_sorted(&base).unwrap_or_default();
-
-    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
-    for type_dir in type_dirs {
-        let type_name = dir_name(&type_dir);
-        let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
-        for suite_dir in suite_dirs {
-            let suite_name = dir_name(&suite_dir);
-            let case_dirs = read_dir_sorted(&suite_dir).unwrap_or_default();
-            for case_dir in case_dirs {
-                let case_name = dir_name(&case_dir);
-                let case_label = format!(
-                    "{preset_name}/capella/ssz_static/{type_name}/{suite_name}/{case_name}"
-                );
-                all_cases.push((type_name.clone(), case_dir, case_label));
-            }
-        }
-    }
-
-    let results: Vec<(bool, Option<String>)> = all_cases
-        .into_par_iter()
-        .map(|(type_name, case_dir, case_label)| {
-            let result = run_capella_static_case(preset_name, &type_name, &case_dir, &case_label);
-            match result {
-                Ok(true) => (true, None),
-                Ok(false) => (false, None),
-                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
-            }
-        })
-        .collect();
-
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-    for (passed, err) in results {
-        match (passed, err) {
-            (true, _) => pass += 1,
-            (false, None) => skip += 1,
-            (false, Some(msg)) => {
-                fail += 1;
-                failures.push(msg);
-            }
-        }
-    }
-
-    StaticResult {
-        pass,
-        fail,
-        skip,
-        failures,
-    }
-}
-
-fn run_capella_static_case(
-    preset: &str,
-    type_name: &str,
-    case_dir: &Path,
-    case_label: &str,
-) -> Result<bool, ConformanceError> {
-    let ssz_snappy = case_dir.join("serialized.ssz_snappy");
-    if !ssz_snappy.exists() {
-        return Ok(false);
-    }
-    let roots_yaml = case_dir.join("roots.yaml");
-    if !roots_yaml.exists() {
-        return Ok(false);
-    }
-
-    let compressed = std::fs::read(&ssz_snappy)?;
-    let ssz_bytes = decompress_raw(&compressed)?;
-    let expected_root = read_root_from_file(&roots_yaml)?;
-
-    dispatch_capella(preset, type_name, &ssz_bytes, &expected_root, case_label)
 }
 
 fn dispatch_capella(
@@ -1416,104 +1024,6 @@ fn dispatch_capella_minimal(
             Ok(false)
         }
     }
-}
-
-// ── Deneb ssz_static runners ──────────────────────────────────────────────────
-
-/// Run all deneb ssz_static tests for the mainnet preset.
-pub fn run_ssz_static_deneb_mainnet(root: &Path) -> StaticResult {
-    run_deneb_ssz_static_preset(&root.join("mainnet"), "mainnet")
-}
-
-/// Run all deneb ssz_static tests for the minimal preset.
-pub fn run_ssz_static_deneb_minimal(root: &Path) -> StaticResult {
-    run_deneb_ssz_static_preset(&root.join("minimal"), "minimal")
-}
-
-fn run_deneb_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResult {
-    let base = preset_dir.join("deneb/ssz_static");
-    if !base.is_dir() {
-        return StaticResult {
-            pass: 0,
-            fail: 0,
-            skip: 0,
-            failures: vec![],
-        };
-    }
-
-    let type_dirs = read_dir_sorted(&base).unwrap_or_default();
-
-    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
-    for type_dir in type_dirs {
-        let type_name = dir_name(&type_dir);
-        let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
-        for suite_dir in suite_dirs {
-            let suite_name = dir_name(&suite_dir);
-            let case_dirs = read_dir_sorted(&suite_dir).unwrap_or_default();
-            for case_dir in case_dirs {
-                let case_name = dir_name(&case_dir);
-                let case_label =
-                    format!("{preset_name}/deneb/ssz_static/{type_name}/{suite_name}/{case_name}");
-                all_cases.push((type_name.clone(), case_dir, case_label));
-            }
-        }
-    }
-
-    let results: Vec<(bool, Option<String>)> = all_cases
-        .into_par_iter()
-        .map(|(type_name, case_dir, case_label)| {
-            let result = run_deneb_static_case(preset_name, &type_name, &case_dir, &case_label);
-            match result {
-                Ok(true) => (true, None),
-                Ok(false) => (false, None),
-                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
-            }
-        })
-        .collect();
-
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-    for (passed, err) in results {
-        match (passed, err) {
-            (true, _) => pass += 1,
-            (false, None) => skip += 1,
-            (false, Some(msg)) => {
-                fail += 1;
-                failures.push(msg);
-            }
-        }
-    }
-
-    StaticResult {
-        pass,
-        fail,
-        skip,
-        failures,
-    }
-}
-
-fn run_deneb_static_case(
-    preset: &str,
-    type_name: &str,
-    case_dir: &Path,
-    case_label: &str,
-) -> Result<bool, ConformanceError> {
-    let ssz_snappy = case_dir.join("serialized.ssz_snappy");
-    if !ssz_snappy.exists() {
-        return Ok(false);
-    }
-    let roots_yaml = case_dir.join("roots.yaml");
-    if !roots_yaml.exists() {
-        return Ok(false);
-    }
-
-    let compressed = std::fs::read(&ssz_snappy)?;
-    let ssz_bytes = decompress_raw(&compressed)?;
-    let expected_root = read_root_from_file(&roots_yaml)?;
-
-    dispatch_deneb(preset, type_name, &ssz_bytes, &expected_root, case_label)
 }
 
 fn dispatch_deneb(
@@ -1816,105 +1326,6 @@ fn dispatch_deneb_minimal(
             Ok(false)
         }
     }
-}
-
-// ── Electra ssz_static runners ────────────────────────────────────────────────
-
-/// Run all electra ssz_static tests for the mainnet preset.
-pub fn run_ssz_static_electra_mainnet(root: &Path) -> StaticResult {
-    run_electra_ssz_static_preset(&root.join("mainnet"), "mainnet")
-}
-
-/// Run all electra ssz_static tests for the minimal preset.
-pub fn run_ssz_static_electra_minimal(root: &Path) -> StaticResult {
-    run_electra_ssz_static_preset(&root.join("minimal"), "minimal")
-}
-
-fn run_electra_ssz_static_preset(preset_dir: &Path, preset_name: &str) -> StaticResult {
-    let base = preset_dir.join("electra/ssz_static");
-    if !base.is_dir() {
-        return StaticResult {
-            pass: 0,
-            fail: 0,
-            skip: 0,
-            failures: vec![],
-        };
-    }
-
-    let type_dirs = read_dir_sorted(&base).unwrap_or_default();
-
-    let mut all_cases: Vec<(String, std::path::PathBuf, String)> = Vec::new();
-    for type_dir in type_dirs {
-        let type_name = dir_name(&type_dir);
-        let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
-        for suite_dir in suite_dirs {
-            let suite_name = dir_name(&suite_dir);
-            let case_dirs = read_dir_sorted(&suite_dir).unwrap_or_default();
-            for case_dir in case_dirs {
-                let case_name = dir_name(&case_dir);
-                let case_label = format!(
-                    "{preset_name}/electra/ssz_static/{type_name}/{suite_name}/{case_name}"
-                );
-                all_cases.push((type_name.clone(), case_dir, case_label));
-            }
-        }
-    }
-
-    let results: Vec<(bool, Option<String>)> = all_cases
-        .into_par_iter()
-        .map(|(type_name, case_dir, case_label)| {
-            let result = run_electra_static_case(preset_name, &type_name, &case_dir, &case_label);
-            match result {
-                Ok(true) => (true, None),
-                Ok(false) => (false, None),
-                Err(e) => (false, Some(format!("`{case_label}`: {e}"))),
-            }
-        })
-        .collect();
-
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-    for (passed, err) in results {
-        match (passed, err) {
-            (true, _) => pass += 1,
-            (false, None) => skip += 1,
-            (false, Some(msg)) => {
-                fail += 1;
-                failures.push(msg);
-            }
-        }
-    }
-
-    StaticResult {
-        pass,
-        fail,
-        skip,
-        failures,
-    }
-}
-
-fn run_electra_static_case(
-    preset: &str,
-    type_name: &str,
-    case_dir: &Path,
-    case_label: &str,
-) -> Result<bool, ConformanceError> {
-    let ssz_snappy = case_dir.join("serialized.ssz_snappy");
-    if !ssz_snappy.exists() {
-        return Ok(false);
-    }
-    let roots_yaml = case_dir.join("roots.yaml");
-    if !roots_yaml.exists() {
-        return Ok(false);
-    }
-
-    let compressed = std::fs::read(&ssz_snappy)?;
-    let ssz_bytes = decompress_raw(&compressed)?;
-    let expected_root = read_root_from_file(&roots_yaml)?;
-
-    dispatch_electra(preset, type_name, &ssz_bytes, &expected_root, case_label)
 }
 
 fn dispatch_electra(
@@ -2292,54 +1703,3 @@ fn dispatch_electra_minimal(
 }
 
 // Helpers `read_dir_sorted` and `dir_name` are shared via the `fs_util` module.
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fixtures::fixtures_root;
-    use crate::task::CaseOutcome;
-
-    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
-        let mut pass = 0u64;
-        let mut fail = 0u64;
-        let mut skip = 0u64;
-        for task in tasks {
-            match (task.run)() {
-                CaseOutcome::Pass => pass += 1,
-                CaseOutcome::Fail(_) => fail += 1,
-                CaseOutcome::Skip => skip += 1,
-            }
-        }
-        (pass, fail, skip)
-    }
-
-    #[test]
-    fn enumerate_ssz_static_phase0_mainnet_parity() {
-        let Some(root) = fixtures_root() else {
-            return; // skip cleanly when fixtures absent
-        };
-        let mainnet_dir = root.join("mainnet");
-        let run_result = run_ssz_static_preset(&mainnet_dir, "mainnet");
-        let (ep, ef, es) = drain_tasks(enumerate_ssz_static(&root, "phase0", "mainnet", 1));
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_ssz_static phase0/mainnet counts differ from run_ssz_static_preset"
-        );
-    }
-
-    #[test]
-    fn enumerate_ssz_static_phase0_minimal_parity() {
-        let Some(root) = fixtures_root() else {
-            return;
-        };
-        let minimal_dir = root.join("minimal");
-        let run_result = run_ssz_static_preset(&minimal_dir, "minimal");
-        let (ep, ef, es) = drain_tasks(enumerate_ssz_static(&root, "phase0", "minimal", 2));
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_ssz_static phase0/minimal counts differ from run_ssz_static_preset"
-        );
-    }
-}

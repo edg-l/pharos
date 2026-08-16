@@ -26,27 +26,17 @@ use crate::ssz_generic_types::{
 use crate::task::{CaseFn, CaseOutcome as TaskCaseOutcome, CaseTask};
 use crate::yaml_util::read_root_from_file;
 
-/// Result of running all ssz_generic tests.
-pub struct GenericResult {
-    pub pass: u64,
-    pub fail: u64,
-    pub skip: u64,
-    pub failures: Vec<String>,
-}
-
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
-/// Produce one `CaseTask` per ssz_generic test case in the same walk-order as
-/// `run_ssz_generic`. Called by the Phase 7 flat work-pool.
+/// Produce one `CaseTask` per ssz_generic test case.
 ///
 /// The walk is handler → suite → case (sorted). Unsupported handlers are
-/// skipped (no tasks emitted), matching the `continue` in `run_ssz_generic`.
+/// skipped (no tasks emitted).
 ///
 /// Outcome mapping:
 /// - `Ok(CaseOutcome::Pass)` → `TaskCaseOutcome::Pass`
 /// - `Ok(CaseOutcome::Skip)` → `TaskCaseOutcome::Skip`
 /// - `Err(e)`                → `TaskCaseOutcome::Fail("`{case_label}`: {e}")`
-#[allow(dead_code)]
 pub fn enumerate_ssz_generic(root: &Path, row_ordinal: u32) -> Vec<CaseTask> {
     let base = root.join("general/phase0/ssz_generic");
     if !base.is_dir() {
@@ -63,7 +53,7 @@ pub fn enumerate_ssz_generic(root: &Path, row_ordinal: u32) -> Vec<CaseTask> {
 
     for handler_path in handlers {
         let handler: String = dir_name(&handler_path);
-        // Skip unsupported handlers — same set as in run_ssz_generic.
+        // Skip unsupported handlers.
         match handler.as_str() {
             "basic_progressive_list"
             | "progressive_bitlist"
@@ -112,90 +102,6 @@ pub fn enumerate_ssz_generic(root: &Path, row_ordinal: u32) -> Vec<CaseTask> {
     }
 
     tasks
-}
-
-/// Run all ssz_generic tests under `root/general/phase0/ssz_generic/`.
-pub fn run_ssz_generic(root: &Path) -> GenericResult {
-    let base = root.join("general/phase0/ssz_generic");
-    if !base.is_dir() {
-        eprintln!("ssz_generic dir not found: {}", base.display());
-        return GenericResult {
-            pass: 0,
-            fail: 0,
-            skip: 0,
-            failures: vec![],
-        };
-    }
-
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut skip = 0u64;
-    let mut failures = Vec::new();
-
-    let handlers = match read_dir_sorted(&base) {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("Cannot read ssz_generic dir: {e}");
-            return GenericResult {
-                pass: 0,
-                fail: 0,
-                skip: 0,
-                failures: vec![],
-            };
-        }
-    };
-
-    for handler_path in handlers {
-        let handler = dir_name(&handler_path);
-        // Skip unsupported progressive/union handlers
-        match handler.as_str() {
-            "basic_progressive_list"
-            | "progressive_bitlist"
-            | "progressive_containers"
-            | "compatible_unions" => {
-                eprintln!("skipping unsupported handler: {handler}");
-                continue;
-            }
-            _ => {}
-        }
-
-        let suites = read_dir_sorted(&handler_path).unwrap_or_default();
-        for suite_path in suites {
-            let suite = dir_name(&suite_path);
-            // valid or invalid
-            let is_valid = suite == "valid";
-            let is_invalid = suite == "invalid";
-            if !is_valid && !is_invalid {
-                // Some handlers nest handler/suite/case differently
-                // Treat this as a suite directory containing cases
-            }
-
-            let cases = read_dir_sorted(&suite_path).unwrap_or_default();
-            for case_path in cases {
-                let case_name = dir_name(&case_path);
-                let case_label = format!("ssz_generic/{handler}/{suite}/{case_name}");
-                // Type parsers (e.g. `parse_uint_size`) need the case name —
-                // not the suite name — to extract the type spec. The case
-                // dir is e.g. `uint_64_last_byte_empty` or `bitvec_8_random`.
-                let result = run_case(&handler, &case_name, &case_path, &case_label, is_valid);
-                match result {
-                    Ok(CaseOutcome::Pass) => pass += 1,
-                    Ok(CaseOutcome::Skip) => skip += 1,
-                    Err(e) => {
-                        fail += 1;
-                        failures.push(format!("`{case_label}`: {e}"));
-                    }
-                }
-            }
-        }
-    }
-
-    GenericResult {
-        pass,
-        fail,
-        skip,
-        failures,
-    }
 }
 
 enum CaseOutcome {
@@ -578,38 +484,3 @@ fn run_container(
 
 // Helpers `read_dir_sorted` and `dir_name` are shared with `ssz_static` via
 // the `fs_util` module.
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fixtures::fixtures_root;
-    use crate::task::CaseOutcome as TaskCaseOutcome;
-
-    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
-        let mut pass = 0u64;
-        let mut fail = 0u64;
-        let mut skip = 0u64;
-        for task in tasks {
-            match (task.run)() {
-                TaskCaseOutcome::Pass => pass += 1,
-                TaskCaseOutcome::Fail(_) => fail += 1,
-                TaskCaseOutcome::Skip => skip += 1,
-            }
-        }
-        (pass, fail, skip)
-    }
-
-    #[test]
-    fn enumerate_ssz_generic_parity() {
-        let Some(root) = fixtures_root() else {
-            return; // skip cleanly when fixtures absent
-        };
-        let run_result = run_ssz_generic(&root);
-        let (ep, ef, es) = drain_tasks(enumerate_ssz_generic(&root, 0));
-        assert_eq!(
-            (ep, ef, es),
-            (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_ssz_generic counts differ from run_ssz_generic"
-        );
-    }
-}
