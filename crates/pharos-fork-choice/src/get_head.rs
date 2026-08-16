@@ -32,15 +32,29 @@ const PROPOSER_REORG_CUTOFF_BPS: u64 = 1_667;
 ///
 /// Shared by `get_slots_since_genesis` and `on_tick`. Saturating-subtracts so
 /// invalid stores (`time < genesis_time`) yield slot 0 rather than panicking.
-pub(crate) fn slot_from_time<E: BeaconSpec>(time: u64, genesis_time: u64) -> u64 {
-    time.saturating_sub(genesis_time) * 1000 / E::SLOT_DURATION_MS
+/// Milliseconds per slot for `store`, from its RUNTIME config.
+///
+/// `SECONDS_PER_SLOT` is a config-level value (per-network, not a preset), so
+/// the slot clock must read it from `runtime_cfg`, not the compile-time
+/// `E::SLOT_DURATION_MS` (which only coincides on mainnet: mainnet-preset → 12s,
+/// minimal-preset → 6s). `get_forkchoice_store` seeds `seconds_per_slot` to the
+/// preset, so conformance/tests keep preset timing; the live node overrides it
+/// with the real network value (e.g. a 6s devnet). Falls back to the preset if
+/// unset (0).
+pub(crate) fn store_slot_ms<E: BeaconSpec>(store: &Store<E>) -> u64 {
+    let ms = store.runtime_cfg.seconds_per_slot.saturating_mul(1000);
+    if ms == 0 { E::SLOT_DURATION_MS } else { ms }
+}
+
+pub(crate) fn slot_from_time(time: u64, genesis_time: u64, slot_ms: u64) -> u64 {
+    time.saturating_sub(genesis_time) * 1000 / slot_ms.max(1)
 }
 
 /// Wall-clock time at the start of `slot`, inverse of `slot_from_time`.
 ///
 /// Shared by `on_tick` and `get_forkchoice_store`.
-pub(crate) fn slot_start_time<E: BeaconSpec>(slot: u64, genesis_time: u64) -> u64 {
-    genesis_time + slot * E::SLOT_DURATION_MS / 1000
+pub(crate) fn slot_start_time(slot: u64, genesis_time: u64, slot_ms: u64) -> u64 {
+    genesis_time + slot * slot_ms / 1000
 }
 
 /// Milliseconds elapsed within the current slot of `store`.
@@ -48,14 +62,14 @@ pub(crate) fn slot_start_time<E: BeaconSpec>(slot: u64, genesis_time: u64) -> u6
 /// Shared by `is_proposing_on_time` and `record_block_timeliness`.
 pub(crate) fn time_into_current_slot_ms<E: BeaconSpec>(store: &Store<E>) -> u64 {
     let seconds_since_genesis = store.time.saturating_sub(store.genesis_time);
-    seconds_to_milliseconds(seconds_since_genesis) % E::SLOT_DURATION_MS
+    seconds_to_milliseconds(seconds_since_genesis) % store_slot_ms::<E>(store).max(1)
 }
 
 // ── Slot/epoch helpers ────────────────────────────────────────────────────────
 
 /// `get_slots_since_genesis` per `specs/phase0/fork-choice.md:224-226`.
 pub fn get_slots_since_genesis<E: BeaconSpec>(store: &Store<E>) -> u64 {
-    slot_from_time::<E>(store.time, store.genesis_time)
+    slot_from_time(store.time, store.genesis_time, store_slot_ms::<E>(store))
 }
 
 /// `get_current_slot` per `specs/phase0/fork-choice.md:229-231`.
@@ -760,7 +774,12 @@ mod tests {
             altair_fork_epoch: u64::MAX,
             bellatrix_fork_epoch: u64::MAX,
             capella_fork_epoch: u64::MAX,
-            runtime_cfg: pharos_types::config::RuntimeConfig::default(),
+            // Seed seconds_per_slot to the minimal preset so the slot clock
+            // (store_slot_ms) matches MinimalBeaconSpec (mirrors get_forkchoice_store).
+            runtime_cfg: pharos_types::config::RuntimeConfig {
+                seconds_per_slot: MinimalBeaconSpec::SLOT_DURATION_MS / 1000,
+                ..pharos_types::config::RuntimeConfig::default()
+            },
         }
     }
 

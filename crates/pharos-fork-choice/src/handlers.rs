@@ -18,7 +18,7 @@ use crate::error::ForkChoiceError;
 use crate::get_head::{
     compute_slots_since_epoch_start, get_checkpoint_block, get_current_slot,
     get_current_store_epoch, get_slot_component_duration_ms, slot_from_time, slot_start_time,
-    time_into_current_slot_ms,
+    store_slot_ms, time_into_current_slot_ms,
 };
 use crate::pow_block::{PowBlockProvider, ValidateMergeBlockError, validate_merge_block};
 use crate::store::{LatestMessage, Store};
@@ -154,10 +154,12 @@ pub fn on_tick_per_slot<E: BeaconSpec>(store: &mut Store<E>, time: u64) {
 /// Catches up slot-by-slot to `time`, calling `on_tick_per_slot` for each
 /// intermediate slot, then once more for the final `time`.
 pub fn on_tick<E: BeaconSpec>(store: &mut Store<E>, time: u64) {
-    let tick_slot = slot_from_time::<E>(time, store.genesis_time);
+    let slot_ms = store_slot_ms::<E>(store);
+    let tick_slot = slot_from_time(time, store.genesis_time, slot_ms);
 
     while get_current_slot(store).0 < tick_slot {
-        let previous_time = slot_start_time::<E>(get_current_slot(store).0 + 1, store.genesis_time);
+        let previous_time =
+            slot_start_time(get_current_slot(store).0 + 1, store.genesis_time, slot_ms);
         on_tick_per_slot(store, previous_time);
     }
     on_tick_per_slot(store, time);

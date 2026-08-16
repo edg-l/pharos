@@ -270,8 +270,14 @@ where
     };
 
     // time = anchor_state.genesis_time + SLOT_DURATION_MS * anchor_state.slot // 1000
-    // Per `specs/phase0/fork-choice.md:207`.
-    let time = slot_start_time::<E>(anchor_state.slot().0, anchor_state.genesis_time());
+    // Per `specs/phase0/fork-choice.md:207`. At construction the store uses the
+    // preset slot duration (also seeded into `runtime_cfg.seconds_per_slot`
+    // below); the live node re-ticks with its real config immediately after.
+    let time = slot_start_time(
+        anchor_state.slot().0,
+        anchor_state.genesis_time(),
+        E::SLOT_DURATION_MS,
+    );
 
     let genesis_time = anchor_state.genesis_time();
 
@@ -327,8 +333,13 @@ where
         bellatrix_fork_epoch: u64::MAX,
         capella_fork_epoch: u64::MAX,
         // RuntimeConfig defaults to mainnet; the node assigns the real config
-        // after construction.
-        runtime_cfg: RuntimeConfig::default(),
+        // after construction. Seed `seconds_per_slot` to the PRESET slot
+        // duration so the slot clock (`store_slot_ms`) matches `E` for
+        // conformance/tests; the live node overrides the whole config.
+        runtime_cfg: RuntimeConfig {
+            seconds_per_slot: E::SLOT_DURATION_MS / 1000,
+            ..RuntimeConfig::default()
+        },
     };
 
     // Update the current slot based on the anchor state time.
