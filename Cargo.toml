@@ -14,6 +14,7 @@ members = [
     "crates/pharos-node",
     "crates/pharos-validator",
     "crates/pharos-conformance",
+    "crates/pharos-kzg",
 ]
 
 [workspace.package]
@@ -36,6 +37,7 @@ pharos-engine = { path = "crates/pharos-engine" }
 pharos-network = { path = "crates/pharos-network" }
 pharos-api = { path = "crates/pharos-api" }
 pharos-conformance = { path = "crates/pharos-conformance" }
+pharos-kzg = { path = "crates/pharos-kzg" }
 
 # Crypto (allowed exceptions: production primitives, no safe in-house alternative)
 blst = "0.3"

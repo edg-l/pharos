@@ -56,6 +56,7 @@ pub mod altair;
 pub mod bellatrix;
 pub mod capella;
 pub mod config;
+pub mod deneb;
 pub mod eth_spec;
 pub mod fork;
 pub mod payload_status;

@@ -18,6 +18,7 @@ pub mod fixture_walker;
 pub mod fixtures;
 pub mod fork_choice;
 pub mod genesis;
+pub mod kzg;
 pub mod light_client;
 pub mod operations;
 pub mod optimistic;
@@ -1968,6 +1969,27 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
         report.rows.push(Row::placeholder("engine", "yaml", "-"));
     }
 
+    // ── deneb/kzg (general/deneb/kzg fixtures, preset-agnostic) ─────────────
+    if filter.matches("deneb", "kzg", "-") {
+        let result = kzg::run_kzg(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "kzg",
+            "-",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report.rows.push(Row::placeholder("deneb", "kzg", "-"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -2072,6 +2094,8 @@ fn fill_future_placeholders(report: &mut Report) {
         // sync/optimistic
         ("sync", "optimistic", "mainnet"),
         ("sync", "optimistic", "minimal"),
+        // deneb/kzg
+        ("deneb", "kzg", "-"),
     ]
     .iter()
     .copied()
@@ -2178,6 +2202,8 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         ("sync", "optimistic", "minimal"),
         // engine API YAML conformance
         ("engine", "yaml", "-"),
+        // deneb/kzg conformance (general/deneb/kzg fixtures, preset-agnostic)
+        ("deneb", "kzg", "-"),
         // future forks (placeholders)
         ("deneb", "ssz_static", "-"),
         ("electra", "ssz_static", "-"),

@@ -1,0 +1,12 @@
+[package]
+name = "pharos-kzg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "KZG polynomial commitment wrappers over c-kzg for Pharos."
+
+[dependencies]
+c-kzg = { workspace = true, features = ["ethereum_kzg_settings"] }
+thiserror.workspace = true

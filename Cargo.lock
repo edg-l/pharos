@@ -513,6 +513,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "c-kzg"
+version = "2.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6648ed1e4ea8e8a1a4a2c78e1cda29a3fd500bc622899c340d8525ea9a76b24a"
+dependencies = [
+ "blst",
+ "cc",
+ "glob",
+ "hex",
+ "libc",
+ "once_cell",
+ "serde",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3133,6 +3148,7 @@ dependencies = [
  "hex",
  "pharos-engine",
  "pharos-fork-choice",
+ "pharos-kzg",
  "pharos-ssz",
  "pharos-stf",
  "pharos-types",
@@ -3175,6 +3191,14 @@ dependencies = [
  "pharos-utils",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "pharos-kzg"
+version = "0.13.0"
+dependencies = [
+ "c-kzg",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

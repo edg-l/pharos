@@ -1,0 +1,402 @@
+//! KZG conformance runner for `general/deneb/kzg/` fixtures.
+//!
+//! Covers three sub-categories:
+//! - `blob_to_kzg_commitment`
+//! - `verify_blob_kzg_proof`
+//! - `verify_blob_kzg_proof_batch`
+//!
+//! All fixtures live under `<root>/general/deneb/kzg/<sub>/<suite>/<case>/data.yaml`.
+//! Each case has an `input` map and an `output`; `null` output means the
+//! operation must fail (invalid input).
+//!
+//! The runner skips cleanly when fixtures are absent (returns all-zero counts).
+
+use std::path::Path;
+
+use pharos_kzg::KzgVerifier;
+
+use crate::fs_util::{dir_name, read_dir_sorted};
+
+/// Result of running all KZG conformance tests.
+pub struct KzgResult {
+    pub pass: u64,
+    pub fail: u64,
+    pub skip: u64,
+    pub failures: Vec<String>,
+}
+
+/// Run all KZG conformance tests under `<root>/general/deneb/kzg/`.
+///
+/// Returns an all-zero result when the directory is absent (clean skip).
+pub fn run_kzg(root: &Path) -> KzgResult {
+    let base = root.join("general/deneb/kzg");
+    if !base.is_dir() {
+        return KzgResult {
+            pass: 0,
+            fail: 0,
+            skip: 0,
+            failures: vec![],
+        };
+    }
+
+    // Instantiate the mainnet verifier once; it is shared across all cases.
+    let verifier = KzgVerifier::mainnet();
+
+    let mut pass = 0u64;
+    let mut fail = 0u64;
+    let mut skip = 0u64;
+    let mut failures = Vec::new();
+
+    for sub_cat in &[
+        "blob_to_kzg_commitment",
+        "verify_blob_kzg_proof",
+        "verify_blob_kzg_proof_batch",
+    ] {
+        let sub_dir = base.join(sub_cat);
+        if !sub_dir.is_dir() {
+            continue;
+        }
+
+        // Fixtures layout: <sub>/<suite>/<case>/data.yaml
+        let suites = match read_dir_sorted(&sub_dir) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        for suite_dir in suites {
+            if !suite_dir.is_dir() {
+                continue;
+            }
+            let cases = match read_dir_sorted(&suite_dir) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            for case_dir in cases {
+                if !case_dir.is_dir() {
+                    continue;
+                }
+                let case_name = format!(
+                    "general/deneb/kzg/{}/{}/{}",
+                    sub_cat,
+                    dir_name(&suite_dir),
+                    dir_name(&case_dir)
+                );
+                let data_path = case_dir.join("data.yaml");
+                if !data_path.exists() {
+                    skip += 1;
+                    continue;
+                }
+
+                let text = match std::fs::read_to_string(&data_path) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        fail += 1;
+                        failures.push(format!("{case_name}: read error: {e}"));
+                        continue;
+                    }
+                };
+
+                let val: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        fail += 1;
+                        failures.push(format!("{case_name}: yaml parse error: {e}"));
+                        continue;
+                    }
+                };
+
+                let result = match *sub_cat {
+                    "blob_to_kzg_commitment" => {
+                        run_blob_to_kzg_commitment(&verifier, &case_name, &val)
+                    }
+                    "verify_blob_kzg_proof" => {
+                        run_verify_blob_kzg_proof(&verifier, &case_name, &val)
+                    }
+                    "verify_blob_kzg_proof_batch" => {
+                        run_verify_blob_kzg_proof_batch(&verifier, &case_name, &val)
+                    }
+                    _ => {
+                        skip += 1;
+                        continue;
+                    }
+                };
+
+                match result {
+                    CaseResult::Pass => pass += 1,
+                    CaseResult::Fail(msg) => {
+                        fail += 1;
+                        failures.push(msg);
+                    }
+                }
+            }
+        }
+    }
+
+    KzgResult {
+        pass,
+        fail,
+        skip,
+        failures,
+    }
+}
+
+// ── Per-case result ───────────────────────────────────────────────────────────
+
+enum CaseResult {
+    Pass,
+    Fail(String),
+}
+
+// ── blob_to_kzg_commitment ────────────────────────────────────────────────────
+
+fn run_blob_to_kzg_commitment(
+    verifier: &KzgVerifier,
+    case_name: &str,
+    val: &serde_yaml_ng::Value,
+) -> CaseResult {
+    let input = match val.get("input") {
+        Some(v) => v,
+        None => return CaseResult::Fail(format!("{case_name}: missing 'input'")),
+    };
+    let expected_output = val.get("output");
+    let expect_failure =
+        matches!(expected_output, Some(v) if v.is_null()) || expected_output.is_none();
+
+    let blob_hex = match input.get("blob").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.blob")),
+    };
+
+    let blob_bytes = match parse_hex_to_fixed::<131072>(blob_hex) {
+        Ok(b) => b,
+        Err(e) => {
+            if expect_failure {
+                return CaseResult::Pass;
+            }
+            return CaseResult::Fail(format!("{case_name}: blob hex parse failed: {e}"));
+        }
+    };
+
+    match verifier.blob_to_kzg_commitment(&blob_bytes) {
+        Ok(commitment) => {
+            if expect_failure {
+                return CaseResult::Fail(format!(
+                    "{case_name}: expected failure but got commitment 0x{}",
+                    hex::encode(commitment)
+                ));
+            }
+            let expected_hex = match expected_output.and_then(|v| v.as_str()) {
+                Some(s) => s,
+                None => return CaseResult::Fail(format!("{case_name}: missing output string")),
+            };
+            let expected_bytes = match parse_hex_to_fixed::<48>(expected_hex) {
+                Ok(b) => b,
+                Err(e) => return CaseResult::Fail(format!("{case_name}: bad expected hex: {e}")),
+            };
+            if commitment == expected_bytes {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!(
+                    "{case_name}: commitment mismatch: got 0x{}, want {expected_hex}",
+                    hex::encode(commitment)
+                ))
+            }
+        }
+        Err(_) => {
+            if expect_failure {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!("{case_name}: unexpected KZG error on valid input"))
+            }
+        }
+    }
+}
+
+// ── verify_blob_kzg_proof ─────────────────────────────────────────────────────
+
+fn run_verify_blob_kzg_proof(
+    verifier: &KzgVerifier,
+    case_name: &str,
+    val: &serde_yaml_ng::Value,
+) -> CaseResult {
+    let input = match val.get("input") {
+        Some(v) => v,
+        None => return CaseResult::Fail(format!("{case_name}: missing 'input'")),
+    };
+    let expected_output = val.get("output");
+    // null output => operation must fail (invalid inputs).
+    let expect_failure =
+        matches!(expected_output, Some(v) if v.is_null()) || expected_output.is_none();
+
+    let blob_hex = match input.get("blob").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.blob")),
+    };
+    let commitment_hex = match input.get("commitment").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.commitment")),
+    };
+    let proof_hex = match input.get("proof").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.proof")),
+    };
+
+    let blob_bytes = match parse_hex_to_fixed::<131072>(blob_hex) {
+        Ok(b) => b,
+        Err(_) => {
+            return if expect_failure {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!("{case_name}: blob hex parse failed on valid input"))
+            };
+        }
+    };
+    let commitment_bytes = match parse_hex_to_fixed::<48>(commitment_hex) {
+        Ok(b) => b,
+        Err(_) => {
+            return if expect_failure {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!(
+                    "{case_name}: commitment hex parse failed on valid input"
+                ))
+            };
+        }
+    };
+    let proof_bytes = match parse_hex_to_fixed::<48>(proof_hex) {
+        Ok(b) => b,
+        Err(_) => {
+            return if expect_failure {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!(
+                    "{case_name}: proof hex parse failed on valid input"
+                ))
+            };
+        }
+    };
+
+    match verifier.verify_blob_kzg_proof(&blob_bytes, &commitment_bytes, &proof_bytes) {
+        Ok(valid) => {
+            if expect_failure {
+                return CaseResult::Fail(format!(
+                    "{case_name}: expected KZG error but got Ok({valid})"
+                ));
+            }
+            let expected: bool = match expected_output.and_then(|v| v.as_bool()) {
+                Some(b) => b,
+                None => return CaseResult::Fail(format!("{case_name}: 'output' is not bool")),
+            };
+            if valid == expected {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!(
+                    "{case_name}: verify result mismatch: got {valid}, want {expected}"
+                ))
+            }
+        }
+        Err(_) => {
+            if expect_failure {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!("{case_name}: unexpected KZG error on valid input"))
+            }
+        }
+    }
+}
+
+// ── verify_blob_kzg_proof_batch ───────────────────────────────────────────────
+
+fn run_verify_blob_kzg_proof_batch(
+    verifier: &KzgVerifier,
+    case_name: &str,
+    val: &serde_yaml_ng::Value,
+) -> CaseResult {
+    let input = match val.get("input") {
+        Some(v) => v,
+        None => return CaseResult::Fail(format!("{case_name}: missing 'input'")),
+    };
+    let expected_output = val.get("output");
+    let expect_failure =
+        matches!(expected_output, Some(v) if v.is_null()) || expected_output.is_none();
+
+    let blobs_val = match input.get("blobs").and_then(|v| v.as_sequence()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.blobs")),
+    };
+    let commitments_val = match input.get("commitments").and_then(|v| v.as_sequence()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.commitments")),
+    };
+    let proofs_val = match input.get("proofs").and_then(|v| v.as_sequence()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing input.proofs")),
+    };
+
+    let blobs: Result<Vec<[u8; 131072]>, _> = blobs_val
+        .iter()
+        .map(|v| parse_hex_to_fixed::<131072>(v.as_str().unwrap_or("")))
+        .collect();
+    let commitments: Result<Vec<[u8; 48]>, _> = commitments_val
+        .iter()
+        .map(|v| parse_hex_to_fixed::<48>(v.as_str().unwrap_or("")))
+        .collect();
+    let proofs: Result<Vec<[u8; 48]>, _> = proofs_val
+        .iter()
+        .map(|v| parse_hex_to_fixed::<48>(v.as_str().unwrap_or("")))
+        .collect();
+
+    let (blobs, commitments, proofs) = match (blobs, commitments, proofs) {
+        (Ok(b), Ok(c), Ok(p)) => (b, c, p),
+        _ => {
+            return if expect_failure {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!("{case_name}: hex parse failed on valid input"))
+            };
+        }
+    };
+
+    match verifier.verify_blob_kzg_proof_batch(&blobs, &commitments, &proofs) {
+        Ok(valid) => {
+            if expect_failure {
+                return CaseResult::Fail(format!(
+                    "{case_name}: expected KZG error but got Ok({valid})"
+                ));
+            }
+            let expected: bool = match expected_output.and_then(|v| v.as_bool()) {
+                Some(b) => b,
+                None => return CaseResult::Fail(format!("{case_name}: 'output' is not bool")),
+            };
+            if valid == expected {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!(
+                    "{case_name}: batch verify mismatch: got {valid}, want {expected}"
+                ))
+            }
+        }
+        Err(_) => {
+            if expect_failure {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!("{case_name}: unexpected KZG error on valid input"))
+            }
+        }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Parse a `0x`-prefixed hex string into a fixed-size byte array.
+fn parse_hex_to_fixed<const N: usize>(s: &str) -> Result<[u8; N], String> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(s).map_err(|e| e.to_string())?;
+    if bytes.len() != N {
+        return Err(format!("expected {N} bytes, got {}", bytes.len()));
+    }
+    let mut arr = [0u8; N];
+    arr.copy_from_slice(&bytes);
+    Ok(arr)
+}
