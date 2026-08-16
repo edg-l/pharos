@@ -34,7 +34,7 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 /// Rejection reason returned when signing is disallowed.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -168,16 +168,18 @@ impl SlashingProtection for SqliteSlashingProtection {
         slot: u64,
         signing_root: Option<&str>,
     ) -> Result<(), SlashingError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|_| SlashingError::Sqlite("mutex poisoned".into()))?;
         let slot_i = slot as i64;
 
-        // BEGIN IMMEDIATE: all checks and the INSERT run in one atomic transaction.
-        // With PRAGMA synchronous=FULL + WAL, commit() is the durable fsync point
-        // per the D-commit-before-sign invariant.
-        let tx = conn.unchecked_transaction()?;
+        // BEGIN IMMEDIATE: take the write lock at transaction start (not lazily at
+        // first write as DEFERRED would), so check-then-insert is atomic at the DB
+        // level and not solely reliant on the in-process Mutex. With PRAGMA
+        // synchronous=FULL + WAL, commit() is the durable fsync point per the
+        // D-commit-before-sign invariant.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         // Check the low watermark: reject if slot < min stored slot.
         let min_slot: Option<i64> = tx
@@ -238,7 +240,7 @@ impl SlashingProtection for SqliteSlashingProtection {
         target_epoch: u64,
         signing_root: Option<&str>,
     ) -> Result<(), SlashingError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|_| SlashingError::Sqlite("mutex poisoned".into()))?;
