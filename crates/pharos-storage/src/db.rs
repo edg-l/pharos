@@ -29,6 +29,7 @@ use crate::cf::{
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
 use crate::keys::{blob_sidecar_key, parse_slot_key, root_key, slot_key};
+use crate::migrations::{MIGRATION_BASELINE, run_migrations};
 use crate::state_summary::StateSummary;
 use crate::store::{ColdMigrationBatch, Store};
 use crate::transition::BlockTransition;
@@ -65,7 +66,14 @@ use crate::transition::BlockTransition;
 ///   Electra LC branches are deeper than Deneb (EIP-7251 enlarged BeaconState),
 ///   so electra types cannot share CFs with Deneb. Opening a v5 database returns
 ///   `StorageError::SchemaMismatch`; the operator must resync from checkpoint.
-const SCHEMA_VERSION: u32 = 6;
+///   v6 is also the [`MIGRATION_BASELINE`](crate::migrations::MIGRATION_BASELINE):
+///   versions below v6 (v1..=v5) are resync-only (no migration path); v6 and
+///   above are migrated forward in place by the [`crate::migrations`] framework.
+/// - v7 (M11 Phase 4): seed of the forward-only migration framework. Identity /
+///   version-bump-only migration (no new CFs, no data move) — proves the
+///   migration walk with a real registry entry. Opening a v6 database now
+///   MIGRATES forward to v7 in place instead of erroring.
+pub(crate) const SCHEMA_VERSION: u32 = 7;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -90,7 +98,7 @@ pub struct RocksStore {
 
 impl RocksStore {
     /// Open (or create) the RocksDB database at `cfg.path` with the full
-    /// schema-v6 column-family set registered (`cf::all_cfs`).
+    /// schema-v7 column-family set registered (`cf::all_cfs`).
     ///
     /// Steps per `D-rocksdb`:
     /// 1. Build global `Options` with `create_if_missing` / `create_missing_column_families`.
@@ -127,12 +135,26 @@ impl RocksStore {
                     });
                 }
                 let found = u32::from_le_bytes(bytes[..4].try_into().expect("length checked"));
-                if found != SCHEMA_VERSION {
+                if (MIGRATION_BASELINE..SCHEMA_VERSION).contains(&found) {
+                    // `MIGRATION_BASELINE <= found < SCHEMA_VERSION`: walk the
+                    // forward migrations in place, each step atomic.
+                    warn!(
+                        from = found,
+                        to = SCHEMA_VERSION,
+                        "migrating chain DB schema forward"
+                    );
+                    run_migrations(&store.db, found, SCHEMA_VERSION)?;
+                } else if found != SCHEMA_VERSION {
+                    // Either a future version (`found > SCHEMA_VERSION`, no
+                    // down-migration) or a pre-baseline version
+                    // (`found < MIGRATION_BASELINE`, no migration path). Both are
+                    // resync-only.
                     return Err(StorageError::SchemaMismatch {
                         found,
                         expected: SCHEMA_VERSION,
                     });
                 }
+                // else: `found == SCHEMA_VERSION` — current, nothing to do.
             }
         }
 
@@ -1199,7 +1221,8 @@ mod tests {
     }
 
     /// Opening a database written with schema v1 (before the `payload-status` CF was added)
-    /// must return `SchemaMismatch { found: 1, expected: 6 }`.
+    /// must return `SchemaMismatch { found: 1, expected: 7 }` — v1 is below the
+    /// migration baseline, so it stays on the resync path.
     #[test]
     fn schema_v1_returns_mismatch() {
         use rocksdb::{ColumnFamilyDescriptor, DB, Options};
@@ -1235,7 +1258,7 @@ mod tests {
                 .expect("write v1 sentinel");
         }
 
-        // Now open with the current `RocksStore::open` which expects v6.
+        // Now open with the current `RocksStore::open` which expects v7.
         let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
@@ -1246,15 +1269,16 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 1,
-                    expected: 6
+                    expected: 7
                 })
             ),
-            "expected SchemaMismatch{{found:1,expected:6}}, got {result:?}"
+            "expected SchemaMismatch{{found:1,expected:7}}, got {result:?}"
         );
     }
 
     /// Opening a database written with schema v2 (before the v3 CFs were added)
-    /// must return `SchemaMismatch { found: 2, expected: 6 }`.
+    /// must return `SchemaMismatch { found: 2, expected: 7 }` — v2 is below the
+    /// migration baseline, so it stays on the resync path.
     #[test]
     fn schema_v2_returns_mismatch() {
         use rocksdb::{ColumnFamilyDescriptor, DB, Options};
@@ -1295,7 +1319,7 @@ mod tests {
                 .expect("write v2 sentinel");
         }
 
-        // Now open with the current `RocksStore::open` which expects v6.
+        // Now open with the current `RocksStore::open` which expects v7.
         let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
@@ -1306,10 +1330,10 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 2,
-                    expected: 6
+                    expected: 7
                 })
             ),
-            "expected SchemaMismatch{{found:2,expected:6}}, got {result:?}"
+            "expected SchemaMismatch{{found:2,expected:7}}, got {result:?}"
         );
     }
 
@@ -1356,5 +1380,138 @@ mod tests {
                 .expect("payload_statuses_iter");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0], (root, PayloadStatus::Invalid));
+    }
+
+    /// Open a RocksDB at `path` with the full current CF set and stamp the given
+    /// `schema_version` sentinel. Used to fabricate a DB at an arbitrary version
+    /// for the migration-walk tests. v7 adds no CFs over v6, so the current
+    /// `all_cfs()` set is layout-compatible with a v6 DB.
+    fn stamp_db_version(path: &std::path::Path, version: u32) {
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+        let descriptors: Vec<ColumnFamilyDescriptor> = all_cfs()
+            .iter()
+            .map(|&n| ColumnFamilyDescriptor::new(n, per_cf_opts(n)))
+            .collect();
+        let db = DB::open_cf_descriptors(&opts, path, descriptors).expect("open db to stamp");
+        let meta_cf = db.cf_handle(CF_METADATA).expect("metadata cf");
+        db.put_cf(meta_cf, b"schema_version", version.to_le_bytes())
+            .expect("write schema_version sentinel");
+    }
+
+    /// Read back the stored `schema_version` sentinel from `store`.
+    fn read_db_version(store: &RocksStore) -> u32 {
+        let cf = store.cf_handle(CF_METADATA).expect("metadata cf");
+        let bytes = store
+            .db
+            .get_cf(cf, b"schema_version")
+            .expect("get schema_version")
+            .expect("schema_version present");
+        u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes"))
+    }
+
+    /// A v6-stamped DB must migrate forward: `open` succeeds and the stored
+    /// version is bumped to the current `SCHEMA_VERSION` (7).
+    #[test]
+    fn migration_walk_v6_to_v7() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("chain_db_v6");
+
+        stamp_db_version(&db_path, 6);
+
+        let store = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+            path: db_path,
+            create_if_missing: false,
+        })
+        .expect("v6 db must migrate forward and open");
+
+        assert_eq!(
+            read_db_version(&store),
+            7,
+            "after migrating a v6 DB the stamped version must be 7"
+        );
+        assert_eq!(SCHEMA_VERSION, 7, "SCHEMA_VERSION must be 7");
+    }
+
+    /// The migration registry must start at the baseline and be contiguous:
+    /// `pairs[0].from == MIGRATION_BASELINE`, `pairs[i+1].from == pairs[i].to`,
+    /// each step is `+1`, and the last `to` equals the current `SCHEMA_VERSION`.
+    #[test]
+    fn migration_registry_contiguous_from_baseline() {
+        use crate::migrations::{MIGRATION_BASELINE, migration_pairs};
+
+        let pairs = migration_pairs();
+        assert!(!pairs.is_empty(), "migration registry must not be empty");
+        assert_eq!(
+            pairs[0].0, MIGRATION_BASELINE,
+            "first migration must start at MIGRATION_BASELINE"
+        );
+        for w in pairs.windows(2) {
+            assert_eq!(
+                w[1].0, w[0].1,
+                "migrations must be contiguous: from[i+1] == to[i]"
+            );
+        }
+        for &(from, to) in &pairs {
+            assert_eq!(to, from + 1, "each migration must bump by exactly one");
+        }
+        assert_eq!(
+            pairs.last().expect("non-empty").1,
+            SCHEMA_VERSION,
+            "last migration must reach the current SCHEMA_VERSION"
+        );
+    }
+
+    /// A v5-stamped DB is below the migration baseline (6) and must hard-error
+    /// with `SchemaMismatch` (resync required), NOT migrate.
+    #[test]
+    fn pre_baseline_still_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("chain_db_v5");
+
+        stamp_db_version(&db_path, 5);
+
+        let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+            path: db_path,
+            create_if_missing: false,
+        });
+
+        assert!(
+            matches!(
+                result,
+                Err(StorageError::SchemaMismatch {
+                    found: 5,
+                    expected: 7
+                })
+            ),
+            "v5 is pre-baseline: expected SchemaMismatch{{found:5,expected:7}}, got {result:?}"
+        );
+    }
+
+    /// A future-version DB (v999, above the current `SCHEMA_VERSION`) must
+    /// hard-error: there is no down-migration.
+    #[test]
+    fn future_version_still_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("chain_db_v999");
+
+        stamp_db_version(&db_path, 999);
+
+        let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+            path: db_path,
+            create_if_missing: false,
+        });
+
+        assert!(
+            matches!(
+                result,
+                Err(StorageError::SchemaMismatch {
+                    found: 999,
+                    expected: 7
+                })
+            ),
+            "future version must hard-error: expected SchemaMismatch{{found:999,expected:7}}, got {result:?}"
+        );
     }
 }

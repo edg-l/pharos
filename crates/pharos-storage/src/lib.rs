@@ -12,6 +12,7 @@ pub mod db;
 pub mod error;
 pub mod forkchoice;
 pub mod keys;
+pub mod migrations;
 pub mod state_summary;
 pub mod store;
 pub mod transition;
