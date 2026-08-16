@@ -66,6 +66,7 @@ pub mod pools;
 pub mod shuffling;
 pub mod state;
 pub mod views;
+pub mod weak_subjectivity;
 
 pub use config::{ConfigError, RuntimeConfig, load_config_dir};
 pub use eth_spec::{EthSpec, MainnetEthSpec, MinimalEthSpec};

@@ -22,6 +22,9 @@ use pharos_types::phase0::misc::Checkpoint;
 use pharos_types::phase0::operations::BeaconBlockHeader;
 use pharos_types::phase0::primitives::{Epoch, Root, Slot, ValidatorIndex};
 use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _, SignedBeaconBlockView};
+use pharos_types::weak_subjectivity::{
+    active_validator_stats, compute_weak_subjectivity_period, is_within_weak_subjectivity_period,
+};
 use reqwest::header::ACCEPT;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -86,6 +89,17 @@ pub enum CheckpointSyncError {
 
     #[error("expected block_root {expected}, got {actual}")]
     TamperFlagMismatch { expected: Root, actual: Root },
+
+    #[error(
+        "checkpoint at epoch {anchor_epoch} is older than the weak-subjectivity period \
+         (current epoch {current_epoch}, ws_period {ws_period} epochs); the anchor is unsafe \
+         to sync from — obtain a fresher checkpoint or pass --ignore-weak-subjectivity-period"
+    )]
+    CheckpointTooOld {
+        anchor_epoch: u64,
+        current_epoch: u64,
+        ws_period: u64,
+    },
 
     #[error("invalid URL: {0}")]
     BeaconApiUrl(String),
@@ -264,14 +278,72 @@ where
 ///
 /// Uses a single `BlockTransition<E>` write (never individual `put_block` /
 /// `put_state` / `put_forkchoice_snapshot` calls) per `D-anchor-state-on-disk`.
+///
+/// # Weak-subjectivity gate
+///
+/// Before persisting, computes the weak-subjectivity period from the anchor
+/// state (`specs/phase0/weak-subjectivity.md`) and rejects (`CheckpointTooOld`)
+/// any anchor whose epoch is older than the WS period before `current_slot`
+/// (the node's wall-clock slot), so we never sync from an unsafe checkpoint.
+/// `current_slot` is the slot derived from wall-clock time and the anchor
+/// state's `genesis_time`. `ignore_ws_period` bypasses the rejection (logging a
+/// `WARN` at the call site) for the `--ignore-weak-subjectivity-period` escape
+/// hatch.
 pub fn apply_anchor<E: EthSpec>(
     anchor: CheckpointAnchor<E>,
     store: &RocksStore,
+    current_slot: u64,
+    ignore_ws_period: bool,
 ) -> Result<ForkChoiceSnapshot, CheckpointSyncError> {
     let state_slot = anchor.state.slot();
     let genesis_time = anchor.state.genesis_time();
     let seconds_per_slot = E::SLOT_DURATION_MS / 1000;
     let last_known_time = genesis_time + state_slot.0 * seconds_per_slot;
+
+    // ── Weak-subjectivity freshness check ─────────────────────────────────────
+    //
+    // Per `specs/phase0/weak-subjectivity.md` `is_within_weak_subjectivity_period`:
+    // a checkpoint older than the WS period before the current slot is unsafe to
+    // sync from. Compute the period from the anchor state's active validator set
+    // and reject a stale anchor unless the operator opts out via
+    // `--ignore-weak-subjectivity-period` (which bypasses the whole gate).
+    let anchor_epoch_for_ws = state_slot.0 / E::SLOTS_PER_EPOCH;
+    let current_epoch = current_slot / E::SLOTS_PER_EPOCH;
+    if ignore_ws_period {
+        tracing::warn!(
+            anchor_epoch = anchor_epoch_for_ws,
+            current_epoch,
+            "checkpoint-sync: skipping the weak-subjectivity freshness check because \
+             --ignore-weak-subjectivity-period is set (UNSAFE)"
+        );
+    } else {
+        let (active_count, total_active_balance_gwei) =
+            active_validator_stats(anchor.state.validators_iter(), Epoch(anchor_epoch_for_ws));
+        if active_count == 0 {
+            // A state with no active validators cannot anchor a sync; the spec
+            // WS math divides by N. Treat as unsafe (degenerate / wrong state).
+            return Err(CheckpointSyncError::CheckpointTooOld {
+                anchor_epoch: anchor_epoch_for_ws,
+                current_epoch,
+                ws_period: 0,
+            });
+        }
+        let ws_period =
+            compute_weak_subjectivity_period::<E>(active_count, total_active_balance_gwei);
+        let within = is_within_weak_subjectivity_period::<E>(
+            state_slot.0,
+            current_slot,
+            active_count,
+            total_active_balance_gwei,
+        );
+        if !within {
+            return Err(CheckpointSyncError::CheckpointTooOld {
+                anchor_epoch: anchor_epoch_for_ws,
+                current_epoch,
+                ws_period,
+            });
+        }
+    }
 
     // Per `D-anchor-state-on-disk` + weak-subjectivity sync convention:
     // the anchor block is treated as the local finalized/justified root.
@@ -1219,7 +1291,10 @@ mod tests {
         };
 
         // Apply anchor — this should persist PayloadStatus::Valid for block_root.
-        apply_anchor::<MinimalEthSpec>(anchor, &rocks).expect("apply_anchor");
+        // The minimal default state has no active validators, so bypass the WS
+        // freshness gate here (this test exercises payload-status seeding, not
+        // the WS check, which has its own dedicated tests below).
+        apply_anchor::<MinimalEthSpec>(anchor, &rocks, 64, true).expect("apply_anchor");
 
         // Confirm the persisted status is Valid.
         let stored_status =
@@ -1260,6 +1335,137 @@ mod tests {
         assert!(
             !is_optimistic::<MinimalEthSpec>(&fc_store, anchor_root2),
             "post-merge anchor must not be optimistic in get_forkchoice_store"
+        );
+    }
+
+    // ── Weak-subjectivity gate tests ──────────────────────────────────────────
+
+    /// Build a Bellatrix `CheckpointAnchor` at `anchor_slot` with `n_validators`
+    /// active validators (32 ETH effective balance each, activation_epoch 0,
+    /// exit FAR_FUTURE), persisted into a fresh RocksDB. Returns `(anchor, store,
+    /// tempdir)`. Used to drive the WS freshness gate.
+    fn make_ws_anchor(
+        anchor_slot: u64,
+        n_validators: u64,
+    ) -> (
+        CheckpointAnchor<MinimalEthSpec>,
+        pharos_storage::RocksStore,
+        tempfile::TempDir,
+    ) {
+        use pharos_ssz::SszList;
+        use pharos_storage::{RocksStore, RocksStoreConfig};
+        use pharos_types::phase0::misc::Validator;
+        use pharos_types::phase0::primitives::Epoch;
+        use pharos_utils::Gwei;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let rocks = RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            path: dir.path().join("db"),
+            create_if_missing: true,
+        })
+        .expect("open rocksdb");
+
+        let validators: Vec<Validator> = (0..n_validators)
+            .map(|_| Validator {
+                effective_balance: Gwei(32_000_000_000),
+                activation_epoch: Epoch(0),
+                exit_epoch: Epoch(u64::MAX),
+                ..Validator::default()
+            })
+            .collect();
+
+        let body = MinimalBeaconBlockBody::default();
+        let body_root: Root = body.tree_hash_root();
+        let state_inner = MinimalBeaconState {
+            genesis_time: 1_600_000_000u64,
+            slot: Slot(anchor_slot),
+            latest_block_header: BeaconBlockHeader {
+                slot: Slot(anchor_slot),
+                state_root: Root::default(),
+                body_root,
+                ..BeaconBlockHeader::default()
+            },
+            validators: SszList::from_vec(validators).expect("validators list"),
+            ..MinimalBeaconState::default()
+        };
+        let fork_state = ForkMinimalBeaconState::Bellatrix(state_inner.clone());
+        let state_root: Root = fork_state.tree_hash_root();
+
+        let signed_block_inner = MinimalSignedBeaconBlock {
+            message: MinimalBeaconBlock {
+                slot: Slot(anchor_slot),
+                state_root,
+                body: body.clone(),
+                ..MinimalBeaconBlock::default()
+            },
+            ..MinimalSignedBeaconBlock::default()
+        };
+        let block_root: Root = {
+            let mut h = state_inner.latest_block_header.clone();
+            h.state_root = state_root;
+            h.tree_hash_root()
+        };
+        let fork_signed_block =
+            <MinimalEthSpec as pharos_types::EthSpec>::bellatrix_into_signed_block(
+                signed_block_inner,
+            );
+        let anchor = CheckpointAnchor {
+            state: fork_state,
+            signed_block: fork_signed_block,
+            state_root,
+            block_root,
+        };
+        (anchor, rocks, dir)
+    }
+
+    /// Minimal preset: 16 validators at 32 ETH → WS period == 256 epochs
+    /// (`SLOTS_PER_EPOCH = 8`). A current slot one epoch past the anchor is well
+    /// inside the period → `apply_anchor` accepts.
+    #[test]
+    fn apply_anchor_accepts_fresh_checkpoint() {
+        let anchor_slot = 100 * MinimalEthSpec::SLOTS_PER_EPOCH; // epoch 100
+        let (anchor, rocks, _dir) = make_ws_anchor(anchor_slot, 16);
+        let current_slot = 101 * MinimalEthSpec::SLOTS_PER_EPOCH; // epoch 101
+        let res = apply_anchor::<MinimalEthSpec>(anchor, &rocks, current_slot, false);
+        assert!(res.is_ok(), "fresh anchor should be accepted: {res:?}");
+    }
+
+    /// Anchor at epoch 100, current at epoch 100 + 256 + 1 = 357 → past the WS
+    /// period → `apply_anchor` rejects with `CheckpointTooOld`.
+    #[test]
+    fn apply_anchor_rejects_stale_checkpoint() {
+        let anchor_epoch = 100u64;
+        let anchor_slot = anchor_epoch * MinimalEthSpec::SLOTS_PER_EPOCH;
+        let (anchor, rocks, _dir) = make_ws_anchor(anchor_slot, 16);
+        // Period is 256 for this set; go one epoch past the boundary.
+        let current_epoch = anchor_epoch + 256 + 1;
+        let current_slot = current_epoch * MinimalEthSpec::SLOTS_PER_EPOCH;
+        let res = apply_anchor::<MinimalEthSpec>(anchor, &rocks, current_slot, false);
+        assert!(
+            matches!(
+                res,
+                Err(CheckpointSyncError::CheckpointTooOld {
+                    anchor_epoch: ae,
+                    ws_period: 256,
+                    ..
+                }) if ae == anchor_epoch
+            ),
+            "stale anchor should be rejected with CheckpointTooOld(ws_period=256), got {res:?}"
+        );
+    }
+
+    /// The same stale anchor is accepted when `ignore_ws_period == true`
+    /// (`--ignore-weak-subjectivity-period` escape hatch).
+    #[test]
+    fn apply_anchor_ignore_flag_bypasses_stale_check() {
+        let anchor_epoch = 100u64;
+        let anchor_slot = anchor_epoch * MinimalEthSpec::SLOTS_PER_EPOCH;
+        let (anchor, rocks, _dir) = make_ws_anchor(anchor_slot, 16);
+        let current_slot = (anchor_epoch + 256 + 1) * MinimalEthSpec::SLOTS_PER_EPOCH;
+        let res = apply_anchor::<MinimalEthSpec>(anchor, &rocks, current_slot, true);
+        assert!(
+            res.is_ok(),
+            "ignore flag must bypass the WS gate even for a stale anchor: {res:?}"
         );
     }
 }

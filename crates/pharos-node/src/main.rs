@@ -86,9 +86,10 @@ struct Args {
     /// block and uses it as the fork-choice anchor (skipping genesis replay).
     /// On warm restart, this flag is ignored; the persisted snapshot wins.
     ///
-    /// Weak-subjectivity validation is deferred to M11; the operator's choice of
-    /// URL is the trust root. For tamper detection, pair with
-    /// `--checkpoint-sync-block-root`.
+    /// The synced anchor is subjected to the weak-subjectivity freshness gate
+    /// (`specs/phase0/weak-subjectivity.md`); a stale anchor aborts startup
+    /// unless `--ignore-weak-subjectivity-period` is set. For tamper detection,
+    /// pair with `--checkpoint-sync-block-root` or `--weak-subjectivity-checkpoint`.
     #[arg(long, value_name = "URL")]
     checkpoint_sync_url: Option<String>,
 
@@ -96,6 +97,19 @@ struct Args {
     /// anchor MUST match. Aborts startup on mismatch.
     #[arg(long, value_name = "ROOT", requires = "checkpoint_sync_url")]
     checkpoint_sync_block_root: Option<String>,
+
+    /// Optional weak-subjectivity checkpoint in `<block_root>:<epoch>` format
+    /// (e.g. `0xabc...:9544`), per `specs/phase0/weak-subjectivity.md`. When
+    /// supplied with `--checkpoint-sync-url`, the synced anchor's block root AND
+    /// epoch MUST match this checkpoint; a mismatch aborts startup.
+    #[arg(long, value_name = "ROOT:EPOCH", requires = "checkpoint_sync_url")]
+    weak_subjectivity_checkpoint: Option<String>,
+
+    /// Bypass the weak-subjectivity period freshness check on the checkpoint-sync
+    /// anchor. UNSAFE: only use when intentionally syncing from a checkpoint
+    /// known to be older than the weak-subjectivity period.
+    #[arg(long, default_value_t = false)]
+    ignore_weak_subjectivity_period: bool,
 
     /// Path to the network config directory (without `.yaml` extension).
     ///
@@ -368,26 +382,67 @@ async fn main() -> anyhow::Result<()> {
             .build()
             .context("building checkpoint-sync HTTP client")?;
         // Parse the optional operator-supplied expected block root and pass it
-        // into fetch_checkpoint for tamper detection (TamperFlagMismatch).
-        let expected_block_root = if let Some(ref expected_hex) = args.checkpoint_sync_block_root {
-            Some(parse_root_hex(expected_hex)?)
-        } else {
-            None
+        // into fetch_checkpoint for tamper detection (TamperFlagMismatch). A
+        // `--weak-subjectivity-checkpoint <root>:<epoch>` also pins the block
+        // root (its epoch is asserted separately, below, against the anchor).
+        let ws_checkpoint = match args.weak_subjectivity_checkpoint {
+            Some(ref s) => Some(parse_weak_subjectivity_checkpoint(s)?),
+            None => None,
+        };
+        let expected_block_root = match (&args.checkpoint_sync_block_root, &ws_checkpoint) {
+            (Some(expected_hex), _) => Some(parse_root_hex(expected_hex)?),
+            (None, Some((ws_root, _))) => Some(*ws_root),
+            (None, None) => None,
         };
 
         let anchor = fetch_checkpoint::<MainnetEthSpec>(&url, &http, expected_block_root)
             .await
             .context("fetching checkpoint anchor")?;
 
-        // TODO(M11): weak-subjectivity check goes here.
+        // Task 4: if a weak-subjectivity checkpoint was supplied, assert the
+        // synced anchor's epoch matches it (block root already enforced via
+        // `expected_block_root` → `TamperFlagMismatch`). Mismatch aborts startup.
+        if let Some((ws_root, ws_epoch)) = ws_checkpoint {
+            let anchor_epoch = anchor.state.slot().0 / MainnetEthSpec::SLOTS_PER_EPOCH;
+            if anchor_epoch != ws_epoch {
+                bail!(
+                    "weak-subjectivity checkpoint epoch mismatch: anchor at epoch {anchor_epoch}, \
+                     --weak-subjectivity-checkpoint specified epoch {ws_epoch}"
+                );
+            }
+            if anchor.block_root != ws_root {
+                bail!(
+                    "weak-subjectivity checkpoint root mismatch: anchor root {}, \
+                     --weak-subjectivity-checkpoint specified root {ws_root}",
+                    anchor.block_root
+                );
+            }
+        }
+
+        // Compute the current (wall-clock) slot from the anchor state's
+        // genesis_time so the weak-subjectivity freshness gate in apply_anchor
+        // can reject a stale anchor (`specs/phase0/weak-subjectivity.md`).
+        let genesis_time = anchor.state.genesis_time();
+        let seconds_per_slot = MainnetEthSpec::SLOT_DURATION_MS / 1000;
+        let wall_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system time before UNIX_EPOCH")?
+            .as_secs();
+        let current_slot = wall_now.saturating_sub(genesis_time) / seconds_per_slot.max(1);
+
         info!(
             slot = %anchor.state.slot(), block_root = %anchor.block_root,
-            "checkpoint-sync: anchor accepted"
+            current_slot, "checkpoint-sync: anchor fetched, applying weak-subjectivity gate"
         );
 
         let gvr = anchor.state.genesis_validators_root();
-        let synth_snap = apply_anchor::<MainnetEthSpec>(anchor, &store)
-            .context("persisting checkpoint anchor")?;
+        let synth_snap = apply_anchor::<MainnetEthSpec>(
+            anchor,
+            &store,
+            current_slot,
+            args.ignore_weak_subjectivity_period,
+        )
+        .context("persisting checkpoint anchor")?;
         let fc = rehydrate_fork_choice_store::<MainnetEthSpec>(&store, &synth_snap, &runtime_cfg)
             .context("rehydrating fork-choice store from checkpoint anchor")?;
         (fc, gvr)
@@ -1604,4 +1659,26 @@ fn parse_root_hex(s: &str) -> anyhow::Result<pharos_types::phase0::primitives::R
         anyhow::anyhow!("--checkpoint-sync-block-root must be 32 bytes (got != 32)")
     })?;
     Ok(pharos_types::phase0::primitives::Root::from(arr))
+}
+
+/// Parse a weak-subjectivity checkpoint `<block_root>:<epoch>` string into
+/// `(Root, epoch)`, per `specs/phase0/weak-subjectivity.md` § Weak Subjectivity
+/// Sync Procedure (the `block_root:epoch_number` CLI format).
+fn parse_weak_subjectivity_checkpoint(
+    s: &str,
+) -> anyhow::Result<(pharos_types::phase0::primitives::Root, u64)> {
+    let (root_str, epoch_str) = s.split_once(':').with_context(|| {
+        format!("--weak-subjectivity-checkpoint must be <block_root>:<epoch>, got {s:?}")
+    })?;
+    let stripped = root_str.strip_prefix("0x").unwrap_or(root_str);
+    let bytes = hex::decode(stripped).with_context(|| {
+        format!("--weak-subjectivity-checkpoint block_root is not valid hex: {root_str:?}")
+    })?;
+    let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+        anyhow::anyhow!("--weak-subjectivity-checkpoint block_root must be 32 bytes (got != 32)")
+    })?;
+    let epoch: u64 = epoch_str.parse().with_context(|| {
+        format!("--weak-subjectivity-checkpoint epoch is not a valid integer: {epoch_str:?}")
+    })?;
+    Ok((pharos_types::phase0::primitives::Root::from(arr), epoch))
 }

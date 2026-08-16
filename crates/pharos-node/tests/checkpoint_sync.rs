@@ -169,6 +169,10 @@ async fn cold_start_checkpoint_sync_writes_anchor() {
     // Capture values before moving anchor into apply_anchor.
     let anchor_block_root = anchor.block_root;
     let anchor_state_root = anchor.state_root;
+    let current_slot = {
+        use pharos_types::views::BeaconStateView as _;
+        anchor.state.slot().0
+    };
 
     let datadir = tempfile::TempDir::new().unwrap();
     let store = RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
@@ -177,8 +181,11 @@ async fn cold_start_checkpoint_sync_writes_anchor() {
     })
     .expect("open store");
 
-    let snapshot =
-        apply_anchor::<MinimalEthSpec>(anchor, &store).expect("apply_anchor should succeed");
+    // This integration test exercises the fetch+persist path; its synthetic
+    // anchor state carries no active validators, so bypass the weak-subjectivity
+    // freshness gate (covered by dedicated unit tests in `checkpoint_sync.rs`).
+    let snapshot = apply_anchor::<MinimalEthSpec>(anchor, &store, current_slot, true)
+        .expect("apply_anchor should succeed");
 
     server_handle.abort();
 

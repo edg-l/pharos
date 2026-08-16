@@ -357,8 +357,16 @@ async fn checkpoint_sync_then_backfill_advances_head() {
     // `apply_anchor` now sets the correct checkpoint roots/epochs directly
     // (weak-subjectivity convention: anchor block = local finalized/justified
     // root). No caller-side patching needed; the snapshot is used as-is.
+    // This synthetic anchor has no active validators, so bypass the
+    // weak-subjectivity freshness gate (covered by unit tests in
+    // `checkpoint_sync.rs`).
+    let anchor_current_slot = {
+        use pharos_types::views::BeaconStateView as _;
+        anchor.state.slot().0
+    };
     let snapshot: ForkChoiceSnapshot =
-        apply_anchor::<MinimalEthSpec>(anchor, &store).expect("apply_anchor must succeed");
+        apply_anchor::<MinimalEthSpec>(anchor, &store, anchor_current_slot, true)
+            .expect("apply_anchor must succeed");
 
     // ── 8. Rehydrate fork-choice store ────────────────────────────────────────
 
