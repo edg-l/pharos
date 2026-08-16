@@ -165,13 +165,15 @@ pub fn row_table() -> &'static [RowSpec] {
         r("deneb", "light_client", "mainnet"),     // 103
         r("deneb", "light_client", "minimal"),     // 104
         // ── electra ──────────────────────────────────────────────────────────
-        r("electra", "ssz_static", "-"),       // 105
-        r("electra", "operations", "mainnet"), // 106
-        r("electra", "operations", "minimal"), // 107
-        r("electra", "fork", "mainnet"),       // 108
-        r("electra", "fork", "minimal"),       // 109
-        r("electra", "finality", "mainnet"),   // 110
-        r("electra", "finality", "minimal"),   // 111
+        r("electra", "ssz_static", "-"),             // 105
+        r("electra", "operations", "mainnet"),       // 106
+        r("electra", "operations", "minimal"),       // 107
+        r("electra", "fork", "mainnet"),             // 108
+        r("electra", "fork", "minimal"),             // 109
+        r("electra", "finality", "mainnet"),         // 110
+        r("electra", "finality", "minimal"),         // 111
+        r("electra", "epoch_processing", "mainnet"), // 112
+        r("electra", "epoch_processing", "minimal"), // 113
         // NOTE: `electra/{transition,sanity,random}` are intentionally NOT wired
         // here yet. Their runners + enumerate arms exist and pass their pure
         // block/single-epoch cases, but a subset of fixtures crosses post-fork
@@ -182,7 +184,7 @@ pub fn row_table() -> &'static [RowSpec] {
         // `docs/m12-electra-plan.md` Phase 4c. (random is fully epoch-crossing;
         // transition 4/6-per-preset and sanity ~11-14 failures are all P4 epoch.)
         // ── future forks (placeholders) ──────────────────────────────────────
-        r("fulu", "ssz_static", "-"), // 112
+        r("fulu", "ssz_static", "-"), // 114
     ];
     TABLE
 }
@@ -321,6 +323,8 @@ mod tests {
             ("electra", "fork", "minimal"),
             ("electra", "finality", "mainnet"),
             ("electra", "finality", "minimal"),
+            ("electra", "epoch_processing", "mainnet"),
+            ("electra", "epoch_processing", "minimal"),
             // electra/{transition,sanity,random} intentionally unwired until P4.
             // future placeholders
             ("fulu", "ssz_static", "-"),
@@ -403,9 +407,9 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 113.
+    /// Total row count is exactly 115.
     #[test]
-    fn row_count_is_113() {
-        assert_eq!(row_table().len(), 113);
+    fn row_count_is_115() {
+        assert_eq!(row_table().len(), 115);
     }
 }

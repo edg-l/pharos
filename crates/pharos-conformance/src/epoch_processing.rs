@@ -61,8 +61,15 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 ///   randao_mixes_reset, historical_summaries_update, participation_flag_updates,
 ///   sync_committee_updates
 /// - deneb (12): same as capella
+/// - electra (11, Phase 4a): justification_and_finalization, inactivity_updates,
+///   rewards_and_penalties, registry_updates (electra-native), slashings
+///   (electra-native), eth1_data_reset, slashings_reset, randao_mixes_reset,
+///   historical_summaries_update, participation_flag_updates, sync_committee_updates.
+///   `pending_deposits`, `pending_consolidations`, `effective_balance_updates` are
+///   NOT registered until Phases 4b/4c add their electra-native impls.
 ///
-/// Supported forks: `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`.
+/// Supported forks: `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`,
+/// `"electra"`.
 pub fn enumerate_epoch_processing(
     root: &Path,
     fork: &'static str,
@@ -129,8 +136,15 @@ pub fn enumerate_epoch_processing(
         ("deneb", "mainnet") => {
             enumerate_deneb_ep_subs_mainnet(root, preset, row_ordinal, &mut ordinal, &mut tasks);
         }
-        _ => {
+        ("deneb", _) => {
             enumerate_deneb_ep_subs_minimal(root, preset, row_ordinal, &mut ordinal, &mut tasks);
+        }
+        // ── electra ───────────────────────────────────────────────────────────
+        ("electra", "mainnet") => {
+            enumerate_electra_ep_subs_mainnet(root, preset, row_ordinal, &mut ordinal, &mut tasks);
+        }
+        _ => {
+            enumerate_electra_ep_subs_minimal(root, preset, row_ordinal, &mut ordinal, &mut tasks);
         }
     }
 
@@ -1653,6 +1667,449 @@ fn enumerate_deneb_ep_subs_minimal(
     }
 }
 
+// ── electra sub-step walkers (Phase 4a) ───────────────────────────────────────
+
+fn enumerate_electra_ep_subs_mainnet(
+    root: &Path,
+    preset: &'static str,
+    row_ordinal: u32,
+    ordinal: &mut u32,
+    tasks: &mut Vec<CaseTask>,
+) {
+    use pharos_stf::altair::epoch::{
+        process_eth1_data_reset as altair_eth1_reset,
+        process_inactivity_updates as altair_inactivity,
+        process_justification_and_finalization as altair_jf,
+        process_participation_flag_updates as altair_participation_flags,
+        process_randao_mixes_reset as altair_randao, process_slashings_reset as altair_slash_reset,
+    };
+    use pharos_stf::capella::epoch::process_historical_summaries_update;
+    use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
+    use pharos_stf::deneb::epoch::process_rewards_and_penalties_deneb;
+    use pharos_stf::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
+    use pharos_stf::electra::epoch::registry_updates::process_registry_updates as process_registry_updates_electra;
+    use pharos_stf::electra::epoch::slashings::process_slashings as process_slashings_electra;
+    use pharos_stf::electra::helpers::{electra_state_to_deneb, update_electra_from_deneb};
+    use pharos_types::{MainnetEthSpec as E, electra::MainnetBeaconState as S};
+
+    type ApplyFn = fn(&mut S) -> Result<(), String>;
+    let subs: &[(&'static str, ApplyFn)] = &[
+        ("justification_and_finalization", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_jf::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("inactivity_updates", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_inactivity::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("rewards_and_penalties", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            process_rewards_and_penalties_deneb::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                E,
+            >(&mut deneb)
+            .map_err(|e| format!("{e}"))?;
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("registry_updates", |s| {
+            process_registry_updates_electra::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                134_217_728,
+                134_217_728,
+                262_144,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+        ("slashings", |s| {
+            process_slashings_electra::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                134_217_728,
+                134_217_728,
+                262_144,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+        ("eth1_data_reset", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_eth1_reset::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("slashings_reset", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_slash_reset::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("randao_mixes_reset", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_randao::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("historical_summaries_update", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            process_historical_summaries_update::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                E,
+            >(&mut capella)
+            .map_err(|e| format!("{e}"))?;
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("participation_flag_updates", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_participation_flags::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                E,
+            >(&mut a)
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        // NOTE: `sync_committee_updates` is NOT registered for electra. The spec
+        // call site is unmodified, but the underlying `get_next_sync_committee_indices`
+        // is `[Modified in Electra:EIP7251]` (16-bit random byte +
+        // `MAX_EFFECTIVE_BALANCE_ELECTRA`), so the altair delegation produces a wrong
+        // next-sync-committee. It lands in Phase 4c (Task 4c.2). See
+        // `docs/m12-electra-plan.md`.
+    ];
+
+    for (sub, apply_fn) in subs {
+        let cases: Vec<(PathBuf, _)> = walk_category(
+            root,
+            preset,
+            "electra",
+            "epoch_processing",
+            Some(sub),
+            epoch_walk_opts(),
+        )
+        .collect();
+
+        for (case_dir, _meta) in cases {
+            let case_ordinal = *ordinal;
+            *ordinal += 1;
+            let case_name = format!(
+                "electra/epoch_processing/{preset}/{sub}/{}",
+                dir_name(&case_dir)
+            );
+            let apply_fn = *apply_fn;
+
+            let run: CaseFn = Box::new(move || {
+                match run_electra_epoch_case::<S, E, _>(&case_dir, &case_name, &apply_fn) {
+                    CaseResult::Pass => CaseOutcome::Pass,
+                    CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                }
+            });
+
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+}
+
+fn enumerate_electra_ep_subs_minimal(
+    root: &Path,
+    preset: &'static str,
+    row_ordinal: u32,
+    ordinal: &mut u32,
+    tasks: &mut Vec<CaseTask>,
+) {
+    use pharos_stf::altair::epoch::{
+        process_eth1_data_reset as altair_eth1_reset,
+        process_inactivity_updates as altair_inactivity,
+        process_justification_and_finalization as altair_jf,
+        process_participation_flag_updates as altair_participation_flags,
+        process_randao_mixes_reset as altair_randao, process_slashings_reset as altair_slash_reset,
+    };
+    use pharos_stf::capella::epoch::process_historical_summaries_update;
+    use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
+    use pharos_stf::deneb::epoch::process_rewards_and_penalties_deneb;
+    use pharos_stf::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
+    use pharos_stf::electra::epoch::registry_updates::process_registry_updates as process_registry_updates_electra;
+    use pharos_stf::electra::epoch::slashings::process_slashings as process_slashings_electra;
+    use pharos_stf::electra::helpers::{electra_state_to_deneb, update_electra_from_deneb};
+    use pharos_types::{MinimalEthSpec as E, electra::MinimalBeaconState as S};
+
+    type ApplyFn = fn(&mut S) -> Result<(), String>;
+    let subs: &[(&'static str, ApplyFn)] = &[
+        ("justification_and_finalization", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_jf::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("inactivity_updates", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_inactivity::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("rewards_and_penalties", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            process_rewards_and_penalties_deneb::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                E,
+            >(&mut deneb)
+            .map_err(|e| format!("{e}"))?;
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("registry_updates", |s| {
+            process_registry_updates_electra::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                134_217_728,
+                64,
+                64,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+        ("slashings", |s| {
+            process_slashings_electra::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                134_217_728,
+                64,
+                64,
+                E,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+        ("eth1_data_reset", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_eth1_reset::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("slashings_reset", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_slash_reset::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("randao_mixes_reset", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_randao::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("historical_summaries_update", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            process_historical_summaries_update::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                E,
+            >(&mut capella)
+            .map_err(|e| format!("{e}"))?;
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        ("participation_flag_updates", |s| {
+            let mut deneb = electra_state_to_deneb(s);
+            let mut capella = deneb_state_to_capella(&deneb);
+            let mut a = capella_state_to_altair(&capella);
+            altair_participation_flags::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                &mut a,
+            )
+            .map_err(|e| format!("{e}"))?;
+            update_capella_from_altair(&mut capella, a);
+            update_deneb_from_capella(&mut deneb, capella);
+            update_electra_from_deneb(s, deneb);
+            Ok(())
+        }),
+        // NOTE: `sync_committee_updates` is NOT registered for electra (electra-delta
+        // in `get_next_sync_committee_indices`); lands in Phase 4c. See the mainnet
+        // walker for the full rationale.
+    ];
+
+    for (sub, apply_fn) in subs {
+        let cases: Vec<(PathBuf, _)> = walk_category(
+            root,
+            preset,
+            "electra",
+            "epoch_processing",
+            Some(sub),
+            epoch_walk_opts(),
+        )
+        .collect();
+
+        for (case_dir, _meta) in cases {
+            let case_ordinal = *ordinal;
+            *ordinal += 1;
+            let case_name = format!(
+                "electra/epoch_processing/{preset}/{sub}/{}",
+                dir_name(&case_dir)
+            );
+            let apply_fn = *apply_fn;
+
+            let run: CaseFn = Box::new(move || {
+                match run_electra_epoch_case::<S, E, _>(&case_dir, &case_name, &apply_fn) {
+                    CaseResult::Pass => CaseOutcome::Pass,
+                    CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                }
+            });
+
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+}
+
 // ── sub-routine runner ────────────────────────────────────────────────────────
 
 fn epoch_walk_opts() -> WalkOpts {
@@ -1764,6 +2221,42 @@ where
             } else {
                 CaseResult::Fail(format!(
                     "{case_name}: state mismatch after bellatrix epoch sub-routine"
+                ))
+            }
+        }
+        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
+        (Err(_), None) => CaseResult::Pass,
+        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
+    }
+}
+fn run_electra_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
+where
+    E: EthSpec<ElectraBeaconState = S>,
+    S: pharos_ssz::Decode + pharos_ssz::Encode,
+    F: Fn(&mut S) -> Result<(), String>,
+{
+    let (pre, post) = match crate::fixture_walker::load_pre_post_electra_state::<E>(case_dir) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut pre_inner = match E::into_electra_state(pre) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not electra state")),
+    };
+
+    let result = apply(&mut pre_inner);
+
+    let post_bytes = post.map(|p| p.as_ssz_bytes());
+    let current_bytes = E::electra_into_state(pre_inner).as_ssz_bytes();
+
+    match (result, post_bytes) {
+        (Ok(()), Some(expected)) => {
+            if current_bytes == expected {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!(
+                    "{case_name}: state mismatch after electra epoch sub-routine"
                 ))
             }
         }
