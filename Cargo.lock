@@ -3249,6 +3249,7 @@ dependencies = [
  "pharos-kzg",
  "pharos-ssz",
  "pharos-stf",
+ "pharos-storage",
  "pharos-types",
  "pharos-utils",
  "rayon",
