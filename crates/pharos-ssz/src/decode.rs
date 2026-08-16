@@ -219,11 +219,17 @@ impl<'a> SszDecoder<'a> {
 
         // Validate each offset.
         let mut prev_offset: Option<usize> = None;
-        for &vi in &var_indices {
+        for (k, &vi) in var_indices.iter().enumerate() {
             let offset = match &self.slots[vi] {
                 FieldSlot::Variable { offset, .. } => *offset,
                 _ => unreachable!(),
             };
+            // The first variable-length field must start exactly at the end of
+            // the fixed region (no gap bytes between fixed and variable parts).
+            // Subsequent fields may be adjacent or equal (zero-length element).
+            if k == 0 && offset != fixed_len {
+                return Err(SszError::OffsetIntoFixedRegion);
+            }
             if offset < fixed_len {
                 return Err(SszError::OffsetIntoFixedRegion);
             }

@@ -3,26 +3,33 @@
 //! Fixture path: `<root>/general/phase0/ssz_generic/<handler>/<suite>/<case>/`
 //!
 //! Handlers:
-//! - `boolean`      → `bool`
-//! - `uints`        → `u8/u16/u32/u64/u128/Uint256`
-//! - `basic_vector` → `SszVector<elem, N>`
-//! - `bitvector`    → `Bitvector<N>`
-//! - `bitlist`      → `Bitlist<N>`
-//! - `containers`   → named test structs
-//! - `basic_progressive_list` / `progressive_bitlist` /
-//!   `progressive_containers` / `compatible_unions` → Phase-7-not-yet Skip
-//! - other unknown handlers → Fail (`ConformanceError::UnsupportedHandler`)
+//! - `boolean`                → `bool`
+//! - `uints`                  → `u8/u16/u32/u64/u128/Uint256`
+//! - `basic_vector`           → `SszVector<elem, N>`
+//! - `bitvector`              → `Bitvector<N>`
+//! - `bitlist`                → `Bitlist<N>`
+//! - `containers`             → named test structs (including progressive-field structs)
+//! - `basic_progressive_list` → `ProgressiveList<T>` (EIP-7916)
+//! - `progressive_bitlist`    → `ProgressiveBitlist` (EIP-7916)
+//! - `progressive_containers` → progressive-container test structs (EIP-7495)
+//! - `compatible_unions`      → `CompatibleUnion*` test types (EIP-7495)
+//! - other unknown handlers   → Fail (`ConformanceError::UnsupportedHandler`)
 
 use std::path::Path;
 
-use pharos_ssz::{Bitlist, Bitvector, Decode, Encode, SszVector, TreeHash};
+use pharos_ssz::{
+    Bitlist, Bitvector, Decode, Encode, ProgressiveBitlist, ProgressiveList, SszVector, TreeHash,
+};
 use pharos_utils::Uint256;
 
 use crate::error::ConformanceError;
 use crate::fs_util::{dir_name, read_dir_sorted};
 use crate::snappy::decompress_raw;
 use crate::ssz_generic_types::{
-    BitsStruct, ComplexTestStruct, FixedTestStruct, SingleFieldTestStruct, SmallTestStruct,
+    BitsStruct, CompatibleUnionA, CompatibleUnionABCA, CompatibleUnionBC, ComplexTestStruct,
+    FixedTestStruct, ProgressiveBitsStruct, ProgressiveComplexTestStruct,
+    ProgressiveSingleFieldContainerTestStruct, ProgressiveSingleListContainerTestStruct,
+    ProgressiveTestStruct, ProgressiveVarTestStruct, SingleFieldTestStruct, SmallTestStruct,
     VarTestStruct,
 };
 use crate::task::{CaseFn, CaseOutcome as TaskCaseOutcome, CaseTask};
@@ -32,9 +39,9 @@ use crate::yaml_util::read_root_from_file;
 
 /// Produce one `CaseTask` per ssz_generic test case.
 ///
-/// The walk is handler → suite → case (sorted). Progressive/union handlers
-/// (Phase-7-not-yet) emit `Skip` tasks so they count in the denominator; a
-/// handler not in the known set produces `Err` (Fail), never a silent drop.
+/// The walk is handler → suite → case (sorted). All handlers are wired to
+/// real implementations; an unknown handler produces `Err` (Fail), never a
+/// silent drop.
 ///
 /// Outcome mapping:
 /// - `Ok(CaseOutcome::Pass)` → `TaskCaseOutcome::Pass`
@@ -124,12 +131,18 @@ fn run_case(
         "bitvector" => run_bitvector(case_name, case_path, case_label, &ssz_bytes, is_valid),
         "bitlist" => run_bitlist(case_name, case_path, case_label, &ssz_bytes, is_valid),
         "containers" => run_container(case_name, case_path, case_label, &ssz_bytes, is_valid),
-        // Phase-7-not-yet: EIP-7916 progressive lists/bitlists and EIP-7495 compatible unions.
-        // These four handlers require progressive SSZ, implemented in Phase 7.
-        "basic_progressive_list"
-        | "progressive_bitlist"
-        | "progressive_containers"
-        | "compatible_unions" => Ok(CaseOutcome::Skip),
+        "basic_progressive_list" => {
+            run_progressive_list(case_name, case_path, case_label, &ssz_bytes, is_valid)
+        }
+        "progressive_bitlist" => {
+            run_progressive_bitlist(case_path, case_label, &ssz_bytes, is_valid)
+        }
+        "progressive_containers" => {
+            run_progressive_container(case_name, case_path, case_label, &ssz_bytes, is_valid)
+        }
+        "compatible_unions" => {
+            run_compatible_union(case_name, case_path, case_label, &ssz_bytes, is_valid)
+        }
         _ => Err(ConformanceError::UnsupportedHandler(handler.to_string())),
     }
 }
@@ -359,9 +372,12 @@ fn run_bitvector(
                 64 => run_typed::<Bitvector<64>>(case_path, case_label, ssz_bytes, is_valid),
                 128 => run_typed::<Bitvector<128>>(case_path, case_label, ssz_bytes, is_valid),
                 256 => run_typed::<Bitvector<256>>(case_path, case_label, ssz_bytes, is_valid),
+                257 => run_typed::<Bitvector<257>>(case_path, case_label, ssz_bytes, is_valid),
                 511 => run_typed::<Bitvector<511>>(case_path, case_label, ssz_bytes, is_valid),
                 512 => run_typed::<Bitvector<512>>(case_path, case_label, ssz_bytes, is_valid),
                 513 => run_typed::<Bitvector<513>>(case_path, case_label, ssz_bytes, is_valid),
+                1280 => run_typed::<Bitvector<1280>>(case_path, case_label, ssz_bytes, is_valid),
+                1281 => run_typed::<Bitvector<1281>>(case_path, case_label, ssz_bytes, is_valid),
                 _ => Err(ConformanceError::UnknownBitvectorLength { n: $n }),
             }
         };
@@ -418,9 +434,12 @@ fn run_bitlist(
                 64 => run_typed::<Bitlist<64>>(case_path, case_label, ssz_bytes, is_valid),
                 128 => run_typed::<Bitlist<128>>(case_path, case_label, ssz_bytes, is_valid),
                 256 => run_typed::<Bitlist<256>>(case_path, case_label, ssz_bytes, is_valid),
+                257 => run_typed::<Bitlist<257>>(case_path, case_label, ssz_bytes, is_valid),
                 511 => run_typed::<Bitlist<511>>(case_path, case_label, ssz_bytes, is_valid),
                 512 => run_typed::<Bitlist<512>>(case_path, case_label, ssz_bytes, is_valid),
                 513 => run_typed::<Bitlist<513>>(case_path, case_label, ssz_bytes, is_valid),
+                1280 => run_typed::<Bitlist<1280>>(case_path, case_label, ssz_bytes, is_valid),
+                1281 => run_typed::<Bitlist<1281>>(case_path, case_label, ssz_bytes, is_valid),
                 _ => Err(ConformanceError::UnknownBitlistLimit { n: $n }),
             }
         };
@@ -445,8 +464,8 @@ fn run_container(
     ssz_bytes: &[u8],
     is_valid: bool,
 ) -> Result<CaseOutcome, ConformanceError> {
-    // suite is the struct name (e.g. "SingleFieldTestStruct") possibly with extras
-    // Strip any trailing "_{extra}" by matching known prefixes
+    // suite is the struct name (e.g. "SingleFieldTestStruct") possibly with extras.
+    // The split is on the first `_` separator.
     let name = suite.split('_').next().unwrap_or(suite);
 
     match name {
@@ -464,13 +483,211 @@ fn run_container(
             run_typed::<ComplexTestStruct>(case_path, case_label, ssz_bytes, is_valid)
         }
         "BitsStruct" => run_typed::<BitsStruct>(case_path, case_label, ssz_bytes, is_valid),
-        // Phase-7-not-yet: these structs contain ProgressiveList / ProgressiveBitlist fields
-        // (EIP-7916), which require progressive SSZ implemented in Phase 7.
-        "ProgressiveTestStruct" | "ProgressiveBitsStruct" => Ok(CaseOutcome::Skip),
+        // EIP-7916 progressive-field structs (container serialization, progressive field types).
+        "ProgressiveTestStruct" => {
+            run_typed::<ProgressiveTestStruct>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        "ProgressiveBitsStruct" => {
+            run_typed::<ProgressiveBitsStruct>(case_path, case_label, ssz_bytes, is_valid)
+        }
         _ => Err(ConformanceError::UnknownContainerStruct {
             name: name.to_string(),
         }),
     }
+}
+
+// ── basic_progressive_list dispatch ──────────────────────────────────────────
+
+/// Dispatch `basic_progressive_list` fixtures.
+///
+/// Fixture naming: `proglist_{type}_{fill}_{len}` where `type` is one of
+/// `bool`, `uint8`, `uint16`, `uint32`, `uint64`, `uint128`, `uint256`.
+fn run_progressive_list(
+    suite: &str,
+    case_path: &Path,
+    case_label: &str,
+    ssz_bytes: &[u8],
+    is_valid: bool,
+) -> Result<CaseOutcome, ConformanceError> {
+    // Name pattern: proglist_{type}_{fill}_{len} (valid) or proglist_{type}_{len}_{suffix} (invalid)
+    // We only need to dispatch on the type.
+    let elem_type = parse_proglist_type(suite);
+
+    match elem_type.as_deref() {
+        Some("bool") => {
+            run_typed::<ProgressiveList<bool>>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        Some("uint8") => {
+            run_typed::<ProgressiveList<u8>>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        Some("uint16") => {
+            run_typed::<ProgressiveList<u16>>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        Some("uint32") => {
+            run_typed::<ProgressiveList<u32>>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        Some("uint64") => {
+            run_typed::<ProgressiveList<u64>>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        Some("uint128") => {
+            run_typed::<ProgressiveList<u128>>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        Some("uint256") => {
+            run_typed::<ProgressiveList<Uint256>>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        _ => Err(ConformanceError::MalformedFixture(format!(
+            "basic_progressive_list suite name unparseable: {suite}"
+        ))),
+    }
+}
+
+/// Parse the element type from a `basic_progressive_list` fixture name.
+///
+/// Name format: `proglist_{type}_{fill}_{len}` or `proglist_{type}_{len}_{invalid_reason}`.
+fn parse_proglist_type(suite: &str) -> Option<String> {
+    // Strip "proglist_" prefix, then the next segment is the type.
+    let rest = suite.strip_prefix("proglist_")?;
+    // Longest-match to distinguish "uint128" from "uint16" etc.
+    let types = [
+        "uint256", "uint128", "uint64", "uint32", "uint16", "uint8", "bool",
+    ];
+    for t in &types {
+        if rest.starts_with(t) {
+            return Some(t.to_string());
+        }
+    }
+    None
+}
+
+// ── progressive_bitlist dispatch ──────────────────────────────────────────────
+
+/// Dispatch `progressive_bitlist` fixtures.
+///
+/// All cases use `ProgressiveBitlist` regardless of the case name.
+fn run_progressive_bitlist(
+    case_path: &Path,
+    case_label: &str,
+    ssz_bytes: &[u8],
+    is_valid: bool,
+) -> Result<CaseOutcome, ConformanceError> {
+    run_typed::<ProgressiveBitlist>(case_path, case_label, ssz_bytes, is_valid)
+}
+
+// ── progressive_containers dispatch ──────────────────────────────────────────
+
+/// Dispatch `progressive_containers` fixtures.
+///
+/// Fixture naming: `{StructName}_{fill}[_{variant}]`.
+/// We match on the struct name prefix (up to the first `_`).
+fn run_progressive_container(
+    suite: &str,
+    case_path: &Path,
+    case_label: &str,
+    ssz_bytes: &[u8],
+    is_valid: bool,
+) -> Result<CaseOutcome, ConformanceError> {
+    // Struct name prefix: split on first `_` of the part AFTER the first uppercase segment.
+    // The fixture names are like "ProgressiveSingleFieldContainerTestStruct_max_0".
+    // We need to find the struct name portion.
+    let name = parse_progressive_container_name(suite);
+
+    match name.as_deref() {
+        Some("ProgressiveSingleFieldContainerTestStruct") => {
+            run_typed::<ProgressiveSingleFieldContainerTestStruct>(
+                case_path, case_label, ssz_bytes, is_valid,
+            )
+        }
+        Some("ProgressiveSingleListContainerTestStruct") => {
+            run_typed::<ProgressiveSingleListContainerTestStruct>(
+                case_path, case_label, ssz_bytes, is_valid,
+            )
+        }
+        Some("ProgressiveVarTestStruct") => {
+            run_typed::<ProgressiveVarTestStruct>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        Some("ProgressiveComplexTestStruct") => {
+            run_typed::<ProgressiveComplexTestStruct>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        _ => Err(ConformanceError::UnknownContainerStruct {
+            name: suite.to_string(),
+        }),
+    }
+}
+
+/// Extract the struct name from a progressive-containers fixture case name.
+///
+/// Case names look like `ProgressiveSingleFieldContainerTestStruct_max_0` or
+/// `ProgressiveComplexTestStruct_lengthy_chaos_1`.
+fn parse_progressive_container_name(suite: &str) -> Option<String> {
+    // Known struct names in the progressive_containers handler.
+    let known = [
+        "ProgressiveComplexTestStruct",
+        "ProgressiveSingleFieldContainerTestStruct",
+        "ProgressiveSingleListContainerTestStruct",
+        "ProgressiveVarTestStruct",
+    ];
+    for name in &known {
+        if let Some(rest) = suite.strip_prefix(name) {
+            // Verify it's followed by '_' or is the full name.
+            if rest.is_empty() || rest.starts_with('_') {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+// ── compatible_unions dispatch ────────────────────────────────────────────────
+
+/// Dispatch `compatible_unions` fixtures.
+///
+/// Fixture naming: `{UnionName}_{fill}[_{extra}]`. We match on the union-type
+/// name prefix. The three union types are:
+/// - `CompatibleUnionA` = `CompatibleUnion({1: PSF})`
+/// - `CompatibleUnionBC` = `CompatibleUnion({2: PSL, 3: PVar})`
+/// - `CompatibleUnionABCA` = `CompatibleUnion({1: PSF, 2: PSL, 3: PVar, 4: PSF})`
+fn run_compatible_union(
+    suite: &str,
+    case_path: &Path,
+    case_label: &str,
+    ssz_bytes: &[u8],
+    is_valid: bool,
+) -> Result<CaseOutcome, ConformanceError> {
+    let name = parse_union_name(suite);
+
+    match name.as_deref() {
+        Some("CompatibleUnionA") => {
+            run_typed::<CompatibleUnionA>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        Some("CompatibleUnionBC") => {
+            run_typed::<CompatibleUnionBC>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        Some("CompatibleUnionABCA") => {
+            run_typed::<CompatibleUnionABCA>(case_path, case_label, ssz_bytes, is_valid)
+        }
+        _ => Err(ConformanceError::UnknownContainerStruct {
+            name: suite.to_string(),
+        }),
+    }
+}
+
+/// Extract the union type name from a `compatible_unions` fixture case name.
+fn parse_union_name(suite: &str) -> Option<String> {
+    // Known names — match longest-first to avoid "CompatibleUnionA" matching
+    // "CompatibleUnionABCA" cases.
+    let known = [
+        "CompatibleUnionABCA",
+        "CompatibleUnionBC",
+        "CompatibleUnionA",
+    ];
+    for name in &known {
+        if let Some(rest) = suite.strip_prefix(name) {
+            if rest.is_empty() || rest.starts_with('_') {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }
 
 // Helpers `read_dir_sorted` and `dir_name` are shared with `ssz_static` via

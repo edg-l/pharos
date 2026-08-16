@@ -13,6 +13,7 @@ pub mod error;
 pub mod gindex;
 pub mod merkle_proof;
 pub mod newtypes;
+pub mod progressive;
 pub mod sequence;
 pub mod tree_hash;
 pub mod union;
@@ -30,12 +31,15 @@ pub use gindex::{
     get_generalized_index_length,
 };
 pub use merkle_proof::{MerkleProof, build_single_proof_from_leaves, verify_merkle_proof};
+pub use progressive::{
+    ProgressiveBitlist, ProgressiveList, merkleize_progressive, mix_in_active_fields,
+};
 pub use sequence::{SszList, SszSequence, SszVector};
 pub use tree_hash::{
     TreeHash, TreeHashType, merkleize, merkleize_padded, mix_in_length, mix_in_selector,
     pack_bytes_to_chunks,
 };
-pub use union::SszUnion;
+pub use union::{CompatibleUnion, CompatibleUnionValue, SszUnion};
 
 // Re-export the derive macros so users only need `pharos_ssz::Encode` etc.
 pub use pharos_ssz_derive::{Decode, Encode, TreeHash};
