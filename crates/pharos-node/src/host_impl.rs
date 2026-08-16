@@ -137,6 +137,14 @@ pub struct HostImpl<E: BeaconSpec> {
     pub(crate) head_tx: Option<watch::Sender<Option<HeadChange>>>,
     /// Channel for new-payload requests to the engine driver.
     pub(crate) payload_tx: Option<mpsc::Sender<NewPayloadRequest<E>>>,
+    /// Live (sticky-high) custody group count, shared with the custody-adjustment
+    /// loop. `None` before `wire_custody` (cold start / test mocks); the accessor
+    /// then falls back to `E::CUSTODY_REQUIREMENT` (the protocol minimum). Backs
+    /// the Fulu MetaDataV3 `custody_group_count` field, the ENR `cgc`, and
+    /// `custody_columns`. MUST advertise a valid count (>= CUSTODY_REQUIREMENT);
+    /// a `cgc` of 0 makes fulu peers (lighthouse) reject our MetaDataV3 as
+    /// out-of-range and ban us with Goodbye(Fault).
+    custody_state: Option<Arc<crate::custody::CustodyState>>,
     /// Tracks (slot, proposer_index) pairs seen so far; gates the RB3 duplicate-
     /// proposer IGNORE rule per `specs/phase0/p2p-interface.md:575`.
     /// Capacity: 4096 entries (D-seen-cache-after-accept).
@@ -289,6 +297,7 @@ impl<E: BeaconSpec> HostImpl<E> {
             last_forwarded_optimistic_slot_capella: AtomicU64::new(0),
             head_tx: None,
             payload_tx: None,
+            custody_state: None,
             seen_block_proposers: RwLock::new(LruCache::new(NonZeroUsize::new(4096).unwrap())),
             proposer_cache: RwLock::new(LruCache::new(NonZeroUsize::new(1024).unwrap())),
             invalid_block_roots: RwLock::new(LruCache::new(NonZeroUsize::new(256).unwrap())),
@@ -347,6 +356,26 @@ impl<E: BeaconSpec> HostImpl<E> {
     ) {
         self.head_tx = Some(head_tx);
         self.payload_tx = Some(payload_tx);
+    }
+
+    /// Wire the shared custody state (Fulu PeerDAS) into `HostImpl`.
+    ///
+    /// Must be called before `Arc::new(self)`. The same `Arc<CustodyState>` is
+    /// driven by the custody-adjustment loop in `main.rs`, so the on-wire
+    /// MetaDataV3 `custody_group_count`, the ENR `cgc`, and `custody_columns`
+    /// all read the one sticky-high source of truth.
+    pub fn wire_custody(&mut self, custody_state: Arc<crate::custody::CustodyState>) {
+        self.custody_state = Some(custody_state);
+    }
+
+    /// The effective custody group count to advertise: the live sticky-high
+    /// value when wired, else the protocol minimum `E::CUSTODY_REQUIREMENT`.
+    /// Never 0 (a 0 `cgc` is out-of-range and gets us banned by fulu peers).
+    fn effective_cgc(&self) -> u64 {
+        self.custody_state
+            .as_ref()
+            .map(|c| c.custody_group_count())
+            .unwrap_or(E::CUSTODY_REQUIREMENT)
     }
 
     /// Send a new execution payload to the engine driver for validation.
@@ -827,12 +856,11 @@ impl<E: BeaconSpec> ForkContext for HostImpl<E> {
     /// startup gossip subscription uses this to subscribe only to the
     /// covering `data_column_sidecar_{subnet}` topics.
     ///
-    /// TODO(Phase 6a): the custody-group count is currently fixed at
-    /// `E::CUSTODY_REQUIREMENT` (the protocol minimum). Phase 6a adds the
-    /// custody-adjustment loop that raises it (validator custody requirement /
-    /// `cgc` ENR field); this accessor should then read the live count.
+    /// Reads the live (sticky-high) custody group count via `effective_cgc`,
+    /// so this stays consistent with the advertised MetaDataV3 `cgc` and ENR
+    /// after the custody-adjustment loop raises the count.
     fn custody_columns(&self, node_id: [u8; 32]) -> Vec<u64> {
-        let custody_group_count = E::CUSTODY_REQUIREMENT;
+        let custody_group_count = self.effective_cgc();
         let mut columns: Vec<u64> = get_custody_groups::<E>(node_id, custody_group_count)
             .into_iter()
             .flat_map(|group| compute_columns_for_custody_group::<E>(group))
@@ -840,6 +868,13 @@ impl<E: BeaconSpec> ForkContext for HostImpl<E> {
         columns.sort_unstable();
         columns.dedup();
         columns
+    }
+
+    /// The node's custody group count (`cgc`) for the Fulu MetaDataV3
+    /// `custody_group_count` field and the ENR `cgc` field. Overrides the
+    /// trait default of 0, which fulu peers reject as out-of-range.
+    fn custody_group_count(&self) -> u64 {
+        self.effective_cgc()
     }
 }
 

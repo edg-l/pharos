@@ -864,6 +864,16 @@ async fn main() -> anyhow::Result<()> {
     // path. Clones of head_tx / payload_tx are used here; the block-ingestion
     // loop owns the originals (passed separately in Step 5b below).
     let store_arc = Arc::clone(&store);
+    // Shared (sticky-high) custody state, seeded at the protocol minimum
+    // `CUSTODY_REQUIREMENT`. Created here so it can be wired into `HostImpl`
+    // (which advertises it as the Fulu MetaDataV3 `custody_group_count` / ENR
+    // `cgc`) AND driven by the custody-adjustment loop below — one source of
+    // truth. A `cgc` of 0 makes fulu peers ban us (Goodbye Fault), so it must
+    // never be left at the trait-default 0.
+    let custody_state = Arc::new(CustodyState::new(
+        <MainnetBeaconSpec as pharos_types::BeaconSpec>::CUSTODY_REQUIREMENT,
+    ));
+
     let mut host_inner = HostImpl::<MainnetBeaconSpec>::new(
         store,
         fork_choice.clone(),
@@ -873,6 +883,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(runtime_cfg.clone()),
     );
     host_inner.wire_engine(head_tx.clone(), payload_tx.clone());
+    host_inner.wire_custody(Arc::clone(&custody_state));
     let host = Arc::new(host_inner);
 
     let discv5_addr = SocketAddr::new(listen_ip, args.discv5_port);
@@ -1654,10 +1665,8 @@ async fn main() -> anyhow::Result<()> {
     // BN feeds those into `custody_validator_indices_tx` (the lighter-touch option
     // that reuses the existing BN↔VC REST pattern — no new endpoint/protocol).
     // The channel starts empty; a non-validating node keeps the protocol-minimum
-    // custody (`CUSTODY_REQUIREMENT`).
-    let custody_state = Arc::new(CustodyState::new(
-        <MainnetBeaconSpec as pharos_types::BeaconSpec>::CUSTODY_REQUIREMENT,
-    ));
+    // custody (`CUSTODY_REQUIREMENT`). `custody_state` is created earlier (wired
+    // into `HostImpl` for the MetaDataV3 `cgc` / ENR); the loop drives the same Arc.
     let (custody_validator_indices_tx, custody_validator_indices_rx) =
         watch::channel::<Vec<pharos_types::phase0::primitives::ValidatorIndex>>(Vec::new());
     // Hold the sender for the lifetime of the node so the channel stays open; the
