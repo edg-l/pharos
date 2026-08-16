@@ -64,30 +64,6 @@ impl OpsResult {
     }
 }
 
-/// Run all six operation sub-categories for the mainnet preset.
-pub fn run_operations_mainnet(root: &Path) -> OpsResult {
-    let mut total = OpsResult::new();
-    total.merge(run_block_header_mainnet(root));
-    total.merge(run_proposer_slashing_mainnet(root));
-    total.merge(run_attester_slashing_mainnet(root));
-    total.merge(run_deposit_mainnet(root));
-    total.merge(run_attestation_mainnet(root));
-    total.merge(run_voluntary_exit_mainnet(root));
-    total
-}
-
-/// Run all six operation sub-categories for the minimal preset.
-pub fn run_operations_minimal(root: &Path) -> OpsResult {
-    let mut total = OpsResult::new();
-    total.merge(run_block_header_minimal(root));
-    total.merge(run_proposer_slashing_minimal(root));
-    total.merge(run_attester_slashing_minimal(root));
-    total.merge(run_deposit_minimal(root));
-    total.merge(run_attestation_minimal(root));
-    total.merge(run_voluntary_exit_minimal(root));
-    total
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Walk options for operation fixtures: `pyspec_tests/` inner dir, no required meta.yaml
@@ -130,476 +106,317 @@ fn tally(result: CaseResult, out: &mut OpsResult) {
     }
 }
 
-// ── block_header ──────────────────────────────────────────────────────────────
+// ── Generic applicator ────────────────────────────────────────────────────────
 
-fn run_block_header_preset<E>(root: &Path, preset: &str) -> OpsResult
+/// Apply one operation case: load pre/post states, load the operation file,
+/// run the process function, then compare (Ok+Some → htr equality, Ok+None →
+/// fail, Err+None → pass, Err+Some → fail). NO rayon inside.
+///
+/// Resolution C1: the process callback returns the CONCRETE `StateTransitionError`
+/// — no generic error type parameter.
+fn apply_op<S, Op, F>(
+    case_dir: &std::path::Path,
+    case_name: &str,
+    op_file: &str,
+    load_states: impl FnOnce(&std::path::Path) -> Result<(S, Option<S>), String>,
+    process: F,
+    verify_sigs: bool,
+) -> crate::task::CaseOutcome
+where
+    S: Encode,
+    Op: Decode,
+    F: FnOnce(&mut S, &Op, bool) -> Result<(), pharos_stf::StateTransitionError>,
+{
+    let (mut pre, post) = match load_states(case_dir) {
+        Ok(v) => v,
+        Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+    };
+    let op = match load_ssz_snappy::<Op>(case_dir, op_file) {
+        Ok(v) => v,
+        Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+    };
+
+    let result = process(&mut pre, &op, verify_sigs);
+
+    match (result, post) {
+        (Ok(()), Some(expected)) => {
+            if pre.as_ssz_bytes() == expected.as_ssz_bytes() {
+                crate::task::CaseOutcome::Pass
+            } else {
+                crate::task::CaseOutcome::Fail(format!(
+                    "{case_name}: state mismatch after {op_file_stem}",
+                    op_file_stem = op_file.trim_end_matches(".ssz_snappy"),
+                ))
+            }
+        }
+        (Ok(()), None) => {
+            crate::task::CaseOutcome::Fail(format!("{case_name}: expected Err but got Ok"))
+        }
+        (Err(_), None) => crate::task::CaseOutcome::Pass,
+        (Err(e), Some(_)) => {
+            crate::task::CaseOutcome::Fail(format!("{case_name}: expected Ok but got Err: {e}"))
+        }
+    }
+}
+
+// ── Generic walker ────────────────────────────────────────────────────────────
+
+/// Walk one operation sub-category and produce a `Vec<CaseTask>`, assigning
+/// sequential `case_ordinal`s from the threaded counter.
+///
+/// Resolution C3: `apply` is `Fn` + `Clone` + `Send` + `Sync` + `'static` so it
+/// can be cloned into each case's `Box<dyn FnOnce>` without capturing a `FnOnce`.
+#[allow(clippy::too_many_arguments)]
+fn enumerate_op<F>(
+    root: &std::path::Path,
+    fork: &str,
+    preset: &str,
+    sub: &str,
+    row_ordinal: u32,
+    case_ordinal: &mut u32,
+    walk_opts: WalkOpts,
+    apply: F,
+) -> Vec<crate::task::CaseTask>
+where
+    F: Fn(
+            std::path::PathBuf,
+            String,
+            Option<crate::fixture_walker::MetaYaml>,
+        ) -> crate::task::CaseOutcome
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    walk_category(root, preset, fork, "operations", Some(sub), walk_opts)
+        .map(|(case_dir, meta)| {
+            let co = *case_ordinal;
+            *case_ordinal += 1;
+            let case_name = format!("{fork}/operations/{preset}/{sub}/{}", dir_name(&case_dir));
+            let apply_clone = apply.clone();
+            crate::task::CaseTask {
+                row_ordinal,
+                case_ordinal: co,
+                run: Box::new(move || apply_clone(case_dir, case_name, meta)),
+            }
+        })
+        .collect()
+}
+
+// ── phase0 descriptor table ───────────────────────────────────────────────────
+
+/// Descriptor table for phase0 operations.
+///
+/// Sub order (verified from `run_operations_mainnet` body, L68):
+///   block_header, proposer_slashing, attester_slashing, deposit, attestation, voluntary_exit
+///
+/// Each entry is `(sub_name, apply_closure)`. The `apply_closure` is `Fn` +
+/// `Clone` + `Send` + `Sync` + `'static` (Resolution C3). EthSpec bounds are
+/// stated once on this builder — `apply_op` itself carries no EthSpec bound
+/// (D-apply-op-no-ethspec-bound).
+#[allow(clippy::type_complexity)]
+fn phase0_op_table<E>() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)>
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlock: BeaconBlockView + Decode,
     <E::Phase0BeaconBlock as BeaconBlockView>::Body: pharos_ssz::TreeHash,
+    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconState: Decode,
 {
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "phase0",
-        "operations",
-        Some("block_header"),
-        ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "phase0/operations/{preset}/block_header/{}",
-                dir_name(&case_dir)
-            );
-            run_block_header_case::<E>(&case_dir, &case_name, meta)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
+    vec![
+        // block_header: op file is block.ssz_snappy; meta is ignored (no verify_sigs param).
+        (
+            "block_header",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                // load_pre_post_phase0_state is called as a function pointer — no FnOnce capture.
+                let (mut pre, post) = match load_pre_post_phase0_state::<E>(&case_dir) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let block =
+                    match load_ssz_snappy::<E::Phase0BeaconBlock>(&case_dir, "block.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let result = process_block_header::<E>(&mut pre, &block);
+                match (result, post) {
+                    (Ok(()), Some(expected)) => {
+                        if pre.as_ssz_bytes() == expected.as_ssz_bytes() {
+                            crate::task::CaseOutcome::Pass
+                        } else {
+                            crate::task::CaseOutcome::Fail(format!(
+                                "{case_name}: state mismatch after block_header"
+                            ))
+                        }
+                    }
+                    (Ok(()), None) => crate::task::CaseOutcome::Fail(format!(
+                        "{case_name}: expected Err but got Ok"
+                    )),
+                    (Err(_), None) => crate::task::CaseOutcome::Pass,
+                    (Err(e), Some(_)) => crate::task::CaseOutcome::Fail(format!(
+                        "{case_name}: expected Ok but got Err: {e}"
+                    )),
+                }
+            }),
+        ),
+        // proposer_slashing
+        (
+            "proposer_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                apply_op::<E::BeaconState, ProposerSlashing, _>(
+                    &case_dir,
+                    &case_name,
+                    "proposer_slashing.ssz_snappy",
+                    load_pre_post_phase0_state::<E>,
+                    |state, op, verify| process_proposer_slashing::<E>(state, op, verify),
+                    bls_verify(&meta),
+                )
+            }),
+        ),
+        // attester_slashing
+        (
+            "attester_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                apply_op::<E::BeaconState, AttesterSlashing<2048>, _>(
+                    &case_dir,
+                    &case_name,
+                    "attester_slashing.ssz_snappy",
+                    load_pre_post_phase0_state::<E>,
+                    |state, op, verify| process_attester_slashing::<E>(state, op, verify),
+                    bls_verify(&meta),
+                )
+            }),
+        ),
+        // deposit
+        (
+            "deposit",
+            Box::new(|case_dir, case_name, meta| {
+                apply_op::<E::BeaconState, Deposit<33>, _>(
+                    &case_dir,
+                    &case_name,
+                    "deposit.ssz_snappy",
+                    load_pre_post_phase0_state::<E>,
+                    |state, op, verify| process_deposit::<E>(state, op, verify),
+                    bls_verify(&meta),
+                )
+            }),
+        ),
+        // attestation
+        (
+            "attestation",
+            Box::new(|case_dir, case_name, meta| {
+                apply_op::<E::BeaconState, Attestation<2048>, _>(
+                    &case_dir,
+                    &case_name,
+                    "attestation.ssz_snappy",
+                    load_pre_post_phase0_state::<E>,
+                    |state, op, verify| process_attestation::<E>(state, op, verify),
+                    bls_verify(&meta),
+                )
+            }),
+        ),
+        // voluntary_exit
+        (
+            "voluntary_exit",
+            Box::new(|case_dir, case_name, meta| {
+                apply_op::<E::BeaconState, SignedVoluntaryExit, _>(
+                    &case_dir,
+                    &case_name,
+                    "voluntary_exit.ssz_snappy",
+                    load_pre_post_phase0_state::<E>,
+                    |state, op, verify| process_voluntary_exit::<E>(state, op, verify),
+                    bls_verify(&meta),
+                )
+            }),
+        ),
+    ]
 }
 
-fn run_block_header_case<E>(
-    case_dir: &Path,
-    case_name: &str,
-    _meta: Option<crate::fixture_walker::MetaYaml>,
-) -> CaseResult
+/// Enumerate all phase0 operation cases for one preset, returning `CaseTask`s
+/// with sequential `case_ordinal` in (sub-table-order, walk-order).
+fn enumerate_operations_phase0<E>(
+    root: &std::path::Path,
+    preset: &str,
+    row_ordinal: u32,
+) -> Vec<crate::task::CaseTask>
 where
     E: EthSpec,
     E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlock: BeaconBlockView + Decode,
     <E::Phase0BeaconBlock as BeaconBlockView>::Body: pharos_ssz::TreeHash,
-{
-    // block_header fixture uses block.ssz_snappy (not block_header.ssz_snappy).
-    // Decode as the concrete phase0 block (raw SSZ, no discriminant prefix).
-    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let block = match load_ssz_snappy::<E::Phase0BeaconBlock>(case_dir, "block.ssz_snappy") {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-
-    let result = process_block_header::<E>(&mut pre, &block);
-
-    match (result, post) {
-        (Ok(()), Some(expected)) => {
-            if pre.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after block_header"))
-            }
-        }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
-    }
-}
-
-fn run_block_header_mainnet(root: &Path) -> OpsResult {
-    run_block_header_preset::<MainnetEthSpec>(root, "mainnet")
-}
-
-fn run_block_header_minimal(root: &Path) -> OpsResult {
-    run_block_header_preset::<MinimalEthSpec>(root, "minimal")
-}
-
-// ── proposer_slashing ─────────────────────────────────────────────────────────
-
-fn run_proposer_slashing_preset<E>(root: &Path, preset: &str) -> OpsResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
-{
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "phase0",
-        "operations",
-        Some("proposer_slashing"),
-        ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "phase0/operations/{preset}/proposer_slashing/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_proposer_slashing_case::<E>(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_proposer_slashing_case<E>(
-    case_dir: &Path,
-    case_name: &str,
-    verify_signatures: bool,
-) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
-{
-    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let slashing =
-        match load_ssz_snappy::<ProposerSlashing>(case_dir, "proposer_slashing.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-
-    let result = process_proposer_slashing::<E>(&mut pre, &slashing, verify_signatures);
-
-    match (result, post) {
-        (Ok(()), Some(expected)) => {
-            if pre.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!(
-                    "{case_name}: state mismatch after proposer_slashing"
-                ))
-            }
-        }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
-    }
-}
-
-fn run_proposer_slashing_mainnet(root: &Path) -> OpsResult {
-    run_proposer_slashing_preset::<MainnetEthSpec>(root, "mainnet")
-}
-
-fn run_proposer_slashing_minimal(root: &Path) -> OpsResult {
-    run_proposer_slashing_preset::<MinimalEthSpec>(root, "minimal")
-}
-
-// ── attester_slashing ─────────────────────────────────────────────────────────
-
-fn run_attester_slashing_preset<E>(root: &Path, preset: &str) -> OpsResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
-{
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "phase0",
-        "operations",
-        Some("attester_slashing"),
-        ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "phase0/operations/{preset}/attester_slashing/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_attester_slashing_case::<E>(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_attester_slashing_case<E>(
-    case_dir: &Path,
-    case_name: &str,
-    verify_signatures: bool,
-) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
-{
-    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let slashing =
-        match load_ssz_snappy::<AttesterSlashing<2048>>(case_dir, "attester_slashing.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-
-    let result = process_attester_slashing::<E>(&mut pre, &slashing, verify_signatures);
-
-    match (result, post) {
-        (Ok(()), Some(expected)) => {
-            if pre.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!(
-                    "{case_name}: state mismatch after attester_slashing"
-                ))
-            }
-        }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
-    }
-}
-
-fn run_attester_slashing_mainnet(root: &Path) -> OpsResult {
-    run_attester_slashing_preset::<MainnetEthSpec>(root, "mainnet")
-}
-
-fn run_attester_slashing_minimal(root: &Path) -> OpsResult {
-    run_attester_slashing_preset::<MinimalEthSpec>(root, "minimal")
-}
-
-// ── deposit ───────────────────────────────────────────────────────────────────
-
-fn run_deposit_preset<E>(root: &Path, preset: &str) -> OpsResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
-{
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "phase0",
-        "operations",
-        Some("deposit"),
-        ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("phase0/operations/{preset}/deposit/{}", dir_name(&case_dir));
-            let verify_signatures = bls_verify(&meta);
-            run_deposit_case::<E>(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_deposit_case<E>(case_dir: &Path, case_name: &str, verify_signatures: bool) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
-{
-    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let deposit = match load_ssz_snappy::<Deposit<33>>(case_dir, "deposit.ssz_snappy") {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-
-    let result = process_deposit::<E>(&mut pre, &deposit, verify_signatures);
-
-    match (result, post) {
-        (Ok(()), Some(expected)) => {
-            if pre.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after deposit"))
-            }
-        }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
-    }
-}
-
-fn run_deposit_mainnet(root: &Path) -> OpsResult {
-    run_deposit_preset::<MainnetEthSpec>(root, "mainnet")
-}
-
-fn run_deposit_minimal(root: &Path) -> OpsResult {
-    run_deposit_preset::<MinimalEthSpec>(root, "minimal")
-}
-
-// ── attestation ───────────────────────────────────────────────────────────────
-
-fn run_attestation_preset<E>(root: &Path, preset: &str) -> OpsResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
+    E::Phase0BeaconState: Decode,
 {
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "phase0",
-        "operations",
-        Some("attestation"),
-        ops_walk_opts(),
-    )
-    .collect();
+    let table = phase0_op_table::<E>();
+    let mut case_ordinal: u32 = 0;
+    let mut tasks = Vec::new();
+    for (sub, apply) in table {
+        // apply is Box<dyn Fn+Send+Sync> — wrap in Arc for Clone.
+        let apply = std::sync::Arc::new(apply);
+        let sub_tasks = enumerate_op(
+            root,
+            "phase0",
+            preset,
+            sub,
+            row_ordinal,
+            &mut case_ordinal,
+            ops_walk_opts(),
+            move |dir, name, meta| apply(dir, name, meta),
+        );
+        tasks.extend(sub_tasks);
+    }
+    tasks
+}
 
-    let outcomes: Vec<CaseResult> = cases
+/// Run all six operation sub-categories for the mainnet preset.
+pub fn run_operations_mainnet(root: &Path) -> OpsResult {
+    let tasks = enumerate_operations_phase0::<MainnetEthSpec>(root, "mainnet", 0);
+    drain_tasks_to_ops_result(tasks)
+}
+
+/// Run all six operation sub-categories for the minimal preset.
+pub fn run_operations_minimal(root: &Path) -> OpsResult {
+    let tasks = enumerate_operations_phase0::<MinimalEthSpec>(root, "minimal", 0);
+    drain_tasks_to_ops_result(tasks)
+}
+
+/// Drain a `Vec<CaseTask>` via ONE `into_par_iter`, sort by `case_ordinal`, and
+/// repack into `OpsResult` in `case_ordinal` order. This is the single relocated
+/// rayon drain per preset entry-point (migration invariant: one per fork-preset
+/// until the flat-pool flip in Phase 7).
+fn drain_tasks_to_ops_result(tasks: Vec<crate::task::CaseTask>) -> OpsResult {
+    let mut outcomes: Vec<(u32, crate::task::CaseOutcome)> = tasks
         .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "phase0/operations/{preset}/attestation/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_attestation_case::<E>(&case_dir, &case_name, verify_signatures)
-        })
+        .map(|t| (t.case_ordinal, (t.run)()))
         .collect();
+    outcomes.sort_by_key(|(co, _)| *co);
 
     let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_attestation_case<E>(case_dir: &Path, case_name: &str, verify_signatures: bool) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
-    E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
-{
-    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let attestation = match load_ssz_snappy::<Attestation<2048>>(case_dir, "attestation.ssz_snappy")
-    {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-
-    let result = process_attestation::<E>(&mut pre, &attestation, verify_signatures);
-
-    match (result, post) {
-        (Ok(()), Some(expected)) => {
-            if pre.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after attestation"))
+    for (_, outcome) in outcomes {
+        match outcome {
+            crate::task::CaseOutcome::Pass => out.pass += 1,
+            crate::task::CaseOutcome::Skip => out.skip += 1,
+            crate::task::CaseOutcome::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
             }
         }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
-    }
-}
-
-fn run_attestation_mainnet(root: &Path) -> OpsResult {
-    run_attestation_preset::<MainnetEthSpec>(root, "mainnet")
-}
-
-fn run_attestation_minimal(root: &Path) -> OpsResult {
-    run_attestation_preset::<MinimalEthSpec>(root, "minimal")
-}
-
-// ── voluntary_exit ────────────────────────────────────────────────────────────
-
-fn run_voluntary_exit_preset<E>(root: &Path, preset: &str) -> OpsResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
-{
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "phase0",
-        "operations",
-        Some("voluntary_exit"),
-        ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "phase0/operations/{preset}/voluntary_exit/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_voluntary_exit_case::<E>(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
     }
     out
-}
-
-fn run_voluntary_exit_case<E>(
-    case_dir: &Path,
-    case_name: &str,
-    verify_signatures: bool,
-) -> CaseResult
-where
-    E: EthSpec,
-    E::BeaconState: BeaconStateWrite,
-{
-    let (mut pre, post) = match load_pre_post_phase0_state::<E>(case_dir) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let signed_exit =
-        match load_ssz_snappy::<SignedVoluntaryExit>(case_dir, "voluntary_exit.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-
-    let result = process_voluntary_exit::<E>(&mut pre, &signed_exit, verify_signatures);
-
-    match (result, post) {
-        (Ok(()), Some(expected)) => {
-            if pre.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after voluntary_exit"))
-            }
-        }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
-    }
-}
-
-fn run_voluntary_exit_mainnet(root: &Path) -> OpsResult {
-    run_voluntary_exit_preset::<MainnetEthSpec>(root, "mainnet")
-}
-
-fn run_voluntary_exit_minimal(root: &Path) -> OpsResult {
-    run_voluntary_exit_preset::<MinimalEthSpec>(root, "minimal")
 }
 
 // ── Altair operations ─────────────────────────────────────────────────────────
