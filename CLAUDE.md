@@ -24,7 +24,7 @@ Engine API client, storage abstraction, VC, slashing logic.
 
 ## Locked decisions (short form)
 
-- Workspace, 11 crates under `crates/`, two binaries (`pharos`, `pharos-vc`)
+- Workspace, 12 crates under `crates/`, two binaries (`pharos`, `pharos-vc`)
 - Sync STF, async I/O at the edges (`tokio` + `rayon`)
 - Fork representation: enum-of-forks with shared trait. **No `superstruct`**
 - Preset generic: `EthSpec` trait with associated constants
@@ -52,6 +52,8 @@ crates/
   pharos-utils          # base, no internal deps
   pharos-ssz            # SSZ + Merkleization + persistent collections
   pharos-types          # per-fork containers, EthSpec
+  pharos-kzg            # KZG wrappers over c-kzg (M10-DA Phase 1)
+                        #   pub: KzgVerifier, KzgError
   pharos-storage        # Store trait + rocksdb
   pharos-fork-choice    # LMD-GHOST + FFG  (M1)
                         #   pub: Store, get_forkchoice_store, on_block,
@@ -370,6 +372,142 @@ CLI flags. Workspace version bumped `0.9.0` → `0.10.0`. Deferred: on-disk stat
 sidecar persistence (Deneb+), a fork-crossing rehydrate integration test (code path is
 fork-safe; existing restart test is same-fork).
 
+## M8-OptimisticSync status
+
+Closed. Full spec-correct optimistic sync (`specs/sync/optimistic.md` +
+`bellatrix/fork-choice.md`), 7 phases + Phase 3b in `docs/m8-optimistic-plan.md`.
+Motivation: M7's live VC gate could not pass against a still-syncing EL because the
+STF rejected every SYNCING payload ("rejected payload forever"). Shipped:
+(1) **non-gating newPayload** — `ExecutionEngineHandle::new_payload_wire` rejects only
+INVALID/INVALID_BLOCK_HASH (SYNCING/ACCEPTED/VALID import); `FixedExecutionEngine`
+mock untouched. (2) **pre-seed** `payload_statuses[root]=NotValidated` at import
+(if-absent, persisted) so a dropped `payload_tx` send never leaves a post-merge block
+statusless. (3) **derivation** `is_optimistic = block_is_execution_enabled &&
+status != Valid` (single source of truth, no parallel flag); Beacon API
+`execution_optimistic` now per-root. (4) **candidate gate**
+`is_optimistic_candidate_block` (SAFE_SLOTS=128) runs AFTER the STF and rejects only
+NotValidated && !candidate && eligible-now (VALID non-candidate imports); inert on
+capella+. (5) **PayloadVerificationStatus** enum threaded out of
+`verify_and_notify_new_payload` → `process_execution_payload` (Invalid→Err, never a
+successful return) → `state_transition` returns `(state, Option<status>)`. (6) **INVALID
+resolution** — `resolve_invalid_block` (3-case latestValidHash table) +
+`apply_invalid_payload` (transitive descendant BFS); wired into both newPayload + FCU
+INVALID arms; `filter_block_tree` excludes Invalid → head reorgs off the bad branch;
+in-memory (self-heals on restart). (7) **VALID promotion** `promote_valid_ancestors`.
+(8) **merge relaxation** — `validate_merge_block` PowBlockNotFound imports optimistically;
+VALID re-validates via the real `EnginePowBlockProvider` threaded into the driver
+(genesis-sync-through-merge edges documented as known limitations, unreachable for
+checkpoint-synced Pharos). (9) **FCU safe/finalized** route through
+`latest_verified_ancestor` (never an optimistic hash; head may be). (10) **anchor seeded
+Valid** in get_forkchoice_store/apply_anchor/rehydrate (spec: checkpoint anchor MAY be
+assumed VALID). (11) **is_optimistic_node** = head-optimistic OR base has an
+explicitly-Invalid exec child; exposed via `ChainStateApi`; duty READS stay 200 with
+`execution_optimistic` (production endpoints don't exist yet — 503 contract documented +
+VC do-not-sign marker). (12) **conformance** `sync/optimistic` runner (pass=2 fail=0
+bellatrix+capella, both presets); `docs/conformance.md` pre-existing rows byte-identical.
+15 ADRs in `docs/decisions.md` (M8-OptimisticSync section). Workspace version bumped
+`0.11.0` → `0.12.0`. Deferred: genesis-sync-through-merge re-validation retry +
+indirect-merge-promotion re-validation (unreachable for checkpoint sync); production
+endpoint 503 wiring (when block production lands); live syncing-EL devnet acceptance
+(needs a p2p-enabled EL syncing from behind).
+
+## M9-Validator status
+
+Closed. In-house validator client (`pharos-vc` binary) + the beacon-node production
+surface it drives (8-phase plan in `docs/m9-validator-plan.md`). Shipped: BLS signing
++ signing-domain constants (`pharos-utils`); in-memory `OperationPools<E>`
+(`pharos-node/src/op_pools.rs`, aggregate-on-insert, fed from gossip-accept); live
+Engine-API V2 block production (`engine_getPayloadV2` wired, `prepare_execution_payload`
+V1/V2); CL block + attestation assembly via STF reuse (`block_production.rs`,
+`process_block` gains a `verify_signatures: bool` so production builds sigs-off and the
+node re-verifies on import); validator/beacon production REST endpoints + `liveness`
+(503 when optimistic/syncing); in-house EIP-2335 keystore decrypt (scrypt|pbkdf2 +
+AES-128-CTR + checksum); rusqlite slashing protection (separate file, commit-before-sign,
+EIP-3076 interchange) validated by `tests/interchange_conformance.rs`; VC duty scheduling
++ doppelganger (BN `liveness` endpoint) + syncnets-ENR-on-subscription. **Live
+bellatrix→Capella devnet acceptance PASSED** (lighthouse v8.1.3 + ethrex v13,
+`CAPELLA_FORK_EPOCH=1`): all 9 pharos-vc proposals — incl. capella slots 35/47/53/61 —
+received by lighthouse over gossip and kept canonical, **0 re-orgs / 0 bans / 0 panics
+over 2+ epochs**, ethrex `newPayloadV2` VALID. The devnet found ONE live-only correctness
+bug (the M9 analogue of M5-follow/M6-Capella): `D-vc-proposer-slot-alignment` — the VC
+loop used a free-running `tokio::time::interval`, firing proposals ~4.3s into the slot
+(past lighthouse's t=1/3 attestation cutoff) so the block got `head_weight:0` and was
+proposer-boost re-org'd; fixed by slot-aligning the loop to t≈0 (commit `e77691c`,
+proposals now fire 2–5ms in) and re-verified live. Reproducible launcher at
+`~/.cache/pharos-devnet/run-blockprod.sh` (`--fresh` regenerates genesis + repartitions
+the last-8 validators to pharos-vc, disjoint key set). 14 ADRs in `docs/decisions.md`
+(M9-Validator section). `docs/conformance.md` row counts byte-identical (M9 is
+VC/API/engine work; the conformance runner does not exercise it). Workspace version
+bumped `0.12.0` → `0.13.0`. Deferred: 503-contract sub-check (e) is documented
+(production endpoints exist; EL-kill→503→no-sign verified by unit/contract, not the live
+gate); fork-aware `--genesis-state-path` cold-start (`D-genesis-cold-start-phase0-only`,
+phase0-only today — live nodes use checkpoint-sync); eth1 deposit following + rewards
+endpoints + Web3Signer (M11).
+
+## M10-DA status
+
+Closed (DA substrate only). KZG crate, blob SSZ types, Deneb fork plumbing,
+blob gossip/req-resp, blob storage, and the `is_data_available` import gate,
+in 5 phases (plan: `docs/m10-da-plan.md`). The full Deneb STF, Engine API V3,
+and EIP-7044/7045/7514 are the M10-Deneb follow-on milestone. Live Deneb devnet
+acceptance (Lighthouse + ethrex, `DENEB_FORK_EPOCH=1`) is DEFERRED to M10-Deneb
+(see correction I12 in the plan).
+
+**Phase 1** (`pharos-kzg` crate + blob types): `pharos-kzg` crate over `c-kzg`
+(`KzgVerifier`, `KzgError`); blob SSZ types in `pharos-types/src/deneb/`
+(`KZGCommitment`, `KZGProof`, `Blob`, `BlobSidecar`, `BlobIdentifier`); KZG
+conformance runner (`deneb/kzg` — `blob_to_kzg_commitment`, `verify_blob_kzg_proof`,
+`verify_blob_kzg_proof_batch` all `fail=0`).
+
+**Phase 2** (Deneb fork plumbing + container deltas): `Fork::Deneb` +
+`ForkVariant::Deneb` in all exhaustive matches; Deneb `BeaconBlockBody` with
+`blob_kzg_commitments`, `ExecutionPayload`/`Header` with `blob_gas_used` +
+`excess_blob_gas`, `BeaconState` stub; `verify_blob_sidecar_inclusion_proof`
+(gen-index `2*MAX_BLOB_COMMITMENTS_PER_BLOCK + index` = `8192 + index`, depth
+17, validated by `deneb/merkle_proof` conformance runner with `fail=0`);
+context-bytes codec + topics + fork-migration + ENR for the Deneb digest;
+`deneb/ssz_static` conformance both presets (`fail=0`).
+
+**Phase 3** (blob gossip + req-resp): `GossipTopicKind::BlobSidecar(SubnetId)`;
+`validate_blob_sidecar` on `HostImpl<E>` (14 rules from `deneb/p2p-interface.md`
+including C1/C2 from plan-reviewer corrections); `BlobSidecarsByRange` +
+`BlobSidecarsByRoot` req-resp (bare-list SSZ per `D-byroot-bare-list` lesson);
+`BlobProvider<E>` host trait; spawn_blocking gossip dispatch.
+
+**Phase 4** (blob storage): `CF_BLOB_SIDECARS` keyed `block_root (32 B) ||
+index_be (8 B)`; `Store<E>` blob methods (`put/get/get-all-by-root/prune-below-slot`);
+`BlockTransition<E>.blob_sidecars` written atomically; `SCHEMA_VERSION` 3 → 4
+(`SchemaMismatch` → resync); `run_blob_prune_loop` (separate head-watch loop,
+prunes at `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` epochs behind head).
+
+**Phase 5** (DA gate + import integration): `trait DataAvailabilityChecker<E>`
+with `DataAvailabilityVerdict { Available, NotAvailable, Irrelevant }`; `BlobAvailabilityChecker`
+(missing sidecars → NotAvailable, empty commitments → Available, pre-Deneb →
+Irrelevant); DA gate as step before `state_transition` in `import_block` (RI-1);
+`BlobAwaitingBlocks` registry with time-based `MAX_BLOB_AWAIT_HOLD` eviction;
+`run_blob_ingestion_loop` (persists sidecars, re-injects via `reinject_tx` on
+set completion); `BlobProvider<E>` req-resp handlers; `blob_da_pipeline.rs`
+integration test (park → deliver sidecars → re-inject → import → head).
+
+**Phase 6** (this phase): conformance (`deneb/kzg` + `deneb/ssz_static` +
+`deneb/merkle_proof`, all presets, all `fail=0`); 8 ADRs in `docs/decisions.md`
+(M10-DA section); version bump `0.13.0` → `0.14.0`.
+
+8 ADRs: `D-kzg-crate`, `D-da-checker-trait`, `D-blob-hold-reuses-reinject`,
+`D-blob-store-cf-keyed-by-root-index`, `D-sidecar-substrate-generic-naming`,
+`D-kzg-trusted-setup-source`, `D-da-block-not-in-forkchoice-until-available`,
+`D-schema-v4-migration`.
+
+Tests: `blob_storage.rs` (put/get/prune; v3 open errors), `blob_da_pipeline.rs`
+(park-deliver-reimport pipeline), `validate_blob_sidecar` unit tests (14 rules),
+`BlobSidecarsByRootRequest` bare-list wire-byte test. `docs/conformance.md`
+pre-Deneb rows byte-identical to v0.13.0.
+
+Deferred: full Deneb STF + Engine API V3 + EIP-7044/7045/7514 (M10-Deneb);
+live devnet acceptance (I12, M10-Deneb); `engine_getBlobsV1` local-EL retrieval
+(M10-Deneb w/ Engine V3); historical blob backfill beyond `blob_serve_range`
+(serve-what-we-have + `ResourceUnavailable` for gaps).
+
 ## Reference repos (cloned in `~/dev/`)
 
 - `consensus-specs/` — Python specs + reference tests (test fixtures live
@@ -404,6 +542,10 @@ Pharos talks to an external EL via the Engine API. Default pairing:
 - `cargo fmt` and `cargo clippy` before commits (or just `make fmt lint`).
 - `make check` (i.e. `cargo check --workspace`) must stay green.
 - No Co-Authored-By lines in commits.
+- **Commit directly to `master` in this repo.** It's a solo project; do NOT
+  create feature branches automatically (the generic "branch first on the
+  default branch" rule does not apply here). Commit straight to `master` in
+  small batches without asking. Only branch when Edgar explicitly asks.
 - Don't commit `CLAUDE.md` or planning artifacts unless explicitly asked.
 - **Long-running test/conformance runs** — applies to anything > ~30 s
   wall, and ALWAYS to: `cargo test --workspace`, `cargo test -p
