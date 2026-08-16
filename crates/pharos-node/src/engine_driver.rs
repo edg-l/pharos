@@ -256,6 +256,7 @@ impl ExecutionEngineHandle {
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
             NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
             NewPayloadWire::V4 { .. } => NewPayloadVersion::V4,
+            NewPayloadWire::V5 { .. } => NewPayloadVersion::V5,
         };
         match self.engine.new_payload_blocking(version, wire) {
             Ok(status) => {
@@ -1033,6 +1034,10 @@ pub async fn run_engine_driver_loop<E: BeaconSpec, P: PowBlockProvider + Send + 
                 let state_clone = state.clone();
                 let fcu_result = tokio::task::spawn_blocking(move || {
                     match fcu_version {
+                        // Amsterdam-only: the version-selection above maps Fulu→V3,
+                        // so this arm is unreachable until the Amsterdam fork lands.
+                        ForkchoiceUpdatedVersion::V4 => engine_clone
+                            .forkchoice_updated_v4_blocking(state_clone, None, None),
                         ForkchoiceUpdatedVersion::V3 => engine_clone
                             .forkchoice_updated_v3_blocking(state_clone, None),
                         ForkchoiceUpdatedVersion::V2 => engine_clone
@@ -1118,6 +1123,7 @@ pub async fn run_engine_driver_loop<E: BeaconSpec, P: PowBlockProvider + Send + 
                     NewPayloadWire::V2(_) => NewPayloadVersion::V2,
                     NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
                     NewPayloadWire::V4 { .. } => NewPayloadVersion::V4,
+                    NewPayloadWire::V5 { .. } => NewPayloadVersion::V5,
                 };
                 let np_result = tokio::task::spawn_blocking(move || {
                     engine_clone.new_payload_blocking(version, payload_wire)
@@ -1442,6 +1448,7 @@ mod tests {
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
             NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
             NewPayloadWire::V4 { .. } => NewPayloadVersion::V4,
+            NewPayloadWire::V5 { .. } => NewPayloadVersion::V5,
         };
         assert_eq!(version, NewPayloadVersion::V1);
     }
@@ -1473,6 +1480,7 @@ mod tests {
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
             NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
             NewPayloadWire::V4 { .. } => NewPayloadVersion::V4,
+            NewPayloadWire::V5 { .. } => NewPayloadVersion::V5,
         };
         assert_eq!(version, NewPayloadVersion::V2);
     }

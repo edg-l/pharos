@@ -1,14 +1,15 @@
 //! Engine API YAML conformance runner.
 //!
 //! Walks `execution-apis/src/engine/openrpc/methods/*.yaml`; for each
-//! example pair in each V1 method's `examples:` block: spins up an axum
+//! example pair in each method's `examples:` block: spins up an axum
 //! mock server on a random port, drives `EngineClient` against it, and
 //! asserts the request matches the YAML params and the response parses.
 //!
-//! Scope: Bellatrix (Paris) V1 methods only. V2+ examples are reported
-//! with skip reason `"capella+ method, scoped out of m4a"`.
+//! Scope: all 25 `engine_*` methods with ≥1 example in execution-apis.
+//! `engine_forkchoiceUpdatedV4` has no examples and contributes 0 to the count.
 //!
-//! Per `D-engine-conformance-runner` (docs/m4a-plan.md Phase 5 Task 5.5).
+//! Per `D-engine-conformance-runner` (docs/m4a-plan.md) and
+//! `D-engine-yaml-full-method-coverage` (docs/m14-conformance-completeness-plan.md).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -23,8 +24,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::post;
 use pharos_engine::{
-    EngineClient, ExecutionPayloadV2, ExecutionPayloadV3, GetPayloadVersion, JwtSecret,
-    NewPayloadVersion, NewPayloadWire, PayloadAttributesV3, TransitionConfigurationV1,
+    BlobAndProofV2, BlobCellsAndProofs, EngineClient, ExecutionPayloadBodyV1,
+    ExecutionPayloadBodyV2, ExecutionPayloadV2, ExecutionPayloadV3, ExecutionPayloadV4,
+    GetPayloadVersion, JwtSecret, NewPayloadVersion, NewPayloadWire, PayloadAttributesV3,
+    TransitionConfigurationV1,
 };
 use reqwest::Url;
 use serde_json::Value;
@@ -124,66 +127,17 @@ pub fn enumerate_engine_yaml(specs_dir: &Path, row_ordinal: u32) -> Vec<CaseTask
 
         for method in methods {
             let method_name: String = method.name.clone();
-            let is_engine = method_name.starts_with("engine_");
 
-            if !is_engine {
-                // Non-engine methods: one skip task per example, matching run_method_examples.
-                for ex in &method.examples {
-                    let case_ordinal = ordinal;
-                    ordinal += 1;
-                    tasks.push(CaseTask {
-                        row_ordinal,
-                        case_ordinal,
-                        run: Box::new(|| CaseOutcome::Skip),
-                    });
-                    let _ = ex; // suppress unused warning
-                }
-                continue;
-            }
-
-            const DEFERRED_V1: &[&str] = &[
-                "engine_getBlobsV1",
-                "engine_getPayloadBodiesByHashV1",
-                "engine_getPayloadBodiesByRangeV1",
-            ];
-            const UNVERSIONED: &[&str] = &["engine_exchangeCapabilities"];
-            const V2_IN_SCOPE: &[&str] = &["engine_newPayloadV2", "engine_forkchoiceUpdatedV2"];
-            const V3_IN_SCOPE: &[&str] = &[
-                "engine_newPayloadV3",
-                "engine_forkchoiceUpdatedV3",
-                "engine_getPayloadV3",
-            ];
-            // V4 methods in scope for M12-Electra (Prague/EIP-7685).
-            const V4_IN_SCOPE: &[&str] = &["engine_newPayloadV4", "engine_getPayloadV4"];
-            // V4 methods still deferred (no FCU V4 in Prague; FCU V3 handles it).
-            const V4_DEFERRED: &[&str] = &["engine_forkchoiceUpdatedV4"];
-
-            let is_v1 = method_name.ends_with("V1");
-            let is_v2_in_scope = V2_IN_SCOPE.contains(&method_name.as_str());
-            let is_v3_in_scope = V3_IN_SCOPE.contains(&method_name.as_str());
-            let is_v4_in_scope = V4_IN_SCOPE.contains(&method_name.as_str());
-            let is_unversioned = UNVERSIONED.contains(&method_name.as_str());
-            let is_deferred = DEFERRED_V1.contains(&method_name.as_str())
-                || V4_DEFERRED.contains(&method_name.as_str());
+            // All engine_* methods are in scope. Non-engine methods never appear
+            // in execution-apis engine YAML (verified: no eth_* methods present).
+            debug_assert!(
+                method_name.starts_with("engine_"),
+                "unexpected non-engine method in engine YAML: {method_name}"
+            );
 
             for ex in method.examples {
                 let case_ordinal = ordinal;
                 ordinal += 1;
-
-                if is_deferred
-                    || (!is_v1
-                        && !is_v2_in_scope
-                        && !is_v3_in_scope
-                        && !is_v4_in_scope
-                        && !is_unversioned)
-                {
-                    tasks.push(CaseTask {
-                        row_ordinal,
-                        case_ordinal,
-                        run: Box::new(|| CaseOutcome::Skip),
-                    });
-                    continue;
-                }
 
                 let method_name_owned = method_name.clone();
                 let label = format!("{method_name}/{}", ex.name);
@@ -326,67 +280,15 @@ fn parse_yaml_methods(path: &Path) -> Result<Vec<YamlMethod>, String> {
 fn run_method_examples(method: &YamlMethod, result: &mut CategoryResult) {
     let name = &method.name;
 
-    // Skip non-engine methods.
-    if !name.starts_with("engine_") {
-        result.skip += method.examples.len() as u64;
-        for ex in &method.examples {
-            result.skip_reasons.insert(
-                format!("{name}/{}", ex.name),
-                "non-engine method".to_string(),
-            );
-        }
-        return;
-    }
-
-    // V1 methods introduced in Shanghai or later (not Bellatrix/Paris):
-    // getPayloadBodies* are Shanghai V1 methods but out of scope for M6.
-    // getBlobsV1 is Cancun, out of scope.
-    const DEFERRED_V1: &[&str] = &[
-        "engine_getBlobsV1",
-        "engine_getPayloadBodiesByHashV1",
-        "engine_getPayloadBodiesByRangeV1",
-    ];
-
-    // Unversioned methods (no "V1/V2" suffix) in scope.
-    const UNVERSIONED: &[&str] = &["engine_exchangeCapabilities"];
-
-    // V2 methods in scope for M6 (Capella / Shanghai).
-    const V2_IN_SCOPE: &[&str] = &["engine_newPayloadV2", "engine_forkchoiceUpdatedV2"];
-
-    // V3 methods in scope for M10-Deneb (Cancun).
-    const V3_IN_SCOPE: &[&str] = &[
-        "engine_newPayloadV3",
-        "engine_forkchoiceUpdatedV3",
-        "engine_getPayloadV3",
-    ];
-
-    // V4 methods in scope for M12-Electra (Prague/EIP-7685).
-    const V4_IN_SCOPE: &[&str] = &["engine_newPayloadV4", "engine_getPayloadV4"];
-    // V4 methods still deferred (no FCU V4 in Prague; FCU V3 handles it).
-    const V4_DEFERRED: &[&str] = &["engine_forkchoiceUpdatedV4"];
-
-    let is_v1 = name.ends_with("V1");
-    let is_v2_in_scope = V2_IN_SCOPE.contains(&name.as_str());
-    let is_v3_in_scope = V3_IN_SCOPE.contains(&name.as_str());
-    let is_v4_in_scope = V4_IN_SCOPE.contains(&name.as_str());
-    let is_unversioned = UNVERSIONED.contains(&name.as_str());
-    let is_deferred = DEFERRED_V1.contains(&name.as_str()) || V4_DEFERRED.contains(&name.as_str());
+    // All methods in engine YAML are engine_* methods; non-engine methods never
+    // appear in execution-apis engine YAML (verified: no eth_* methods present).
+    debug_assert!(
+        name.starts_with("engine_"),
+        "unexpected non-engine method in engine YAML: {name}"
+    );
 
     for ex in &method.examples {
         let label = format!("{name}/{}", ex.name);
-
-        // Skip deferred/out-of-scope methods.
-        if is_deferred
-            || (!is_v1 && !is_v2_in_scope && !is_v3_in_scope && !is_v4_in_scope && !is_unversioned)
-        {
-            result.skip += 1;
-            result.skip_reasons.insert(
-                label,
-                "method not in scope for current milestone".to_string(),
-            );
-            continue;
-        }
-
         match run_single_example(name, ex) {
             Ok(()) => result.pass += 1,
             Err(e) => {
@@ -496,7 +398,9 @@ fn run_single_example(method_name: &str, ex: &YamlExample) -> Result<(), String>
         // getPayload* take a single payload-id param. The upstream example value
         // is QUANTITY-trimmed (odd-length hex) which cannot round-trip byte-exact
         // through the 8-byte `PayloadIdV1` DATA type, so compare it semantically.
-        let params_match = if method_name.starts_with("engine_getPayload") {
+        let params_match = if method_name.starts_with("engine_getPayload")
+            && !method_name.contains("Bodies")
+        {
             let got_id = params_to_payload_id(got_params.as_array().and_then(|a| a.first()));
             let want_id = params_to_payload_id(ex.params_json.as_array().and_then(|a| a.first()));
             got_id == want_id
@@ -630,6 +534,11 @@ async fn dispatch_engine_call(
                 .map_err(|e| e.to_string())?;
             serde_json::to_value(payload).map_err(|e| e.to_string())
         }
+        "engine_getPayloadV2" => {
+            let id = params_to_payload_id(_params.get(0));
+            let response = client.get_payload_v2(id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
         "engine_exchangeCapabilities" => {
             // Extract the capabilities list from params[0] (array of strings).
             let methods_owned: Vec<String> = _params
@@ -761,8 +670,201 @@ async fn dispatch_engine_call(
             let response = client.get_payload_v4(id).await.map_err(|e| e.to_string())?;
             serde_json::to_value(response).map_err(|e| e.to_string())
         }
+        "engine_getPayloadV5" => {
+            let id = params_to_payload_id(_params.get(0));
+            let response = client.get_payload_v5(id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
+        "engine_getPayloadV6" => {
+            let id = params_to_payload_id(_params.get(0));
+            let response = client.get_payload_v6(id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
+        "engine_getBlobsV1" => {
+            let versioned_hashes: Vec<String> = _params
+                .get(0)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let response = client
+                .get_blobs_v1(versioned_hashes)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
+        "engine_getBlobsV2" => {
+            let versioned_hashes: Vec<String> = _params
+                .get(0)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let response: Vec<Option<BlobAndProofV2>> = client
+                .get_blobs_v2(versioned_hashes)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
+        "engine_getBlobsV3" => {
+            let versioned_hashes: Vec<String> = _params
+                .get(0)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let response: Vec<Option<BlobAndProofV2>> = client
+                .get_blobs_v3(versioned_hashes)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
+        "engine_getBlobsV4" => {
+            let versioned_hashes: Vec<String> = _params
+                .get(0)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let cell_indices_bitarray = _params
+                .get(1)
+                .and_then(Value::as_str)
+                .unwrap_or("0x00")
+                .to_string();
+            let response: Vec<Option<BlobCellsAndProofs>> = client
+                .get_blobs_v4(versioned_hashes, cell_indices_bitarray)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
+        "engine_getPayloadBodiesByHashV1" => {
+            let block_hashes: Vec<String> = _params
+                .get(0)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let response: Vec<Option<ExecutionPayloadBodyV1>> = client
+                .get_payload_bodies_by_hash_v1(block_hashes)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
+        "engine_getPayloadBodiesByHashV2" => {
+            let block_hashes: Vec<String> = _params
+                .get(0)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let response: Vec<Option<ExecutionPayloadBodyV2>> = client
+                .get_payload_bodies_by_hash_v2(block_hashes)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
+        "engine_getPayloadBodiesByRangeV1" => {
+            let start = _params
+                .get(0)
+                .and_then(Value::as_str)
+                .unwrap_or("0x0")
+                .to_string();
+            let count = _params
+                .get(1)
+                .and_then(Value::as_str)
+                .unwrap_or("0x0")
+                .to_string();
+            let response: Vec<Option<ExecutionPayloadBodyV1>> = client
+                .get_payload_bodies_by_range_v1(start, count)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
+        "engine_getPayloadBodiesByRangeV2" => {
+            let start = _params
+                .get(0)
+                .and_then(Value::as_str)
+                .unwrap_or("0x0")
+                .to_string();
+            let count = _params
+                .get(1)
+                .and_then(Value::as_str)
+                .unwrap_or("0x0")
+                .to_string();
+            let response: Vec<Option<ExecutionPayloadBodyV2>> = client
+                .get_payload_bodies_by_range_v2(start, count)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
+        }
+        "engine_newPayloadV5" => {
+            let payload = params_to_execution_payload_v4(_params.get(0));
+            let versioned_hashes: Vec<String> = _params
+                .get(1)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let parent_beacon_block_root = _params
+                .get(2)
+                .and_then(Value::as_str)
+                .unwrap_or("0x0000000000000000000000000000000000000000000000000000000000000000")
+                .to_string();
+            let execution_requests: Vec<String> = _params
+                .get(3)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let status = client
+                .new_payload(
+                    NewPayloadVersion::V5,
+                    NewPayloadWire::V5 {
+                        payload,
+                        versioned_hashes,
+                        parent_beacon_block_root,
+                        execution_requests,
+                    },
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(status).map_err(|e| e.to_string())
+        }
         _ => {
-            // Unknown V1 method — this should not happen for in-scope methods.
+            // All 25 engine_* methods with examples are dispatched above.
+            // Reaching this arm means the YAML has a new method not yet handled.
             Err(format!("unhandled engine method: {method}"))
         }
     }
@@ -953,6 +1055,66 @@ fn params_to_execution_payload_v3(v: Option<&Value>) -> ExecutionPayloadV3 {
 
 fn params_to_payload_attrs_v3(v: &Value) -> Result<PayloadAttributesV3, String> {
     serde_json::from_value(v.clone()).map_err(|e| e.to_string())
+}
+
+fn params_to_execution_payload_v4(v: Option<&Value>) -> ExecutionPayloadV4 {
+    use pharos_engine::WithdrawalV1;
+    let v = match v {
+        Some(v) => v,
+        None => {
+            return ExecutionPayloadV4 {
+                parent_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                fee_recipient: "0x0000000000000000000000000000000000000000".into(),
+                state_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                receipts_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                logs_bloom: "0x00".into(),
+                prev_randao: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                block_number: "0x0".into(),
+                gas_limit: "0x0".into(),
+                gas_used: "0x0".into(),
+                timestamp: "0x0".into(),
+                extra_data: "0x".into(),
+                base_fee_per_gas: "0x0".into(),
+                block_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                transactions: vec![],
+                withdrawals: vec![],
+                blob_gas_used: "0x0".into(),
+                excess_blob_gas: "0x0".into(),
+                block_access_list: "0xc0".into(),
+            };
+        }
+    };
+    serde_json::from_value(v.clone()).unwrap_or_else(|_| ExecutionPayloadV4 {
+        parent_hash: str_field(v, "parentHash"),
+        fee_recipient: str_field(v, "feeRecipient"),
+        state_root: str_field(v, "stateRoot"),
+        receipts_root: str_field(v, "receiptsRoot"),
+        logs_bloom: str_field(v, "logsBloom"),
+        prev_randao: str_field(v, "prevRandao"),
+        block_number: str_field(v, "blockNumber"),
+        gas_limit: str_field(v, "gasLimit"),
+        gas_used: str_field(v, "gasUsed"),
+        timestamp: str_field(v, "timestamp"),
+        extra_data: str_field(v, "extraData"),
+        base_fee_per_gas: str_field(v, "baseFeePerGas"),
+        block_hash: str_field(v, "blockHash"),
+        transactions: v
+            .get("transactions")
+            .and_then(|t| serde_json::from_value::<Vec<String>>(t.clone()).ok())
+            .unwrap_or_default(),
+        withdrawals: v
+            .get("withdrawals")
+            .and_then(|w| serde_json::from_value::<Vec<WithdrawalV1>>(w.clone()).ok())
+            .unwrap_or_default(),
+        blob_gas_used: str_field(v, "blobGasUsed"),
+        excess_blob_gas: str_field(v, "excessBlobGas"),
+        block_access_list: str_field(v, "blockAccessList"),
+    })
 }
 
 fn params_to_payload_id(v: Option<&Value>) -> pharos_engine::PayloadIdV1 {

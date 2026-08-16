@@ -35,8 +35,8 @@ use crate::error::EngineError;
 use crate::types::{
     BlobAndProofV1, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
     ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response, GetPayloadV4Response,
-    GetPayloadV5Response, PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3,
-    PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
+    GetPayloadV5Response, GetPayloadV6Response, PayloadAttributesV1, PayloadAttributesV2,
+    PayloadAttributesV3, PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
 };
 
 /// Capacity of the EngineHandle → actor request channel.
@@ -94,6 +94,14 @@ pub enum EngineRequest {
         attrs: Option<PayloadAttributesV3>,
         reply: oneshot::Sender<Result<ForkchoiceUpdatedV1Response, EngineError>>,
     },
+    /// `engine_forkchoiceUpdatedV4` — Amsterdam (post-Fulu) (optional V3 payload attributes,
+    /// optional custody columns).
+    ForkchoiceUpdatedV4 {
+        state: ForkchoiceStateV1,
+        attrs: Option<PayloadAttributesV3>,
+        custody_columns: Option<String>,
+        reply: oneshot::Sender<Result<ForkchoiceUpdatedV1Response, EngineError>>,
+    },
     /// `engine_getPayloadV3` — Deneb block production.
     /// Returns `{executionPayload, blockValue, blobsBundle, shouldOverrideBuilder}`.
     GetPayloadV3 {
@@ -111,6 +119,12 @@ pub enum EngineRequest {
     GetPayloadV5 {
         id: PayloadIdV1,
         reply: oneshot::Sender<Result<GetPayloadV5Response, EngineError>>,
+    },
+    /// `engine_getPayloadV6` — Amsterdam block production.
+    /// Returns `{executionPayload (V4), blockValue, blobsBundle (V2), shouldOverrideBuilder, executionRequests}`.
+    GetPayloadV6 {
+        id: PayloadIdV1,
+        reply: oneshot::Sender<Result<GetPayloadV6Response, EngineError>>,
     },
     /// `engine_getBlobsV1` — retrieve blobs from the local EL blob pool.
     GetBlobsV1 {
@@ -324,6 +338,32 @@ impl EngineHandle {
         self.dispatch_blocking(|reply| EngineRequest::GetPayloadV5 { id, reply })
     }
 
+    /// Sync `engine_getPayloadV6` — Amsterdam block production.
+    ///
+    /// Returns `{executionPayload (V4), blockValue, blobsBundle (V2), shouldOverrideBuilder,
+    /// executionRequests}` per amsterdam.md.
+    pub fn get_payload_v6_blocking(
+        &self,
+        id: PayloadIdV1,
+    ) -> Result<GetPayloadV6Response, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetPayloadV6 { id, reply })
+    }
+
+    /// Sync `engine_forkchoiceUpdatedV4` — Amsterdam (post-Fulu) (optional V3 payload attributes).
+    pub fn forkchoice_updated_v4_blocking(
+        &self,
+        state: ForkchoiceStateV1,
+        attrs: Option<PayloadAttributesV3>,
+        custody_columns: Option<String>,
+    ) -> Result<ForkchoiceUpdatedV1Response, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::ForkchoiceUpdatedV4 {
+            state,
+            attrs,
+            custody_columns,
+            reply,
+        })
+    }
+
     /// Sync `engine_getBlobsV1` — retrieve blobs from the local EL blob pool.
     ///
     /// Returns a `Vec<Option<BlobAndProofV1>>` preserving the request order.
@@ -513,6 +553,18 @@ async fn dispatch(client: &EngineClient, req: EngineRequest) {
         } => {
             let _ = reply.send(client.forkchoice_updated_v3(state, attrs).await);
         }
+        EngineRequest::ForkchoiceUpdatedV4 {
+            state,
+            attrs,
+            custody_columns,
+            reply,
+        } => {
+            let _ = reply.send(
+                client
+                    .forkchoice_updated_v4(state, attrs, custody_columns)
+                    .await,
+            );
+        }
         EngineRequest::GetPayloadV3 { id, reply } => {
             let _ = reply.send(client.get_payload_v3(id).await);
         }
@@ -521,6 +573,9 @@ async fn dispatch(client: &EngineClient, req: EngineRequest) {
         }
         EngineRequest::GetPayloadV5 { id, reply } => {
             let _ = reply.send(client.get_payload_v5(id).await);
+        }
+        EngineRequest::GetPayloadV6 { id, reply } => {
+            let _ = reply.send(client.get_payload_v6(id).await);
         }
         EngineRequest::GetBlobsV1 {
             versioned_hashes,

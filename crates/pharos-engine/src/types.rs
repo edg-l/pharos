@@ -919,6 +919,113 @@ impl TryFrom<ExecutionPayloadV3>
     }
 }
 
+// ── BlobAndProofV2 ────────────────────────────────────────────────────────────
+
+/// `BlobAndProofV2` per `execution-apis/src/engine/osaka.md`.
+///
+/// One element of the response from `engine_getBlobsV2` / `engine_getBlobsV3`.
+/// Differs from `BlobAndProofV1` in that `proofs` is a `Vec<String>` (cell
+/// proofs, one per cell) rather than a single proof string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobAndProofV2 {
+    /// `blob`: 131072 bytes (DATA).
+    pub blob: String,
+    /// `proofs`: array of KZG cell proofs (DATA, 48 bytes each).
+    pub proofs: Vec<String>,
+}
+
+// ── BlobCellsAndProofs ────────────────────────────────────────────────────────
+
+/// Response element for `engine_getBlobsV4` per `execution-apis/src/engine/amsterdam.md`.
+///
+/// Returns partial-column data (`blob_cells`) alongside KZG proofs.
+/// The outer `Vec<Option<BlobCellsAndProofs>>` uses `null` for absent blob sets;
+/// within each element, individual cells and proofs may be `null` when a specific
+/// cell index is not available (partial-column case).
+/// Note: the field names in the JSON wire format are `blob_cells` and `proofs` (snake_case).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobCellsAndProofs {
+    /// `blob_cells`: array of cell data hex strings; individual cells may be `null`.
+    pub blob_cells: Vec<Option<String>>,
+    /// `proofs`: array of KZG proofs (DATA, 48 bytes each); individual proofs may be `null`.
+    pub proofs: Vec<Option<String>>,
+}
+
+// ── ExecutionPayloadBodyV1 ────────────────────────────────────────────────────
+
+/// Response element for `engine_getPayloadBodiesByHashV1` and
+/// `engine_getPayloadBodiesByRangeV1` per `execution-apis/src/engine/shanghai.md`.
+///
+/// An absent block body is represented as JSON `null` (→ `None`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionPayloadBodyV1 {
+    pub transactions: Vec<String>,
+    pub withdrawals: Option<Vec<WithdrawalV1>>,
+}
+
+// ── ExecutionPayloadBodyV2 ────────────────────────────────────────────────────
+
+/// Response element for `engine_getPayloadBodiesByHashV2` and
+/// `engine_getPayloadBodiesByRangeV2` per `execution-apis/src/engine/amsterdam.md`.
+///
+/// Extends `ExecutionPayloadBodyV1` with `blockAccessList`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionPayloadBodyV2 {
+    pub transactions: Vec<String>,
+    pub withdrawals: Option<Vec<WithdrawalV1>>,
+    /// `blockAccessList`: optional RLP-encoded block access list (DATA).
+    pub block_access_list: Option<String>,
+}
+
+// ── ExecutionPayloadV4 ────────────────────────────────────────────────────────
+
+/// `ExecutionPayloadV4` per `execution-apis/src/engine/amsterdam.md`.
+///
+/// Extends `ExecutionPayloadV3` with `blockAccessList` (EIP-7709 / Amsterdam).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionPayloadV4 {
+    pub parent_hash: String,
+    pub fee_recipient: String,
+    pub state_root: String,
+    pub receipts_root: String,
+    pub logs_bloom: String,
+    pub prev_randao: String,
+    pub block_number: String,
+    pub gas_limit: String,
+    pub gas_used: String,
+    pub timestamp: String,
+    pub extra_data: String,
+    pub base_fee_per_gas: String,
+    pub block_hash: String,
+    pub transactions: Vec<String>,
+    pub withdrawals: Vec<WithdrawalV1>,
+    pub blob_gas_used: String,
+    pub excess_blob_gas: String,
+    /// `blockAccessList`: RLP-encoded block access list (DATA) — [New in Amsterdam].
+    pub block_access_list: String,
+}
+
+// ── GetPayloadV6Response ──────────────────────────────────────────────────────
+
+/// Response to `engine_getPayloadV6` per `execution-apis/src/engine/amsterdam.md`.
+///
+/// Identical envelope to `GetPayloadV5Response` except `executionPayload` is
+/// `ExecutionPayloadV4` (includes `blockAccessList`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPayloadV6Response {
+    pub execution_payload: ExecutionPayloadV4,
+    pub block_value: String,
+    pub blobs_bundle: BlobsBundleV2,
+    pub should_override_builder: bool,
+    /// `executionRequests: Array of DATA` — EIP-7685 request list.
+    pub execution_requests: Vec<String>,
+}
+
 // ── GetPayloadV2Response ──────────────────────────────────────────────────────
 
 /// Response to `engine_getPayloadV2` per `execution-apis/src/engine/shanghai.md`.

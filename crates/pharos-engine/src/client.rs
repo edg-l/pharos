@@ -20,10 +20,12 @@ use pharos_utils::metrics::METRIC_ENGINE_CALL_LATENCY_SECONDS;
 use crate::error::EngineError;
 use crate::jwt::{JwtSecret, sign_token};
 use crate::types::{
-    BlobAndProofV1, BlockHeader, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
+    BlobAndProofV1, BlobAndProofV2, BlobCellsAndProofs, BlockHeader, ExecutionPayloadBodyV1,
+    ExecutionPayloadBodyV2, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
     ForkchoiceStateV1, ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response,
-    GetPayloadV4Response, GetPayloadV5Response, PayloadAttributesV1, PayloadAttributesV2,
-    PayloadAttributesV3, PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
+    GetPayloadV4Response, GetPayloadV5Response, GetPayloadV6Response, PayloadAttributesV1,
+    PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, PayloadStatusV1, SyncingStatus,
+    TransitionConfigurationV1,
 };
 
 const ENGINE_RPC_TIMEOUT: Duration = Duration::from_secs(8);
@@ -52,7 +54,7 @@ pub const DEFAULT_ENGINE_CAPABILITIES: &[&str] = &[
 // ── Version enums ────────────────────────────────────────────────────────────
 
 /// Version selector for `engine_newPayload*`. Bellatrix uses V1; Capella uses V2; Deneb uses V3;
-/// Electra / Prague uses V4.
+/// Electra / Prague / Fulu uses V4; Amsterdam uses V5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NewPayloadVersion {
     V1,
@@ -63,10 +65,12 @@ pub enum NewPayloadVersion {
     V3,
     /// Electra / Prague: `engine_newPayloadV4` — same payload type as V3 + `executionRequests`.
     V4,
+    /// Amsterdam (post-Fulu): `engine_newPayloadV5` — same params as V4.
+    V5,
 }
 
 /// Version selector for `engine_forkchoiceUpdated*`. Bellatrix uses V1; Capella uses V2;
-/// Deneb uses V3.
+/// Deneb / Electra / Fulu uses V3; Amsterdam uses V4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForkchoiceUpdatedVersion {
     V1,
@@ -74,10 +78,14 @@ pub enum ForkchoiceUpdatedVersion {
     V2,
     /// Deneb / Cancun: `engine_forkchoiceUpdatedV3` with optional `PayloadAttributesV3`.
     V3,
+    /// Amsterdam (post-Fulu): `engine_forkchoiceUpdatedV4` with optional `PayloadAttributesV3`
+    /// (same attributes type as V3) plus optional custody columns.
+    V4,
 }
 
 /// Version selector for `engine_getPayload*`. Bellatrix uses V1; Capella uses V2;
-/// Deneb uses V3; Electra / Prague uses V4.
+/// Deneb uses V3; Electra / Prague uses V4; Fulu / Osaka uses V5;
+/// Amsterdam uses V6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GetPayloadVersion {
     V1,
@@ -90,6 +98,9 @@ pub enum GetPayloadVersion {
     /// Fulu / Osaka: `engine_getPayloadV5` — V4 envelope + `BlobsBundleV2`
     /// (cell proofs) per `execution-apis/src/engine/osaka.md`.
     V5,
+    /// Amsterdam: `engine_getPayloadV6` — V5 envelope + `ExecutionPayloadV4`
+    /// (includes `blockAccessList`) per `execution-apis/src/engine/amsterdam.md`.
+    V6,
 }
 
 // ── NewPayloadWire ────────────────────────────────────────────────────────────
@@ -130,6 +141,15 @@ pub enum NewPayloadWire {
         /// `executionRequests`: `Array of DATA` — EIP-7685 encoded, one hex string per request
         /// type. Empty lists are omitted. Each entry: `0x || request_type_byte ||
         /// ssz_serialized_requests`.
+        execution_requests: Vec<String>,
+    },
+    /// Amsterdam (post-Fulu): `engine_newPayloadV5` uses `ExecutionPayloadV4` (includes
+    /// `blockAccessList`) alongside versioned hashes, parent beacon block root,
+    /// and execution requests.
+    V5 {
+        payload: crate::types::ExecutionPayloadV4,
+        versioned_hashes: Vec<String>,
+        parent_beacon_block_root: String,
         execution_requests: Vec<String>,
     },
 }
@@ -346,6 +366,23 @@ impl EngineClient {
                 )
                 .await
             }
+            (
+                NewPayloadVersion::V5,
+                NewPayloadWire::V5 {
+                    payload: p,
+                    versioned_hashes,
+                    parent_beacon_block_root,
+                    execution_requests,
+                },
+            ) => {
+                self.new_payload_v5(
+                    p,
+                    versioned_hashes,
+                    parent_beacon_block_root,
+                    execution_requests,
+                )
+                .await
+            }
             _ => Err(EngineError::UnexpectedResponse(
                 "new_payload: version/payload mismatch".into(),
             )),
@@ -419,6 +456,16 @@ impl EngineClient {
                      call forkchoice_updated_v3 with PayloadAttributesV3 instead"
                 );
                 self.forkchoice_updated_v3(state, None).await
+            }
+            ForkchoiceUpdatedVersion::V4 => {
+                // V4 requires `PayloadAttributesV3` (same as V3) plus optional custody
+                // columns. The follow-only path passes `None` for both here.
+                debug_assert!(
+                    attrs.is_none(),
+                    "forkchoice_updated(V4, .., Some(attrs)) drops V1 attrs; \
+                     call forkchoice_updated_v4 with PayloadAttributesV3 instead"
+                );
+                self.forkchoice_updated_v4(state, None, None).await
             }
         }
     }
@@ -496,6 +543,150 @@ impl EngineClient {
         self.rpc_call("engine_getBlobsV1", [versioned_hashes]).await
     }
 
+    /// `engine_getBlobsV2` — retrieve blobs with cell proofs from the local EL blob pool.
+    ///
+    /// Returns a `Vec<Option<BlobAndProofV2>>` where each element has `blob` and
+    /// `proofs` (array of cell proofs). Missing blobs are `null` (→ `None`).
+    pub async fn get_blobs_v2(
+        &self,
+        versioned_hashes: Vec<String>,
+    ) -> Result<Vec<Option<BlobAndProofV2>>, EngineError> {
+        self.rpc_call("engine_getBlobsV2", [versioned_hashes]).await
+    }
+
+    /// `engine_getBlobsV3` — retrieve blobs with cell proofs from the local EL blob pool.
+    ///
+    /// Same response shape as V2 (`BlobAndProofV2`). Returns a `Vec<Option<BlobAndProofV2>>`
+    /// where missing blobs are `null` (→ `None`).
+    pub async fn get_blobs_v3(
+        &self,
+        versioned_hashes: Vec<String>,
+    ) -> Result<Vec<Option<BlobAndProofV2>>, EngineError> {
+        self.rpc_call("engine_getBlobsV3", [versioned_hashes]).await
+    }
+
+    /// `engine_getBlobsV4` — retrieve blob cells and proofs from the local EL blob pool.
+    ///
+    /// Per `execution-apis/src/engine/amsterdam.md`: params are versioned hashes plus
+    /// a `cellIndicesBitarray` (hex-encoded bitarray selecting which cells to return).
+    /// Returns a `Vec<Option<BlobCellsAndProofs>>` where missing blobs are `null` (→ `None`).
+    pub async fn get_blobs_v4(
+        &self,
+        versioned_hashes: Vec<String>,
+        cell_indices_bitarray: String,
+    ) -> Result<Vec<Option<BlobCellsAndProofs>>, EngineError> {
+        self.rpc_call(
+            "engine_getBlobsV4",
+            serde_json::json!([versioned_hashes, cell_indices_bitarray]),
+        )
+        .await
+    }
+
+    /// `engine_getPayloadBodiesByHashV1` — retrieve execution payload bodies by block hash.
+    ///
+    /// Per `execution-apis/src/engine/shanghai.md`.
+    /// Returns `Vec<Option<ExecutionPayloadBodyV1>>` — absent blocks are `null` (→ `None`).
+    pub async fn get_payload_bodies_by_hash_v1(
+        &self,
+        block_hashes: Vec<String>,
+    ) -> Result<Vec<Option<ExecutionPayloadBodyV1>>, EngineError> {
+        self.rpc_call("engine_getPayloadBodiesByHashV1", [block_hashes])
+            .await
+    }
+
+    /// `engine_getPayloadBodiesByHashV2` — retrieve execution payload bodies by block hash.
+    ///
+    /// Per `execution-apis/src/engine/amsterdam.md`. Extends V1 with `blockAccessList`.
+    /// Returns `Vec<Option<ExecutionPayloadBodyV2>>` — absent blocks are `null` (→ `None`).
+    pub async fn get_payload_bodies_by_hash_v2(
+        &self,
+        block_hashes: Vec<String>,
+    ) -> Result<Vec<Option<ExecutionPayloadBodyV2>>, EngineError> {
+        self.rpc_call("engine_getPayloadBodiesByHashV2", [block_hashes])
+            .await
+    }
+
+    /// `engine_getPayloadBodiesByRangeV1` — retrieve execution payload bodies by block range.
+    ///
+    /// Per `execution-apis/src/engine/shanghai.md`.
+    /// `start` is the starting block number (hex QUANTITY), `count` is the number of blocks.
+    /// Returns `Vec<Option<ExecutionPayloadBodyV1>>` — absent blocks are `null` (→ `None`).
+    pub async fn get_payload_bodies_by_range_v1(
+        &self,
+        start: String,
+        count: String,
+    ) -> Result<Vec<Option<ExecutionPayloadBodyV1>>, EngineError> {
+        self.rpc_call("engine_getPayloadBodiesByRangeV1", (start, count))
+            .await
+    }
+
+    /// `engine_getPayloadBodiesByRangeV2` — retrieve execution payload bodies by block range.
+    ///
+    /// Per `execution-apis/src/engine/amsterdam.md`. Extends V1 with `blockAccessList`.
+    /// `start` is the starting block number (hex QUANTITY), `count` is the number of blocks.
+    /// Returns `Vec<Option<ExecutionPayloadBodyV2>>` — absent blocks are `null` (→ `None`).
+    pub async fn get_payload_bodies_by_range_v2(
+        &self,
+        start: String,
+        count: String,
+    ) -> Result<Vec<Option<ExecutionPayloadBodyV2>>, EngineError> {
+        self.rpc_call("engine_getPayloadBodiesByRangeV2", (start, count))
+            .await
+    }
+
+    /// `engine_forkchoiceUpdatedV4` — Amsterdam (post-Fulu) forkchoice update.
+    ///
+    /// Per `execution-apis/src/engine/amsterdam.md`: same payload attributes as V3
+    /// (`PayloadAttributesV3`) plus an optional `custodyColumns` bitarray parameter.
+    /// For the follow-only path (no payload attributes), `custodyColumns` may also be `None`.
+    pub async fn forkchoice_updated_v4(
+        &self,
+        state: ForkchoiceStateV1,
+        attrs: Option<PayloadAttributesV3>,
+        custody_columns: Option<String>,
+    ) -> Result<ForkchoiceUpdatedV1Response, EngineError> {
+        self.rpc_call(
+            "engine_forkchoiceUpdatedV4",
+            serde_json::json!([state, attrs, custody_columns]),
+        )
+        .await
+    }
+
+    /// `engine_newPayloadV5` — Amsterdam (post-Fulu) execution payload.
+    ///
+    /// Per `execution-apis/src/engine/amsterdam.md`: uses `ExecutionPayloadV4`
+    /// (includes `blockAccessList`) alongside versioned hashes, parent beacon
+    /// block root, and execution requests.
+    pub async fn new_payload_v5(
+        &self,
+        payload: crate::types::ExecutionPayloadV4,
+        versioned_hashes: Vec<String>,
+        parent_beacon_block_root: String,
+        execution_requests: Vec<String>,
+    ) -> Result<PayloadStatusV1, EngineError> {
+        self.rpc_call(
+            "engine_newPayloadV5",
+            serde_json::json!([
+                payload,
+                versioned_hashes,
+                parent_beacon_block_root,
+                execution_requests
+            ]),
+        )
+        .await
+    }
+
+    /// `engine_getPayloadV6` — Amsterdam block production.
+    ///
+    /// Returns `{executionPayload (V4), blockValue, blobsBundle (V2), shouldOverrideBuilder,
+    /// executionRequests}` per `execution-apis/src/engine/amsterdam.md`.
+    pub async fn get_payload_v6(
+        &self,
+        id: PayloadIdV1,
+    ) -> Result<GetPayloadV6Response, EngineError> {
+        self.rpc_call("engine_getPayloadV6", [id]).await
+    }
+
     /// `engine_getPayload*` dispatch per version (V1 single-payload interface).
     pub async fn get_payload(
         &self,
@@ -530,6 +721,13 @@ impl EngineClient {
                 // `get_payload_v5` directly.
                 Err(EngineError::UnexpectedResponse(
                     "get_payload(V5): use get_payload_v5 directly for the V5 envelope".into(),
+                ))
+            }
+            GetPayloadVersion::V6 => {
+                // V6 returns a V5-envelope with ExecutionPayloadV4; callers must use
+                // `get_payload_v6` directly.
+                Err(EngineError::UnexpectedResponse(
+                    "get_payload(V6): use get_payload_v6 directly for the V6 envelope".into(),
                 ))
             }
         }
