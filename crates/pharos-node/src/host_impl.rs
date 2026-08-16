@@ -1021,6 +1021,9 @@ where
         }
 
         // Step 4 — RAT3: attestation slot must be within propagation range.
+        // Use saturating arithmetic: att_slot comes from gossip wire input and
+        // saturating_mul prevents a crafted huge slot from wrapping around the
+        // propagation-window check and reaching process_slots_fork (unbounded CPU).
         let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(d) => d.as_millis() as u64,
             Err(_) => return GossipVerdict::Ignore("att: clock unavailable".into()),
@@ -1029,8 +1032,16 @@ where
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
         let att_slot = att.data.slot.0;
         let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
-        let start_time_ms = genesis_time_s * 1000 + att_slot * seconds_per_slot * 1000;
-        let end_time_ms = genesis_time_s * 1000 + (att_slot + range + 1) * seconds_per_slot * 1000;
+        let start_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+            att_slot
+                .saturating_mul(seconds_per_slot)
+                .saturating_mul(1000),
+        );
+        let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+            (att_slot.saturating_add(range).saturating_add(1))
+                .saturating_mul(seconds_per_slot)
+                .saturating_mul(1000),
+        );
         if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < start_time_ms
             || end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms
         {
@@ -1179,6 +1190,7 @@ where
         }
 
         // Step 2 — RAG2: aggregate slot must be within propagation range.
+        // Use saturating arithmetic: see C2 fix above (validate_attestation Step 4).
         let now_ms = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(d) => d.as_millis() as u64,
             Err(_) => return GossipVerdict::Ignore("agg: clock unavailable".into()),
@@ -1187,8 +1199,16 @@ where
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
         let agg_slot = agg.data.slot.0;
         let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
-        let start_time_ms = genesis_time_s * 1000 + agg_slot * seconds_per_slot * 1000;
-        let end_time_ms = genesis_time_s * 1000 + (agg_slot + range + 1) * seconds_per_slot * 1000;
+        let start_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+            agg_slot
+                .saturating_mul(seconds_per_slot)
+                .saturating_mul(1000),
+        );
+        let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
+            (agg_slot.saturating_add(range).saturating_add(1))
+                .saturating_mul(seconds_per_slot)
+                .saturating_mul(1000),
+        );
         if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < start_time_ms
             || end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms
         {

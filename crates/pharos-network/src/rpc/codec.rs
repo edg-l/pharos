@@ -537,9 +537,13 @@ impl<E: EthSpec + Send + Sync + 'static> libp2p::request_response::Codec for Rpc
 /// - Stream identifier: type `0xff`, payload `"sNaPpY"` (6 bytes).
 /// - Compressed data: type `0x00`, payload `[crc:4][snappy_block]`.
 /// - Uncompressed data: type `0x01`, payload `[crc:4][raw_bytes]`.
-/// - Padding: type `0xfe`, skipped.
-/// - Reserved skippable: types `0x80..=0xfd`, skipped.
-/// - Reserved unskippable: types `0x02..=0x7f`, error.
+// Snappy framing format: max chunk payload = 65 536 bytes of data + 4-byte CRC.
+const MAX_SNAPPY_FRAME_PAYLOAD: usize = 65_540;
+
+///
+/// Padding: type `0xfe`, skipped.
+/// Reserved skippable: types `0x80..=0xfd`, skipped.
+/// Reserved unskippable: types `0x02..=0x7f`, error.
 async fn read_bounded_snappy<T: AsyncRead + Unpin>(
     io: &mut T,
     expected: usize,
@@ -553,6 +557,10 @@ async fn read_bounded_snappy<T: AsyncRead + Unpin>(
         io.read_exact(&mut header).await?;
         let chunk_type = header[0];
         let chunk_len = u32::from_le_bytes([header[1], header[2], header[3], 0]) as usize;
+
+        if chunk_len > MAX_SNAPPY_FRAME_PAYLOAD {
+            return Err(io::Error::other("snappy frame payload exceeds max"));
+        }
 
         match chunk_type {
             0xff => {
