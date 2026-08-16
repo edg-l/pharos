@@ -421,34 +421,6 @@ fn drain_tasks_to_ops_result(tasks: Vec<crate::task::CaseTask>) -> OpsResult {
 
 // ── Altair operations ─────────────────────────────────────────────────────────
 
-/// Run all altair operation sub-categories for the mainnet preset.
-pub fn run_operations_altair_mainnet(root: &Path) -> OpsResult {
-    let mut total = OpsResult::new();
-    total.merge(run_altair_block_header_mainnet(root));
-    total.merge(run_altair_proposer_slashing_mainnet(root));
-    total.merge(run_altair_attester_slashing_mainnet(root));
-    total.merge(run_altair_deposit_mainnet(root));
-    total.merge(run_altair_attestation_mainnet(root));
-    total.merge(run_altair_voluntary_exit_mainnet(root));
-    total.merge(run_altair_sync_aggregate_mainnet(root));
-    total
-}
-
-/// Run all altair operation sub-categories for the minimal preset.
-pub fn run_operations_altair_minimal(root: &Path) -> OpsResult {
-    let mut total = OpsResult::new();
-    total.merge(run_altair_block_header_minimal(root));
-    total.merge(run_altair_proposer_slashing_minimal(root));
-    total.merge(run_altair_attester_slashing_minimal(root));
-    total.merge(run_altair_deposit_minimal(root));
-    total.merge(run_altair_attestation_minimal(root));
-    total.merge(run_altair_voluntary_exit_minimal(root));
-    total.merge(run_altair_sync_aggregate_minimal(root));
-    total
-}
-
-// ── Altair helpers ────────────────────────────────────────────────────────────
-
 /// Walk options for altair operation fixtures.
 fn altair_ops_walk_opts() -> WalkOpts {
     WalkOpts {
@@ -457,922 +429,955 @@ fn altair_ops_walk_opts() -> WalkOpts {
     }
 }
 
-// ── altair/block_header ───────────────────────────────────────────────────────
+/// Descriptor table for altair operations — mainnet preset.
+///
+/// Sub order (verified from `run_operations_altair_mainnet` body):
+///   block_header, proposer_slashing, attester_slashing, deposit, attestation,
+///   voluntary_exit, sync_aggregate
+///
+/// block_header and sync_aggregate are bespoke (concrete preset types,
+/// projection through `E::altair_into_state`). The 5 shared subs follow the
+/// same pattern inline. All closures return `CaseOutcome` directly.
+/// EthSpec bounds are stated once on this builder; `apply_op` carries no
+/// EthSpec bound (D-apply-op-no-ethspec-bound).
+#[allow(clippy::type_complexity)]
+fn altair_op_table_mainnet() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)> {
+    use pharos_types::MainnetEthSpec as E;
+    vec![
+        // block_header: bespoke — loads raw altair::MainnetBeaconState, projects via altair_into_state.
+        (
+            "block_header",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::altair::block::process_block_header_altair;
+                use pharos_types::altair::MainnetBeaconBlock;
 
-fn run_altair_block_header_mainnet(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "altair",
-        "operations",
-        Some("block_header"),
-        altair_ops_walk_opts(),
-    )
-    .collect();
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_inner = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v)),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let block =
+                    match load_ssz_snappy::<MainnetBeaconBlock>(&case_dir, "block.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let result = process_block_header_altair::<
+                    16,
+                    2,
+                    128,
+                    16,
+                    16,
+                    2048,
+                    33,
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut pre, &block);
+                let current = E::altair_into_state(pre);
+                match (result, post_inner) {
+                    (Ok(()), Some(expected)) => {
+                        if current.as_ssz_bytes() == expected.as_ssz_bytes() {
+                            crate::task::CaseOutcome::Pass
+                        } else {
+                            crate::task::CaseOutcome::Fail(format!(
+                                "{case_name}: state mismatch after block_header"
+                            ))
+                        }
+                    }
+                    (Ok(()), None) => crate::task::CaseOutcome::Fail(format!(
+                        "{case_name}: expected Err but got Ok"
+                    )),
+                    (Err(_), None) => crate::task::CaseOutcome::Pass,
+                    (Err(e), Some(_)) => crate::task::CaseOutcome::Fail(format!(
+                        "{case_name}: expected Ok but got Err: {e}"
+                    )),
+                }
+            }),
+        ),
+        // proposer_slashing
+        (
+            "proposer_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_proposer_slashing;
+                use pharos_types::phase0::ProposerSlashing;
 
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!(
-                "altair/operations/mainnet/block_header/{}",
-                dir_name(&case_dir)
-            );
-            run_altair_block_header_case_mainnet(&case_dir, &case_name)
-        })
-        .collect();
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<ProposerSlashing>(
+                    &case_dir,
+                    "proposer_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_proposer_slashing::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "proposer_slashing",
+                )
+            }),
+        ),
+        // attester_slashing
+        (
+            "attester_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_attester_slashing;
+                use pharos_types::phase0::AttesterSlashing;
 
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<AttesterSlashing<2048>>(
+                    &case_dir,
+                    "attester_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_attester_slashing::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attester_slashing",
+                )
+            }),
+        ),
+        // deposit
+        (
+            "deposit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_deposit;
+                use pharos_types::phase0::Deposit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<Deposit<33>>(&case_dir, "deposit.ssz_snappy") {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_deposit::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "deposit")
+            }),
+        ),
+        // attestation
+        (
+            "attestation",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_attestation;
+                use pharos_types::phase0::Attestation;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op =
+                    match load_ssz_snappy::<Attestation<2048>>(&case_dir, "attestation.ssz_snappy")
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let result = process_attestation::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+            }),
+        ),
+        // voluntary_exit
+        (
+            "voluntary_exit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_voluntary_exit;
+                use pharos_types::phase0::SignedVoluntaryExit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<SignedVoluntaryExit>(
+                    &case_dir,
+                    "voluntary_exit.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_voluntary_exit::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "voluntary_exit",
+                )
+            }),
+        ),
+        // sync_aggregate: bespoke — uses MainnetSyncAggregate concrete type.
+        (
+            "sync_aggregate",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, meta| {
+                use pharos_stf::altair::operations::process_sync_aggregate;
+                use pharos_types::altair::MainnetSyncAggregate;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<MainnetSyncAggregate>(
+                    &case_dir,
+                    "sync_aggregate.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_sync_aggregate::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "sync_aggregate",
+                )
+            }),
+        ),
+    ]
 }
 
-fn run_altair_block_header_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
-    use pharos_stf::altair::block::process_block_header_altair;
-    use pharos_types::{MainnetEthSpec as E, altair::MainnetBeaconBlock};
+/// Descriptor table for altair operations — minimal preset.
+///
+/// Same sub order as mainnet: block_header, proposer_slashing, attester_slashing,
+/// deposit, attestation, voluntary_exit, sync_aggregate.
+#[allow(clippy::type_complexity)]
+fn altair_op_table_minimal() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)> {
+    use pharos_types::MinimalEthSpec as E;
+    vec![
+        // block_header: bespoke.
+        (
+            "block_header",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, _meta| {
+                use pharos_stf::altair::block::process_block_header_altair;
+                use pharos_types::altair::MinimalBeaconBlock;
 
-    let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::altair_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let block = match load_ssz_snappy::<MainnetBeaconBlock>(case_dir, "block.ssz_snappy") {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_inner = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v)),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let block =
+                    match load_ssz_snappy::<MinimalBeaconBlock>(&case_dir, "block.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let result = process_block_header_altair::<
+                    16,
+                    2,
+                    128,
+                    16,
+                    16,
+                    2048,
+                    33,
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut pre, &block);
+                let current = E::altair_into_state(pre);
+                match (result, post_inner) {
+                    (Ok(()), Some(expected)) => {
+                        if current.as_ssz_bytes() == expected.as_ssz_bytes() {
+                            crate::task::CaseOutcome::Pass
+                        } else {
+                            crate::task::CaseOutcome::Fail(format!(
+                                "{case_name}: state mismatch after block_header"
+                            ))
+                        }
+                    }
+                    (Ok(()), None) => crate::task::CaseOutcome::Fail(format!(
+                        "{case_name}: expected Err but got Ok"
+                    )),
+                    (Err(_), None) => crate::task::CaseOutcome::Pass,
+                    (Err(e), Some(_)) => crate::task::CaseOutcome::Fail(format!(
+                        "{case_name}: expected Ok but got Err: {e}"
+                    )),
+                }
+            }),
+        ),
+        // proposer_slashing
+        (
+            "proposer_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_proposer_slashing;
+                use pharos_types::phase0::ProposerSlashing;
 
-    let mut pre = pre_inner;
-    let result = process_block_header_altair::<
-        16,
-        2,
-        128,
-        16,
-        16,
-        2048,
-        33,
-        8192,
-        16_777_216,
-        2048,
-        1_099_511_627_776,
-        65536,
-        8192,
-        4,
-        512,
-        E,
-    >(&mut pre, &block);
-    let current = E::altair_into_state(pre);
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<ProposerSlashing>(
+                    &case_dir,
+                    "proposer_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_proposer_slashing::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "proposer_slashing",
+                )
+            }),
+        ),
+        // attester_slashing
+        (
+            "attester_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_attester_slashing;
+                use pharos_types::phase0::AttesterSlashing;
 
-    match (result, post_inner) {
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<AttesterSlashing<2048>>(
+                    &case_dir,
+                    "attester_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_attester_slashing::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attester_slashing",
+                )
+            }),
+        ),
+        // deposit
+        (
+            "deposit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_deposit;
+                use pharos_types::phase0::Deposit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<Deposit<33>>(&case_dir, "deposit.ssz_snappy") {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result =
+                    process_deposit::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                        &mut pre,
+                        &op,
+                        bls_verify(&meta),
+                    );
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "deposit")
+            }),
+        ),
+        // attestation
+        (
+            "attestation",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_attestation;
+                use pharos_types::phase0::Attestation;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op =
+                    match load_ssz_snappy::<Attestation<2048>>(&case_dir, "attestation.ssz_snappy")
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let mut pre = pre_inner;
+                let result =
+                    process_attestation::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                        &mut pre,
+                        &op,
+                        bls_verify(&meta),
+                    );
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+            }),
+        ),
+        // voluntary_exit
+        (
+            "voluntary_exit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_stf::altair::operations::process_voluntary_exit;
+                use pharos_types::phase0::SignedVoluntaryExit;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<SignedVoluntaryExit>(
+                    &case_dir,
+                    "voluntary_exit.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_voluntary_exit::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "voluntary_exit",
+                )
+            }),
+        ),
+        // sync_aggregate: bespoke — uses MinimalSyncAggregate concrete type.
+        (
+            "sync_aggregate",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, meta| {
+                use pharos_stf::altair::operations::process_sync_aggregate;
+                use pharos_types::altair::MinimalSyncAggregate;
+
+                let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                    &case_dir,
+                    "pre.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
+                        &case_dir,
+                        "post.ssz_snappy",
+                    ) {
+                        Ok(v) => Some(E::altair_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<MinimalSyncAggregate>(
+                    &case_dir,
+                    "sync_aggregate.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_sync_aggregate::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::altair_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "sync_aggregate",
+                )
+            }),
+        ),
+    ]
+}
+
+/// Shared outcome helper for altair ops: compares bytes-level post-state
+/// (both sides already wrapped via `E::altair_into_state`).
+fn altair_op_outcome(
+    result: Result<(), pharos_stf::StateTransitionError>,
+    current_bytes: Vec<u8>,
+    post_bytes: Option<Vec<u8>>,
+    case_name: &str,
+    op: &str,
+) -> crate::task::CaseOutcome {
+    match (result, post_bytes) {
         (Ok(()), Some(expected)) => {
-            if current.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
+            if current_bytes == expected {
+                crate::task::CaseOutcome::Pass
             } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after block_header"))
+                crate::task::CaseOutcome::Fail(format!("{case_name}: state mismatch after {op}"))
             }
         }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
-    }
-}
-
-fn run_altair_block_header_minimal(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "altair",
-        "operations",
-        Some("block_header"),
-        altair_ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, _meta)| {
-            let case_name = format!(
-                "altair/operations/minimal/block_header/{}",
-                dir_name(&case_dir)
-            );
-            run_altair_block_header_case_minimal(&case_dir, &case_name)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_altair_block_header_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
-    use pharos_stf::altair::block::process_block_header_altair;
-    use pharos_types::{MinimalEthSpec as E, altair::MinimalBeaconBlock};
-
-    let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::altair_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+        (Ok(()), None) => {
+            crate::task::CaseOutcome::Fail(format!("{case_name}: expected Err but got Ok"))
         }
+        (Err(_), None) => crate::task::CaseOutcome::Pass,
+        (Err(e), Some(_)) => {
+            crate::task::CaseOutcome::Fail(format!("{case_name}: expected Ok but got Err: {e}"))
+        }
+    }
+}
+
+/// Enumerate all altair operation cases for one preset, returning `CaseTask`s
+/// with sequential `case_ordinal` in (sub-table-order, walk-order).
+fn enumerate_operations_altair(
+    root: &std::path::Path,
+    preset: &str,
+    row_ordinal: u32,
+) -> Vec<crate::task::CaseTask> {
+    let table = if preset == "mainnet" {
+        altair_op_table_mainnet()
     } else {
-        None
+        altair_op_table_minimal()
     };
-    let block = match load_ssz_snappy::<MinimalBeaconBlock>(case_dir, "block.ssz_snappy") {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-
-    let mut pre = pre_inner;
-    let result = process_block_header_altair::<
-        16,
-        2,
-        128,
-        16,
-        16,
-        2048,
-        33,
-        64,
-        16_777_216,
-        32,
-        1_099_511_627_776,
-        64,
-        64,
-        4,
-        32,
-        E,
-    >(&mut pre, &block);
-    let current = E::altair_into_state(pre);
-
-    match (result, post_inner) {
-        (Ok(()), Some(expected)) => {
-            if current.as_ssz_bytes() == expected.as_ssz_bytes() {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after block_header"))
-            }
-        }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
+    let mut case_ordinal: u32 = 0;
+    let mut tasks = Vec::new();
+    for (sub, apply) in table {
+        let apply = std::sync::Arc::new(apply);
+        let sub_tasks = enumerate_op(
+            root,
+            "altair",
+            preset,
+            sub,
+            row_ordinal,
+            &mut case_ordinal,
+            altair_ops_walk_opts(),
+            move |dir, name, meta| apply(dir, name, meta),
+        );
+        tasks.extend(sub_tasks);
     }
+    tasks
 }
 
-// ── altair/proposer_slashing ──────────────────────────────────────────────────
-
-fn run_altair_proposer_slashing_mainnet(root: &Path) -> OpsResult {
-    run_altair_op_preset(
-        root,
-        "mainnet",
-        "proposer_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_proposer_slashing;
-            use pharos_types::{MainnetEthSpec as E, phase0::ProposerSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::altair_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing =
-                match load_ssz_snappy::<ProposerSlashing>(case_dir, "proposer_slashing.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-
-            let mut pre = pre_inner;
-            let result = process_proposer_slashing::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            let current = E::altair_into_state(pre);
-            cmp_altair_result(
-                result,
-                current.as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "proposer_slashing",
-            )
-        },
-    )
+/// Run all altair operation sub-categories for the mainnet preset.
+pub fn run_operations_altair_mainnet(root: &Path) -> OpsResult {
+    let tasks = enumerate_operations_altair(root, "mainnet", 0);
+    drain_tasks_to_ops_result(tasks)
 }
 
-fn run_altair_proposer_slashing_minimal(root: &Path) -> OpsResult {
-    run_altair_op_preset(
-        root,
-        "minimal",
-        "proposer_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_proposer_slashing;
-            use pharos_types::{MinimalEthSpec as E, phase0::ProposerSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::altair_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing =
-                match load_ssz_snappy::<ProposerSlashing>(case_dir, "proposer_slashing.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-
-            let mut pre = pre_inner;
-            let result = process_proposer_slashing::<
-                64,
-                16_777_216,
-                32,
-                1_099_511_627_776,
-                64,
-                64,
-                4,
-                32,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            let current = E::altair_into_state(pre);
-            cmp_altair_result(
-                result,
-                current.as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "proposer_slashing",
-            )
-        },
-    )
-}
-
-// ── altair/attester_slashing ──────────────────────────────────────────────────
-
-fn run_altair_attester_slashing_mainnet(root: &Path) -> OpsResult {
-    run_altair_op_preset(
-        root,
-        "mainnet",
-        "attester_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_attester_slashing;
-            use pharos_types::{MainnetEthSpec as E, phase0::AttesterSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::altair_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing = match load_ssz_snappy::<AttesterSlashing<2048>>(
-                case_dir,
-                "attester_slashing.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-
-            let mut pre = pre_inner;
-            let result = process_attester_slashing::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            let current = E::altair_into_state(pre);
-            cmp_altair_result(
-                result,
-                current.as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attester_slashing",
-            )
-        },
-    )
-}
-
-fn run_altair_attester_slashing_minimal(root: &Path) -> OpsResult {
-    run_altair_op_preset(
-        root,
-        "minimal",
-        "attester_slashing",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_attester_slashing;
-            use pharos_types::{MinimalEthSpec as E, phase0::AttesterSlashing};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::altair_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let slashing = match load_ssz_snappy::<AttesterSlashing<2048>>(
-                case_dir,
-                "attester_slashing.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-
-            let mut pre = pre_inner;
-            let result = process_attester_slashing::<
-                64,
-                16_777_216,
-                32,
-                1_099_511_627_776,
-                64,
-                64,
-                4,
-                32,
-                E,
-            >(&mut pre, &slashing, verify_signatures);
-            let current = E::altair_into_state(pre);
-            cmp_altair_result(
-                result,
-                current.as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attester_slashing",
-            )
-        },
-    )
-}
-
-// ── altair/deposit ────────────────────────────────────────────────────────────
-
-fn run_altair_deposit_mainnet(root: &Path) -> OpsResult {
-    run_altair_op_preset(
-        root,
-        "mainnet",
-        "deposit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_deposit;
-            use pharos_types::{MainnetEthSpec as E, phase0::Deposit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::altair_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let deposit = match load_ssz_snappy::<Deposit<33>>(case_dir, "deposit.ssz_snappy") {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-
-            let mut pre = pre_inner;
-            let result = process_deposit::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut pre, &deposit, verify_signatures);
-            let current = E::altair_into_state(pre);
-            cmp_altair_result(
-                result,
-                current.as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "deposit",
-            )
-        },
-    )
-}
-
-fn run_altair_deposit_minimal(root: &Path) -> OpsResult {
-    run_altair_op_preset(
-        root,
-        "minimal",
-        "deposit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_deposit;
-            use pharos_types::{MinimalEthSpec as E, phase0::Deposit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::altair_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let deposit = match load_ssz_snappy::<Deposit<33>>(case_dir, "deposit.ssz_snappy") {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-
-            let mut pre = pre_inner;
-            let result = process_deposit::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                &mut pre,
-                &deposit,
-                verify_signatures,
-            );
-            let current = E::altair_into_state(pre);
-            cmp_altair_result(
-                result,
-                current.as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "deposit",
-            )
-        },
-    )
-}
-
-// ── altair/attestation ────────────────────────────────────────────────────────
-
-fn run_altair_attestation_mainnet(root: &Path) -> OpsResult {
-    run_altair_op_preset(
-        root,
-        "mainnet",
-        "attestation",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_attestation;
-            use pharos_types::{MainnetEthSpec as E, phase0::Attestation};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::altair_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let attestation =
-                match load_ssz_snappy::<Attestation<2048>>(case_dir, "attestation.ssz_snappy") {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-
-            let mut pre = pre_inner;
-            let result = process_attestation::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut pre, &attestation, verify_signatures);
-            let current = E::altair_into_state(pre);
-            cmp_altair_result(
-                result,
-                current.as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attestation",
-            )
-        },
-    )
-}
-
-fn run_altair_attestation_minimal(root: &Path) -> OpsResult {
-    run_altair_op_preset(
-        root,
-        "minimal",
-        "attestation",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_attestation;
-            use pharos_types::{MinimalEthSpec as E, phase0::Attestation};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::altair_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let attestation =
-                match load_ssz_snappy::<Attestation<2048>>(case_dir, "attestation.ssz_snappy") {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-
-            let mut pre = pre_inner;
-            let result =
-                process_attestation::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                    &mut pre,
-                    &attestation,
-                    verify_signatures,
-                );
-            let current = E::altair_into_state(pre);
-            cmp_altair_result(
-                result,
-                current.as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "attestation",
-            )
-        },
-    )
-}
-
-// ── altair/voluntary_exit ─────────────────────────────────────────────────────
-
-fn run_altair_voluntary_exit_mainnet(root: &Path) -> OpsResult {
-    run_altair_op_preset(
-        root,
-        "mainnet",
-        "voluntary_exit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_voluntary_exit;
-            use pharos_types::{MainnetEthSpec as E, phase0::SignedVoluntaryExit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::altair_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let exit =
-                match load_ssz_snappy::<SignedVoluntaryExit>(case_dir, "voluntary_exit.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-
-            let mut pre = pre_inner;
-            let result = process_voluntary_exit::<
-                8192,
-                16_777_216,
-                2048,
-                1_099_511_627_776,
-                65536,
-                8192,
-                4,
-                512,
-                E,
-            >(&mut pre, &exit, verify_signatures);
-            let current = E::altair_into_state(pre);
-            cmp_altair_result(
-                result,
-                current.as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "voluntary_exit",
-            )
-        },
-    )
-}
-
-fn run_altair_voluntary_exit_minimal(root: &Path) -> OpsResult {
-    run_altair_op_preset(
-        root,
-        "minimal",
-        "voluntary_exit",
-        |case_dir, case_name, verify_signatures| {
-            use pharos_stf::altair::operations::process_voluntary_exit;
-            use pharos_types::{MinimalEthSpec as E, phase0::SignedVoluntaryExit};
-
-            let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-                case_dir,
-                "pre.ssz_snappy",
-            ) {
-                Ok(v) => v,
-                Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-            };
-            let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-                match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-                    case_dir,
-                    "post.ssz_snappy",
-                ) {
-                    Ok(v) => Some(E::altair_into_state(v)),
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                }
-            } else {
-                None
-            };
-            let exit =
-                match load_ssz_snappy::<SignedVoluntaryExit>(case_dir, "voluntary_exit.ssz_snappy")
-                {
-                    Ok(v) => v,
-                    Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-                };
-
-            let mut pre = pre_inner;
-            let result =
-                process_voluntary_exit::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-                    &mut pre,
-                    &exit,
-                    verify_signatures,
-                );
-            let current = E::altair_into_state(pre);
-            cmp_altair_result(
-                result,
-                current.as_ssz_bytes(),
-                post_inner.map(|s| s.as_ssz_bytes()),
-                case_name,
-                "voluntary_exit",
-            )
-        },
-    )
-}
-
-// ── altair/sync_aggregate ─────────────────────────────────────────────────────
-
-fn run_altair_sync_aggregate_mainnet(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "mainnet",
-        "altair",
-        "operations",
-        Some("sync_aggregate"),
-        altair_ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "altair/operations/mainnet/sync_aggregate/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_altair_sync_aggregate_case_mainnet(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_altair_sync_aggregate_case_mainnet(
-    case_dir: &Path,
-    case_name: &str,
-    verify_signatures: bool,
-) -> CaseResult {
-    use pharos_stf::altair::operations::process_sync_aggregate;
-    use pharos_types::{MainnetEthSpec as E, altair::MainnetSyncAggregate};
-
-    let pre_inner = match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::altair::MainnetBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::altair_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let sync_aggregate =
-        match load_ssz_snappy::<MainnetSyncAggregate>(case_dir, "sync_aggregate.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-
-    let mut pre = pre_inner;
-    let result = process_sync_aggregate::<
-        8192,
-        16_777_216,
-        2048,
-        1_099_511_627_776,
-        65536,
-        8192,
-        4,
-        512,
-        E,
-    >(&mut pre, &sync_aggregate, verify_signatures);
-    let current = E::altair_into_state(pre);
-    cmp_altair_result(
-        result,
-        current.as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "sync_aggregate",
-    )
-}
-
-fn run_altair_sync_aggregate_minimal(root: &Path) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        "minimal",
-        "altair",
-        "operations",
-        Some("sync_aggregate"),
-        altair_ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!(
-                "altair/operations/minimal/sync_aggregate/{}",
-                dir_name(&case_dir)
-            );
-            let verify_signatures = bls_verify(&meta);
-            run_altair_sync_aggregate_case_minimal(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-fn run_altair_sync_aggregate_case_minimal(
-    case_dir: &Path,
-    case_name: &str,
-    verify_signatures: bool,
-) -> CaseResult {
-    use pharos_stf::altair::operations::process_sync_aggregate;
-    use pharos_types::{MinimalEthSpec as E, altair::MinimalSyncAggregate};
-
-    let pre_inner = match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-        case_dir,
-        "pre.ssz_snappy",
-    ) {
-        Ok(v) => v,
-        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-    };
-    let post_inner = if case_dir.join("post.ssz_snappy").exists() {
-        match load_ssz_snappy::<pharos_types::altair::MinimalBeaconState>(
-            case_dir,
-            "post.ssz_snappy",
-        ) {
-            Ok(v) => Some(E::altair_into_state(v)),
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        }
-    } else {
-        None
-    };
-    let sync_aggregate =
-        match load_ssz_snappy::<MinimalSyncAggregate>(case_dir, "sync_aggregate.ssz_snappy") {
-            Ok(v) => v,
-            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
-        };
-
-    let mut pre = pre_inner;
-    let result = process_sync_aggregate::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
-        &mut pre,
-        &sync_aggregate,
-        verify_signatures,
-    );
-    let current = E::altair_into_state(pre);
-    cmp_altair_result(
-        result,
-        current.as_ssz_bytes(),
-        post_inner.map(|s| s.as_ssz_bytes()),
-        case_name,
-        "sync_aggregate",
-    )
+/// Run all altair operation sub-categories for the minimal preset.
+pub fn run_operations_altair_minimal(root: &Path) -> OpsResult {
+    let tasks = enumerate_operations_altair(root, "minimal", 0);
+    drain_tasks_to_ops_result(tasks)
 }
 
 // ── Bellatrix operations ──────────────────────────────────────────────────────
@@ -2540,63 +2545,6 @@ fn read_execution_valid(case_dir: &Path) -> bool {
 }
 
 fn cmp_bellatrix_result(
-    result: Result<(), pharos_stf::StateTransitionError>,
-    current_bytes: Vec<u8>,
-    post_bytes: Option<Vec<u8>>,
-    case_name: &str,
-    op: &str,
-) -> CaseResult {
-    match (result, post_bytes) {
-        (Ok(()), Some(expected)) => {
-            if current_bytes == expected {
-                CaseResult::Pass
-            } else {
-                CaseResult::Fail(format!("{case_name}: state mismatch after {op}"))
-            }
-        }
-        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
-        (Err(_), None) => CaseResult::Pass,
-        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
-    }
-}
-
-// ── Altair shared helpers ─────────────────────────────────────────────────────
-
-/// Walk altair operation sub-category and run each case with a closure.
-fn run_altair_op_preset(
-    root: &Path,
-    preset: &str,
-    sub: &str,
-    run_case: impl Fn(&Path, &str, bool) -> CaseResult + Sync + Send,
-) -> OpsResult {
-    let cases: Vec<_> = walk_category(
-        root,
-        preset,
-        "altair",
-        "operations",
-        Some(sub),
-        altair_ops_walk_opts(),
-    )
-    .collect();
-
-    let outcomes: Vec<CaseResult> = cases
-        .into_par_iter()
-        .map(|(case_dir, meta)| {
-            let case_name = format!("altair/operations/{preset}/{sub}/{}", dir_name(&case_dir));
-            let verify_signatures = bls_verify(&meta);
-            run_case(&case_dir, &case_name, verify_signatures)
-        })
-        .collect();
-
-    let mut out = OpsResult::new();
-    for result in outcomes {
-        tally(result, &mut out);
-    }
-    out
-}
-
-/// Compare altair operation result against expected post-state (bytes-level comparison).
-fn cmp_altair_result(
     result: Result<(), pharos_stf::StateTransitionError>,
     current_bytes: Vec<u8>,
     post_bytes: Option<Vec<u8>>,
