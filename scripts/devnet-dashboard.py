@@ -833,7 +833,17 @@ function render(s){
         `from slot ${r.slot==null?'?':r.slot} · old ${short(r.old_head)} → new ${short(r.new_head)}</div>`).join('')
     : '';
 
-  $('forkchoice').innerHTML = renderForkTree(s.fork_choice);
+  // Fork-choice tree "tails" the head: keep the newest (rightmost) slots in
+  // view, but only auto-scroll when already near the right edge so a user who
+  // scrolls back to inspect history isn't yanked forward each refresh.
+  {
+    const host = $('forkchoice');
+    const prev = host.querySelector('.ftree');
+    const stick = !prev ||
+      (prev.scrollWidth - prev.scrollLeft - prev.clientWidth < 60);
+    host.innerHTML = renderForkTree(s.fork_choice);
+    if(stick){ const ft = host.querySelector('.ftree'); if(ft) ft.scrollLeft = ft.scrollWidth; }
+  }
 
   $('chain').innerHTML = kv([
     ['fork', s.fork?pill(s.fork,'neutral'):'—'],
