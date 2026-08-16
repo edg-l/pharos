@@ -291,6 +291,24 @@ impl<E: EthSpec> OperationPools<E> {
         }
     }
 
+    /// Best (most-aggregated) attestation pooled for `data_root`, if any.
+    ///
+    /// `insert_attestation` keeps the merged aggregate at the primary key and
+    /// non-mergeable overlaps under subkeys; this returns whichever entry for
+    /// `data_root` has the most participation bits set. Backs
+    /// `GET /eth/v2/validator/aggregate_attestation`.
+    pub fn best_aggregate_for(
+        &self,
+        data_root: Root,
+    ) -> Option<Attestation<VALIDATORS_PER_COMMITTEE>> {
+        let cache = self.attestations.read();
+        cache
+            .iter()
+            .filter(|(k, _)| k.att_data_root == data_root)
+            .map(|(_, v)| v.clone())
+            .max_by_key(|att| att.aggregation_bits.iter().filter(|b| *b).count())
+    }
+
     /// Insert an attester slashing into the pool.
     pub fn insert_attester_slashing(&self, slashing: AttesterSlashing<VALIDATORS_PER_COMMITTEE>) {
         let key = attester_slashing_key(&slashing);

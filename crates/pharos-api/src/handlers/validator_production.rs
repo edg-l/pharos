@@ -82,6 +82,17 @@ struct AggregateAttestationResponse {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Parse a 0x-prefixed 32-byte root from a hex string.
+fn parse_root32(s: &str) -> Result<pharos_types::phase0::primitives::Root, ApiError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(s)
+        .map_err(|_| ApiError::BadRequest("invalid attestation_data_root hex".into()))?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| ApiError::BadRequest("attestation_data_root must be 32 bytes".into()))?;
+    Ok(pharos_types::phase0::primitives::Root::from(arr))
+}
+
 /// Parse a 0x-prefixed 96-byte BLS signature from a hex string.
 fn parse_randao_reveal(s: &str) -> Result<pharos_utils::BLSSignature, ApiError> {
     let s = s.strip_prefix("0x").unwrap_or(s);
@@ -261,17 +272,17 @@ pub async fn get_attestation_data<E: EthSpec>(
 /// attestation_data_root. When no matching attestation is found, returns 404.
 pub async fn get_aggregate_attestation<E: EthSpec>(
     State(state): State<Arc<ApiState<E>>>,
-    Query(_params): Query<AggregateAttestationQuery>,
+    Query(params): Query<AggregateAttestationQuery>,
 ) -> Response {
     let chain = Arc::clone(&state.chain);
     let result = tokio::task::spawn_blocking(move || {
         if chain.is_syncing() || chain.is_optimistic_node() {
             return Err(ApiError::NotSynced("node is syncing or optimistic".into()));
         }
-        // Return 404 when no matching attestation is in the pool.
-        Err::<JsonValue, ApiError>(ApiError::NotFound(
-            "no matching aggregate attestation in pool".into(),
-        ))
+        let data_root = parse_root32(&params.attestation_data_root)?;
+        chain
+            .aggregate_attestation(data_root)
+            .ok_or_else(|| ApiError::NotFound("no matching aggregate attestation in pool".into()))
     })
     .await
     .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")));

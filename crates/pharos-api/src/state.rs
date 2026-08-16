@@ -399,6 +399,28 @@ pub fn beacon_state_to_json_full<E: EthSpec>(state: E::BeaconState) -> Result<Js
 
 // ── Internal JSON helpers ──────────────────────────────────────────────────────
 
+/// Serialize an `Attestation` to the beacon-API JSON shape (shared by
+/// `pool_attestations` and `aggregate_attestation`).
+fn attestation_to_json<const N: u64>(att: &Attestation<N>) -> JsonValue {
+    serde_json::json!({
+        "aggregation_bits": format!("0x{}", hex::encode(att.aggregation_bits.as_ssz_bytes())),
+        "data": {
+            "slot": att.data.slot.0.to_string(),
+            "index": att.data.index.0.to_string(),
+            "beacon_block_root": format!("0x{}", hex::encode(att.data.beacon_block_root.as_slice())),
+            "source": {
+                "epoch": att.data.source.epoch.0.to_string(),
+                "root": format!("0x{}", hex::encode(att.data.source.root.as_slice())),
+            },
+            "target": {
+                "epoch": att.data.target.epoch.0.to_string(),
+                "root": format!("0x{}", hex::encode(att.data.target.root.as_slice())),
+            },
+        },
+        "signature": format!("0x{}", hex::encode(att.signature.as_slice())),
+    })
+}
+
 fn pending_att_raw_to_json(pa: pharos_types::PendingAttestationRaw) -> JsonValue {
     serde_json::json!({
         "aggregation_bits": hex(&pa.aggregation_bits_ssz),
@@ -711,6 +733,13 @@ pub trait ChainStateApi<E: EthSpec>: Send + Sync + 'static {
     /// Default returns an empty array.
     fn pool_attestations(&self) -> Vec<JsonValue> {
         vec![]
+    }
+
+    /// Best aggregate attestation pooled for `data_root`, as beacon-API JSON
+    /// (`GET /eth/v2/validator/aggregate_attestation`). Default `None`
+    /// (no pool wired); `NodeChainState` overrides with the real pool lookup.
+    fn aggregate_attestation(&self, _data_root: Root) -> Option<JsonValue> {
+        None
     }
 
     /// Return pooled attester slashings as JSON array.
@@ -1646,27 +1675,16 @@ where
         };
         pools
             .attestations_snapshot()
-            .into_iter()
-            .map(|att| {
-                serde_json::json!({
-                    "aggregation_bits": format!("0x{}", hex::encode(att.aggregation_bits.as_ssz_bytes())),
-                    "data": {
-                        "slot": att.data.slot.0.to_string(),
-                        "index": att.data.index.0.to_string(),
-                        "beacon_block_root": format!("0x{}", hex::encode(att.data.beacon_block_root.as_slice())),
-                        "source": {
-                            "epoch": att.data.source.epoch.0.to_string(),
-                            "root": format!("0x{}", hex::encode(att.data.source.root.as_slice())),
-                        },
-                        "target": {
-                            "epoch": att.data.target.epoch.0.to_string(),
-                            "root": format!("0x{}", hex::encode(att.data.target.root.as_slice())),
-                        },
-                    },
-                    "signature": format!("0x{}", hex::encode(att.signature.as_slice())),
-                })
-            })
+            .iter()
+            .map(attestation_to_json)
             .collect()
+    }
+
+    fn aggregate_attestation(&self, data_root: Root) -> Option<JsonValue> {
+        let pools = self.pools.as_ref()?;
+        pools
+            .best_aggregate_for(data_root)
+            .map(|att| attestation_to_json(&att))
     }
 
     fn pool_attester_slashings(&self) -> Vec<JsonValue> {
