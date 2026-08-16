@@ -3244,9 +3244,12 @@ version = "0.20.0"
 dependencies = [
  "axum",
  "hex",
+ "parking_lot",
  "pharos-engine",
  "pharos-fork-choice",
  "pharos-kzg",
+ "pharos-network",
+ "pharos-node",
  "pharos-ssz",
  "pharos-stf",
  "pharos-storage",
@@ -3258,6 +3261,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "snap",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]

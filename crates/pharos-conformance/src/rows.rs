@@ -71,6 +71,9 @@ pub fn row_table() -> &'static [RowSpec] {
         // fork_choice rows carry the Q1 footnote.
         rf("phase0", "fork_choice", "mainnet"), // 19
         rf("phase0", "fork_choice", "minimal"), // 20
+        // M14-Phase6: phase0/networking gossip-validator fixtures.
+        r("phase0", "networking", "mainnet"), // 21
+        r("phase0", "networking", "minimal"), // 22
         // ── altair ──────────────────────────────────────────────────────────
         r("altair", "transition", "mainnet"),       // 21
         r("altair", "transition", "minimal"),       // 22
@@ -90,8 +93,11 @@ pub fn row_table() -> &'static [RowSpec] {
         r("altair", "rewards", "minimal"),          // 36
         r("altair", "light_client", "mainnet"),     // 37
         r("altair", "light_client", "minimal"),     // 38
-        r("altair", "genesis", "mainnet"),          // 39
-        r("altair", "genesis", "minimal"),          // 40
+        r("altair", "genesis", "mainnet"),          // 39 (shifted +2)
+        r("altair", "genesis", "minimal"),          // 40 (shifted +2)
+        // M14-Phase6: altair/networking gossip-validator fixtures.
+        r("altair", "networking", "mainnet"),
+        r("altair", "networking", "minimal"),
         // ── bellatrix ────────────────────────────────────────────────────────
         r("bellatrix", "transition", "mainnet"),       // 41
         r("bellatrix", "transition", "minimal"),       // 42
@@ -109,8 +115,11 @@ pub fn row_table() -> &'static [RowSpec] {
         r("bellatrix", "random", "minimal"),           // 54
         r("bellatrix", "rewards", "mainnet"),          // 55
         r("bellatrix", "rewards", "minimal"),          // 56
-        r("bellatrix", "fork_choice", "mainnet"),      // 57
-        r("bellatrix", "fork_choice", "minimal"),      // 58
+        r("bellatrix", "fork_choice", "mainnet"),      // (shifted +4)
+        r("bellatrix", "fork_choice", "minimal"),      // (shifted +4)
+        // M14-Phase6: bellatrix/networking gossip-validator fixtures.
+        r("bellatrix", "networking", "mainnet"),
+        r("bellatrix", "networking", "minimal"),
         // ── capella (transition + ssz_static) ───────────────────────────────
         r("capella", "transition", "mainnet"), // 59
         r("capella", "transition", "minimal"), // 60
@@ -135,8 +144,11 @@ pub fn row_table() -> &'static [RowSpec] {
         r("capella", "rewards", "minimal"),          // 76
         r("capella", "fork_choice", "mainnet"),      // 77
         r("capella", "fork_choice", "minimal"),      // 78
-        r("capella", "light_client", "mainnet"),     // 79
-        r("capella", "light_client", "minimal"),     // 80
+        r("capella", "light_client", "mainnet"),     // (shifted +6)
+        r("capella", "light_client", "minimal"),     // (shifted +6)
+        // M14-Phase6: capella/networking gossip-validator fixtures.
+        r("capella", "networking", "mainnet"),
+        r("capella", "networking", "minimal"),
         // ── sync/optimistic ──────────────────────────────────────────────────
         r("sync", "optimistic", "mainnet"), // 81
         r("sync", "optimistic", "minimal"), // 82
@@ -162,8 +174,11 @@ pub fn row_table() -> &'static [RowSpec] {
         r("deneb", "rewards", "minimal"),          // 100
         r("deneb", "fork_choice", "mainnet"),      // 101
         r("deneb", "fork_choice", "minimal"),      // 102
-        r("deneb", "light_client", "mainnet"),     // 103
-        r("deneb", "light_client", "minimal"),     // 104
+        r("deneb", "light_client", "mainnet"),     // (shifted +8)
+        r("deneb", "light_client", "minimal"),     // (shifted +8)
+        // M14-Phase6: deneb/networking gossip-validator fixtures.
+        r("deneb", "networking", "mainnet"),
+        r("deneb", "networking", "minimal"),
         // ── electra ──────────────────────────────────────────────────────────
         r("electra", "ssz_static", "mainnet"),       // 105
         r("electra", "ssz_static", "minimal"),       // 106
@@ -290,6 +305,9 @@ mod tests {
             ("phase0", "rewards", "minimal"),
             ("phase0", "fork_choice", "mainnet"),
             ("phase0", "fork_choice", "minimal"),
+            // phase0/networking
+            ("phase0", "networking", "mainnet"),
+            ("phase0", "networking", "minimal"),
             // altair
             ("altair", "transition", "mainnet"),
             ("altair", "transition", "minimal"),
@@ -311,6 +329,9 @@ mod tests {
             ("altair", "light_client", "minimal"),
             ("altair", "genesis", "mainnet"),
             ("altair", "genesis", "minimal"),
+            // altair/networking
+            ("altair", "networking", "mainnet"),
+            ("altair", "networking", "minimal"),
             // bellatrix
             ("bellatrix", "transition", "mainnet"),
             ("bellatrix", "transition", "minimal"),
@@ -330,6 +351,9 @@ mod tests {
             ("bellatrix", "rewards", "minimal"),
             ("bellatrix", "fork_choice", "mainnet"),
             ("bellatrix", "fork_choice", "minimal"),
+            // bellatrix/networking
+            ("bellatrix", "networking", "mainnet"),
+            ("bellatrix", "networking", "minimal"),
             // capella/transition + capella/ssz_static
             ("capella", "transition", "mainnet"),
             ("capella", "transition", "minimal"),
@@ -355,6 +379,9 @@ mod tests {
             ("capella", "fork_choice", "minimal"),
             ("capella", "light_client", "mainnet"),
             ("capella", "light_client", "minimal"),
+            // capella/networking
+            ("capella", "networking", "mainnet"),
+            ("capella", "networking", "minimal"),
             // sync/optimistic
             ("sync", "optimistic", "mainnet"),
             ("sync", "optimistic", "minimal"),
@@ -382,6 +409,9 @@ mod tests {
             ("deneb", "fork_choice", "minimal"),
             ("deneb", "light_client", "mainnet"),
             ("deneb", "light_client", "minimal"),
+            // deneb/networking
+            ("deneb", "networking", "mainnet"),
+            ("deneb", "networking", "minimal"),
             // electra
             ("electra", "ssz_static", "mainnet"),
             ("electra", "ssz_static", "minimal"),
@@ -519,13 +549,14 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 160 (155 + 5 M13-Fulu Phase 6b rows:
-    /// `fulu/light_client` mainnet+minimal, `fulu/merkle_proof` mainnet+minimal,
-    /// `fulu/fast_confirmation` minimal). The 155 base is the M13-Fulu Phase 5b
-    /// total (153 + 2 networking placeholder rows). `sync/optimistic` is NOT a new
-    /// row — the existing global row enumerates fulu cases too.
+    /// Total row count is exactly 170 (160 + 10 M14-Phase6 rows:
+    /// `phase0/networking` mainnet+minimal, `altair/networking` mainnet+minimal,
+    /// `bellatrix/networking` mainnet+minimal, `capella/networking` mainnet+minimal,
+    /// `deneb/networking` mainnet+minimal). The 160 base is the M13-Fulu total.
+    /// `electra/networking` and `fulu/networking` already existed; these 10 are the
+    /// remaining forks.
     #[test]
-    fn row_count_is_160() {
-        assert_eq!(row_table().len(), 160);
+    fn row_count_is_170() {
+        assert_eq!(row_table().len(), 170);
     }
 }

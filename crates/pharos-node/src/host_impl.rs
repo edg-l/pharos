@@ -48,6 +48,7 @@ use pharos_ssz::{Bitvector, TreeHash};
 use pharos_stf::fulu::data_columns::{compute_columns_for_custody_group, get_custody_groups};
 use pharos_storage::{RocksStore, Store as StoreTrait};
 use pharos_types::BeaconSpec;
+use pharos_types::PayloadStatus;
 use pharos_types::RuntimeConfig;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::fork::{ForkSchedule, compute_fork_digest, compute_fork_digest_for_epoch};
@@ -253,6 +254,14 @@ pub struct HostImpl<E: BeaconSpec> {
     /// Shares the same `op_pools` Arc so detected `AttesterSlashing`s are
     /// surfaced immediately for block inclusion without an extra channel.
     pub(crate) slasher: crate::slasher::AttestationSlasher<E>,
+    /// Injectable clock override for conformance tests.
+    ///
+    /// When `Some`, all gossip-validator time reads are sourced from this atomic
+    /// (milliseconds since UNIX epoch) instead of real `SystemTime::now()`.
+    /// Set by the gossip conformance runner per message to simulate fixture
+    /// `current_time_ms + offset_ms`. Never set on the live node — production
+    /// stays on real wall-clock time. Per `D-hostimpl-injectable-clock`.
+    pub now_ms_override: Option<Arc<AtomicU64>>,
     _phantom: PhantomData<E>,
 }
 
@@ -338,6 +347,7 @@ impl<E: BeaconSpec> HostImpl<E> {
             )),
             op_pools: op_pools.clone(),
             slasher: crate::slasher::AttestationSlasher::new(op_pools),
+            now_ms_override: None,
             _phantom: PhantomData,
         }
     }
@@ -366,6 +376,17 @@ impl<E: BeaconSpec> HostImpl<E> {
     /// all read the one sticky-high source of truth.
     pub fn wire_custody(&mut self, custody_state: Arc<crate::custody::CustodyState>) {
         self.custody_state = Some(custody_state);
+    }
+
+    /// Register a block root as invalid (conformance test infrastructure).
+    ///
+    /// Used by the gossip conformance runner (`networking.rs`) to seed the
+    /// `invalid_block_roots` LRU cache with blocks that were marked `failed:
+    /// true` in a fixture's `blocks` list, so that `validate_beacon_block`
+    /// step-1 (RB7) fires correctly when the message block references one of
+    /// those as its parent. Per `D-gossip-conformance-runner`.
+    pub fn register_invalid_block_root(&self, root: Root) {
+        self.invalid_block_roots.write().put(root, ());
     }
 
     /// The effective custody group count to advertise: the live sticky-high
@@ -418,6 +439,28 @@ impl<E: BeaconSpec> HostImpl<E> {
         &self.fork_context.fork_schedule
     }
 
+    // ── Injectable clock ──────────────────────────────────────────────────────
+
+    /// Current time in milliseconds since the UNIX epoch.
+    ///
+    /// When `now_ms_override` is `Some`, returns the stored atomic value
+    /// (`Ordering::Relaxed`) instead of querying `SystemTime::now()`. The
+    /// override is set by the gossip conformance runner per message to simulate
+    /// fixture `current_time_ms + offset_ms`. On the live node the override is
+    /// always `None`, so behaviour is identical to `SystemTime::now()`.
+    ///
+    /// All gossip-validator method bodies call this instead of calling
+    /// `SystemTime::now()` directly, per `D-hostimpl-injectable-clock`.
+    fn now_ms(&self) -> u64 {
+        if let Some(ref arc) = self.now_ms_override {
+            return arc.load(Ordering::Relaxed);
+        }
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
     // ── Private epoch/fork helpers ────────────────────────────────────────────
 
     /// Wall-clock epoch derived from `genesis_time_secs`.
@@ -431,17 +474,16 @@ impl<E: BeaconSpec> HostImpl<E> {
     /// epoch        = elapsed_slots / SLOTS_PER_EPOCH
     /// ```
     ///
-    /// When `genesis_time_secs == 0` the epoch is always 0 (suitable for
-    /// tests where no real genesis-time alignment is needed).
+    /// When `now_ms()` returns 0 (uninitialised clock) and `genesis_time_secs`
+    /// is also 0, `elapsed_ms` is 0 and the result is `Epoch(0)` — the same
+    /// behaviour as before. The previous early-return guard for
+    /// `genesis_time_secs == 0` was removed because it prevented correct epoch
+    /// computation in the gossip conformance runner, where `genesis_time = 0`
+    /// is a valid fixture value and the clock is set to a large value via
+    /// `now_ms_override`.
     fn current_epoch(&self) -> Epoch {
         let genesis_time_secs = self.fork_context.genesis_time_secs;
-        if genesis_time_secs == 0 {
-            return Epoch(0);
-        }
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now_secs = self.now_ms() / 1000;
         if now_secs < genesis_time_secs {
             return Epoch(0);
         }
@@ -455,6 +497,51 @@ impl<E: BeaconSpec> HostImpl<E> {
         let slot_ms = (self.runtime_cfg.seconds_per_slot.saturating_mul(1000)).max(1);
         let elapsed_slots = elapsed_ms / slot_ms;
         Epoch(elapsed_slots / E::SLOTS_PER_EPOCH)
+    }
+
+    /// EIP-7045 (Deneb): check that `now_ms` is within the current or previous
+    /// epoch of `att_slot`, using time-based `is_within_slot_range` semantics
+    /// (with `MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS` tolerance on both ends).
+    ///
+    /// Returns `true` if the attestation slot is in a valid propagation epoch.
+    ///
+    /// This implements the spec helper:
+    ///   ```text
+    ///   is_previous_epoch_att = is_within_slot_range(state,
+    ///       start_of(att_epoch + 1), SLOTS_PER_EPOCH - 1, current_time_ms)
+    ///   is_current_epoch_att  = is_within_slot_range(state,
+    ///       start_of(att_epoch), SLOTS_PER_EPOCH - 1, current_time_ms)
+    ///   return is_previous_epoch_att OR is_current_epoch_att
+    ///   ```
+    /// Using slot-time arithmetic with genesis_time_ms + slot * slot_ms as the
+    /// slot start, and (slot + range + 1) as the exclusive end.
+    fn is_att_slot_in_eip7045_window(
+        &self,
+        att_slot: u64,
+        genesis_time_ms: u64,
+        slot_ms: u64,
+    ) -> bool {
+        let att_epoch = att_slot / E::SLOTS_PER_EPOCH;
+        let spe = E::SLOTS_PER_EPOCH;
+        let now_ms = self.now_ms();
+        // Helper: is `now_ms` within [epoch_start_ms, epoch_end_ms) ± DISPARITY?
+        // `epoch_start_ms` = genesis_time_ms + epoch * spe * slot_ms
+        // `epoch_end_ms`   = genesis_time_ms + (epoch + 1) * spe * slot_ms
+        let in_epoch = |epoch: u64| -> bool {
+            let start_ms =
+                genesis_time_ms.saturating_add(epoch.saturating_mul(spe).saturating_mul(slot_ms));
+            let end_ms = genesis_time_ms.saturating_add(
+                (epoch.saturating_add(1))
+                    .saturating_mul(spe)
+                    .saturating_mul(slot_ms),
+            );
+            // not too early: now_ms + DISP >= start_ms
+            // not too late:  end_ms + DISP >= now_ms
+            now_ms.saturating_add(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) >= start_ms
+                && end_ms.saturating_add(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) >= now_ms
+        };
+        // Accept if now is in att_epoch (current) OR att_epoch+1 (previous-epoch att).
+        in_epoch(att_epoch) || in_epoch(att_epoch.saturating_add(1))
     }
 
     /// Fork digest active at `epoch`, BPO-aware (RI-2, EIP-7892).
@@ -585,7 +672,14 @@ impl<E: BeaconSpec> HostImpl<E> {
             let fc = self.fork_choice.read();
             let head_root = pharos_fork_choice::get_head(&*fc);
             let fork_epochs = fc.fork_epochs();
-            (fc.block_states.get(&head_root)?.clone(), fork_epochs)
+            // If the head block has no state entry (e.g. it is a consensus-failed
+            // block in `fc.blocks` but never stored in `fc.block_states`) return
+            // `None` → callers emit IGNORE.  Do NOT fall back to the
+            // justified-checkpoint state: that state is on a potentially different
+            // branch and would yield committees from the wrong fork, turning valid
+            // attestations into false REJECTs on the live node.
+            let state = fc.block_states.get(&head_root).cloned()?;
+            (state, fork_epochs)
         };
         if state.slot() < slot {
             process_slots_fork::<E>(&mut state, slot, fork_epochs, &self.runtime_cfg).ok()?;
@@ -645,12 +739,13 @@ impl<E: BeaconSpec> HostImpl<E> {
 
         // Slow path (cache miss): clone the head state and advance it to `slot`.
         // If the entry was evicted between locks (finalization), bail → IGNORE.
-        let mut state = self
-            .fork_choice
-            .read()
-            .block_states
-            .get(&head_root)?
-            .clone();
+        // Do NOT fall back to justified_checkpoint: that state is on a potentially
+        // different branch and would produce committees from the wrong fork,
+        // turning valid attestations into false REJECTs on the live node.
+        let mut state = {
+            let fc = self.fork_choice.read();
+            fc.block_states.get(&head_root).cloned()?
+        };
         if state.slot() < slot {
             process_slots_fork::<E>(&mut state, slot, fork_epochs, &self.runtime_cfg).ok()?;
         }
@@ -715,9 +810,11 @@ impl<E: BeaconSpec> HostImpl<E> {
                 Attestation = pharos_types::phase0::Attestation<2048>,
             >,
     {
+        use pharos_stf::get_beacon_proposer_index_electra;
         use pharos_stf::phase0::accessors::get_beacon_proposer_index;
         use pharos_stf::process_slots_fork;
         use pharos_types::BeaconStateView as _;
+        use pharos_types::views::ForkVariant;
 
         let (fork_epochs, parent_state) = {
             let fc = self.fork_choice.read();
@@ -739,7 +836,24 @@ impl<E: BeaconSpec> HostImpl<E> {
         if ps.slot() < slot {
             process_slots_fork::<E>(&mut ps, slot, fork_epochs, &self.runtime_cfg).ok()?;
         }
-        let idx = get_beacon_proposer_index::<E>(&ps).0;
+        // Fork-aware proposer index derivation:
+        //   - Fulu (EIP-7917): read from precomputed `proposer_lookahead`; the
+        //     lookahead index for `slot` is `slot % SLOTS_PER_EPOCH`.
+        //   - Electra (EIP-7251): 16-bit random sample via
+        //     `get_beacon_proposer_index_electra`.
+        //   - Phase0..Deneb: 8-bit random sample via `get_beacon_proposer_index`.
+        //
+        // Using `get_beacon_proposer_index` (phase0, 8-bit) for electra states
+        // returns a DIFFERENT proposer, causing step-10 REJECT for valid blocks.
+        let idx = match ps.fork_variant() {
+            ForkVariant::Fulu => {
+                ps.proposer_lookahead_at(E::SLOTS_PER_EPOCH)
+                    .unwrap_or_else(|| get_beacon_proposer_index_electra::<E>(&ps))
+                    .0
+            }
+            ForkVariant::Electra => get_beacon_proposer_index_electra::<E>(&ps).0,
+            _ => get_beacon_proposer_index::<E>(&ps).0,
+        };
         self.proposer_cache.write().put((slot, parent_root), idx);
         Some((idx, ps))
     }
@@ -996,26 +1110,42 @@ where
         // old per-fork `if let` chain that silently rejected capella blocks.
         let block_msg: E::BeaconBlock = E::signed_block_message(block);
 
-        // Step 1 — RB7: parent block is in the invalid-roots set (REJECT).
+        // Step 1 — RB7: parent block failed consensus validation.
+        //
+        // Per `specs/bellatrix/p2p-interface.md`: when the parent is in
+        // `store.blocks` but NOT in `store.block_states` (consensus-failed),
+        // the verdict depends on the EL payload status:
+        //   - `NOT_VALIDATED` (EL result unknown) → REJECT
+        //   - any other status (EL result known: VALID or INVALIDATED) → IGNORE
+        //
+        // In the live node `invalid_block_roots` is the proxy for "parent failed
+        // consensus"; `fc.payload_statuses` carries the EL status.
         if self
             .invalid_block_roots
             .read()
             .peek(&block_msg.parent_root())
             .is_some()
         {
-            return GossipVerdict::Reject("block: parent in invalid set".into());
+            let parent_ps = self
+                .fork_choice
+                .read()
+                .payload_statuses
+                .get(&block_msg.parent_root())
+                .cloned()
+                .unwrap_or(PayloadStatus::NotValidated);
+            return match parent_ps {
+                PayloadStatus::NotValidated => {
+                    GossipVerdict::Reject("block: parent in invalid set".into())
+                }
+                _ => GossipVerdict::Ignore("block: parent invalid with known EL result".into()),
+            };
         }
 
         // Step 2 — RB1: block is from a future slot (IGNORE).
         let genesis_time_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
         let slot_time_ms = genesis_time_ms
             + u128::from(block_msg.slot().0) * u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
-        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis(),
-            Err(_) => {
-                return GossipVerdict::Ignore("block: clock unavailable".into());
-            }
-        };
+        let now_ms = u128::from(self.now_ms());
         if now_ms + u128::from(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < slot_time_ms {
             return GossipVerdict::Ignore("block: from future slot".into());
         }
@@ -1064,9 +1194,45 @@ where
                 return GossipVerdict::Ignore(GOSSIP_REASON_PARENT_UNSEEN.into());
             }
 
-            // Step 7 — defensive: parent is in blocks but state is missing (REJECT).
+            // Step 7 — parent in blocks but not in block_states: check payload status.
+            //
+            // Per `specs/bellatrix/p2p-interface.md` execution-enabled path:
+            //   - if parent NOT in block_states:
+            //     - payload_status == NOT_VALIDATED → REJECT
+            //     - otherwise → IGNORE (EL result known)
+            //   - if parent in block_states but payload_status == INVALIDATED → IGNORE
+            //
+            // Note: the consensus-failed / unknown case was already caught by step 1
+            // (invalid_block_roots). This branch handles blocks that fell through step 1
+            // (e.g. not yet in invalid_block_roots but also not in block_states).
             if !fc.block_states.contains_key(&block_msg.parent_root()) {
-                return GossipVerdict::Reject("block: parent invalid".into());
+                let parent_ps = fc
+                    .payload_statuses
+                    .get(&block_msg.parent_root())
+                    .cloned()
+                    .unwrap_or(PayloadStatus::NotValidated);
+                return match parent_ps {
+                    PayloadStatus::NotValidated => {
+                        GossipVerdict::Reject("block: parent invalid".into())
+                    }
+                    _ => GossipVerdict::Ignore("block: parent invalid with known EL result".into()),
+                };
+            }
+
+            // Parent is in block_states. Check if EL-invalid (execution-enabled blocks only).
+            // Per spec: `[IGNORE] The block's parent's execution payload passes validation`.
+            // Gate on execution-enabled (bellatrix+): phase0/altair blocks have no
+            // execution payload; `execution_payload_timestamp` returns None for those
+            // fork variants. Firing this check unconditionally would falsely IGNORE
+            // pre-merge blocks whose parent happens to have PayloadStatus::Invalid
+            // (which is never set pre-merge, but is a correctness invariant to preserve).
+            if E::execution_payload_timestamp(&block_msg).is_some()
+                && matches!(
+                    fc.payload_statuses.get(&block_msg.parent_root()),
+                    Some(PayloadStatus::Invalid)
+                )
+            {
+                return GossipVerdict::Ignore("block: parent EL-invalid".into());
             }
 
             // Step 8 — RB8: block is from a higher slot than its parent (REJECT).
@@ -1118,7 +1284,55 @@ where
             }
         }
 
-        // Step 10 — RB10: block is proposed by the expected proposer (REJECT/IGNORE).
+        // Step 10 — execution-payload timestamp REJECT (bellatrix+, execution enabled).
+        // Per `specs/bellatrix/p2p-interface.md`: must run BEFORE the proposer-index
+        // and proposer-signature checks so a wrong-timestamp block is REJECTed without
+        // a needless BLS verify and the multi-fault ordering matches spec.
+        //
+        // `is_execution_enabled(parent_state, body)`:
+        //   - `is_merge_transition_complete(parent_state)`: parent state has a non-default
+        //     execution payload header (block_hash != zero), OR
+        //   - `is_merge_transition_block(parent_state, body)`: the payload is non-empty
+        //     (ts != 0 is the simplest non-default check available without full STF).
+        //
+        // `is_merge_complete` is checked on the stored parent state (not slot-advanced):
+        // `is_merge_transition_complete` only reads `latest_execution_payload_header`
+        // which is set when the merge transition completes and never changes afterward.
+        {
+            use pharos_types::views::BeaconStateView as _;
+            let actual_timestamp = E::execution_payload_timestamp(&block_msg);
+            if let Some(ts) = actual_timestamp {
+                let genesis_time_s = self.fork_choice.read().genesis_time;
+                let expected_timestamp = genesis_time_s.saturating_add(
+                    block_msg
+                        .slot()
+                        .0
+                        .saturating_mul(self.runtime_cfg.seconds_per_slot),
+                );
+                // is_merge_transition_complete: parent state has non-zero block_hash
+                // in its latest_execution_payload_header.  Read directly from the
+                // stored parent state — no slot-advance needed; the header is set by
+                // the merge transition and is stable thereafter.
+                let is_merge_complete = {
+                    let fc = self.fork_choice.read();
+                    fc.block_states
+                        .get(&block_msg.parent_root())
+                        .and_then(|s| s.execution_payload_header_raw())
+                        .map(|h| h.block_hash != [0u8; 32])
+                        .unwrap_or(false)
+                };
+                // is_execution_enabled = is_merge_complete OR block has non-empty payload (ts != 0).
+                let is_execution_enabled = is_merge_complete || ts != 0;
+                if is_execution_enabled && ts != expected_timestamp {
+                    self.invalid_block_roots.write().put(block_root, ());
+                    return GossipVerdict::Reject(
+                        "block: incorrect execution payload timestamp".into(),
+                    );
+                }
+            }
+        }
+
+        // Step 11 — RB10: block is proposed by the expected proposer (REJECT/IGNORE).
         // Drop the fc read guard before calling the helper (it re-acquires).
         let (expected_idx, parent_state_at_slot) = match self
             .lookup_or_compute_expected_proposer(block_msg.slot(), block_msg.parent_root())
@@ -1133,7 +1347,7 @@ where
             return GossipVerdict::Reject("block: proposer mismatch".into());
         }
 
-        // Step 11 — RB5: proposer signature is valid (REJECT).
+        // Step 12 — RB5: proposer signature is valid (REJECT).
         {
             let block_epoch = compute_epoch_at_slot(block_msg.slot(), E::SLOTS_PER_EPOCH);
             let domain = get_domain::<E>(
@@ -1237,10 +1451,7 @@ where
         // Use saturating arithmetic: att_slot comes from gossip wire input and
         // saturating_mul prevents a crafted huge slot from wrapping around the
         // propagation-window check and reaching process_slots_fork (unbounded CPU).
-        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis() as u64,
-            Err(_) => return GossipVerdict::Ignore("att: clock unavailable".into()),
-        };
+        let now_ms = self.now_ms();
         let genesis_time_s = self.fork_choice.read().genesis_time;
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
         let att_slot = att.data.slot.0;
@@ -1254,24 +1465,22 @@ where
             return GossipVerdict::Ignore("att: slot not in propagation range".into());
         }
         // Lower bound: att_slot must not be too old.
-        let wall_epoch = self.current_epoch();
+        let genesis_time_ms = genesis_time_s.saturating_mul(1000);
+        let slot_ms = seconds_per_slot.saturating_mul(1000);
         let deneb_fork_epoch = self.fork_context.fork_schedule.deneb_fork_epoch;
-        if wall_epoch >= deneb_fork_epoch {
-            // EIP-7045: earliest = start of (wall_epoch - 1).
-            let prev_epoch = wall_epoch.0.saturating_sub(1);
-            let earliest_slot = prev_epoch.saturating_mul(E::SLOTS_PER_EPOCH);
-            if att_slot < earliest_slot {
+        if self.current_epoch() >= deneb_fork_epoch {
+            // EIP-7045 (Deneb): att must be from the current or previous epoch
+            // (time-based check with MAXIMUM_GOSSIP_CLOCK_DISPARITY tolerance).
+            if !self.is_att_slot_in_eip7045_window(att_slot, genesis_time_ms, slot_ms) {
                 return GossipVerdict::Ignore("att: slot not in propagation range".into());
             }
         } else {
             // Pre-Deneb: att_slot + ATTESTATION_PROPAGATION_SLOT_RANGE + 1 > wall_slot.
             let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
-            let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
-                (att_slot.saturating_add(range).saturating_add(1))
-                    .saturating_mul(seconds_per_slot)
-                    .saturating_mul(1000),
+            let end_time_ms = genesis_time_ms.saturating_add(
+                (att_slot.saturating_add(range).saturating_add(1)).saturating_mul(slot_ms),
             );
-            if end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms {
+            if end_time_ms.saturating_add(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < now_ms {
                 return GossipVerdict::Ignore("att: slot not in propagation range".into());
             }
         }
@@ -1313,6 +1522,21 @@ where
         let indexed = get_indexed_attestation::<E>(&head_state, att);
         if !is_valid_indexed_attestation::<E>(&head_state, &indexed, true) {
             return GossipVerdict::Reject("att: invalid signature".into());
+        }
+
+        // Pre-step — RAT10 (early out): if the voted block is in the
+        // invalid-roots cache, it was seen but failed consensus validation →
+        // REJECT immediately, before the fc.blocks look-up below.  This also
+        // handles the conformance-runner case where consensus-failed blocks are
+        // NOT inserted into fc.blocks (keeping them out of the LMD-GHOST tree),
+        // so the live node never returns IGNORE for a known-failed block.
+        if self
+            .invalid_block_roots
+            .read()
+            .peek(&att.data.beacon_block_root)
+            .is_some()
+        {
+            return GossipVerdict::Reject("att: voted block failed validation".into());
         }
 
         // Steps 10-12 require the fork-choice lock; acquire once.
@@ -1427,10 +1651,7 @@ where
         // epoch >= DENEB_FORK_EPOCH the lower bound becomes start_of_prev_epoch.
         //
         // Use saturating arithmetic: see C2 fix above (validate_attestation Step 4).
-        let now_ms = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            Ok(d) => d.as_millis() as u64,
-            Err(_) => return GossipVerdict::Ignore("agg: clock unavailable".into()),
-        };
+        let now_ms = self.now_ms();
         let genesis_time_s = self.fork_choice.read().genesis_time;
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
         let agg_slot = agg.data.slot.0;
@@ -1444,24 +1665,22 @@ where
             return GossipVerdict::Ignore("agg: slot not in propagation range".into());
         }
         // Lower bound: agg_slot must not be too old.
-        let wall_epoch = self.current_epoch();
+        let genesis_time_ms = genesis_time_s.saturating_mul(1000);
+        let slot_ms = seconds_per_slot.saturating_mul(1000);
         let deneb_fork_epoch = self.fork_context.fork_schedule.deneb_fork_epoch;
-        if wall_epoch >= deneb_fork_epoch {
-            // EIP-7045: earliest = start of (wall_epoch - 1).
-            let prev_epoch = wall_epoch.0.saturating_sub(1);
-            let earliest_slot = prev_epoch.saturating_mul(E::SLOTS_PER_EPOCH);
-            if agg_slot < earliest_slot {
+        if self.current_epoch() >= deneb_fork_epoch {
+            // EIP-7045 (Deneb): aggregate must be from current or previous epoch
+            // (time-based check with MAXIMUM_GOSSIP_CLOCK_DISPARITY tolerance).
+            if !self.is_att_slot_in_eip7045_window(agg_slot, genesis_time_ms, slot_ms) {
                 return GossipVerdict::Ignore("agg: slot not in propagation range".into());
             }
         } else {
             // Pre-Deneb: agg_slot + ATTESTATION_PROPAGATION_SLOT_RANGE + 1 > wall_slot.
             let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
-            let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
-                (agg_slot.saturating_add(range).saturating_add(1))
-                    .saturating_mul(seconds_per_slot)
-                    .saturating_mul(1000),
+            let end_time_ms = genesis_time_ms.saturating_add(
+                (agg_slot.saturating_add(range).saturating_add(1)).saturating_mul(slot_ms),
             );
-            if end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms {
+            if end_time_ms.saturating_add(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < now_ms {
                 return GossipVerdict::Ignore("agg: slot not in propagation range".into());
             }
         }
@@ -1563,6 +1782,17 @@ where
             return GossipVerdict::Reject("agg: invalid aggregate signature".into());
         }
 
+        // Pre-step — RAG14 (early out): voted block in invalid-roots cache →
+        // consensus-failed → REJECT before the fc.blocks look-up.
+        if self
+            .invalid_block_roots
+            .read()
+            .peek(&agg.data.beacon_block_root)
+            .is_some()
+        {
+            return GossipVerdict::Reject("agg: voted block failed validation".into());
+        }
+
         // Steps 13-16 require the fork-choice lock; acquire once.
         {
             let fc = self.fork_choice.read();
@@ -1634,7 +1864,7 @@ where
     /// Per `D-folded-phase0-validators` in `docs/decisions.md`.
     fn validate_voluntary_exit(&self, exit: &SignedVoluntaryExit) -> GossipVerdict {
         use pharos_stf::phase0::accessors::{
-            compute_epoch_at_slot, compute_signing_root, get_domain,
+            compute_domain, compute_epoch_at_slot, compute_signing_root, get_domain,
         };
         use pharos_stf::phase0::helpers::DOMAIN_VOLUNTARY_EXIT;
         use pharos_stf::phase0::predicates::is_active_validator;
@@ -1697,11 +1927,34 @@ where
         }
 
         // [REJECT] BLS signature must be valid.
-        let domain = get_domain::<E>(
-            &head_state,
-            DOMAIN_VOLUNTARY_EXIT,
-            Some(voluntary_exit.epoch),
-        );
+        //
+        // EIP-7044 (Deneb): voluntary exits are always signed with the CAPELLA fork
+        // version domain, regardless of the current fork. This allows exits signed
+        // before the Deneb transition to remain valid after it.
+        // Pre-Deneb: use the epoch-based fork version via `get_domain`.
+        use pharos_types::views::ForkVariant;
+        let domain = {
+            let variant = head_state.fork_variant();
+            let is_deneb_or_later = matches!(
+                variant,
+                ForkVariant::Deneb | ForkVariant::Electra | ForkVariant::Fulu
+            );
+            if is_deneb_or_later {
+                let capella_fork_version = self
+                    .fork_context
+                    .fork_schedule
+                    .capella_fork_version
+                    .into_inner();
+                let gvr = head_state.genesis_validators_root();
+                compute_domain(DOMAIN_VOLUNTARY_EXIT, capella_fork_version, &gvr)
+            } else {
+                get_domain::<E>(
+                    &head_state,
+                    DOMAIN_VOLUNTARY_EXIT,
+                    Some(voluntary_exit.epoch),
+                )
+            }
+        };
         let signing_root = compute_signing_root(voluntary_exit, domain);
         match pharos_utils::bls::verify(&validator.pubkey, signing_root.as_ref(), &exit.signature) {
             Ok(true) => {}
@@ -1983,10 +2236,7 @@ where
         let subnet_id = subnet;
 
         // Step 1 — RSM1: slot must be the current slot.
-        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis() as u64,
-            Err(_) => return GossipVerdict::Ignore("sync_msg: clock unavailable".into()),
-        };
+        let now_ms = self.now_ms();
         let genesis_time_s = self.fork_choice.read().genesis_time;
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
         // Saturating math: an attacker-supplied `slot = u64::MAX` would otherwise
@@ -2102,12 +2352,7 @@ where
         let agg_index = msg.aggregator_index().0;
 
         // Step 1 — RAC1: contribution slot must be the current slot.
-        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis() as u64,
-            Err(_) => {
-                return GossipVerdict::Ignore("sync_contrib: clock unavailable".into());
-            }
-        };
+        let now_ms = self.now_ms();
         let genesis_time_s = self.fork_choice.read().genesis_time;
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
         // Saturating math (see `validate_sync_committee_message`): a crafted
@@ -2351,10 +2596,7 @@ where
         }
 
         // Step 3 — clock window (per spec, common condition before full-node arm).
-        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis(),
-            Err(_) => return GossipVerdict::Ignore("lc_finality: clock unavailable".into()),
-        };
+        let now_ms = u128::from(self.now_ms());
         let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
         let signature_slot = msg.finality_signature_slot();
         let slot_ms = u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
@@ -2425,10 +2667,7 @@ where
         }
 
         // Step 3 — clock window (per spec, common condition before full-node arm).
-        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis(),
-            Err(_) => return GossipVerdict::Ignore("lc_optimistic: clock unavailable".into()),
-        };
+        let now_ms = u128::from(self.now_ms());
         let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
         let signature_slot = msg.optimistic_signature_slot();
         let slot_ms = u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
@@ -2498,12 +2737,7 @@ where
             return GossipVerdict::Ignore("capella_lc_finality: non-monotonic slot".into());
         }
 
-        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis(),
-            Err(_) => {
-                return GossipVerdict::Ignore("capella_lc_finality: clock unavailable".into());
-            }
-        };
+        let now_ms = u128::from(self.now_ms());
         let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
         let signature_slot = msg.finality_signature_slot();
         let slot_ms = u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
@@ -2569,12 +2803,7 @@ where
             return GossipVerdict::Ignore("capella_lc_optimistic: non-monotonic slot".into());
         }
 
-        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis(),
-            Err(_) => {
-                return GossipVerdict::Ignore("capella_lc_optimistic: clock unavailable".into());
-            }
-        };
+        let now_ms = u128::from(self.now_ms());
         let genesis_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
         let signature_slot = msg.optimistic_signature_slot();
         let slot_ms = u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
@@ -2767,10 +2996,7 @@ where
             let genesis_time_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
             let slot_time_ms = genesis_time_ms
                 + u128::from(block_slot.0) * u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
-            let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-                Ok(d) => d.as_millis(),
-                Err(_) => return GossipVerdict::Ignore("blob: clock unavailable".into()),
-            };
+            let now_ms = u128::from(self.now_ms());
             if now_ms + u128::from(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < slot_time_ms {
                 return GossipVerdict::Ignore("blob: from future slot".into());
             }
@@ -2808,8 +3034,22 @@ where
             let head_state = match fc.block_states.get(&block_header.parent_root) {
                 Some(s) => s,
                 None => {
+                    // Check `invalid_block_roots` first: if the parent was seen but
+                    // failed consensus validation it is removed from fc.blocks (to keep
+                    // it out of the LMD-GHOST tree) but its root is in the
+                    // invalid-roots LRU cache. This produces REJECT (rule 8) before
+                    // falling through to the fc.blocks "seen but no state" check.
+                    if self
+                        .invalid_block_roots
+                        .read()
+                        .peek(&block_header.parent_root)
+                        .is_some()
+                    {
+                        return GossipVerdict::Reject("blob: parent failed validation".into());
+                    }
                     if fc.blocks.contains_key(&block_header.parent_root) {
-                        // Parent block seen but no state → failed validation (rule 8).
+                        // Parent block seen and in fc.blocks but no state → failed
+                        // validation (EL-invalid, rule 8).
                         return GossipVerdict::Reject("blob: parent failed validation".into());
                     }
                     // Parent not seen at all (rule 7).
@@ -3017,10 +3257,7 @@ where
             let genesis_time_ms = u128::from(self.fork_choice.read().genesis_time) * 1000;
             let slot_time_ms = genesis_time_ms
                 + u128::from(block_slot.0) * u128::from(self.runtime_cfg.seconds_per_slot) * 1000;
-            let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-                Ok(d) => d.as_millis(),
-                Err(_) => return GossipVerdict::Ignore("data_column: clock unavailable".into()),
-            };
+            let now_ms = u128::from(self.now_ms());
             if now_ms + u128::from(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < slot_time_ms {
                 return GossipVerdict::Ignore("data_column: from future slot".into());
             }
@@ -3222,10 +3459,7 @@ where
         }
 
         // Step 5 — [IGNORE] attestation slot within propagation range (EIP-7045).
-        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis() as u64,
-            Err(_) => return GossipVerdict::Ignore("single-att: clock unavailable".into()),
-        };
+        let now_ms = self.now_ms();
         let genesis_time_s = self.fork_choice.read().genesis_time;
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
         let att_slot = data.slot.0;
@@ -3237,23 +3471,21 @@ where
         if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < att_slot_start_ms {
             return GossipVerdict::Ignore("single-att: slot not in propagation range".into());
         }
-        let wall_epoch = self.current_epoch();
+        let genesis_time_ms = genesis_time_s.saturating_mul(1000);
+        let slot_ms = seconds_per_slot.saturating_mul(1000);
         let deneb_fork_epoch = self.fork_context.fork_schedule.deneb_fork_epoch;
-        if wall_epoch >= deneb_fork_epoch {
-            // EIP-7045: earliest = start of (wall_epoch - 1). Always true at electra.
-            let prev_epoch = wall_epoch.0.saturating_sub(1);
-            let earliest_slot = prev_epoch.saturating_mul(E::SLOTS_PER_EPOCH);
-            if att_slot < earliest_slot {
+        if self.current_epoch() >= deneb_fork_epoch {
+            // EIP-7045: att must be from current or previous epoch (time-based). Always
+            // at electra+ since deneb_epoch <= electra_epoch.
+            if !self.is_att_slot_in_eip7045_window(att_slot, genesis_time_ms, slot_ms) {
                 return GossipVerdict::Ignore("single-att: slot not in propagation range".into());
             }
         } else {
             let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
-            let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
-                (att_slot.saturating_add(range).saturating_add(1))
-                    .saturating_mul(seconds_per_slot)
-                    .saturating_mul(1000),
+            let end_time_ms = genesis_time_ms.saturating_add(
+                (att_slot.saturating_add(range).saturating_add(1)).saturating_mul(slot_ms),
             );
-            if end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms {
+            if end_time_ms.saturating_add(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < now_ms {
                 return GossipVerdict::Ignore("single-att: slot not in propagation range".into());
             }
         }
@@ -3293,6 +3525,17 @@ where
         match pharos_utils::bls::verify(&attester_pubkey, signing_root.as_ref(), &att.signature) {
             Ok(true) => {}
             _ => return GossipVerdict::Reject("single-att: invalid signature".into()),
+        }
+
+        // Pre-step — Step 11 (early out): voted block in invalid-roots cache →
+        // consensus-failed → REJECT before the fc.blocks look-up.
+        if self
+            .invalid_block_roots
+            .read()
+            .peek(&data.beacon_block_root)
+            .is_some()
+        {
+            return GossipVerdict::Reject("single-att: voted block failed validation".into());
         }
 
         // Steps 10-13 require the fork-choice lock.
@@ -3391,10 +3634,7 @@ where
         }
 
         // Step 3 — [IGNORE] aggregate slot within propagation range (EIP-7045).
-        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis() as u64,
-            Err(_) => return GossipVerdict::Ignore("agg-e: clock unavailable".into()),
-        };
+        let now_ms = self.now_ms();
         let genesis_time_s = self.fork_choice.read().genesis_time;
         let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
         let agg_slot = data.slot.0;
@@ -3406,22 +3646,21 @@ where
         if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < agg_slot_start_ms {
             return GossipVerdict::Ignore("agg-e: slot not in propagation range".into());
         }
-        let wall_epoch = self.current_epoch();
+        let genesis_time_ms = genesis_time_s.saturating_mul(1000);
+        let slot_ms = seconds_per_slot.saturating_mul(1000);
         let deneb_fork_epoch = self.fork_context.fork_schedule.deneb_fork_epoch;
-        if wall_epoch >= deneb_fork_epoch {
-            let prev_epoch = wall_epoch.0.saturating_sub(1);
-            let earliest_slot = prev_epoch.saturating_mul(E::SLOTS_PER_EPOCH);
-            if agg_slot < earliest_slot {
+        if self.current_epoch() >= deneb_fork_epoch {
+            // EIP-7045: agg must be from current or previous epoch (time-based). Always
+            // at electra+ since deneb_epoch <= electra_epoch.
+            if !self.is_att_slot_in_eip7045_window(agg_slot, genesis_time_ms, slot_ms) {
                 return GossipVerdict::Ignore("agg-e: slot not in propagation range".into());
             }
         } else {
             let range = ATTESTATION_PROPAGATION_SLOT_RANGE;
-            let end_time_ms = genesis_time_s.saturating_mul(1000).saturating_add(
-                (agg_slot.saturating_add(range).saturating_add(1))
-                    .saturating_mul(seconds_per_slot)
-                    .saturating_mul(1000),
+            let end_time_ms = genesis_time_ms.saturating_add(
+                (agg_slot.saturating_add(range).saturating_add(1)).saturating_mul(slot_ms),
             );
-            if end_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms {
+            if end_time_ms.saturating_add(MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS) < now_ms {
                 return GossipVerdict::Ignore("agg-e: slot not in propagation range".into());
             }
         }
@@ -3556,6 +3795,17 @@ where
         // (DOMAIN_BEACON_ATTESTER + fast_aggregate_verify).
         if !is_valid_indexed_attestation::<E>(&head_state, &indexed, true) {
             return GossipVerdict::Reject("agg-e: invalid aggregate signature".into());
+        }
+
+        // Pre-step — Step 15 (early out): voted block in invalid-roots cache →
+        // consensus-failed → REJECT before the fc.blocks look-up.
+        if self
+            .invalid_block_roots
+            .read()
+            .peek(&data.beacon_block_root)
+            .is_some()
+        {
+            return GossipVerdict::Reject("agg-e: voted block failed validation".into());
         }
 
         // Steps 14-16 require the fork-choice lock.
@@ -4021,8 +4271,8 @@ mod tests {
 
     /// Build a `HostImpl` with a bellatrix-at-genesis schedule:
     /// `altair_fork_epoch == bellatrix_fork_epoch == 0`.
-    /// `genesis_time_secs = 0` causes `current_epoch()` to always return 0,
-    /// which resolves to the bellatrix fork version.
+    /// `genesis_time_secs = 0` with clock at 0 means `current_epoch() == 0`
+    /// (elapsed = 0), which resolves to the bellatrix fork version.
     fn make_bellatrix_genesis_host(dir: &tempfile::TempDir) -> HostImpl<MainnetBeaconSpec> {
         use pharos_ssz::TreeHash;
         use pharos_types::state::BeaconBlock as ForkBeaconBlock;
@@ -4892,14 +5142,22 @@ mod tests {
     #[test]
     fn block_rejects_parent_in_invalid_set() {
         let dir = tempfile::TempDir::new().unwrap();
-        let (host, parent_root, _) = make_block_test_host(&dir);
+        let (host, _, _) = make_block_test_host(&dir);
 
-        // Pre-populate the invalid-roots cache with the parent root.
-        host.invalid_block_roots.write().put(parent_root, ());
+        // Use a synthetic parent root that is NOT in fc.payload_statuses.
+        // The genesis anchor root has PayloadStatus::Valid (set by get_forkchoice_store),
+        // so using it here would trigger the "Ignore" arm (EL-verified status known).
+        // A synthetic root not in payload_statuses defaults to NotValidated → Reject.
+        let consensus_failed_root = Root::from_array([0xba; 32]);
+
+        // Pre-populate the invalid-roots cache with the synthetic parent root.
+        host.invalid_block_roots
+            .write()
+            .put(consensus_failed_root, ());
 
         let block = make_signed_block(
             Slot(1),
-            parent_root,
+            consensus_failed_root,
             &ForkMinimalState::Phase0(MinimalBeaconState::default()),
             0,
             false,

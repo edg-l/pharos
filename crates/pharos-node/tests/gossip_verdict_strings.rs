@@ -16,11 +16,13 @@
 //! (`exit: `, `proposer_slashing: `, `attester_slashing: `) and the new
 //! `bls_to_exec: ` validator.
 //!
-//! Counts audited from source: block=13, att=15, agg=20, exit=8, ps=8, as=8,
-//! bte=7, sync_msg=8, sync_contrib=14, blob=20, total=121 (each validator has a
-//! defensive "head state unavailable" IGNORE string beyond the spec IGNORE/REJECT
-//! rules; blob validator adds 14 spec rules + 6 defensive checks = 20;
-//! blob breakdown: 6 IGNORE + 14 REJECT).
+//! Counts audited from source: block=15, att=15, agg=20, exit=8, ps=8, as=8,
+//! bte=7, sync_msg=7, sync_contrib=13, blob=19, total=120.
+//! Six "clock unavailable" strings (block/att/agg/sync_msg/sync_contrib/blob) were
+//! removed when all gossip-time reads were migrated to the injectable `self.now_ms()`
+//! which never fails (uses `unwrap_or_default`). Three new block strings were added:
+//! `block: parent EL-invalid`, `block: parent invalid with known EL result` (from the
+//! EL-result-aware step-1 branching), and `block: incorrect execution payload timestamp`.
 //!
 //! `"block: unrecognised fork variant"` was removed in M7 commit 2598fb5: the
 //! `BeaconSpec::signed_block_message` refactor made an unrecognised fork a compile
@@ -40,23 +42,27 @@ const NETWORK_HOST_SRC: &str = include_str!("../../../crates/pharos-network/src/
 /// `pharos-network/src/host.rs`.  The `verdict_strings_match_known_list` test
 /// verifies it separately via `pharos_network::host::GOSSIP_REASON_PARENT_UNSEEN`.
 const EXPECTED: &[&str] = &[
-    // ── block (13) ────────────────────────────────────────────────────────────
-    "block: clock unavailable",
+    // ── block (15) ────────────────────────────────────────────────────────────
+    // "block: clock unavailable" removed: now_ms() uses unwrap_or_default, never
+    // returns a clock error; all gossip time reads use the injectable self.now_ms().
     "block: duplicate proposer/slot",
     "block: finalized not ancestor",
     "block: from future slot",
+    "block: incorrect execution payload timestamp",
     "block: invalid proposer signature",
     "block: not greater than finalized slot",
     "block: not higher than parent slot",
+    "block: parent EL-invalid",
     "block: parent in invalid set",
     "block: parent invalid",
+    "block: parent invalid with known EL result",
     "block: proposer index out of range",
     "block: proposer mismatch",
     "block: shuffling unavailable",
     "block: too many blob kzg commitments",
-    // ── att (15) ──────────────────────────────────────────────────────────────
+    // ── att (14) ──────────────────────────────────────────────────────────────
     "att: agg bits length mismatch",
-    "att: clock unavailable",
+    // "att: clock unavailable" removed: now_ms() uses unwrap_or_default.
     "att: committee index out of range",
     "att: committee unavailable",
     "att: duplicate validator/epoch",
@@ -67,14 +73,15 @@ const EXPECTED: &[&str] = &[
     "att: slot not in propagation range",
     "att: target epoch mismatch",
     "att: target not ancestor",
+    "att: voted block failed validation",
     "att: voted block invalid",
     "att: voted block unseen",
     "att: wrong subnet",
-    // ── agg (20) ──────────────────────────────────────────────────────────────
+    // ── agg (19) ──────────────────────────────────────────────────────────────
     "agg: agg bits length mismatch",
     "agg: aggregator index out of range",
     "agg: aggregator not in committee",
-    "agg: clock unavailable",
+    // "agg: clock unavailable" removed: now_ms() uses unwrap_or_default.
     "agg: committee index out of range",
     "agg: committee unavailable",
     "agg: duplicate aggregator/epoch",
@@ -89,6 +96,7 @@ const EXPECTED: &[&str] = &[
     "agg: superset seen",
     "agg: target epoch mismatch",
     "agg: target not ancestor",
+    "agg: voted block failed validation",
     "agg: voted block invalid",
     "agg: voted block unseen",
     // ── exit (7: 1 IGNORE + 6 REJECT) ────────────────────────────────────────
@@ -126,8 +134,8 @@ const EXPECTED: &[&str] = &[
     "bls_to_exec: not BLS withdrawal credentials",
     "bls_to_exec: pubkey hash mismatch",
     "bls_to_exec: validator index out of range",
-    // ── sync_msg (8: 4 IGNORE + 4 REJECT) ────────────────────────────────────
-    "sync_msg: clock unavailable",
+    // ── sync_msg (7: 3 IGNORE + 4 REJECT) ────────────────────────────────────
+    // "sync_msg: clock unavailable" removed: now_ms() uses unwrap_or_default.
     "sync_msg: duplicate (slot, validator, subnet)",
     "sync_msg: head state unavailable",
     "sync_msg: invalid signature",
@@ -135,10 +143,10 @@ const EXPECTED: &[&str] = &[
     "sync_msg: slot not current",
     "sync_msg: subnet not valid for validator",
     "sync_msg: validator index out of range",
-    // ── sync_contrib (14: 5 IGNORE + 9 REJECT) ───────────────────────────────
+    // ── sync_contrib (13: 4 IGNORE + 9 REJECT) ───────────────────────────────
     "sync_contrib: aggregator index out of range",
     "sync_contrib: aggregator not in subcommittee",
-    "sync_contrib: clock unavailable",
+    // "sync_contrib: clock unavailable" removed: now_ms() uses unwrap_or_default.
     "sync_contrib: contribution superset seen",
     "sync_contrib: duplicate aggregator/slot/subcommittee",
     "sync_contrib: head state unavailable",
@@ -150,9 +158,9 @@ const EXPECTED: &[&str] = &[
     "sync_contrib: not selected as aggregator",
     "sync_contrib: slot not current",
     "sync_contrib: subcommittee index out of range",
-    // ── blob (20: 6 IGNORE + 14 REJECT) ──────────────────────────────────────
-    // 14 spec rules (deneb/p2p-interface.md:497-585) + 6 defensive checks.
-    "blob: clock unavailable",
+    // ── blob (19: 5 IGNORE + 14 REJECT) ──────────────────────────────────────
+    // 14 spec rules (deneb/p2p-interface.md:497-585) + 5 defensive checks.
+    // "blob: clock unavailable" removed: now_ms() uses unwrap_or_default.
     "blob: duplicate sidecar tuple",
     "blob: finalized not ancestor of block",
     "blob: from future slot",
@@ -290,11 +298,17 @@ fn verdict_strings_match_known_list() {
         .filter(|s| s.starts_with("sync_contrib: "))
         .count();
     assert_eq!(
-        block_count, 13,
-        "expected 13 inline block: strings (parent-unseen lives in const; +1 blob-kzg C2)"
+        block_count, 15,
+        "expected 15 inline block: strings (parent-unseen lives in const; 3 EL-state strings added; 1 clock removed)"
     );
-    assert_eq!(att_count, 15, "expected 15 att: strings");
-    assert_eq!(agg_count, 20, "expected 20 agg: strings");
+    assert_eq!(
+        att_count, 15,
+        "expected 15 att: strings (1 clock removed; +1 failed-validation early-out)"
+    );
+    assert_eq!(
+        agg_count, 20,
+        "expected 20 agg: strings (1 clock removed; +1 failed-validation early-out)"
+    );
     assert_eq!(
         exit_count, 8,
         "expected 8 exit: strings (1 IGNORE + 7 REJECT incl. head-state)"
@@ -306,21 +320,21 @@ fn verdict_strings_match_known_list() {
         "expected 7 bls_to_exec: strings (2 IGNORE + 5 incl. head-state)"
     );
     assert_eq!(
-        sync_msg_count, 8,
-        "expected 8 sync_msg: strings (4 IGNORE + 4 REJECT)"
+        sync_msg_count, 7,
+        "expected 7 sync_msg: strings (3 IGNORE + 4 REJECT; 1 clock removed)"
     );
     assert_eq!(
-        sync_contrib_count, 14,
-        "expected 14 sync_contrib: strings (5 IGNORE + 9 REJECT)"
+        sync_contrib_count, 13,
+        "expected 13 sync_contrib: strings (4 IGNORE + 9 REJECT; 1 clock removed)"
     );
     assert_eq!(
-        blob_count, 20,
-        "expected 20 blob: strings (6 IGNORE + 14 REJECT; 14 spec rules + 6 defensive)"
+        blob_count, 19,
+        "expected 19 blob: strings (5 IGNORE + 14 REJECT; 14 spec rules + 5 defensive; 1 clock removed)"
     );
     assert_eq!(
         EXPECTED.len(),
-        121,
-        "expected 121 total inline verdict strings"
+        120,
+        "expected 120 total inline verdict strings (6 clock strings removed, 3 EL-state block strings added, 2 failed-validation early-out strings added)"
     );
 
     // ── Part 4: GOSSIP_REASON_PARENT_UNSEEN const is the canonical definition ──

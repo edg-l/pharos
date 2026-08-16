@@ -36,6 +36,7 @@ pharos-stf = { path = "crates/pharos-stf" }
 pharos-engine = { path = "crates/pharos-engine" }
 pharos-network = { path = "crates/pharos-network" }
 pharos-api = { path = "crates/pharos-api" }
+pharos-node = { path = "crates/pharos-node" }
 pharos-conformance = { path = "crates/pharos-conformance" }
 pharos-kzg = { path = "crates/pharos-kzg" }
 

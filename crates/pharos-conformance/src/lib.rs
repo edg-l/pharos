@@ -355,10 +355,45 @@ fn enumerate_row(
         // ── fulu/kzg ──────────────────────────────────────────────────────────
         ("fulu", "kzg", "-") => Some(fulu_kzg::enumerate_fulu_kzg(root, row_ordinal)),
 
-        // ── fulu/networking ───────────────────────────────────────────────────
-        // Runs the DAS-core custody helpers (`get_custody_groups`,
-        // `compute_columns_for_custody_group`) for real; gossip-validator
-        // condition fixtures are enumerated as skips (need a live harness).
+        // ── networking / gossip-validator fixtures ────────────────────────────
+        // phase0..electra: gossip-only handlers (no custody helpers).
+        // fulu: gossip handlers + DAS-core custody helpers.
+        ("phase0", "networking", preset) => Some(networking::enumerate_networking(
+            root,
+            "phase0",
+            preset,
+            row_ordinal,
+        )),
+        ("altair", "networking", preset) => Some(networking::enumerate_networking(
+            root,
+            "altair",
+            preset,
+            row_ordinal,
+        )),
+        ("bellatrix", "networking", preset) => Some(networking::enumerate_networking(
+            root,
+            "bellatrix",
+            preset,
+            row_ordinal,
+        )),
+        ("capella", "networking", preset) => Some(networking::enumerate_networking(
+            root,
+            "capella",
+            preset,
+            row_ordinal,
+        )),
+        ("deneb", "networking", preset) => Some(networking::enumerate_networking(
+            root,
+            "deneb",
+            preset,
+            row_ordinal,
+        )),
+        ("electra", "networking", preset) => Some(networking::enumerate_networking(
+            root,
+            "electra",
+            preset,
+            row_ordinal,
+        )),
         ("fulu", "networking", preset) => Some(networking::enumerate_networking(
             root,
             "fulu",

@@ -782,6 +782,14 @@ pub trait BeaconSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + D
         block: &Self::BeaconBlock,
     ) -> Option<pharos_utils::Hash256>;
 
+    /// Extract the `timestamp` field from a fork-enum `BeaconBlock`'s execution
+    /// payload, or `None` for pre-merge blocks (phase0/altair).
+    ///
+    /// Used by `validate_beacon_block` to check that the execution payload
+    /// timestamp equals `genesis_time + slot * seconds_per_slot`
+    /// per `specs/bellatrix/p2p-interface.md`.
+    fn execution_payload_timestamp(block: &Self::BeaconBlock) -> Option<u64>;
+
     /// Extract a clone of the `ExecutionPayload` from a fork-enum `SignedBeaconBlock`.
     ///
     /// Returns `Some(payload)` for Bellatrix blocks; `None` for Phase0/Altair/Capella.
@@ -2113,6 +2121,18 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Deneb(b) => Some(b.body.execution_payload.parent_hash),
                 crate::state::$block::Electra(b) => Some(b.body.execution_payload.parent_hash),
                 crate::state::$block::Fulu(b) => Some(b.body.execution_payload.parent_hash),
+                crate::state::$block::Phase0(_) => None,
+                crate::state::$block::Altair(_) => None,
+            }
+        }
+
+        fn execution_payload_timestamp(block: &Self::BeaconBlock) -> Option<u64> {
+            match block {
+                crate::state::$block::Bellatrix(b) => Some(b.body.execution_payload.timestamp),
+                crate::state::$block::Capella(b) => Some(b.body.execution_payload.timestamp),
+                crate::state::$block::Deneb(b) => Some(b.body.execution_payload.timestamp),
+                crate::state::$block::Electra(b) => Some(b.body.execution_payload.timestamp),
+                crate::state::$block::Fulu(b) => Some(b.body.execution_payload.timestamp),
                 crate::state::$block::Phase0(_) => None,
                 crate::state::$block::Altair(_) => None,
             }
