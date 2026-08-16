@@ -164,9 +164,12 @@ pub fn row_table() -> &'static [RowSpec] {
         r("deneb", "fork_choice", "minimal"),      // 102
         r("deneb", "light_client", "mainnet"),     // 103
         r("deneb", "light_client", "minimal"),     // 104
-        // ── future forks (placeholders from fill_future_placeholders) ────────
-        r("electra", "ssz_static", "-"), // 105
-        r("fulu", "ssz_static", "-"),    // 106
+        // ── electra ──────────────────────────────────────────────────────────
+        r("electra", "ssz_static", "-"),       // 105
+        r("electra", "operations", "mainnet"), // 106
+        r("electra", "operations", "minimal"), // 107
+        // ── future forks (placeholders) ──────────────────────────────────────
+        r("fulu", "ssz_static", "-"), // 108
     ];
     TABLE
 }
@@ -297,8 +300,11 @@ mod tests {
             ("deneb", "fork_choice", "minimal"),
             ("deneb", "light_client", "mainnet"),
             ("deneb", "light_client", "minimal"),
-            // future placeholders
+            // electra
             ("electra", "ssz_static", "-"),
+            ("electra", "operations", "mainnet"),
+            ("electra", "operations", "minimal"),
+            // future placeholders
             ("fulu", "ssz_static", "-"),
         ];
 
@@ -379,9 +385,9 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 107.
+    /// Total row count is exactly 109.
     #[test]
-    fn row_count_is_107() {
-        assert_eq!(row_table().len(), 107);
+    fn row_count_is_109() {
+        assert_eq!(row_table().len(), 109);
     }
 }

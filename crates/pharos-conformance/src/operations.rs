@@ -5282,6 +5282,328 @@ fn enumerate_operations_deneb(
     tasks
 }
 
+// ── Electra operations ────────────────────────────────────────────────────────
+
+fn electra_ops_walk_opts() -> WalkOpts {
+    WalkOpts {
+        meta_required: false,
+        inner_dir: Some("pyspec_tests"),
+    }
+}
+
+/// Descriptor table for electra operations — mainnet preset.
+///
+/// Phase 2b: only `attestation` + `attester_slashing` sub-ops registered.
+/// Remaining sub-ops (block_header, proposer_slashing, sync_aggregate, deposit,
+/// voluntary_exit, execution_payload, withdrawals, bls_to_execution_change,
+/// deposit_request, withdrawal_request, consolidation_request) land in later
+/// phases.
+#[allow(clippy::type_complexity)]
+fn electra_op_table_mainnet() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)> {
+    use pharos_stf::electra::operations::{
+        process_attestation_electra, process_attester_slashing_electra,
+    };
+    use pharos_types::MainnetEthSpec as E;
+    vec![
+        // attestation: direct on electra state (EIP-7549).
+        (
+            "attestation",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, meta| {
+                use pharos_types::electra::{MainnetAttestation, MainnetBeaconState};
+
+                let pre_inner =
+                    match load_ssz_snappy::<MainnetBeaconState>(&case_dir, "pre.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<MainnetBeaconState>(&case_dir, "post.ssz_snappy") {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<MainnetAttestation>(
+                    &case_dir,
+                    "attestation.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_attestation_electra::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    131_072, // MAX_AGGREGATION_BITS mainnet (2048 * 64)
+                    64,      // MAX_COMMITTEES_PER_SLOT mainnet
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+            }),
+        ),
+        // attester_slashing: direct on electra state (EIP-7251 slash_validator).
+        (
+            "attester_slashing",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, meta| {
+                use pharos_types::electra::{MainnetAttesterSlashing, MainnetBeaconState};
+
+                let pre_inner =
+                    match load_ssz_snappy::<MainnetBeaconState>(&case_dir, "pre.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<MainnetBeaconState>(&case_dir, "post.ssz_snappy") {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<MainnetAttesterSlashing>(
+                    &case_dir,
+                    "attester_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_attester_slashing_electra::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    131_072, // MAX_AGGREGATION_BITS mainnet (2048 * 64)
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attester_slashing",
+                )
+            }),
+        ),
+    ]
+}
+
+/// Descriptor table for electra operations — minimal preset.
+///
+/// Phase 2b: only `attestation` + `attester_slashing` sub-ops registered.
+#[allow(clippy::type_complexity)]
+fn electra_op_table_minimal() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)> {
+    use pharos_stf::electra::operations::{
+        process_attestation_electra, process_attester_slashing_electra,
+    };
+    use pharos_types::MinimalEthSpec as E;
+    vec![
+        // attestation: direct on electra state (EIP-7549).
+        (
+            "attestation",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, meta| {
+                use pharos_types::electra::{MinimalAttestation, MinimalBeaconState};
+
+                let pre_inner =
+                    match load_ssz_snappy::<MinimalBeaconState>(&case_dir, "pre.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<MinimalBeaconState>(&case_dir, "post.ssz_snappy") {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<MinimalAttestation>(
+                    &case_dir,
+                    "attestation.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_attestation_electra::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728, // PENDING_DEPOSITS_LIMIT minimal
+                    64,          // PENDING_PARTIAL_WITHDRAWALS_LIMIT minimal
+                    64,          // PENDING_CONSOLIDATIONS_LIMIT minimal
+                    8192,        // MAX_AGGREGATION_BITS minimal (2048 * 4)
+                    4,           // MAX_COMMITTEES_PER_SLOT minimal
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+            }),
+        ),
+        // attester_slashing: direct on electra state (EIP-7251 slash_validator).
+        (
+            "attester_slashing",
+            Box::new(|case_dir: std::path::PathBuf, case_name: String, meta| {
+                use pharos_types::electra::{MinimalAttesterSlashing, MinimalBeaconState};
+
+                let pre_inner =
+                    match load_ssz_snappy::<MinimalBeaconState>(&case_dir, "pre.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let post_bytes = if case_dir.join("post.ssz_snappy").exists() {
+                    match load_ssz_snappy::<MinimalBeaconState>(&case_dir, "post.ssz_snappy") {
+                        Ok(v) => Some(E::electra_into_state(v).as_ssz_bytes()),
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let op = match load_ssz_snappy::<MinimalAttesterSlashing>(
+                    &case_dir,
+                    "attester_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                    }
+                };
+                let mut pre = pre_inner;
+                let result = process_attester_slashing_electra::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728, // PENDING_DEPOSITS_LIMIT minimal
+                    64,          // PENDING_PARTIAL_WITHDRAWALS_LIMIT minimal
+                    64,          // PENDING_CONSOLIDATIONS_LIMIT minimal
+                    8192,        // MAX_AGGREGATION_BITS minimal (2048 * 4)
+                    E,
+                >(&mut pre, &op, bls_verify(&meta));
+                let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attester_slashing",
+                )
+            }),
+        ),
+    ]
+}
+
+/// Enumerate all electra operation cases for one preset, returning `CaseTask`s
+/// with sequential `case_ordinal` in (sub-table-order, walk-order).
+fn enumerate_operations_electra(
+    root: &std::path::Path,
+    preset: &str,
+    row_ordinal: u32,
+) -> Vec<crate::task::CaseTask> {
+    let table = if preset == "mainnet" {
+        electra_op_table_mainnet()
+    } else {
+        electra_op_table_minimal()
+    };
+    let mut case_ordinal: u32 = 0;
+    let mut tasks = Vec::new();
+    for (sub, apply) in table {
+        let apply = std::sync::Arc::new(apply);
+        let sub_tasks = enumerate_op(
+            root,
+            "electra",
+            preset,
+            sub,
+            row_ordinal,
+            &mut case_ordinal,
+            electra_ops_walk_opts(),
+            move |dir, name, meta| apply(dir, name, meta),
+        );
+        tasks.extend(sub_tasks);
+    }
+    tasks
+}
+
 /// Public dispatch: enumerate all operation cases for a given `(fork, preset)` pair.
 ///
 /// Called by the flat-pool driver in `lib.rs::run()`. Returns a `Vec<CaseTask>`
@@ -5308,6 +5630,8 @@ pub fn enumerate_operations(
         ("capella", "minimal") => enumerate_operations_capella(root, "minimal", row_ordinal),
         ("deneb", "mainnet") => enumerate_operations_deneb(root, "mainnet", row_ordinal),
         ("deneb", "minimal") => enumerate_operations_deneb(root, "minimal", row_ordinal),
+        ("electra", "mainnet") => enumerate_operations_electra(root, "mainnet", row_ordinal),
+        ("electra", "minimal") => enumerate_operations_electra(root, "minimal", row_ordinal),
         _ => Vec::new(),
     }
 }
