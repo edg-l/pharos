@@ -1,7 +1,13 @@
 //! `PharosBehaviour`: the combined `NetworkBehaviour` for the Pharos node.
 //!
-//! Composes gossipsub, six per-method request-response behaviours, identify,
-//! and ping into a single struct that the libp2p swarm drives.
+//! Composes gossipsub, the per-method request-response behaviours, and
+//! identify into a single struct that the libp2p swarm drives.
+//!
+//! NOTE: there is deliberately NO libp2p `/ipfs/ping/1.0.0` behaviour. eth2
+//! peers (lighthouse et al.) do not implement the standard libp2p ping; they
+//! use the consensus-layer RPC `Ping` method instead (see `rpc_ping` and
+//! `Network::tick_ping`). Including `ping::Behaviour` only produced a stream of
+//! `Failure::Unsupported` events against every eth2 peer.
 //!
 //! Each Ethereum CL req-resp method is registered as a SEPARATE
 //! `request_response::Behaviour` so that multistream-select negotiates the
@@ -11,7 +17,7 @@
 //! request types, causing every non-Status RPC to fail at codec decode.
 
 use libp2p::swarm::NetworkBehaviour;
-use libp2p::{gossipsub, identify, ping, request_response};
+use libp2p::{gossipsub, identify, request_response};
 use pharos_types::BeaconSpec;
 
 use crate::rpc::codec::RpcCodec;
@@ -210,7 +216,6 @@ where
     RpcMetaDataV3(request_response::Event<RpcRequest, RpcResponse<E>>),
     /// Boxed to keep the enum size reasonable (`identify::Event` is large).
     Identify(Box<identify::Event>),
-    Ping(ping::Event),
 }
 
 impl<E: BeaconSpec> From<gossipsub::Event> for PharosBehaviourEvent<E>
@@ -393,15 +398,6 @@ where
     }
 }
 
-impl<E: BeaconSpec> From<ping::Event> for PharosBehaviourEvent<E>
-where
-    RpcResponse<E>: std::fmt::Debug,
-{
-    fn from(e: ping::Event) -> Self {
-        PharosBehaviourEvent::Ping(e)
-    }
-}
-
 // ── PharosBehaviour ───────────────────────────────────────────────────────────
 
 /// The combined libp2p `NetworkBehaviour` for the Pharos node.
@@ -451,5 +447,4 @@ where
     pub rpc_status_v2: RpcStatusV2Behaviour<E>,
     pub rpc_metadata_v3: RpcMetaDataV3Behaviour<E>,
     pub identify: identify::Behaviour,
-    pub ping: ping::Behaviour,
 }

@@ -24,7 +24,6 @@ use libp2p::gossipsub::{self, IdentTopic, MessageAcceptance, TopicHash};
 use libp2p::identify;
 use libp2p::identity::Keypair;
 use libp2p::noise;
-use libp2p::ping;
 use libp2p::request_response::{self, OutboundRequestId, ProtocolSupport};
 use libp2p::swarm::ConnectionError;
 use libp2p::{PeerId, Swarm, SwarmBuilder};
@@ -2386,7 +2385,6 @@ impl<
         let identify_cfg = identify::Config::new("pharos/libp2p".into(), public_key.clone())
             .with_agent_version(pharos_utils::version::AGENT_STRING.to_string());
         let identify = identify::Behaviour::new(identify_cfg);
-        let ping = ping::Behaviour::new(ping::Config::default());
 
         let swarm = SwarmBuilder::with_existing_identity(local_key.clone())
             .with_tokio()
@@ -2440,7 +2438,6 @@ impl<
                 rpc_status_v2: RpcStatusV2Behaviour(mk_rr(M::StatusV2)),
                 rpc_metadata_v3: RpcMetaDataV3Behaviour(mk_rr(M::MetaDataV3)),
                 identify,
-                ping,
             })
             .unwrap()
             .with_swarm_config(|c| c.with_idle_connection_timeout(transport::idle_timeout()))
