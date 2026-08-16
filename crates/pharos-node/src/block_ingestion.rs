@@ -866,8 +866,21 @@ where
         + pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
     E::ElectraSignedBeaconBlock: pharos_ssz::Decode
         + pharos_types::views::SignedBeaconBlockView<Message = E::ElectraBeaconBlock>,
+    E::FuluSignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::FuluBeaconBlock>,
 {
     match host.fork_from_context(&topic.fork_digest.into_inner()) {
+        Some(pharos_network::types::Fork::Fulu) => {
+            // Fulu beacon blocks share the Electra block shape; the topic's
+            // fork-digest context selects the Fulu SSZ type (RI-2).
+            match E::FuluSignedBeaconBlock::from_ssz_bytes(data) {
+                Ok(inner) => Some(E::fulu_into_signed_block(inner)),
+                Err(e) => {
+                    warn!(error = ?e, "block_ingestion: fulu SSZ decode failed; dropping");
+                    None
+                }
+            }
+        }
         Some(pharos_network::types::Fork::Electra) => {
             match E::ElectraSignedBeaconBlock::from_ssz_bytes(data) {
                 Ok(inner) => Some(E::electra_into_signed_block(inner)),

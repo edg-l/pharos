@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pharos_types::BeaconSpec;
-use pharos_types::fork::{ForkSchedule, compute_fork_digest};
+use pharos_types::fork::{ForkSchedule, compute_fork_digest, compute_fork_digest_for_epoch};
 use pharos_types::phase0::ENRForkID;
 use pharos_types::phase0::primitives::Version;
 use pharos_utils::Epoch;
@@ -195,6 +195,212 @@ async fn do_migration<E: BeaconSpec>(
     );
 }
 
+// ── BPO-boundary migration (RI-2, EIP-7892) ────────────────────────────────────
+
+/// A scheduled blob-parameter-only (BPO) boundary migration within the Fulu fork.
+///
+/// At each `BLOB_SCHEDULE` entry's epoch the active blob parameters change, so
+/// the fork digest rotates (EIP-7892 XOR formula) even though the fork version
+/// (`fulu_fork_version`) is unchanged. `new_digest` is the digest active at and
+/// after `epoch`; the loop unsubscribes the prior-digest topics and subscribes
+/// the new-digest topics at the boundary. Distinct from the regular
+/// fork-boundary migration (`run_fork_migration_loop`), which fires on a fork
+/// VERSION change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BpoMigration {
+    /// The epoch at which this BPO entry activates (the migration fires here).
+    pub epoch: Epoch,
+    /// `MAX_BLOBS_PER_BLOCK` at and after `epoch` (the parameter that rotates
+    /// the digest).
+    pub max_blobs_per_block: u64,
+    /// The fork digest active at and after `epoch` (BPO-aware, EIP-7892).
+    pub new_digest: ForkDigest,
+}
+
+/// Build the ordered list of BPO-boundary migrations from a `ForkSchedule`.
+///
+/// Parses `fork_schedule.blob_schedule` (EIP-7892 `BLOB_SCHEDULE`) and produces
+/// one [`BpoMigration`] per entry, in ascending epoch order, each carrying the
+/// fork digest computed via [`compute_fork_digest_for_epoch`] at the entry's
+/// epoch with that entry's blob parameters. Returns an empty vec when no Fulu
+/// fork / blob schedule is configured.
+///
+/// `max_blobs_per_block_electra` is `E::MAX_BLOBS_PER_BLOCK_ELECTRA` (the
+/// pre-Fulu baseline the digest helper falls back to before the first entry).
+///
+/// RI-2 (EIP-7892): the riskiest integration point — the digest MUST rotate at
+/// every BPO boundary or peers on the new digest will not gossip with us.
+pub fn schedule_bpo_boundary_migrations<E: BeaconSpec>(
+    fork_schedule: &ForkSchedule,
+    max_blobs_per_block_electra: u64,
+) -> Vec<BpoMigration> {
+    let gvr = fork_schedule.genesis_validators_root;
+    let fulu_version = fork_schedule.fulu_fork_version;
+
+    let mut entries: Vec<BpoMigration> = fork_schedule
+        .blob_schedule
+        .iter()
+        .map(|entry| {
+            let epoch = Epoch(entry.epoch);
+            let new_digest = compute_fork_digest_for_epoch(
+                fulu_version,
+                &gvr,
+                epoch,
+                fork_schedule.fulu_fork_epoch,
+                &fork_schedule.blob_schedule,
+                fork_schedule.electra_fork_epoch,
+                max_blobs_per_block_electra,
+            );
+            BpoMigration {
+                epoch,
+                max_blobs_per_block: entry.max_blobs_per_block,
+                new_digest,
+            }
+        })
+        .collect();
+
+    entries.sort_by_key(|m| m.epoch.0);
+    entries
+}
+
+/// Run the BPO-boundary migration loop within the Fulu fork (RI-2, EIP-7892).
+///
+/// Ticks every slot. At each scheduled [`BpoMigration`] boundary (the first
+/// wall-clock tick at or after `migration.epoch`), recomputes the fork digest
+/// (already carried in the `BpoMigration`), unsubscribes the prior-digest
+/// topics, subscribes the new-digest topics, and updates the ENR.
+///
+/// Distinct from `run_fork_migration_loop` (which fires on fork VERSION
+/// changes): this loop fires on blob-parameter changes that rotate the digest
+/// without a version change. Exits immediately when no BPO entries are
+/// scheduled.
+pub async fn run_bpo_migration_loop<E: BeaconSpec>(
+    cmd: NetworkCommandSender<E>,
+    discovery: DiscoveryHandle,
+    fork_schedule: Arc<ForkSchedule>,
+    genesis_time_secs: u64,
+    max_blobs_per_block_electra: u64,
+) {
+    let migrations =
+        schedule_bpo_boundary_migrations::<E>(&fork_schedule, max_blobs_per_block_electra);
+    if migrations.is_empty() {
+        return;
+    }
+
+    let slot_ms = E::SLOT_DURATION_MS;
+    let slots_per_epoch = E::SLOTS_PER_EPOCH;
+    let mut interval = tokio::time::interval(Duration::from_millis(slot_ms));
+
+    // The fulu base digest (before the first BPO entry) is the prior digest for
+    // the first migration; thereafter each migration's prior is the preceding
+    // migration's `new_digest`.
+    let mut prior_digest = compute_fork_digest_for_epoch(
+        fork_schedule.fulu_fork_version,
+        &fork_schedule.genesis_validators_root,
+        fork_schedule.fulu_fork_epoch,
+        fork_schedule.fulu_fork_epoch,
+        &fork_schedule.blob_schedule,
+        fork_schedule.electra_fork_epoch,
+        max_blobs_per_block_electra,
+    );
+    let mut next_idx = 0usize;
+
+    loop {
+        interval.tick().await;
+
+        if next_idx >= migrations.len() {
+            return;
+        }
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let epoch = if genesis_time_secs > 0 && now_secs >= genesis_time_secs {
+            let elapsed_ms = (now_secs - genesis_time_secs).saturating_mul(1000);
+            let elapsed_slots = elapsed_ms / slot_ms.max(1);
+            elapsed_slots / slots_per_epoch
+        } else {
+            0
+        };
+        let current_epoch = Epoch(epoch);
+
+        // Fire every boundary we have crossed (handles multiple boundaries
+        // crossed in one tick, e.g. on a slow startup).
+        while next_idx < migrations.len() && current_epoch >= migrations[next_idx].epoch {
+            let migration = migrations[next_idx].clone();
+            do_bpo_migration::<E>(
+                &cmd,
+                &discovery,
+                &fork_schedule,
+                prior_digest,
+                &migration,
+                current_epoch,
+            )
+            .await;
+            prior_digest = migration.new_digest;
+            next_idx += 1;
+        }
+    }
+}
+
+/// Execute a BPO-boundary migration: rotate topics from `old_digest` to
+/// `migration.new_digest` and update the ENR.
+async fn do_bpo_migration<E: BeaconSpec>(
+    cmd: &NetworkCommandSender<E>,
+    discovery: &DiscoveryHandle,
+    fork_schedule: &ForkSchedule,
+    old_digest: ForkDigest,
+    migration: &BpoMigration,
+    epoch: Epoch,
+) {
+    let new_digest = migration.new_digest;
+    let fulu_version = fork_schedule.fulu_fork_version;
+
+    info!(
+        bpo_epoch = migration.epoch.0,
+        max_blobs_per_block = migration.max_blobs_per_block,
+        old_digest = ?old_digest,
+        new_digest = ?new_digest,
+        "BPO migration: crossing blob-parameter boundary (EIP-7892)"
+    );
+
+    // Step 1: Update the ENR `eth2` field with the new (rotated) digest.
+    let enr_fork_id = ENRForkID {
+        fork_digest: new_digest,
+        next_fork_version: fork_schedule.next_fork_version(epoch),
+        next_fork_epoch: fork_schedule.next_fork_epoch(epoch),
+    };
+    if let Err(e) = discovery.update_enr_eth2(enr_fork_id).await {
+        tracing::warn!(%e, "BPO migration: ENR eth2 update failed");
+    }
+
+    // TODO(Phase 5b, task 5.6): write the rotated digest to the ENR `nfd`
+    // (next-fork-digest) field once the `nfd` ENR field lands. The `eth2`
+    // field update above keeps the active fork-digest correct in the
+    // meantime; `nfd` is the forward-looking advertisement of the NEXT BPO
+    // digest and is purely additive.
+
+    // Step 2: Unsubscribe the prior-digest topics.
+    let old_topics = topics_for_version::<E>(fulu_version, fork_schedule, old_digest);
+    for topic in old_topics {
+        if let Err(e) = send_unsubscribe(cmd, topic).await {
+            tracing::debug!(%e, "BPO migration: old-digest unsubscribe error");
+        }
+    }
+
+    // Step 3: Subscribe the new-digest topics.
+    let new_topics = topics_for_version::<E>(fulu_version, fork_schedule, new_digest);
+    for topic in new_topics {
+        if let Err(e) = send_subscribe(cmd, topic).await {
+            tracing::debug!(%e, "BPO migration: new-digest subscribe error");
+        }
+    }
+
+    info!(new_digest = ?new_digest, "BPO migration: complete");
+}
+
 // ── Topic helpers ─────────────────────────────────────────────────────────────
 
 /// Select the full topic set appropriate for `version` at `digest`.
@@ -233,10 +439,20 @@ fn topics_for_version<E: BeaconSpec>(
         // `beacon_aggregate_and_proof`; the new `SingleAttestation` per-subnet
         // publication is a VC concern, not a topic addition).
         electra_gossip_topics::<E>(digest)
+    } else if version == fork_schedule.fulu_fork_version {
+        // Fulu (EIP-7594 PeerDAS) gossip topics. The custody-gated
+        // `data_column_sidecar_{subnet}` topics are NOT included here: they
+        // depend on the node id + custody-group count and are subscribed
+        // separately at the network layer via `subscribe_fulu_data_column_topics`.
+        // This helper covers only the global + blob topics whose fork-digest
+        // segment rotates at the fork / BPO boundary.
+        fulu_gossip_topics::<E>(digest)
     } else {
-        // Unknown version (post-Electra fork not yet specified). Use the Electra
-        // topic set as the safest known shape until a new fork arm is added.
-        electra_gossip_topics::<E>(digest)
+        // Unreachable: every `fork_schedule` version is matched above. A future
+        // fork MUST add an explicit arm here so a missing case is a compile-time
+        // gap surfaced in review, not a silent regression to a stale digest.
+        // (No `_ =>` fallthrough to a wrong topic set — M12 lesson.)
+        unreachable!("topics_for_version: unknown fork version {version:?}")
     }
 }
 
@@ -405,6 +621,30 @@ pub(crate) fn electra_gossip_topics<E: BeaconSpec>(electra_digest: ForkDigest) -
     // Electra inherits the full Deneb topic set; the fork-digest segment is
     // the only thing that changes at the Electra boundary.
     deneb_gossip_topics::<E>(electra_digest)
+}
+
+/// The fulu gossip topics: the same global + blob topic shape as Electra under
+/// the fulu fork digest.
+///
+/// Per `specs/fulu/p2p-interface.md` (EIP-7594 PeerDAS): the
+/// `data_column_sidecar_{subnet}` topics are NOT included here because they are
+/// custody-gated (node-id + custody-group-count dependent) and subscribed
+/// separately via `subscribe_fulu_data_column_topics`. This helper covers the
+/// non-custody topics whose fork-digest segment rotates at the fulu / BPO
+/// boundary.
+///
+/// Attestation subnet topics are handled by the subnet rotation driver.
+pub(crate) fn fulu_gossip_topics<E: BeaconSpec>(fulu_digest: ForkDigest) -> Vec<GossipTopic> {
+    deneb_gossip_topics::<E>(fulu_digest)
+}
+
+/// Returns the list of fulu (non-custody) topics for a given fork digest.
+///
+/// Public helper used by integration tests to verify that the migration
+/// correctly subscribes to the fulu topic set. The custody-gated
+/// `data_column_sidecar` topics are excluded (see `fulu_gossip_topics`).
+pub fn fulu_topic_list<E: BeaconSpec>(fulu_digest: ForkDigest) -> Vec<GossipTopic> {
+    fulu_gossip_topics::<E>(fulu_digest)
 }
 
 /// Returns the list of altair topics for a given fork digest.
@@ -684,5 +924,123 @@ mod tests {
                 "blob_sidecar_{subnet} must be present exactly once"
             );
         }
+    }
+
+    /// Build a fulu-active fork schedule with the mainnet BLOB_SCHEDULE
+    /// (two BPO entries) for the BPO-migration test.
+    ///
+    /// Versions + epochs mirror the Phase 1.5 digest-rotation test
+    /// (`crates/pharos-types/src/fork.rs::fulu_fork_digest_rotates_per_bpo_entry`):
+    /// FULU_FORK_VERSION 0x06000000, FULU_FORK_EPOCH 411392,
+    /// ELECTRA_FORK_EPOCH 364032, BLOB_SCHEDULE [412672->15, 419072->21].
+    fn fulu_schedule_mainnet() -> ForkSchedule {
+        use pharos_types::fulu::BlobScheduleEntry;
+        ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(0),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(0),
+            capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+            capella_fork_epoch: Epoch(0),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(0),
+            electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
+            electra_fork_epoch: Epoch(364_032),
+            fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x00]),
+            fulu_fork_epoch: Epoch(411_392),
+            blob_schedule: vec![
+                BlobScheduleEntry {
+                    epoch: 412_672,
+                    max_blobs_per_block: 15,
+                },
+                BlobScheduleEntry {
+                    epoch: 419_072,
+                    max_blobs_per_block: 21,
+                },
+            ],
+            genesis_validators_root: Root::default(),
+        }
+    }
+
+    /// RI-2 (EIP-7892): the two mainnet BPO entries must produce two distinct
+    /// migration events, in ascending epoch order, with DISTINCT fork digests
+    /// matching the BPO-aware `compute_fork_digest_for_epoch` reference values.
+    #[test]
+    fn bpo_migrations_two_entries_distinct_digests() {
+        use pharos_types::fork::compute_fork_digest_for_epoch;
+        let sched = fulu_schedule_mainnet();
+        let max_blobs_electra = MainnetBeaconSpec::MAX_BLOBS_PER_BLOCK_ELECTRA;
+
+        let migrations =
+            schedule_bpo_boundary_migrations::<MainnetBeaconSpec>(&sched, max_blobs_electra);
+
+        assert_eq!(
+            migrations.len(),
+            2,
+            "two BLOB_SCHEDULE entries must produce two BPO migration events"
+        );
+
+        // Ascending epoch order.
+        assert_eq!(migrations[0].epoch, Epoch(412_672));
+        assert_eq!(migrations[1].epoch, Epoch(419_072));
+        assert_eq!(migrations[0].max_blobs_per_block, 15);
+        assert_eq!(migrations[1].max_blobs_per_block, 21);
+
+        // Distinct digests between the two boundaries.
+        assert_ne!(
+            migrations[0].new_digest, migrations[1].new_digest,
+            "fork digest must rotate between the two BPO entries (RI-2)"
+        );
+
+        // Each migration's digest matches the canonical BPO-aware reference.
+        let gvr = sched.genesis_validators_root;
+        let reference_first = compute_fork_digest_for_epoch(
+            sched.fulu_fork_version,
+            &gvr,
+            Epoch(412_672),
+            sched.fulu_fork_epoch,
+            &sched.blob_schedule,
+            sched.electra_fork_epoch,
+            max_blobs_electra,
+        );
+        let reference_second = compute_fork_digest_for_epoch(
+            sched.fulu_fork_version,
+            &gvr,
+            Epoch(419_072),
+            sched.fulu_fork_epoch,
+            &sched.blob_schedule,
+            sched.electra_fork_epoch,
+            max_blobs_electra,
+        );
+        assert_eq!(
+            migrations[0].new_digest, reference_first,
+            "first BPO digest must match compute_fork_digest_for_epoch reference"
+        );
+        assert_eq!(
+            migrations[1].new_digest, reference_second,
+            "second BPO digest must match compute_fork_digest_for_epoch reference"
+        );
+
+        // Both BPO digests differ from the plain fulu base digest (the XOR with
+        // blob params changes the bytes).
+        let plain = compute_fork_digest(sched.fulu_fork_version, &gvr);
+        assert_ne!(migrations[0].new_digest, plain);
+        assert_ne!(migrations[1].new_digest, plain);
+    }
+
+    /// An empty `blob_schedule` (no BPO entries) yields no migrations.
+    #[test]
+    fn bpo_migrations_empty_schedule_is_empty() {
+        let mut sched = fulu_schedule_mainnet();
+        sched.blob_schedule.clear();
+        let migrations = schedule_bpo_boundary_migrations::<MainnetBeaconSpec>(
+            &sched,
+            MainnetBeaconSpec::MAX_BLOBS_PER_BLOCK_ELECTRA,
+        );
+        assert!(
+            migrations.is_empty(),
+            "no BLOB_SCHEDULE entries must produce no BPO migrations"
+        );
     }
 }

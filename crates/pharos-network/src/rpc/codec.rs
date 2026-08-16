@@ -238,6 +238,17 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
                     }
                     // Dispatch SSZ decode based on the chunk's fork (context bytes).
                     let block = match chunk_fork {
+                        Some(Fork::Fulu) => {
+                            // Fulu beacon blocks share the Electra block shape;
+                            // the context-bytes arm selects the Fulu SSZ type.
+                            // Per `specs/fulu/p2p-interface.md` (context bytes).
+                            let inner = read_ssz_snappy_payload::<_, E::FuluSignedBeaconBlock>(
+                                io,
+                                MAX_SIGNED_BEACON_BLOCK_SSZ_BYTES,
+                            )
+                            .await?;
+                            E::fulu_into_signed_block(inner)
+                        }
                         Some(Fork::Electra) => {
                             let inner = read_ssz_snappy_payload::<_, E::ElectraSignedBeaconBlock>(
                                 io,
@@ -501,7 +512,9 @@ impl<E: BeaconSpec + Send + Sync + 'static> libp2p::request_response::Codec for 
                     // per `specs/altair/p2p-interface.md:445-461` and
                     // `specs/capella/p2p-interface.md`.
                     // Dispatch to the inner SSZ bytes (no fork discriminant byte).
-                    let (fork, ssz) = if let Some(inner) = E::unwrap_electra_signed_block(block) {
+                    let (fork, ssz) = if let Some(inner) = E::unwrap_fulu_signed_block(block) {
+                        (Fork::Fulu, inner.as_ssz_bytes())
+                    } else if let Some(inner) = E::unwrap_electra_signed_block(block) {
                         (Fork::Electra, inner.as_ssz_bytes())
                     } else if let Some(inner) = E::unwrap_deneb_signed_block(block) {
                         (Fork::Deneb, inner.as_ssz_bytes())

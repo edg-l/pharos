@@ -181,6 +181,50 @@ pub fn subscribe_deneb_blob_topics<E: BeaconSpec>(
     Ok(())
 }
 
+// ── subscribe_fulu_data_column_topics ──────────────────────────────────────────
+
+/// Subscribe to the Fulu (EIP-7594 PeerDAS) `data_column_sidecar_<subnet>` topics
+/// covering the node's CUSTODY columns under `fork_digest`, merging them into an
+/// existing `topic_map`.
+///
+/// `columns` is the node's custodied column-index set (computed by the node
+/// crate via `get_custody_groups` + `compute_columns_for_custody_group`). Only
+/// the subnets covering those columns are subscribed, NOT all
+/// `DATA_COLUMN_SIDECAR_SUBNET_COUNT` subnets; PeerDAS nodes custody a subset.
+/// Each column maps to subnet `column % DATA_COLUMN_SIDECAR_SUBNET_COUNT`
+/// (multiple columns may share a subnet; duplicates are de-duplicated via the
+/// `topic_map`). Per `specs/fulu/p2p-interface.md` + `specs/fulu/das-core.md`.
+pub fn subscribe_fulu_data_column_topics<E: BeaconSpec>(
+    gs: &mut gossipsub::Behaviour,
+    fork_digest: ForkDigest,
+    columns: &[u64],
+    topic_map: &mut HashMap<TopicHash, GossipTopic>,
+) -> Result<(), NetworkError> {
+    for &column in columns {
+        let subnet = crate::topics::compute_subnet_for_data_column_sidecar(
+            column,
+            E::DATA_COLUMN_SIDECAR_SUBNET_COUNT,
+        );
+        let topic = GossipTopic {
+            fork_digest,
+            kind: GossipTopicKind::DataColumnSidecar(subnet),
+        };
+        let hash = topic.topic_hash();
+        if topic_map.contains_key(&hash) {
+            // Multiple custodied columns share this subnet; already subscribed.
+            continue;
+        }
+        gs.subscribe(&IdentTopic::new(topic.topic_str()))
+            .map_err(|e| {
+                NetworkError::Libp2p(format!(
+                    "subscribe data_column_sidecar_{subnet} failed: {e}"
+                ))
+            })?;
+        topic_map.insert(hash, topic);
+    }
+    Ok(())
+}
+
 // ── dispatch_gossip_message ───────────────────────────────────────────────────
 
 /// SSZ-decode an already-decompressed gossip payload and dispatch to the
@@ -204,6 +248,19 @@ pub fn dispatch_gossip_message<E: BeaconSpec, H: Host<E>>(
             // digest per `specs/altair/p2p-interface.md` and
             // `specs/bellatrix/p2p-interface.md`.
             match host.fork_from_context(&topic.fork_digest.into_inner()) {
+                Some(crate::types::Fork::Fulu) => {
+                    // Fulu beacon blocks share the Electra block shape; the
+                    // fork-digest context selects the Fulu SSZ type. The gossip
+                    // validation body itself is `validate_beacon_block` (shared
+                    // across forks). Per `specs/fulu/p2p-interface.md`.
+                    match E::FuluSignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
+                        Ok(inner) => {
+                            let block = E::fulu_into_signed_block(inner);
+                            host.validate_beacon_block(&block)
+                        }
+                        Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
+                    }
+                }
                 Some(crate::types::Fork::Electra) => {
                     match E::ElectraSignedBeaconBlock::from_ssz_bytes(ssz_bytes) {
                         Ok(inner) => {
@@ -336,7 +393,8 @@ pub fn dispatch_gossip_message<E: BeaconSpec, H: Host<E>>(
             match host.fork_from_context(&topic.fork_digest.into_inner()) {
                 Some(crate::types::Fork::Capella)
                 | Some(crate::types::Fork::Deneb)
-                | Some(crate::types::Fork::Electra) => {
+                | Some(crate::types::Fork::Electra)
+                | Some(crate::types::Fork::Fulu) => {
                     match E::CapellaLightClientFinalityUpdate::from_ssz_bytes(ssz_bytes) {
                         Ok(msg) => host.validate_capella_light_client_finality_update(&msg),
                         Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
@@ -352,7 +410,8 @@ pub fn dispatch_gossip_message<E: BeaconSpec, H: Host<E>>(
             match host.fork_from_context(&topic.fork_digest.into_inner()) {
                 Some(crate::types::Fork::Capella)
                 | Some(crate::types::Fork::Deneb)
-                | Some(crate::types::Fork::Electra) => {
+                | Some(crate::types::Fork::Electra)
+                | Some(crate::types::Fork::Fulu) => {
                     match E::CapellaLightClientOptimisticUpdate::from_ssz_bytes(ssz_bytes) {
                         Ok(msg) => host.validate_capella_light_client_optimistic_update(&msg),
                         Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
@@ -383,6 +442,17 @@ pub fn dispatch_gossip_message<E: BeaconSpec, H: Host<E>>(
             Ok(sidecar) => host.validate_blob_sidecar(*subnet, &sidecar),
             Err(_) => GossipVerdict::Reject("ssz decode".to_string()),
         },
+        // ── Fulu topics ──────────────────────────────────────────────────────
+        // Per `specs/fulu/p2p-interface.md` (EIP-7594 PeerDAS). The
+        // `data_column_sidecar_{subnet}` gossip topic exists as network
+        // substrate from Phase 5a; the 13-rule `validate_data_column_sidecar`
+        // validation body (with KZG + BLS in spawn_blocking) lands in Phase 5b
+        // (plan task 5.4). Until then, decoded sidecars are IGNORED (no
+        // propagation, no peer penalty) rather than dispatched to a
+        // not-yet-implemented validator.
+        GossipTopicKind::DataColumnSidecar(_subnet) => GossipVerdict::Ignore(
+            "data column sidecar validator not implemented (Phase 5b)".to_string(),
+        ),
     }
 }
 

@@ -84,6 +84,23 @@ pub trait ForkContext: Send + Sync + 'static {
     fn local_metadata(&self) -> AltairMetaData {
         AltairMetaData::default()
     }
+
+    /// The set of data-column indices this node custodies (EIP-7594 PeerDAS).
+    ///
+    /// `node_id` is the local discv5 node id (big-endian 32-byte uint256).
+    /// Implementations compute the custody column set via the Fulu DAS-core
+    /// helpers (`get_custody_groups` + `compute_columns_for_custody_group`)
+    /// over the node's custody-group count. The startup gossip subscription
+    /// uses this to subscribe ONLY to `data_column_sidecar_{subnet}` topics
+    /// covering the custodied columns, NOT all `DATA_COLUMN_SIDECAR_SUBNET_COUNT`
+    /// subnets. Per `specs/fulu/p2p-interface.md` + `specs/fulu/das-core.md`.
+    ///
+    /// The default returns an empty set so non-Fulu test mocks compile
+    /// unchanged.
+    fn custody_columns(&self, node_id: [u8; 32]) -> Vec<u64> {
+        let _ = node_id;
+        Vec::new()
+    }
 }
 
 // ── BlockProvider ─────────────────────────────────────────────────────────────
@@ -497,6 +514,10 @@ where
 
     fn local_metadata(&self) -> AltairMetaData {
         (**self).local_metadata()
+    }
+
+    fn custody_columns(&self, node_id: [u8; 32]) -> Vec<u64> {
+        (**self).custody_columns(node_id)
     }
 }
 

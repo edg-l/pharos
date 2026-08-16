@@ -47,7 +47,7 @@ use crate::error::NetworkError;
 use crate::gossip::config::gossipsub_behaviour;
 use crate::gossip::{
     dispatch_gossip_message, subscribe_altair_extra_topics, subscribe_base_topics,
-    subscribe_deneb_blob_topics,
+    subscribe_deneb_blob_topics, subscribe_fulu_data_column_topics,
 };
 use crate::handle::NetworkHandle;
 use crate::host::{
@@ -2373,6 +2373,33 @@ impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: Pe
                     &mut topic_map,
                 )?;
             }
+            Some(crate::types::Fork::Fulu) => {
+                // Fulu (EIP-7594 PeerDAS): altair extras + blob_sidecar subnets
+                // (retained for the DA gate on pre-Fulu-history blocks) + the
+                // node's CUSTODY `data_column_sidecar` subnets ONLY (NOT all
+                // DATA_COLUMN_SIDECAR_SUBNET_COUNT subnets). The custody column
+                // set is computed by the node crate via the Fulu DAS-core
+                // helpers (`get_custody_groups` + `compute_columns_for_custody_group`)
+                // over the node's custody-group count, surfaced through
+                // `ForkContext::custody_columns`. Per `specs/fulu/p2p-interface.md`.
+                subscribe_altair_extra_topics::<E>(
+                    &mut swarm.behaviour_mut().gossipsub,
+                    fork_digest,
+                    &mut topic_map,
+                )?;
+                subscribe_deneb_blob_topics::<E>(
+                    &mut swarm.behaviour_mut().gossipsub,
+                    fork_digest,
+                    &mut topic_map,
+                )?;
+                let custody_columns = self.host.custody_columns(node_id.raw());
+                subscribe_fulu_data_column_topics::<E>(
+                    &mut swarm.behaviour_mut().gossipsub,
+                    fork_digest,
+                    &custody_columns,
+                    &mut topic_map,
+                )?;
+            }
             // Phase0 or unknown digest: base topics only. No `_ =>` catch-all:
             // every `Fork` variant is matched explicitly so a future fork is a
             // compile error here rather than a silent topic-set regression.
@@ -2660,7 +2687,8 @@ mod tests {
                 | Fork::Bellatrix
                 | Fork::Capella
                 | Fork::Deneb
-                | Fork::Electra => ForkDigest::from_array([0u8; 4]),
+                | Fork::Electra
+                | Fork::Fulu => ForkDigest::from_array([0u8; 4]),
             }
         }
         fn fork_from_context(&self, _ctx: &[u8; 4]) -> Option<crate::types::Fork> {

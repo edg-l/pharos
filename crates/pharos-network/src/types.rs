@@ -35,6 +35,8 @@ pub enum Fork {
     Deneb,
     /// Electra fork.
     Electra,
+    /// Fulu (PeerDAS / EIP-7594) fork.
+    Fulu,
 }
 
 // ── SubnetId ──────────────────────────────────────────────────────────────────

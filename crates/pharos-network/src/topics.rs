@@ -35,6 +35,23 @@ pub fn compute_subnet_for_blob_sidecar(index: u64, blob_sidecar_subnet_count: u6
     index % blob_sidecar_subnet_count
 }
 
+// ── compute_subnet_for_data_column_sidecar ─────────────────────────────────────
+
+/// Map a data-column index to its gossip subnet (EIP-7594 PeerDAS).
+///
+/// `compute_subnet_for_data_column_sidecar(column_index) =
+/// column_index % DATA_COLUMN_SIDECAR_SUBNET_COUNT` per
+/// `specs/fulu/p2p-interface.md`.
+///
+/// `data_column_sidecar_subnet_count` must be
+/// `E::DATA_COLUMN_SIDECAR_SUBNET_COUNT` (= 128 for both presets).
+pub fn compute_subnet_for_data_column_sidecar(
+    column_index: u64,
+    data_column_sidecar_subnet_count: u64,
+) -> SubnetId {
+    column_index % data_column_sidecar_subnet_count
+}
+
 // ── GossipTopicKind ───────────────────────────────────────────────────────────
 
 /// The kind of gossip topic, distinguishing the Phase-0, Altair, and Capella topics.
@@ -75,6 +92,14 @@ pub enum GossipTopicKind {
     /// Each blob sidecar is broadcast on subnet `index % BLOB_SIDECAR_SUBNET_COUNT`.
     /// The subnet id is a decimal integer in the topic name (no padding).
     BlobSidecar(SubnetId),
+    // ── Fulu topics ───────────────────────────────────────────────────────────
+    /// `data_column_sidecar_<subnet_id>` per `specs/fulu/p2p-interface.md`
+    /// (EIP-7594 PeerDAS).
+    ///
+    /// Each data-column sidecar is broadcast on subnet
+    /// `column_index % DATA_COLUMN_SIDECAR_SUBNET_COUNT`. The inner value is the
+    /// subnet id, a decimal integer in the topic name (no padding).
+    DataColumnSidecar(SubnetId),
 }
 
 // ── GossipTopic ───────────────────────────────────────────────────────────────
@@ -213,6 +238,8 @@ pub(crate) fn topic_kind_name(kind: &GossipTopicKind) -> String {
         GossipTopicKind::BlsToExecutionChange => "bls_to_execution_change".to_string(),
         // Deneb topics — `specs/deneb/p2p-interface.md`.
         GossipTopicKind::BlobSidecar(subnet) => format!("blob_sidecar_{subnet}"),
+        // Fulu topics — `specs/fulu/p2p-interface.md`.
+        GossipTopicKind::DataColumnSidecar(subnet) => format!("data_column_sidecar_{subnet}"),
     }
 }
 
@@ -226,6 +253,7 @@ pub(crate) fn is_subnet_topic(kind: &GossipTopicKind) -> bool {
         GossipTopicKind::BeaconAttestation(_)
             | GossipTopicKind::SyncCommittee(_)
             | GossipTopicKind::BlobSidecar(_)
+            | GossipTopicKind::DataColumnSidecar(_)
     )
 }
 
@@ -263,6 +291,11 @@ fn parse_topic_kind(name: &str) -> Option<GossipTopicKind> {
             if let Some(subnet_str) = name.strip_prefix("blob_sidecar_") {
                 let subnet_id: SubnetId = subnet_str.parse().ok()?;
                 return Some(GossipTopicKind::BlobSidecar(subnet_id));
+            }
+            // Handle `data_column_sidecar_<decimal-subnet-id>` (Fulu, EIP-7594).
+            if let Some(subnet_str) = name.strip_prefix("data_column_sidecar_") {
+                let subnet_id: SubnetId = subnet_str.parse().ok()?;
+                return Some(GossipTopicKind::DataColumnSidecar(subnet_id));
             }
             None
         }

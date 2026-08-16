@@ -45,14 +45,15 @@ use pharos_network::host::{
 };
 use pharos_network::types::{Fork, SubnetId};
 use pharos_ssz::{Bitvector, TreeHash};
+use pharos_stf::fulu::data_columns::{compute_columns_for_custody_group, get_custody_groups};
 use pharos_storage::{RocksStore, Store as StoreTrait};
 use pharos_types::BeaconSpec;
 use pharos_types::RuntimeConfig;
 use pharos_types::altair::MetaData as AltairMetaData;
-use pharos_types::fork::{ForkSchedule, compute_fork_digest};
+use pharos_types::fork::{ForkSchedule, compute_fork_digest, compute_fork_digest_for_epoch};
 use pharos_types::phase0::primitives::{
     ATTESTATION_SUBNET_COUNT, ForkDigest, INTERVALS_PER_SLOT, MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS,
-    Root, Version,
+    Root,
 };
 use pharos_types::phase0::{
     Attestation, AttesterSlashing, Checkpoint, ENRForkID, ProposerSlashing,
@@ -385,11 +386,25 @@ impl<E: BeaconSpec> HostImpl<E> {
         Epoch(elapsed_slots / E::SLOTS_PER_EPOCH)
     }
 
-    /// The fork version active at the current wall-clock epoch.
-    fn current_fork_version_now(&self) -> Version {
-        self.fork_context
-            .fork_schedule
-            .current_fork_version(self.current_epoch())
+    /// Fork digest active at `epoch`, BPO-aware (RI-2, EIP-7892).
+    ///
+    /// Returns the plain [`compute_fork_digest`] for pre-Fulu epochs and the
+    /// XORed BPO digest from Fulu onward (rotating at every blob-schedule
+    /// boundary within the Fulu fork). Used by `current_fork_digest`,
+    /// `fork_digest_for(Fork::Fulu)`, and `fork_from_context` so the Fulu
+    /// digest tracked across the network layer always reflects the active
+    /// blob parameters.
+    fn fulu_aware_fork_digest(&self, epoch: Epoch) -> ForkDigest {
+        let sched = &self.fork_context.fork_schedule;
+        compute_fork_digest_for_epoch(
+            sched.current_fork_version(epoch),
+            &self.fork_context.genesis_validators_root,
+            epoch,
+            sched.fulu_fork_epoch,
+            &sched.blob_schedule,
+            sched.electra_fork_epoch,
+            E::MAX_BLOBS_PER_BLOCK_ELECTRA,
+        )
     }
 
     /// Return a clone of the `Arc<RocksStore>` backing this host.
@@ -650,8 +665,11 @@ impl<E: BeaconSpec> ForkContext for HostImpl<E> {
     /// combined with `genesis_validators_root`. No frozen field; the value tracks the
     /// epoch boundary automatically. (ADR `D-epoch-driven-fork-digest`.)
     fn current_fork_digest(&self) -> ForkDigest {
-        let gvr = &self.fork_context.genesis_validators_root;
-        compute_fork_digest(self.current_fork_version_now(), gvr)
+        // RI-2 (EIP-7892): within the Fulu fork the digest rotates at every
+        // BPO (blob-parameter-only) boundary. `compute_fork_digest_for_epoch`
+        // returns the plain digest pre-Fulu and the XORed BPO digest from Fulu
+        // onward, looking up the active blob parameters for `current_epoch`.
+        self.fulu_aware_fork_digest(self.current_epoch())
     }
 
     /// Returns the ENR fork ID for the current epoch.
@@ -686,6 +704,11 @@ impl<E: BeaconSpec> ForkContext for HostImpl<E> {
             Fork::Capella => sched.capella_fork_version,
             Fork::Deneb => sched.deneb_fork_version,
             Fork::Electra => sched.electra_fork_version,
+            // RI-2 (EIP-7892): the Fulu digest is epoch-dependent (rotates at
+            // every BPO boundary). Return the digest active at the current
+            // wall-clock epoch via the BPO-aware helper rather than a plain
+            // base-version digest.
+            Fork::Fulu => return self.fulu_aware_fork_digest(self.current_epoch()),
         };
         compute_fork_digest(version, &self.fork_context.genesis_validators_root)
     }
@@ -721,11 +744,42 @@ impl<E: BeaconSpec> ForkContext for HostImpl<E> {
         if *ctx == electra_digest.into_inner() {
             return Some(Fork::Electra);
         }
+        // RI-2 (EIP-7892): the Fulu digest is epoch-dependent. Match against the
+        // BPO-aware digest active at the current wall-clock epoch (the only Fulu
+        // digest relevant to live gossip / context-bytes dispatch right now).
+        let fulu_digest = self.fulu_aware_fork_digest(self.current_epoch());
+        if *ctx == fulu_digest.into_inner() {
+            return Some(Fork::Fulu);
+        }
         None
     }
 
     fn local_metadata(&self) -> AltairMetaData {
         self.metadata.read().clone()
+    }
+
+    /// The data-column indices this node custodies (EIP-7594 PeerDAS).
+    ///
+    /// Computes the custody group set via `get_custody_groups(node_id,
+    /// custody_group_count)` and flattens each group to its column indices via
+    /// `compute_columns_for_custody_group`, reusing the Phase-4
+    /// `pharos_stf::fulu::data_columns` helpers (no reimplementation). The
+    /// startup gossip subscription uses this to subscribe only to the
+    /// covering `data_column_sidecar_{subnet}` topics.
+    ///
+    /// TODO(Phase 6a): the custody-group count is currently fixed at
+    /// `E::CUSTODY_REQUIREMENT` (the protocol minimum). Phase 6a adds the
+    /// custody-adjustment loop that raises it (validator custody requirement /
+    /// `cgc` ENR field); this accessor should then read the live count.
+    fn custody_columns(&self, node_id: [u8; 32]) -> Vec<u64> {
+        let custody_group_count = E::CUSTODY_REQUIREMENT;
+        let mut columns: Vec<u64> = get_custody_groups::<E>(node_id, custody_group_count)
+            .into_iter()
+            .flat_map(|group| compute_columns_for_custody_group::<E>(group))
+            .collect();
+        columns.sort_unstable();
+        columns.dedup();
+        columns
     }
 }
 
@@ -3500,6 +3554,7 @@ mod tests {
         MainnetLightClientFinalityUpdate, MainnetLightClientOptimisticUpdate,
     };
     use pharos_types::phase0::operations::BeaconBlockHeader;
+    use pharos_types::phase0::primitives::Version;
 
     fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetBeaconSpec> {
         use pharos_ssz::TreeHash;
