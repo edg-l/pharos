@@ -15,6 +15,7 @@ use pharos_utils::BLSPubkey;
 
 use pharos_types::capella::execution_payload::Withdrawal;
 
+use crate::altair::epoch::process_justification_and_finalization;
 use crate::bellatrix::execution_engine::{ExecutionEngine, PayloadVerificationStatus};
 use crate::capella::block::process_block;
 use crate::capella::epoch::process_epoch;
@@ -868,7 +869,7 @@ where
     fn process_jaf_capella(&mut self) -> Result<(), crate::error::EpochProcessingError> {
         use crate::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
         let mut altair = capella_state_to_altair(self);
-        crate::altair::epoch::process_justification_and_finalization::<
+        process_justification_and_finalization::<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
             ETH1_DATA_VOTES_LIMIT,

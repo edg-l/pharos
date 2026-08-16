@@ -15,7 +15,7 @@ use pharos_types::{
 use pharos_utils::BLSPubkey;
 
 use crate::altair::block::process_block;
-use crate::altair::epoch::process_epoch;
+use crate::altair::epoch::{process_epoch, process_justification_and_finalization};
 use crate::error::{EpochProcessingError, StateTransitionError};
 use crate::phase0::helpers::DOMAIN_BEACON_PROPOSER;
 
@@ -469,7 +469,7 @@ where
     >,
 {
     fn process_jaf(&mut self) -> Result<(), EpochProcessingError> {
-        crate::altair::epoch::process_justification_and_finalization::<
+        process_justification_and_finalization::<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
             ETH1_DATA_VOTES_LIMIT,

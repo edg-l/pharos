@@ -174,13 +174,18 @@ pub enum EpochProcessingError {
     UnsupportedFork,
     #[error("ssz error: {0}")]
     Ssz(#[from] pharos_ssz::SszError),
+    #[error("state transition error during epoch processing: {0}")]
+    StateTransition(Box<StateTransitionError>),
 }
 
 impl From<StateTransitionError> for EpochProcessingError {
     fn from(e: StateTransitionError) -> Self {
+        // Preserve the original error rather than collapsing every non-Ssz case to
+        // a fabricated `ValidatorIndexOutOfRange { index: 0 }` (which discarded the
+        // real cause and masked the failure).
         match e {
             StateTransitionError::Ssz(s) => EpochProcessingError::Ssz(s),
-            _ => EpochProcessingError::ValidatorIndexOutOfRange { index: 0 },
+            other => EpochProcessingError::StateTransition(Box::new(other)),
         }
     }
 }
