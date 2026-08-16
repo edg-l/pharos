@@ -7,9 +7,15 @@
 //!
 //! # GossipValidator note
 //!
-//! `GossipValidator<E>` methods on `HostImpl<E>` return `GossipVerdict::Accept`
-//! stubs except for the two light-client gossip topics, which implement full
-//! validation per `specs/altair/light-client/p2p-interface.md` (M4c Phase 1).
+//! The following gossip validators are fully implemented:
+//! - `beacon_block` (12-step pipeline, M4e).
+//! - `beacon_attestation_*` (13-step pipeline, M4e).
+//! - `beacon_aggregate_and_proof` (17-step pipeline, M4e).
+//! - `voluntary_exit`, `proposer_slashing`, `attester_slashing` (M4e).
+//! - `bls_to_execution_change` (M6).
+//! - `light_client_finality_update`, `light_client_optimistic_update` (M4c).
+//! - `sync_committee_{subnet}` (6-step RSM pipeline).
+//! - `sync_committee_contribution_and_proof` (12-step RAC pipeline).
 //! See `D-lc-gossip-validation-full-node-arm` in `docs/decisions.md`.
 //!
 //! # record_attnets_change
@@ -171,6 +177,24 @@ pub struct HostImpl<E: EthSpec> {
     /// (ADR `D-bls-to-exec-seen-cache`).
     /// Capacity: 4096 entries.
     seen_bls_to_execution_change_indices: RwLock<LruCache<u64, ()>>,
+    /// Tracks `(slot, validator_index, subnet_id)` triples that have already produced
+    /// an accepted `SyncCommitteeMessage`; gates the per-topic duplicate-validator
+    /// IGNORE rule per `specs/altair/p2p-interface.md` (RSM4).
+    /// Key includes subnet so a validator appearing on multiple subnets can produce
+    /// one accepted message per subnet per slot (distinct topics).
+    /// Capacity: 65536 entries.
+    seen_sync_messages: RwLock<LruCache<(Slot, u64, u64), ()>>,
+    /// Tracks `(aggregator_index, slot, subcommittee_index)` triples that have already
+    /// produced an accepted `ContributionAndProof`; gates the RAC8 duplicate-aggregator
+    /// IGNORE rule per `specs/altair/p2p-interface.md`.
+    /// Capacity: 16384 entries.
+    seen_sync_contribution_aggregators: RwLock<LruCache<(u64, Slot, u64), ()>>,
+    /// Per `(slot, beacon_block_root, subcommittee_index)`, stores the OR of all
+    /// previously-seen contribution `aggregation_bits` as a `Vec<bool>`. Used to
+    /// implement the RAC7 non-strict-superset IGNORE rule: IGNORE iff every set bit
+    /// in the incoming bitvector is already set in the stored OR-vector.
+    /// Capacity: 4096 entries.
+    seen_sync_contribution_data: RwLock<LruCache<(Slot, Root, u64), Vec<bool>>>,
     _phantom: PhantomData<E>,
 }
 
@@ -231,6 +255,13 @@ impl<E: EthSpec> HostImpl<E> {
                 NonZeroUsize::new(4096).unwrap(),
             )),
             seen_bls_to_execution_change_indices: RwLock::new(LruCache::new(
+                NonZeroUsize::new(4096).unwrap(),
+            )),
+            seen_sync_messages: RwLock::new(LruCache::new(NonZeroUsize::new(65536).unwrap())),
+            seen_sync_contribution_aggregators: RwLock::new(LruCache::new(
+                NonZeroUsize::new(16384).unwrap(),
+            )),
+            seen_sync_contribution_data: RwLock::new(LruCache::new(
                 NonZeroUsize::new(4096).unwrap(),
             )),
             op_pools: OperationPools::new(),
@@ -730,6 +761,7 @@ where
         pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
     E::BellatrixSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::AltairSignedContributionAndProof: pharos_types::SignedContributionAndProofView,
 {
     /// Validate a gossip `beacon_block` message per `specs/phase0/p2p-interface.md:540-620`.
     ///
@@ -1629,24 +1661,335 @@ where
         GossipVerdict::Accept
     }
 
-    /// TODO(M4): Validate sync committee message slot, validator index, signature.
+    /// Validate a `sync_committee_{subnet_id}` message per
+    /// `specs/altair/p2p-interface.md:332-399` (rules RSM1–RSM5 + accept).
+    ///
+    /// Step order:
+    ///   1. RSM1 — slot is the current slot (IGNORE).
+    ///   2. RSM2 — validator_index within num_validators (REJECT).
+    ///   3. RSM3 — subnet valid for the validator (REJECT).
+    ///   4. RSM4 — first message for (slot, validator_index, subnet) (IGNORE).
+    ///   5. RSM5 — BLS signature valid over beacon_block_root (REJECT).
+    ///   6. Mark seen; feed op-pool; Accept.
     fn validate_sync_committee_message(
         &self,
         subnet: SubnetId,
         msg: &pharos_types::altair::SyncCommitteeMessage,
     ) -> GossipVerdict {
-        // Feed accepted sync messages into the pool so drain_sync_aggregate can
-        // use them at block-production time (Task 2.4).
-        // `subnet` is the sync committee subcommittee index (0..SYNC_COMMITTEE_SUBNET_COUNT).
+        use pharos_stf::altair::helpers::{
+            DOMAIN_SYNC_COMMITTEE, compute_subnets_for_sync_committee,
+        };
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_signing_root, get_domain,
+        };
+        use pharos_types::BeaconStateView as _;
+
+        let msg_slot = msg.slot;
+        let validator_index = msg.validator_index.0;
+        let subnet_id = subnet;
+
+        // Step 1 — RSM1: slot must be the current slot.
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as u64,
+            Err(_) => return GossipVerdict::Ignore("sync_msg: clock unavailable".into()),
+        };
+        let genesis_time_s = self.fork_choice.read().genesis_time;
+        let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
+        let slot_start_ms = genesis_time_s * 1000 + msg_slot.0 * seconds_per_slot * 1000;
+        let slot_end_ms = slot_start_ms + seconds_per_slot * 1000;
+        if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < slot_start_ms
+            || slot_end_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms
+        {
+            return GossipVerdict::Ignore("sync_msg: slot not current".into());
+        }
+
+        // Fetch head state for the rest of the checks.
+        let head_state = match self.head_state_at_slot(msg_slot) {
+            Some(s) => s,
+            None => return GossipVerdict::Ignore("sync_msg: head state unavailable".into()),
+        };
+
+        // Step 2 — RSM2: validator_index must be within range.
+        if validator_index as usize >= head_state.num_validators() {
+            return GossipVerdict::Reject("sync_msg: validator index out of range".into());
+        }
+
+        // Step 3 — RSM3: subnet must be valid for the validator.
+        let validator_pubkey = match head_state.validator(validator_index as usize) {
+            Some(v) => v.pubkey.into_inner(),
+            None => {
+                return GossipVerdict::Reject("sync_msg: validator index out of range".into());
+            }
+        };
+        let (current_pks, next_pks) = match head_state.sync_committee_pubkeys() {
+            Some(pair) => pair,
+            None => {
+                // Phase0 state has no sync committee — reject (the message is on the wrong topic).
+                return GossipVerdict::Reject("sync_msg: no sync committee (pre-altair)".into());
+            }
+        };
+        let valid_subnets = compute_subnets_for_sync_committee::<E>(
+            &current_pks,
+            &next_pks,
+            head_state.slot().0,
+            &validator_pubkey,
+        );
+        if !valid_subnets.contains(&subnet_id) {
+            return GossipVerdict::Reject("sync_msg: subnet not valid for validator".into());
+        }
+
+        // Step 4 — RSM4: first message for (slot, validator_index, subnet) on this topic.
+        let seen_key = (msg_slot, validator_index, subnet_id);
+        if self.seen_sync_messages.read().peek(&seen_key).is_some() {
+            return GossipVerdict::Ignore("sync_msg: duplicate (slot, validator, subnet)".into());
+        }
+
+        // Step 5 — RSM5: BLS signature over beacon_block_root must be valid.
+        let msg_epoch = compute_epoch_at_slot(msg_slot, E::SLOTS_PER_EPOCH);
+        let domain = get_domain::<E>(&head_state, DOMAIN_SYNC_COMMITTEE, Some(msg_epoch));
+        let signing_root = compute_signing_root(&msg.beacon_block_root, domain);
+        match pharos_utils::bls::verify(
+            &pharos_utils::BLSPubkey::from_array(validator_pubkey),
+            signing_root.as_ref(),
+            &msg.signature,
+        ) {
+            Ok(true) => {}
+            _ => return GossipVerdict::Reject("sync_msg: invalid signature".into()),
+        }
+
+        // Step 6 — Mark seen, feed pool, accept.
+        self.seen_sync_messages.write().put(seen_key, ());
         self.op_pools.insert_sync_message(msg.clone(), subnet);
         GossipVerdict::Accept
     }
 
-    /// TODO(M4): Validate sync committee contribution: aggregator index, proof, signature.
+    /// Validate a `sync_committee_contribution_and_proof` message per
+    /// `specs/altair/p2p-interface.md:209-323` (rules RAC1–RAC11 + accept).
+    ///
+    /// Step order:
+    ///   1.  RAC1  — contribution slot is current slot (IGNORE).
+    ///   2.  RAC2  — subcommittee_index < SYNC_COMMITTEE_SUBNET_COUNT (REJECT).
+    ///   3.  RAC3  — aggregation_bits has at least one participant (REJECT).
+    ///   4.  RAC4  — selection_proof selects validator as aggregator (REJECT).
+    ///   5.  RAC5  — aggregator_index within num_validators (REJECT).
+    ///   6.  RAC6  — aggregator pubkey is in the declared subcommittee (REJECT).
+    ///   7.  RAC7  — non-strict-superset check on contribution data (IGNORE).
+    ///   8.  RAC8  — first contribution from this aggregator/slot/subcommittee (IGNORE).
+    ///   9.  RAC9  — selection_proof signature valid (REJECT).
+    ///  10.  RAC10 — aggregator signature over ContributionAndProof valid (REJECT).
+    ///  11.  RAC11 — aggregate signature valid over beacon_block_root (REJECT).
+    ///  12.  Mark both seen-caches; Accept.
     fn validate_sync_committee_contribution_and_proof(
         &self,
-        _msg: &<E as EthSpec>::AltairSignedContributionAndProof,
+        msg: &<E as EthSpec>::AltairSignedContributionAndProof,
     ) -> GossipVerdict {
+        use pharos_stf::altair::helpers::{
+            DOMAIN_CONTRIBUTION_AND_PROOF, DOMAIN_SYNC_COMMITTEE,
+            DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF, get_sync_subcommittee_pubkeys,
+            is_sync_committee_aggregator,
+        };
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_signing_root, get_domain,
+        };
+        use pharos_types::BeaconStateView as _;
+        use pharos_types::SignedContributionAndProofView as _;
+        use pharos_utils::BLSPubkey;
+
+        let contrib_slot = msg.contribution_slot();
+        let contrib_subcommittee = msg.contribution_subcommittee_index();
+        let agg_index = msg.aggregator_index().0;
+
+        // Step 1 — RAC1: contribution slot must be the current slot.
+        let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_millis() as u64,
+            Err(_) => {
+                return GossipVerdict::Ignore("sync_contrib: clock unavailable".into());
+            }
+        };
+        let genesis_time_s = self.fork_choice.read().genesis_time;
+        let seconds_per_slot = self.runtime_cfg.seconds_per_slot;
+        let slot_start_ms = genesis_time_s * 1000 + contrib_slot.0 * seconds_per_slot * 1000;
+        let slot_end_ms = slot_start_ms + seconds_per_slot * 1000;
+        if now_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < slot_start_ms
+            || slot_end_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY_MS < now_ms
+        {
+            return GossipVerdict::Ignore("sync_contrib: slot not current".into());
+        }
+
+        // Step 2 — RAC2: subcommittee_index must be in range.
+        if contrib_subcommittee >= E::SYNC_COMMITTEE_SUBNET_COUNT {
+            return GossipVerdict::Reject("sync_contrib: subcommittee index out of range".into());
+        }
+
+        // Step 3 — RAC3: contribution must have at least one participant.
+        let agg_bits = msg.contribution_aggregation_bits();
+        if !agg_bits.iter().any(|b| *b) {
+            return GossipVerdict::Reject("sync_contrib: no participants".into());
+        }
+
+        // Step 4 — RAC4: selection_proof must select validator as aggregator.
+        if !is_sync_committee_aggregator::<E>(msg.selection_proof().as_ref()) {
+            return GossipVerdict::Reject("sync_contrib: not selected as aggregator".into());
+        }
+
+        // Fetch head state.
+        let head_state = match self.head_state_at_slot(contrib_slot) {
+            Some(s) => s,
+            None => {
+                return GossipVerdict::Ignore("sync_contrib: head state unavailable".into());
+            }
+        };
+
+        // Step 5 — RAC5: aggregator_index must be within range.
+        if agg_index as usize >= head_state.num_validators() {
+            return GossipVerdict::Reject("sync_contrib: aggregator index out of range".into());
+        }
+
+        // Step 6 — RAC6: aggregator pubkey must be in the declared subcommittee.
+        let aggregator_pubkey = match head_state.validator(agg_index as usize) {
+            Some(v) => v.pubkey.into_inner(),
+            None => {
+                return GossipVerdict::Reject("sync_contrib: aggregator index out of range".into());
+            }
+        };
+        let (current_pks, next_pks) = match head_state.sync_committee_pubkeys() {
+            Some(pair) => pair,
+            None => {
+                return GossipVerdict::Reject(
+                    "sync_contrib: no sync committee (pre-altair)".into(),
+                );
+            }
+        };
+        let subcommittee_pks = get_sync_subcommittee_pubkeys::<E>(
+            &current_pks,
+            &next_pks,
+            head_state.slot().0,
+            contrib_subcommittee,
+        );
+        if !subcommittee_pks.contains(&aggregator_pubkey) {
+            return GossipVerdict::Reject("sync_contrib: aggregator not in subcommittee".into());
+        }
+
+        // Step 7 — RAC7: non-strict-superset check on contribution data.
+        let data_key = (
+            contrib_slot,
+            msg.contribution_beacon_block_root(),
+            contrib_subcommittee,
+        );
+        {
+            let cache = self.seen_sync_contribution_data.read();
+            if let Some(stored) = cache.peek(&data_key) {
+                // IGNORE iff every set bit in incoming is already in `stored`.
+                let all_covered = agg_bits
+                    .iter()
+                    .enumerate()
+                    .all(|(i, &b)| !b || stored.get(i).copied().unwrap_or(false));
+                if all_covered {
+                    return GossipVerdict::Ignore(
+                        "sync_contrib: contribution superset seen".into(),
+                    );
+                }
+            }
+        }
+
+        // Step 8 — RAC8: first contribution from this aggregator/slot/subcommittee.
+        let agg_key = (agg_index, contrib_slot, contrib_subcommittee);
+        if self
+            .seen_sync_contribution_aggregators
+            .read()
+            .peek(&agg_key)
+            .is_some()
+        {
+            return GossipVerdict::Ignore(
+                "sync_contrib: duplicate aggregator/slot/subcommittee".into(),
+            );
+        }
+
+        // Step 9 — RAC9: selection_proof must be valid over SyncAggregatorSelectionData.
+        let contrib_epoch = compute_epoch_at_slot(contrib_slot, E::SLOTS_PER_EPOCH);
+        let domain_sel = get_domain::<E>(
+            &head_state,
+            DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF,
+            Some(contrib_epoch),
+        );
+        let sel_data = pharos_types::altair::SyncAggregatorSelectionData {
+            slot: contrib_slot,
+            subcommittee_index: contrib_subcommittee,
+        };
+        let signing_root_sel = compute_signing_root(&sel_data, domain_sel);
+        match pharos_utils::bls::verify(
+            &BLSPubkey::from_array(aggregator_pubkey),
+            signing_root_sel.as_ref(),
+            msg.selection_proof(),
+        ) {
+            Ok(true) => {}
+            _ => {
+                return GossipVerdict::Reject(
+                    "sync_contrib: invalid selection proof signature".into(),
+                );
+            }
+        }
+
+        // Step 10 — RAC10: aggregator signature over ContributionAndProof must be valid.
+        let domain_cap = get_domain::<E>(
+            &head_state,
+            DOMAIN_CONTRIBUTION_AND_PROOF,
+            Some(contrib_epoch),
+        );
+        let msg_root = msg.message_tree_hash_root();
+        let signing_root_cap = compute_signing_root(&msg_root, domain_cap);
+        match pharos_utils::bls::verify(
+            &BLSPubkey::from_array(aggregator_pubkey),
+            signing_root_cap.as_ref(),
+            msg.outer_signature(),
+        ) {
+            Ok(true) => {}
+            _ => {
+                return GossipVerdict::Reject("sync_contrib: invalid aggregator signature".into());
+            }
+        }
+
+        // Step 11 — RAC11: aggregate signature valid over beacon_block_root.
+        let domain_sc = get_domain::<E>(&head_state, DOMAIN_SYNC_COMMITTEE, Some(contrib_epoch));
+        let signing_root_agg =
+            compute_signing_root(&msg.contribution_beacon_block_root(), domain_sc);
+        let participant_pubkeys: Vec<BLSPubkey> = agg_bits
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &b)| {
+                if b {
+                    subcommittee_pks.get(i).map(|pk| BLSPubkey::from_array(*pk))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        match pharos_utils::bls::fast_aggregate_verify(
+            &participant_pubkeys,
+            signing_root_agg.as_ref(),
+            msg.contribution_signature(),
+        ) {
+            Ok(true) => {}
+            _ => {
+                return GossipVerdict::Reject("sync_contrib: invalid aggregate signature".into());
+            }
+        }
+
+        // Step 12 — Mark both seen-caches and accept.
+        self.seen_sync_contribution_aggregators
+            .write()
+            .put(agg_key, ());
+        {
+            let mut write = self.seen_sync_contribution_data.write();
+            let stored = write.get_or_insert_mut(data_key, || vec![false; agg_bits.len()]);
+            for (i, &b) in agg_bits.iter().enumerate() {
+                if b {
+                    if let Some(slot) = stored.get_mut(i) {
+                        *slot = true;
+                    }
+                }
+            }
+        }
         GossipVerdict::Accept
     }
 
@@ -5978,6 +6321,902 @@ mod tests {
         assert_eq!(
             host.validate_bls_to_execution_change(&signed),
             GossipVerdict::Reject("bls_to_exec: invalid signature".into()),
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // sync_committee_message validation tests (RSM1–RSM5 + happy path)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    use pharos_types::altair::{MinimalSyncCommittee, SyncCommitteeMessage};
+
+    fn sc_msg_test_sk() -> BlstSecretKey {
+        BlstSecretKey::key_gen(&[0xABu8; 32], &[]).expect("valid IKM")
+    }
+
+    fn sc_msg_test_pubkey() -> BLSPubkey {
+        BLSPubkey::from_array(sc_msg_test_sk().sk_to_pk().compress())
+    }
+
+    fn sc_msg_test_sign(msg: &[u8]) -> BLSSignature {
+        BLSSignature::from_array(sc_msg_test_sk().sign(msg, BLS_DST, &[]).compress())
+    }
+
+    /// Build a `HostImpl<MinimalEthSpec>` with an altair state at slot 0.
+    ///
+    /// The state has:
+    /// - One validator (index 0) with `sc_msg_test_pubkey()`.
+    /// - `current_sync_committee.pubkeys[0] = sc_msg_test_pubkey()` (rest default).
+    /// - `genesis_time` set so slot 0 is the current slot.
+    ///
+    /// Returns `(host, genesis_root)`.
+    fn make_sync_msg_host(dir: &tempfile::TempDir) -> (HostImpl<MinimalEthSpec>, Root) {
+        use pharos_types::altair::MinimalBeaconState as AltairMinimalState;
+        use pharos_types::phase0::misc::Fork;
+        use pharos_types::phase0::operations::BeaconBlockHeader;
+        use pharos_types::phase0::primitives::{Epoch, ValidatorIndex};
+
+        let store = Arc::new(
+            RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+                path: dir.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("open store"),
+        );
+
+        let genesis_slot = Slot(0);
+        let validator = pharos_types::phase0::misc::Validator {
+            pubkey: sc_msg_test_pubkey(),
+            effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+            activation_epoch: Epoch(0),
+            exit_epoch: Epoch(u64::MAX),
+            withdrawable_epoch: Epoch(u64::MAX),
+            slashed: false,
+            ..Default::default()
+        };
+        let validators_list =
+            pharos_ssz::SszList::from_vec(vec![validator]).expect("validators within limit");
+        let balances_list =
+            pharos_ssz::SszList::from_vec(vec![Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE)])
+                .expect("balances within limit");
+
+        // Build sync committee with the test pubkey at index 0.
+        // MinimalEthSpec: SYNC_COMMITTEE_SIZE = 32.
+        let mut sc_pubkeys_vec = vec![BLSPubkey::default(); 32];
+        sc_pubkeys_vec[0] = sc_msg_test_pubkey();
+        let sc_pubkeys_ssz = pharos_ssz::SszVector::from_vec(sc_pubkeys_vec)
+            .expect("sync committee pubkeys within vector limit");
+        let sync_committee = MinimalSyncCommittee {
+            pubkeys: sc_pubkeys_ssz,
+            aggregate_pubkey: BLSPubkey::default(),
+        };
+
+        let genesis_body_root = MinimalBeaconBlockBody::default().tree_hash_root();
+        let altair_inner = AltairMinimalState {
+            genesis_time: 0,
+            slot: genesis_slot,
+            fork: Fork {
+                previous_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+                current_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+                epoch: Epoch(0),
+            },
+            latest_block_header: BeaconBlockHeader {
+                slot: genesis_slot,
+                proposer_index: ValidatorIndex(0),
+                parent_root: Root::default(),
+                state_root: Root::default(),
+                body_root: genesis_body_root,
+            },
+            validators: validators_list,
+            balances: balances_list,
+            current_sync_committee: sync_committee.clone(),
+            next_sync_committee: sync_committee,
+            ..Default::default()
+        };
+
+        let fork_genesis_state = ForkMinimalState::Altair(altair_inner);
+        let state_root = {
+            use pharos_ssz::TreeHash as _;
+            fork_genesis_state.tree_hash_root()
+        };
+
+        let genesis_block = MinimalBeaconBlock {
+            slot: genesis_slot,
+            proposer_index: ValidatorIndex(0),
+            parent_root: Root::default(),
+            state_root,
+            body: MinimalBeaconBlockBody::default(),
+        };
+        let genesis_root: Root = {
+            use pharos_ssz::TreeHash as _;
+            genesis_block.tree_hash_root()
+        };
+
+        // Use Phase0 genesis state for fork_choice initialization (it only needs
+        // a valid state_root match). We override block_states below.
+        let phase0_default = MinimalBeaconState::default();
+        let phase0_state_root = {
+            use pharos_ssz::TreeHash as _;
+            ForkMinimalState::Phase0(phase0_default.clone()).tree_hash_root()
+        };
+        let phase0_genesis = ForkMinimalState::Phase0(phase0_default);
+        let phase0_anchor_block = MinimalBeaconBlock {
+            state_root: phase0_state_root,
+            ..MinimalBeaconBlock::default()
+        };
+        let phase0_block = pharos_types::state::BeaconBlock::Phase0(phase0_anchor_block);
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MinimalEthSpec>(
+            phase0_genesis,
+            phase0_block,
+        );
+        let fork_choice = Arc::new(RwLock::new(fc_store));
+
+        {
+            let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000;
+            let now_sec = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let mut fc = fork_choice.write();
+            // Replace genesis state with our altair state at genesis_root.
+            fc.block_states.clear();
+            fc.block_states
+                .insert(genesis_root, fork_genesis_state.clone());
+            fc.blocks.clear();
+            fc.blocks.insert(
+                genesis_root,
+                pharos_types::state::BeaconBlock::Phase0(genesis_block),
+            );
+            fc.justified_checkpoint = pharos_types::phase0::Checkpoint {
+                epoch: Epoch(0),
+                root: genesis_root,
+            };
+            fc.finalized_checkpoint = pharos_types::phase0::Checkpoint {
+                epoch: Epoch(0),
+                root: genesis_root,
+            };
+            // genesis_time set so slot 0 is "current": position now at mid-slot.
+            // slot_start = genesis_time, slot_end = genesis_time + seconds_per_slot.
+            // Setting genesis_time = now - seconds_per_slot/2 puts now at mid-slot.
+            fc.genesis_time = now_sec.saturating_sub(seconds_per_slot / 2);
+        }
+
+        let gvr = Root::default();
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(0),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(u64::MAX),
+            capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+            capella_fork_epoch: Epoch(u64::MAX),
+            genesis_validators_root: gvr,
+        };
+        let seconds_per_slot = MinimalEthSpec::SLOT_DURATION_MS / 1000;
+        let runtime_cfg = Arc::new(RuntimeConfig {
+            seconds_per_slot,
+            ..Default::default()
+        });
+        let host =
+            HostImpl::<MinimalEthSpec>::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg);
+        (host, genesis_root)
+    }
+
+    /// Build a valid `SyncCommitteeMessage` for validator 0 at slot 0 signing over
+    /// `beacon_block_root`, with optional signature corruption.
+    fn make_sync_msg(
+        head_state: &ForkMinimalState,
+        beacon_block_root: Root,
+        flip_sig: bool,
+    ) -> SyncCommitteeMessage {
+        use pharos_stf::altair::helpers::DOMAIN_SYNC_COMMITTEE;
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_signing_root, get_domain,
+        };
+        let epoch = compute_epoch_at_slot(Slot(0), MinimalEthSpec::SLOTS_PER_EPOCH);
+        let domain = get_domain::<MinimalEthSpec>(head_state, DOMAIN_SYNC_COMMITTEE, Some(epoch));
+        let signing_root = compute_signing_root(&beacon_block_root, domain);
+        let mut sig_bytes: [u8; 96] = sc_msg_test_sign(signing_root.as_ref()).into();
+        if flip_sig {
+            sig_bytes[0] ^= 0xff;
+        }
+        SyncCommitteeMessage {
+            slot: Slot(0),
+            beacon_block_root,
+            validator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+            signature: BLSSignature::from_array(sig_bytes),
+        }
+    }
+
+    // ── RSM1: sync_msg_ignores_slot_not_current ──────────────────────────────
+
+    #[test]
+    fn sync_msg_ignores_slot_not_current() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root) = make_sync_msg_host(&dir);
+        // Force genesis_time = 0 so slot 0 is in the distant past.
+        host.fork_choice.write().genesis_time = 0;
+        let msg = SyncCommitteeMessage {
+            slot: Slot(0),
+            beacon_block_root: Root::default(),
+            validator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_message(0, &msg),
+            GossipVerdict::Ignore("sync_msg: slot not current".into()),
+        );
+    }
+
+    // ── RSM2: sync_msg_ignores_state_unavailable ─────────────────────────────
+
+    #[test]
+    fn sync_msg_ignores_state_unavailable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root) = make_sync_msg_host(&dir);
+        // Remove all states so head_state_at_slot returns None.
+        host.fork_choice.write().block_states.clear();
+        let msg = SyncCommitteeMessage {
+            slot: Slot(0),
+            beacon_block_root: Root::default(),
+            validator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_message(0, &msg),
+            GossipVerdict::Ignore("sync_msg: head state unavailable".into()),
+        );
+    }
+
+    // ── RSM2: sync_msg_rejects_validator_out_of_range ────────────────────────
+
+    #[test]
+    fn sync_msg_rejects_validator_out_of_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root) = make_sync_msg_host(&dir);
+        let msg = SyncCommitteeMessage {
+            slot: Slot(0),
+            beacon_block_root: Root::default(),
+            // Only 1 validator (index 0), so index 99 is out of range.
+            validator_index: pharos_types::phase0::primitives::ValidatorIndex(99),
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_message(0, &msg),
+            GossipVerdict::Reject("sync_msg: validator index out of range".into()),
+        );
+    }
+
+    // ── RSM3: sync_msg_rejects_wrong_subnet ──────────────────────────────────
+
+    #[test]
+    fn sync_msg_rejects_wrong_subnet() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root) = make_sync_msg_host(&dir);
+        // Validator 0's pubkey is in subcommittee 0 (indices 0..8). Subnet 3 is wrong.
+        let msg = SyncCommitteeMessage {
+            slot: Slot(0),
+            beacon_block_root: Root::default(),
+            validator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_message(3, &msg),
+            GossipVerdict::Reject("sync_msg: subnet not valid for validator".into()),
+        );
+    }
+
+    // ── RSM5: sync_msg_rejects_invalid_signature ─────────────────────────────
+
+    #[test]
+    fn sync_msg_rejects_invalid_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root) = make_sync_msg_host(&dir);
+        let head_state = host
+            .fork_choice
+            .read()
+            .block_states
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let msg = make_sync_msg(&head_state, genesis_root, true /* flip_sig */);
+        assert_eq!(
+            host.validate_sync_committee_message(0, &msg),
+            GossipVerdict::Reject("sync_msg: invalid signature".into()),
+        );
+    }
+
+    // ── RSM3 / no sync committee: sync_msg_rejects_pre_altair_state ─────────────
+
+    #[test]
+    fn sync_msg_rejects_pre_altair_state() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root) = make_sync_msg_host(&dir);
+        // Replace the altair state with a phase0 state so sync_committee_pubkeys() returns None.
+        let phase0_state = ForkMinimalState::Phase0(MinimalBeaconState {
+            validators: pharos_ssz::SszList::from_vec(vec![
+                pharos_types::phase0::misc::Validator {
+                    pubkey: sc_msg_test_pubkey(),
+                    effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                    activation_epoch: pharos_types::phase0::primitives::Epoch(0),
+                    exit_epoch: pharos_types::phase0::primitives::Epoch(u64::MAX),
+                    withdrawable_epoch: pharos_types::phase0::primitives::Epoch(u64::MAX),
+                    slashed: false,
+                    ..Default::default()
+                },
+            ])
+            .expect("1 validator within limit"),
+            balances: pharos_ssz::SszList::from_vec(vec![Gwei(
+                MinimalEthSpec::MAX_EFFECTIVE_BALANCE,
+            )])
+            .expect("1 balance within limit"),
+            ..Default::default()
+        });
+        host.fork_choice
+            .write()
+            .block_states
+            .insert(genesis_root, phase0_state);
+        let msg = SyncCommitteeMessage {
+            slot: Slot(0),
+            beacon_block_root: Root::default(),
+            validator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_message(0, &msg),
+            GossipVerdict::Reject("sync_msg: no sync committee (pre-altair)".into()),
+        );
+    }
+
+    // ── RSM4 + happy path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn sync_msg_accepts_happy_path_then_deduplicates() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root) = make_sync_msg_host(&dir);
+        let head_state = host
+            .fork_choice
+            .read()
+            .block_states
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let msg = make_sync_msg(&head_state, genesis_root, false);
+
+        assert_eq!(
+            host.validate_sync_committee_message(0, &msg),
+            GossipVerdict::Accept,
+            "first valid message must Accept",
+        );
+        // Seen-cache is populated; second message with same (slot, validator, subnet) → IGNORE.
+        assert_eq!(
+            host.validate_sync_committee_message(0, &msg),
+            GossipVerdict::Ignore("sync_msg: duplicate (slot, validator, subnet)".into()),
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // sync_committee_contribution_and_proof tests (RAC1–RAC11 + happy path)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    use pharos_types::altair::{
+        ContributionAndProof, SignedContributionAndProof, SyncAggregatorSelectionData,
+        SyncCommitteeContribution,
+    };
+
+    fn sc_contrib_test_sign(msg: &[u8]) -> BLSSignature {
+        // Reuse sc_msg_test_sign — same aggregator key for contribution tests.
+        sc_msg_test_sign(msg)
+    }
+
+    /// Build a `SignedContributionAndProof<8>` (MinimalEthSpec subcommittee = 8).
+    ///
+    /// Parameters:
+    /// - `head_state`: used to compute domains.
+    /// - `agg_index`: `message.aggregator_index`.
+    /// - `subcommittee_index`: `contribution.subcommittee_index`.
+    /// - `beacon_block_root`: `contribution.beacon_block_root`.
+    /// - `participant_bits`: which bits to set in `aggregation_bits`.
+    /// - `flip_*`: corrupt the named signature for negative tests.
+    #[allow(clippy::too_many_arguments)]
+    fn make_signed_contribution(
+        head_state: &ForkMinimalState,
+        agg_index: u64,
+        subcommittee_index: u64,
+        beacon_block_root: Root,
+        participant_bits: &[bool; 8],
+        flip_sel: bool,
+        flip_agg_sig: bool,
+        flip_contrib_sig: bool,
+    ) -> SignedContributionAndProof<8> {
+        use pharos_ssz::Bitvector;
+        use pharos_ssz::TreeHash as _;
+        use pharos_stf::altair::helpers::{
+            DOMAIN_CONTRIBUTION_AND_PROOF, DOMAIN_SYNC_COMMITTEE,
+            DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF,
+        };
+        use pharos_stf::phase0::accessors::{
+            compute_epoch_at_slot, compute_signing_root, get_domain,
+        };
+
+        let slot = Slot(0);
+        let epoch = compute_epoch_at_slot(slot, MinimalEthSpec::SLOTS_PER_EPOCH);
+
+        // Build aggregation_bits bitvector.
+        let mut agg_bits = Bitvector::<8>::default();
+        for (i, &b) in participant_bits.iter().enumerate() {
+            if b {
+                agg_bits.set(i, true);
+            }
+        }
+
+        // Contribution signature: sign beacon_block_root under DOMAIN_SYNC_COMMITTEE.
+        let domain_sc =
+            get_domain::<MinimalEthSpec>(head_state, DOMAIN_SYNC_COMMITTEE, Some(epoch));
+        let sc_signing_root = compute_signing_root(&beacon_block_root, domain_sc);
+        let mut contrib_sig_bytes: [u8; 96] = sc_contrib_test_sign(sc_signing_root.as_ref()).into();
+        if flip_contrib_sig {
+            contrib_sig_bytes[0] ^= 0xff;
+        }
+
+        let contribution = SyncCommitteeContribution::<8> {
+            slot,
+            beacon_block_root,
+            subcommittee_index,
+            aggregation_bits: agg_bits,
+            signature: BLSSignature::from_array(contrib_sig_bytes),
+        };
+
+        // Selection proof: sign SyncAggregatorSelectionData under DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF.
+        let domain_sel = get_domain::<MinimalEthSpec>(
+            head_state,
+            DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF,
+            Some(epoch),
+        );
+        let sel_data = SyncAggregatorSelectionData {
+            slot,
+            subcommittee_index,
+        };
+        let sel_signing_root = compute_signing_root(&sel_data, domain_sel);
+        let mut sel_bytes: [u8; 96] = sc_contrib_test_sign(sel_signing_root.as_ref()).into();
+        if flip_sel {
+            sel_bytes[0] ^= 0xff;
+        }
+
+        let cap = ContributionAndProof::<8> {
+            aggregator_index: pharos_types::phase0::primitives::ValidatorIndex(agg_index),
+            contribution,
+            selection_proof: BLSSignature::from_array(sel_bytes),
+        };
+
+        // Aggregator signature: sign ContributionAndProof under DOMAIN_CONTRIBUTION_AND_PROOF.
+        let domain_cap =
+            get_domain::<MinimalEthSpec>(head_state, DOMAIN_CONTRIBUTION_AND_PROOF, Some(epoch));
+        let cap_root = cap.tree_hash_root();
+        let cap_signing_root = compute_signing_root(&cap_root, domain_cap);
+        let mut agg_sig_bytes: [u8; 96] = sc_contrib_test_sign(cap_signing_root.as_ref()).into();
+        if flip_agg_sig {
+            agg_sig_bytes[0] ^= 0xff;
+        }
+
+        SignedContributionAndProof::<8> {
+            message: cap,
+            signature: BLSSignature::from_array(agg_sig_bytes),
+        }
+    }
+
+    // ── RAC1: sync_contrib_ignores_slot_not_current ──────────────────────────
+
+    #[test]
+    fn sync_contrib_ignores_slot_not_current() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root) = make_sync_msg_host(&dir);
+        host.fork_choice.write().genesis_time = 0;
+        let msg = SignedContributionAndProof::<8> {
+            message: ContributionAndProof::<8> {
+                aggregator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+                contribution: SyncCommitteeContribution::<8> {
+                    slot: Slot(0),
+                    beacon_block_root: Root::default(),
+                    subcommittee_index: 0,
+                    aggregation_bits: pharos_ssz::Bitvector::default(),
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Ignore("sync_contrib: slot not current".into()),
+        );
+    }
+
+    // ── RAC2: sync_contrib_rejects_subcommittee_out_of_range ─────────────────
+
+    #[test]
+    fn sync_contrib_rejects_subcommittee_out_of_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root) = make_sync_msg_host(&dir);
+        // MinimalEthSpec::SYNC_COMMITTEE_SUBNET_COUNT = 4, so index 99 is out of range.
+        let msg = SignedContributionAndProof::<8> {
+            message: ContributionAndProof::<8> {
+                aggregator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+                contribution: SyncCommitteeContribution::<8> {
+                    slot: Slot(0),
+                    beacon_block_root: Root::default(),
+                    subcommittee_index: 99,
+                    aggregation_bits: pharos_ssz::Bitvector::default(),
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Reject("sync_contrib: subcommittee index out of range".into()),
+        );
+    }
+
+    // ── RAC3: sync_contrib_rejects_no_participants ────────────────────────────
+
+    #[test]
+    fn sync_contrib_rejects_no_participants() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root) = make_sync_msg_host(&dir);
+        // All bits clear = no participants.
+        let msg = SignedContributionAndProof::<8> {
+            message: ContributionAndProof::<8> {
+                aggregator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+                contribution: SyncCommitteeContribution::<8> {
+                    slot: Slot(0),
+                    beacon_block_root: Root::default(),
+                    subcommittee_index: 0,
+                    aggregation_bits: pharos_ssz::Bitvector::default(),
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Reject("sync_contrib: no participants".into()),
+        );
+    }
+
+    // ── RAC5: sync_contrib_ignores_state_unavailable ─────────────────────────
+    // (RAC4 is not reachable for MinimalEthSpec because modulo=1 always → true)
+
+    #[test]
+    fn sync_contrib_ignores_state_unavailable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root) = make_sync_msg_host(&dir);
+        host.fork_choice.write().block_states.clear();
+        let mut agg_bits = pharos_ssz::Bitvector::<8>::default();
+        agg_bits.set(0, true);
+        let msg = SignedContributionAndProof::<8> {
+            message: ContributionAndProof::<8> {
+                aggregator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+                contribution: SyncCommitteeContribution::<8> {
+                    slot: Slot(0),
+                    beacon_block_root: Root::default(),
+                    subcommittee_index: 0,
+                    aggregation_bits: agg_bits,
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Ignore("sync_contrib: head state unavailable".into()),
+        );
+    }
+
+    // ── RAC5: sync_contrib_rejects_aggregator_out_of_range ───────────────────
+
+    #[test]
+    fn sync_contrib_rejects_aggregator_out_of_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root) = make_sync_msg_host(&dir);
+        let mut agg_bits = pharos_ssz::Bitvector::<8>::default();
+        agg_bits.set(0, true);
+        let msg = SignedContributionAndProof::<8> {
+            message: ContributionAndProof::<8> {
+                // Only 1 validator (index 0) in state; index 99 is out of range.
+                aggregator_index: pharos_types::phase0::primitives::ValidatorIndex(99),
+                contribution: SyncCommitteeContribution::<8> {
+                    slot: Slot(0),
+                    beacon_block_root: Root::default(),
+                    subcommittee_index: 0,
+                    aggregation_bits: agg_bits,
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Reject("sync_contrib: aggregator index out of range".into()),
+        );
+    }
+
+    // ── RAC6 / no sync committee: sync_contrib_rejects_pre_altair_state ────────
+
+    #[test]
+    fn sync_contrib_rejects_pre_altair_state() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root) = make_sync_msg_host(&dir);
+        // Replace with a phase0 state so sync_committee_pubkeys() returns None.
+        let phase0_state = ForkMinimalState::Phase0(MinimalBeaconState {
+            validators: pharos_ssz::SszList::from_vec(vec![
+                pharos_types::phase0::misc::Validator {
+                    pubkey: sc_msg_test_pubkey(),
+                    effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+                    activation_epoch: pharos_types::phase0::primitives::Epoch(0),
+                    exit_epoch: pharos_types::phase0::primitives::Epoch(u64::MAX),
+                    withdrawable_epoch: pharos_types::phase0::primitives::Epoch(u64::MAX),
+                    slashed: false,
+                    ..Default::default()
+                },
+            ])
+            .expect("1 validator within limit"),
+            balances: pharos_ssz::SszList::from_vec(vec![Gwei(
+                MinimalEthSpec::MAX_EFFECTIVE_BALANCE,
+            )])
+            .expect("1 balance within limit"),
+            ..Default::default()
+        });
+        host.fork_choice
+            .write()
+            .block_states
+            .insert(genesis_root, phase0_state);
+        let mut agg_bits = pharos_ssz::Bitvector::<8>::default();
+        agg_bits.set(0, true);
+        let msg = SignedContributionAndProof::<8> {
+            message: ContributionAndProof::<8> {
+                aggregator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+                contribution: SyncCommitteeContribution::<8> {
+                    slot: Slot(0),
+                    beacon_block_root: Root::default(),
+                    subcommittee_index: 0,
+                    aggregation_bits: agg_bits,
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Reject("sync_contrib: no sync committee (pre-altair)".into()),
+        );
+    }
+
+    // ── RAC6: sync_contrib_rejects_aggregator_not_in_subcommittee ────────────
+
+    #[test]
+    fn sync_contrib_rejects_aggregator_not_in_subcommittee() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, _genesis_root) = make_sync_msg_host(&dir);
+        // Our test pubkey is only at index 0 in the sync committee (subcommittee 0).
+        // Claiming subcommittee 1 → not in subcommittee.
+        let mut agg_bits = pharos_ssz::Bitvector::<8>::default();
+        agg_bits.set(0, true);
+        let msg = SignedContributionAndProof::<8> {
+            message: ContributionAndProof::<8> {
+                aggregator_index: pharos_types::phase0::primitives::ValidatorIndex(0),
+                contribution: SyncCommitteeContribution::<8> {
+                    slot: Slot(0),
+                    beacon_block_root: Root::default(),
+                    subcommittee_index: 1, // wrong subcommittee
+                    aggregation_bits: agg_bits,
+                    signature: BLSSignature::from_array([0u8; 96]),
+                },
+                selection_proof: BLSSignature::from_array([0u8; 96]),
+            },
+            signature: BLSSignature::from_array([0u8; 96]),
+        };
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Reject("sync_contrib: aggregator not in subcommittee".into()),
+        );
+    }
+
+    // ── RAC7: sync_contrib_ignores_superset_seen ─────────────────────────────
+
+    #[test]
+    fn sync_contrib_ignores_superset_seen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root) = make_sync_msg_host(&dir);
+        let head_state = host
+            .fork_choice
+            .read()
+            .block_states
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+
+        // Accept a contribution covering bit 0.
+        let msg_a = make_signed_contribution(
+            &head_state,
+            0,
+            0,
+            genesis_root,
+            &[true, false, false, false, false, false, false, false],
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg_a),
+            GossipVerdict::Accept,
+        );
+
+        // A contribution covering only bit 0 again → RAC7 superset seen fires first
+        // (RAC7 runs before RAC8 in the validation pipeline).
+        let msg_b = make_signed_contribution(
+            &head_state,
+            0,
+            0,
+            genesis_root,
+            &[true, false, false, false, false, false, false, false],
+            false,
+            false,
+            false,
+        );
+        // RAC7 fires (all bits of msg_b are already in the stored seen_data).
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg_b),
+            GossipVerdict::Ignore("sync_contrib: contribution superset seen".into()),
+        );
+    }
+
+    // ── RAC9: sync_contrib_rejects_invalid_selection_proof ───────────────────
+
+    #[test]
+    fn sync_contrib_rejects_invalid_selection_proof() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root) = make_sync_msg_host(&dir);
+        let head_state = host
+            .fork_choice
+            .read()
+            .block_states
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+
+        let msg = make_signed_contribution(
+            &head_state,
+            0,
+            0,
+            genesis_root,
+            &[true, false, false, false, false, false, false, false],
+            true, // flip_sel
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Reject("sync_contrib: invalid selection proof signature".into()),
+        );
+    }
+
+    // ── RAC10: sync_contrib_rejects_invalid_aggregator_signature ─────────────
+
+    #[test]
+    fn sync_contrib_rejects_invalid_aggregator_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root) = make_sync_msg_host(&dir);
+        let head_state = host
+            .fork_choice
+            .read()
+            .block_states
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+
+        let msg = make_signed_contribution(
+            &head_state,
+            0,
+            0,
+            genesis_root,
+            &[true, false, false, false, false, false, false, false],
+            false,
+            true, // flip_agg_sig
+            false,
+        );
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Reject("sync_contrib: invalid aggregator signature".into()),
+        );
+    }
+
+    // ── RAC11: sync_contrib_rejects_invalid_aggregate_signature ──────────────
+
+    #[test]
+    fn sync_contrib_rejects_invalid_aggregate_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root) = make_sync_msg_host(&dir);
+        let head_state = host
+            .fork_choice
+            .read()
+            .block_states
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+
+        let msg = make_signed_contribution(
+            &head_state,
+            0,
+            0,
+            genesis_root,
+            &[true, false, false, false, false, false, false, false],
+            false,
+            false,
+            true, // flip_contrib_sig
+        );
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Reject("sync_contrib: invalid aggregate signature".into()),
+        );
+    }
+
+    // ── happy path + dedup: sync_contrib_accepts_happy_path ──────────────────
+
+    #[test]
+    fn sync_contrib_accepts_happy_path_then_deduplicates() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (host, genesis_root) = make_sync_msg_host(&dir);
+        let head_state = host
+            .fork_choice
+            .read()
+            .block_states
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+
+        let msg = make_signed_contribution(
+            &head_state,
+            0,
+            0,
+            genesis_root,
+            &[true, false, false, false, false, false, false, false],
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg),
+            GossipVerdict::Accept,
+            "first valid contribution must Accept",
+        );
+
+        // seen_sync_contribution_aggregators populated → second call IGNORE (RAC8).
+        let msg2 = make_signed_contribution(
+            &head_state,
+            0,
+            0,
+            genesis_root,
+            &[false, true, false, false, false, false, false, false],
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            host.validate_sync_committee_contribution_and_proof(&msg2),
+            GossipVerdict::Ignore("sync_contrib: duplicate aggregator/slot/subcommittee".into()),
         );
     }
 }

@@ -54,6 +54,8 @@ pub use phase0::accessors::{
 // a single location without depending on `pharos-stf::phase0::helpers` directly.
 pub use altair::helpers::{
     DOMAIN_CONTRIBUTION_AND_PROOF, DOMAIN_SYNC_COMMITTEE, DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF,
+    compute_subnets_for_sync_committee, get_sync_subcommittee_pubkeys,
+    is_sync_committee_aggregator,
 };
 pub use capella::helpers::DOMAIN_BLS_TO_EXECUTION_CHANGE;
 pub use phase0::helpers::{

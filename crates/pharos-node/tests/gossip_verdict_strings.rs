@@ -17,7 +17,7 @@
 //! `bls_to_exec: ` validator.
 //!
 //! Counts audited from source: block=13, att=15, agg=20, exit=8, ps=8, as=8,
-//! bte=7, total=78 (each of the 4 new validators also has a defensive
+//! bte=7, sync_msg=8, sync_contrib=14, total=100 (each validator has a defensive
 //! "head state unavailable" IGNORE string beyond the spec IGNORE/REJECT rules).
 //!
 //! `"block: unrecognised fork variant"` was removed in M7 commit 2598fb5: the
@@ -115,7 +115,7 @@ const EXPECTED: &[&str] = &[
     "attester_slashing: invalid indexed attestation_1",
     "attester_slashing: invalid indexed attestation_2",
     "attester_slashing: no slashable validators in intersection",
-    // ── bls_to_exec (6: 2 IGNORE + 4 REJECT) ─────────────────────────────────
+    // ── bls_to_exec (7: 2 IGNORE + 5 REJECT) ─────────────────────────────────
     "bls_to_exec: already seen for this validator",
     "bls_to_exec: current epoch is pre-capella",
     "bls_to_exec: head state unavailable",
@@ -123,6 +123,30 @@ const EXPECTED: &[&str] = &[
     "bls_to_exec: not BLS withdrawal credentials",
     "bls_to_exec: pubkey hash mismatch",
     "bls_to_exec: validator index out of range",
+    // ── sync_msg (8: 3 IGNORE + 5 REJECT) ────────────────────────────────────
+    "sync_msg: clock unavailable",
+    "sync_msg: duplicate (slot, validator, subnet)",
+    "sync_msg: head state unavailable",
+    "sync_msg: invalid signature",
+    "sync_msg: no sync committee (pre-altair)",
+    "sync_msg: slot not current",
+    "sync_msg: subnet not valid for validator",
+    "sync_msg: validator index out of range",
+    // ── sync_contrib (14: 5 IGNORE + 9 REJECT) ───────────────────────────────
+    "sync_contrib: aggregator index out of range",
+    "sync_contrib: aggregator not in subcommittee",
+    "sync_contrib: clock unavailable",
+    "sync_contrib: contribution superset seen",
+    "sync_contrib: duplicate aggregator/slot/subcommittee",
+    "sync_contrib: head state unavailable",
+    "sync_contrib: invalid aggregate signature",
+    "sync_contrib: invalid aggregator signature",
+    "sync_contrib: invalid selection proof signature",
+    "sync_contrib: no participants",
+    "sync_contrib: no sync committee (pre-altair)",
+    "sync_contrib: not selected as aggregator",
+    "sync_contrib: slot not current",
+    "sync_contrib: subcommittee index out of range",
 ];
 
 /// Extract all quoted strings from `src` that start with one of the topic
@@ -136,6 +160,8 @@ fn extract_prefixed_strings(src: &str) -> Vec<String> {
         "proposer_slashing: ",
         "attester_slashing: ",
         "bls_to_exec: ",
+        "sync_msg: ",
+        "sync_contrib: ",
     ];
     let mut found = std::collections::BTreeSet::new();
     let mut chars = src.chars().peekable();
@@ -228,6 +254,14 @@ fn verdict_strings_match_known_list() {
         .iter()
         .filter(|s| s.starts_with("bls_to_exec: "))
         .count();
+    let sync_msg_count = EXPECTED
+        .iter()
+        .filter(|s| s.starts_with("sync_msg: "))
+        .count();
+    let sync_contrib_count = EXPECTED
+        .iter()
+        .filter(|s| s.starts_with("sync_contrib: "))
+        .count();
     assert_eq!(
         block_count, 12,
         "expected 12 inline block: strings (parent-unseen lives in const)"
@@ -245,9 +279,17 @@ fn verdict_strings_match_known_list() {
         "expected 7 bls_to_exec: strings (2 IGNORE + 5 incl. head-state)"
     );
     assert_eq!(
+        sync_msg_count, 8,
+        "expected 8 sync_msg: strings (3 IGNORE + 5 REJECT)"
+    );
+    assert_eq!(
+        sync_contrib_count, 14,
+        "expected 14 sync_contrib: strings (5 IGNORE + 9 REJECT)"
+    );
+    assert_eq!(
         EXPECTED.len(),
-        78,
-        "expected 78 total inline verdict strings"
+        100,
+        "expected 100 total inline verdict strings"
     );
 
     // ── Part 4: GOSSIP_REASON_PARENT_UNSEEN const is the canonical definition ──

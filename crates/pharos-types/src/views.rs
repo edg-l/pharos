@@ -56,6 +56,69 @@ pub enum ForkVariant {
     Capella,
 }
 
+// ── SignedContributionAndProofView ────────────────────────────────────────────
+
+/// Read-only accessors for `SignedContributionAndProof<SYNC_SUBCOMMITTEE_SIZE>`.
+///
+/// Replaces direct field access for generic gossip-validator code that cannot
+/// name the const-generic `SYNC_SUBCOMMITTEE_SIZE` (= mainnet 128 / minimal 8).
+///
+/// Implemented by the blanket impl below over all concrete
+/// `SignedContributionAndProof<N>`.
+pub trait SignedContributionAndProofView {
+    /// `contribution.slot`
+    fn contribution_slot(&self) -> Slot;
+    /// `contribution.beacon_block_root`
+    fn contribution_beacon_block_root(&self) -> Root;
+    /// `contribution.subcommittee_index`
+    fn contribution_subcommittee_index(&self) -> u64;
+    /// `contribution.aggregation_bits` materialized as a `Vec<bool>` (one entry
+    /// per subcommittee slot).  No const-generic needed by the caller.
+    fn contribution_aggregation_bits(&self) -> Vec<bool>;
+    /// `contribution.signature`
+    fn contribution_signature(&self) -> &BLSSignature;
+    /// `message.aggregator_index`
+    fn aggregator_index(&self) -> ValidatorIndex;
+    /// `message.selection_proof`
+    fn selection_proof(&self) -> &BLSSignature;
+    /// `tree_hash_root(message)` — used by the gossip validator to compute the
+    /// signing root of the `ContributionAndProof` without naming the generic type.
+    fn message_tree_hash_root(&self) -> Root;
+    /// `signature` — the outer signed wrapper signature.
+    fn outer_signature(&self) -> &BLSSignature;
+}
+
+impl<const N: u64> SignedContributionAndProofView for crate::altair::SignedContributionAndProof<N> {
+    fn contribution_slot(&self) -> Slot {
+        self.message.contribution.slot
+    }
+    fn contribution_beacon_block_root(&self) -> Root {
+        self.message.contribution.beacon_block_root
+    }
+    fn contribution_subcommittee_index(&self) -> u64 {
+        self.message.contribution.subcommittee_index
+    }
+    fn contribution_aggregation_bits(&self) -> Vec<bool> {
+        self.message.contribution.aggregation_bits.iter().collect()
+    }
+    fn contribution_signature(&self) -> &BLSSignature {
+        &self.message.contribution.signature
+    }
+    fn aggregator_index(&self) -> ValidatorIndex {
+        self.message.aggregator_index
+    }
+    fn selection_proof(&self) -> &BLSSignature {
+        &self.message.selection_proof
+    }
+    fn message_tree_hash_root(&self) -> Root {
+        use pharos_ssz::TreeHash as _;
+        self.message.tree_hash_root()
+    }
+    fn outer_signature(&self) -> &BLSSignature {
+        &self.signature
+    }
+}
+
 // ── BeaconBlockBodyView ───────────────────────────────────────────────────────
 
 /// Read-only accessors for `BeaconBlockBody` fields.

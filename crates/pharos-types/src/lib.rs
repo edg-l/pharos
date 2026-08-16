@@ -73,5 +73,5 @@ pub use state::{BeaconBlock, BeaconBlockBody, BeaconState, SignedBeaconBlock};
 pub use views::{
     BeaconBlockBodyView, BeaconBlockView, BeaconStateView, ExecutionPayloadHeaderRaw,
     LightClientFinalityUpdateView, LightClientOptimisticUpdateView, PendingAttestationRaw,
-    SignedBeaconBlockView, SyncCommitteePubkeys,
+    SignedBeaconBlockView, SignedContributionAndProofView, SyncCommitteePubkeys,
 };

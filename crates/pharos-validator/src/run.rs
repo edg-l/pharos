@@ -98,16 +98,11 @@ pub fn is_aggregator(selection_proof_sig: &[u8], committee_length: u64) -> bool 
 
 /// Determine whether this validator is a sync-committee aggregator for a subcommittee.
 ///
-/// Per `specs/altair/validator.md`: `is_sync_committee_aggregator(signature) →
-/// SHA256(signature)[0..8] as uint64 % modulo == 0`
-/// with `modulo = TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE = 16`
-/// (SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT / TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE
-/// is the correct denominator, constant at 16).
+/// Delegates to `pharos_stf::is_sync_committee_aggregator::<MainnetEthSpec>` —
+/// the authoritative definition lives there so both the VC and the node's gossip
+/// validator share one implementation. The VC operates exclusively on mainnet.
 pub fn is_sync_committee_aggregator(selection_proof_sig: &[u8]) -> bool {
-    const MODULO: u64 = 16;
-    let hash = pharos_utils::hash::hash(selection_proof_sig);
-    let first8 = u64::from_le_bytes(hash.as_slice()[..8].try_into().unwrap_or([0u8; 8]));
-    first8 % MODULO == 0
+    pharos_stf::is_sync_committee_aggregator::<pharos_types::MainnetEthSpec>(selection_proof_sig)
 }
 
 // ── ValidatorEntry ────────────────────────────────────────────────────────────

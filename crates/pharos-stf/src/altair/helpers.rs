@@ -1517,6 +1517,121 @@ pub(crate) fn initiate_validator_exit_altair_pub<
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+// ── Sync-committee aggregator / subnet helpers ────────────────────────────────
+
+/// `is_sync_committee_aggregator` per `specs/altair/validator.md:438-443`.
+///
+/// A validator is selected as a sync-committee aggregator when
+/// `SHA256(selection_proof)[0:8] as uint64 % modulo == 0`
+/// with `modulo = max(1, SYNC_COMMITTEE_SIZE // SYNC_COMMITTEE_SUBNET_COUNT //
+/// TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE)`.
+///
+/// The constants reduce to `modulo = max(1, subcommittee_size // 16)` where
+/// `subcommittee_size = SYNC_COMMITTEE_SIZE / SYNC_COMMITTEE_SUBNET_COUNT`.
+/// For mainnet (512/4/16 = 8) and minimal (32/4/16 = 0 → 1) the modulo is
+/// well-defined.
+///
+/// Only the selection-proof *bytes* are needed; the caller holds them as a
+/// `BLSSignature` and can pass `sig.as_slice()` (or `sig.0.as_ref()`).
+pub fn is_sync_committee_aggregator<E: pharos_types::EthSpec>(
+    selection_proof_bytes: &[u8],
+) -> bool {
+    let modulo = std::cmp::max(
+        1,
+        E::SYNC_COMMITTEE_SIZE
+            / E::SYNC_COMMITTEE_SUBNET_COUNT
+            / E::TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE,
+    );
+    let hash = pharos_utils::hash::hash(selection_proof_bytes);
+    let first8 = u64::from_le_bytes(hash.as_slice()[..8].try_into().unwrap_or([0u8; 8]));
+    first8 % modulo == 0
+}
+
+/// `compute_subnets_for_sync_committee` per `specs/altair/validator.md:378-395`.
+///
+/// Returns the set of subnet IDs on which `validator_index` should broadcast
+/// `SyncCommitteeMessage`s during the current slot.
+///
+/// Uses the *current* sync committee unless the next slot crosses a sync
+/// committee period boundary, in which case the *next* committee is used.
+///
+/// Parameters:
+/// - `current_pubkeys` / `next_pubkeys`: the full ordered pubkey slices from
+///   `state.current_sync_committee.pubkeys` and `state.next_sync_committee.pubkeys`
+///   respectively — available from `BeaconStateView::sync_committee_pubkeys()`.
+/// - `state_slot`: `state.slot`.
+/// - `validator_pubkey`: the 48-byte pubkey of the target validator.
+///
+/// Returns an ordered, deduplicated `Vec<u64>` of subnet indices.
+pub fn compute_subnets_for_sync_committee<E: pharos_types::EthSpec>(
+    current_pubkeys: &[[u8; 48]],
+    next_pubkeys: &[[u8; 48]],
+    state_slot: u64,
+    validator_pubkey: &[u8; 48],
+) -> Vec<u64> {
+    use crate::phase0::accessors::compute_epoch_at_slot;
+    use pharos_types::phase0::Slot;
+
+    // Determine whether to use current or next sync committee per spec:
+    // "if compute_sync_committee_period(get_current_epoch(state)) ==
+    //     compute_sync_committee_period(compute_epoch_at_slot(Slot(state.slot + 1)))"
+    let current_epoch = compute_epoch_at_slot(Slot(state_slot), E::SLOTS_PER_EPOCH);
+    let next_slot_epoch = compute_epoch_at_slot(Slot(state_slot + 1), E::SLOTS_PER_EPOCH);
+    let current_period = current_epoch.0 / E::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+    let next_period = next_slot_epoch.0 / E::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+    let sync_pubkeys = if current_period == next_period {
+        current_pubkeys
+    } else {
+        next_pubkeys
+    };
+
+    let subcommittee_size = E::SYNC_COMMITTEE_SIZE / E::SYNC_COMMITTEE_SUBNET_COUNT;
+
+    let mut subnets: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    for (index, pk) in sync_pubkeys.iter().enumerate() {
+        if pk == validator_pubkey {
+            subnets.insert(index as u64 / subcommittee_size);
+        }
+    }
+    subnets.into_iter().collect()
+}
+
+/// `get_sync_subcommittee_pubkeys` per `specs/altair/p2p-interface.md:98-114`.
+///
+/// Returns the ordered pubkeys in subcommittee `subcommittee_index` for the
+/// current slot (using current or next sync committee per the same period
+/// transition logic as `compute_subnets_for_sync_committee`).
+///
+/// Parameters are the same as in `compute_subnets_for_sync_committee`.
+/// Returns an empty vec for an out-of-range `subcommittee_index`.
+pub fn get_sync_subcommittee_pubkeys<E: pharos_types::EthSpec>(
+    current_pubkeys: &[[u8; 48]],
+    next_pubkeys: &[[u8; 48]],
+    state_slot: u64,
+    subcommittee_index: u64,
+) -> Vec<[u8; 48]> {
+    use crate::phase0::accessors::compute_epoch_at_slot;
+    use pharos_types::phase0::Slot;
+
+    let current_epoch = compute_epoch_at_slot(Slot(state_slot), E::SLOTS_PER_EPOCH);
+    let next_slot_epoch = compute_epoch_at_slot(Slot(state_slot + 1), E::SLOTS_PER_EPOCH);
+    let current_period = current_epoch.0 / E::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+    let next_period = next_slot_epoch.0 / E::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+    let sync_pubkeys = if current_period == next_period {
+        current_pubkeys
+    } else {
+        next_pubkeys
+    };
+
+    if subcommittee_index >= E::SYNC_COMMITTEE_SUBNET_COUNT {
+        return vec![];
+    }
+    let subcommittee_size = E::SYNC_COMMITTEE_SIZE / E::SYNC_COMMITTEE_SUBNET_COUNT;
+    let start = (subcommittee_index * subcommittee_size) as usize;
+    let end = (start as u64 + subcommittee_size) as usize;
+    sync_pubkeys.get(start..end).unwrap_or(&[]).to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
