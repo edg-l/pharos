@@ -354,6 +354,21 @@ pub struct Network<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvide
     ///      bootnode dial failures where `OutgoingConnectionError.peer_id=None`
     ///      cannot key into this map.
     pending_dials: HashMap<PeerId, Instant>,
+    /// Gossip validation tasks dispatched via `spawn_blocking`.
+    ///
+    /// Each task returns `(verdict, propagation_source, message_id, topic,
+    /// ssz_bytes, message)` so the main select loop can report the result
+    /// to gossipsub, score the peer, and emit events without re-acquiring
+    /// the data from the now-dropped task scope.
+    #[allow(clippy::type_complexity)]
+    gossip_tasks: tokio::task::JoinSet<(
+        GossipVerdict,
+        PeerId,
+        gossipsub::MessageId,
+        GossipTopic,
+        Vec<u8>,
+        gossipsub::Message,
+    )>,
     _phantom: PhantomData<E>,
 }
 
@@ -518,6 +533,89 @@ impl<
                 }
                 _ = self.score_prune_tick.tick() => {
                     self.tick_score_prune();
+                }
+                Some(join_result) = self.gossip_tasks.join_next() => {
+                    match join_result {
+                        Ok((verdict, propagation_source, message_id, topic, ssz_bytes, message)) => {
+                            // --- same logic as current lines 770-846 ---
+                            // Convert verdict to gossipsub MessageAcceptance.
+                            let score_event;
+                            let acceptance = match &verdict {
+                                GossipVerdict::Accept => {
+                                    score_event = ScoreEvent::GossipAccept {
+                                        topic: message.topic.clone(),
+                                    };
+                                    MessageAcceptance::Accept
+                                }
+                                GossipVerdict::Reject(reason) => {
+                                    score_event = ScoreEvent::GossipReject {
+                                        topic: message.topic.clone(),
+                                        reason: reason.clone(),
+                                    };
+                                    MessageAcceptance::Reject
+                                }
+                                GossipVerdict::Ignore(reason) => {
+                                    score_event = ScoreEvent::GossipIgnore {
+                                        topic: message.topic.clone(),
+                                        reason: reason.clone(),
+                                    };
+                                    MessageAcceptance::Ignore
+                                }
+                            };
+
+                            // Report validation result to gossipsub.
+                            if !self
+                                .swarm
+                                .behaviour_mut()
+                                .gossipsub
+                                .report_message_validation_result(&message_id, &propagation_source, acceptance)
+                            {
+                                tracing::debug!(%message_id, "report_message_validation_result returned false (message not in cache)");
+                            }
+
+                            // Emit topic-specific events for accepted and selected-ignore messages.
+                            match &verdict {
+                                GossipVerdict::Accept => {
+                                    if let GossipTopicKind::BlobSidecar(subnet) = topic.kind {
+                                        self.emit_event(NetworkEvent::GossipBlobSidecar {
+                                            subnet,
+                                            peer: propagation_source,
+                                            data: ssz_bytes,
+                                        })
+                                        .await;
+                                    } else {
+                                        self.emit_event(NetworkEvent::GossipMessage {
+                                            topic,
+                                            peer: propagation_source,
+                                            data: ssz_bytes,
+                                        })
+                                        .await;
+                                    }
+                                }
+                                GossipVerdict::Ignore(reason)
+                                    if topic.kind == GossipTopicKind::BeaconBlock
+                                        && reason == GOSSIP_REASON_PARENT_UNSEEN =>
+                                {
+                                    self.emit_event(NetworkEvent::UnknownParentBlock {
+                                        topic,
+                                        peer: propagation_source,
+                                        data: ssz_bytes,
+                                    })
+                                    .await;
+                                }
+                                _ => {}
+                            }
+
+                            // Record score event for the peer.
+                            self.peer_manager
+                                .record_event(propagation_source, score_event);
+                        }
+                        Err(join_err) => {
+                            if join_err.is_panic() {
+                                tracing::error!(%join_err, "gossip validation task panicked");
+                            }
+                        }
+                    }
                 }
                 _ = &mut self.shutdown_signal => {
                     self.shutdown_goodbye().await;
@@ -755,95 +853,25 @@ impl<
             }
         };
 
-        // SSZ-decode + validate via the host.
+        // SSZ-decode + validate via the host on a blocking thread.
         // `dispatch_gossip_message` may call BLS verify (a blocking CPU op).
         // Running it on a blocking thread prevents stalling the async executor.
-        let verdict = tokio::task::spawn_blocking({
-            let host = self.host.clone();
-            let topic = topic.clone();
-            let bytes = ssz_bytes.clone();
-            move || dispatch_gossip_message::<E, H>(host.as_ref(), &topic, &bytes)
-        })
-        .await
-        .expect("dispatch task panicked");
-
-        // Convert verdict to gossipsub MessageAcceptance.
-        let score_event;
-        let acceptance = match &verdict {
-            GossipVerdict::Accept => {
-                score_event = ScoreEvent::GossipAccept {
-                    topic: message.topic.clone(),
-                };
-                MessageAcceptance::Accept
-            }
-            GossipVerdict::Reject(reason) => {
-                score_event = ScoreEvent::GossipReject {
-                    topic: message.topic.clone(),
-                    reason: reason.clone(),
-                };
-                MessageAcceptance::Reject
-            }
-            GossipVerdict::Ignore(reason) => {
-                score_event = ScoreEvent::GossipIgnore {
-                    topic: message.topic.clone(),
-                    reason: reason.clone(),
-                };
-                MessageAcceptance::Ignore
-            }
-        };
-
-        // Report validation result to gossipsub.
-        if !self
-            .swarm
-            .behaviour_mut()
-            .gossipsub
-            .report_message_validation_result(&message_id, &propagation_source, acceptance)
-        {
-            tracing::debug!(%message_id, "report_message_validation_result returned false (message not in cache)");
-        }
-
-        // Emit topic-specific events for accepted and selected-ignore messages.
-        match &verdict {
-            GossipVerdict::Accept => {
-                // Blob sidecars get their own typed event so Phase 5's
-                // `run_blob_ingestion_loop` can receive them without parsing the
-                // generic `GossipMessage` data field (D-bls-on-hot-path / task 3.4).
-                if let GossipTopicKind::BlobSidecar(subnet) = topic.kind {
-                    self.emit_event(NetworkEvent::GossipBlobSidecar {
-                        subnet,
-                        peer: propagation_source,
-                        data: ssz_bytes,
-                    })
-                    .await;
-                } else {
-                    // All other accepted topics: emit the generic GossipMessage.
-                    self.emit_event(NetworkEvent::GossipMessage {
-                        topic,
-                        peer: propagation_source,
-                        data: ssz_bytes,
-                    })
-                    .await;
-                }
-            }
-            GossipVerdict::Ignore(reason)
-                if topic.kind == GossipTopicKind::BeaconBlock
-                    && reason == GOSSIP_REASON_PARENT_UNSEEN =>
-            {
-                // RB6: parent unseen — surface to the lookup loop so it can
-                // fetch the missing ancestor and replay the orphaned block.
-                self.emit_event(NetworkEvent::UnknownParentBlock {
-                    topic,
-                    peer: propagation_source,
-                    data: ssz_bytes,
-                })
-                .await;
-            }
-            _ => {}
-        }
-
-        // Record score event for the peer.
-        self.peer_manager
-            .record_event(propagation_source, score_event);
+        // The task returns ALL captured state so the completion arm in the main
+        // select loop can report the verdict without re-acquiring it.
+        let host = self.host.clone();
+        let topic = topic.clone();
+        let bytes = ssz_bytes.clone();
+        self.gossip_tasks.spawn_blocking(move || {
+            let verdict = dispatch_gossip_message::<E, H>(host.as_ref(), &topic, &bytes);
+            (
+                verdict,
+                propagation_source,
+                message_id,
+                topic,
+                ssz_bytes,
+                message,
+            )
+        });
     }
 
     /// Handle an inbound or outbound req-resp event.
@@ -1349,10 +1377,8 @@ impl<
                     banned_peer = %peer_id,
                     "rejecting connection from banned peer"
                 );
-                self.peer_manager.record_event(
-                    peer_id,
-                    ScoreEvent::BannedPeerConnected,
-                );
+                self.peer_manager
+                    .record_event(peer_id, ScoreEvent::BannedPeerConnected);
                 self.swarm.disconnect_peer_id(peer_id).ok();
                 return;
             }
@@ -2109,6 +2135,7 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
             score_prune_tick,
             bootnodes: bootnodes_for_network,
             pending_dials: HashMap::new(),
+            gossip_tasks: tokio::task::JoinSet::new(),
             _phantom: PhantomData,
         };
 

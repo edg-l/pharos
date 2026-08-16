@@ -469,16 +469,12 @@ impl<E: EthSpec> HostImpl<E> {
         use pharos_stf::process_slots_fork;
         use pharos_types::BeaconStateView as _;
 
-        let (head_root, fork_epochs) = {
+        let (mut state, fork_epochs) = {
             let fc = self.fork_choice.read();
-            (pharos_fork_choice::get_head(&*fc), fc.fork_epochs())
+            let head_root = pharos_fork_choice::get_head(&*fc);
+            let fork_epochs = fc.fork_epochs();
+            (fc.block_states.get(&head_root)?.clone(), fork_epochs)
         };
-        let mut state = self
-            .fork_choice
-            .read()
-            .block_states
-            .get(&head_root)?
-            .clone();
         if state.slot() < slot {
             process_slots_fork::<E>(&mut state, slot, fork_epochs, &self.runtime_cfg).ok()?;
         }
@@ -514,9 +510,12 @@ impl<E: EthSpec> HostImpl<E> {
         use pharos_stf::process_slots_fork;
         use pharos_types::BeaconStateView as _;
 
-        let (head_root, fork_epochs) = {
+        let (head_root, mut state, fork_epochs) = {
             let fc = self.fork_choice.read();
-            (pharos_fork_choice::get_head(&*fc), fc.fork_epochs())
+            let hr = pharos_fork_choice::get_head(&*fc);
+            let fe = fc.fork_epochs();
+            let s = fc.block_states.get(&hr)?.clone();
+            (hr, s, fe)
         };
 
         let cache_key = (slot, index, head_root);
@@ -527,12 +526,7 @@ impl<E: EthSpec> HostImpl<E> {
         }
 
         // Slow path: advance head state to `slot` and compute committee.
-        let mut state = self
-            .fork_choice
-            .read()
-            .block_states
-            .get(&head_root)?
-            .clone();
+        // `state` is already cloned from the single lock above.
         if state.slot() < slot {
             process_slots_fork::<E>(&mut state, slot, fork_epochs, &self.runtime_cfg).ok()?;
         }
@@ -577,38 +571,29 @@ impl<E: EthSpec> HostImpl<E> {
         use pharos_stf::process_slots_fork;
         use pharos_types::BeaconStateView as _;
 
-        let fork_epochs = self.fork_choice.read().fork_epochs();
+        let (fork_epochs, parent_state) = {
+            let fc = self.fork_choice.read();
+            (fc.fork_epochs(), fc.block_states.get(&parent_root)?.clone())
+        };
 
         // Fast path: check cache (peek preserves LRU order on the read path).
         if let Some(&idx) = self.proposer_cache.read().peek(&(slot, parent_root)) {
-            // Re-fetch parent state to advance to slot for signature verification.
-            let mut parent_state = self
-                .fork_choice
-                .read()
-                .block_states
-                .get(&parent_root)?
-                .clone();
-            if parent_state.slot() < slot {
-                process_slots_fork::<E>(&mut parent_state, slot, fork_epochs, &self.runtime_cfg)
-                    .ok()?;
+            // Advance parent state to slot for signature verification.
+            let mut ps = parent_state;
+            if ps.slot() < slot {
+                process_slots_fork::<E>(&mut ps, slot, fork_epochs, &self.runtime_cfg).ok()?;
             }
-            return Some((idx, parent_state));
+            return Some((idx, ps));
         }
 
         // Slow path: advance parent state to `slot` and compute proposer.
-        let mut parent_state = self
-            .fork_choice
-            .read()
-            .block_states
-            .get(&parent_root)?
-            .clone();
-        if parent_state.slot() < slot {
-            process_slots_fork::<E>(&mut parent_state, slot, fork_epochs, &self.runtime_cfg)
-                .ok()?;
+        let mut ps = parent_state;
+        if ps.slot() < slot {
+            process_slots_fork::<E>(&mut ps, slot, fork_epochs, &self.runtime_cfg).ok()?;
         }
-        let idx = get_beacon_proposer_index::<E>(&parent_state).0;
+        let idx = get_beacon_proposer_index::<E>(&ps).0;
         self.proposer_cache.write().put((slot, parent_root), idx);
-        Some((idx, parent_state))
+        Some((idx, ps))
     }
 }
 
@@ -1399,17 +1384,14 @@ where
             return GossipVerdict::Ignore("exit: already seen for this validator".into());
         }
 
-        // Get the head state for subsequent checks (two-step to avoid double-lock).
-        let head_root = pharos_fork_choice::get_head(&*self.fork_choice.read());
-        let head_state = match self
-            .fork_choice
-            .read()
-            .block_states
-            .get(&head_root)
-            .cloned()
-        {
-            Some(s) => s,
-            None => return GossipVerdict::Ignore("exit: head state unavailable".into()),
+        // Get the head state under a single fork-choice lock (avoids TOCTOU).
+        let head_state = {
+            let fc = self.fork_choice.read();
+            let head_root = pharos_fork_choice::get_head(&*fc);
+            match fc.block_states.get(&head_root).cloned() {
+                Some(s) => s,
+                None => return GossipVerdict::Ignore("exit: head state unavailable".into()),
+            }
         };
 
         let num_validators = head_state.num_validators();
@@ -1511,18 +1493,17 @@ where
             return GossipVerdict::Reject("proposer_slashing: headers are not different".into());
         }
 
-        // Get the head state (two-step to avoid double-lock).
-        let head_root = pharos_fork_choice::get_head(&*self.fork_choice.read());
-        let head_state = match self
-            .fork_choice
-            .read()
-            .block_states
-            .get(&head_root)
-            .cloned()
-        {
-            Some(s) => s,
-            None => {
-                return GossipVerdict::Ignore("proposer_slashing: head state unavailable".into());
+        // Get the head state under a single fork-choice lock (avoids TOCTOU).
+        let head_state = {
+            let fc = self.fork_choice.read();
+            let head_root = pharos_fork_choice::get_head(&*fc);
+            match fc.block_states.get(&head_root).cloned() {
+                Some(s) => s,
+                None => {
+                    return GossipVerdict::Ignore(
+                        "proposer_slashing: head state unavailable".into(),
+                    );
+                }
             }
         };
 
@@ -1623,18 +1604,17 @@ where
             );
         }
 
-        // Get head state for index-range checks and signature verification (two-step).
-        let head_root = pharos_fork_choice::get_head(&*self.fork_choice.read());
-        let head_state = match self
-            .fork_choice
-            .read()
-            .block_states
-            .get(&head_root)
-            .cloned()
-        {
-            Some(s) => s,
-            None => {
-                return GossipVerdict::Ignore("attester_slashing: head state unavailable".into());
+        // Get head state for index-range checks and signature verification under a single lock.
+        let head_state = {
+            let fc = self.fork_choice.read();
+            let head_root = pharos_fork_choice::get_head(&*fc);
+            match fc.block_states.get(&head_root).cloned() {
+                Some(s) => s,
+                None => {
+                    return GossipVerdict::Ignore(
+                        "attester_slashing: head state unavailable".into(),
+                    );
+                }
             }
         };
 
@@ -2402,17 +2382,14 @@ where
             return GossipVerdict::Ignore("bls_to_exec: already seen for this validator".into());
         }
 
-        // Get head state for remaining checks (two-step to avoid double-lock).
-        let head_root = pharos_fork_choice::get_head(&*self.fork_choice.read());
-        let head_state = match self
-            .fork_choice
-            .read()
-            .block_states
-            .get(&head_root)
-            .cloned()
-        {
-            Some(s) => s,
-            None => return GossipVerdict::Ignore("bls_to_exec: head state unavailable".into()),
+        // Get head state for remaining checks under a single fork-choice lock.
+        let head_state = {
+            let fc = self.fork_choice.read();
+            let head_root = pharos_fork_choice::get_head(&*fc);
+            match fc.block_states.get(&head_root).cloned() {
+                Some(s) => s,
+                None => return GossipVerdict::Ignore("bls_to_exec: head state unavailable".into()),
+            }
         };
 
         // [REJECT] Validator index must be in range.
