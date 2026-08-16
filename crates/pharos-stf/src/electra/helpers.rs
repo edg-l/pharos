@@ -6,7 +6,7 @@
 //! state-projection helpers convert an electra `BeaconState` to its deneb /
 //! altair siblings so unchanged logic can be reused.
 
-use pharos_ssz::{Bitvector, SszSequence};
+use pharos_ssz::{Bitvector, Encode, SszSequence};
 use pharos_types::{
     EthSpec,
     altair::BeaconState as AltairBeaconState,
@@ -1816,6 +1816,54 @@ where
     })
 }
 
+// ── EIP-7685 execution request encoding ──────────────────────────────────────
+
+/// `get_execution_requests_list` per `specs/electra/beacon-chain.md:1390-1401`.
+///
+/// Encodes execution requests per EIP-7685: for each NON-EMPTY request type,
+/// emit `request_type_byte || ssz_serialize(request_list)`, in canonical order:
+/// deposit (0x00) / withdrawal (0x01) / consolidation (0x02).
+/// Empty lists are OMITTED (skip-empty rule).
+///
+/// Returns a `Vec<Vec<u8>>` suitable for conversion to hex strings for the
+/// Engine API V4 `executionRequests` parameter.
+pub fn get_execution_requests_list<
+    const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64,
+>(
+    execution_requests: &pharos_types::electra::requests::ExecutionRequests<
+        MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+        MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+    >,
+) -> Vec<Vec<u8>> {
+    let mut result: Vec<Vec<u8>> = Vec::new();
+
+    // 0x00: deposit requests
+    if !execution_requests.deposits.is_empty() {
+        let mut entry = vec![0x00u8];
+        entry.extend_from_slice(&execution_requests.deposits.as_ssz_bytes());
+        result.push(entry);
+    }
+
+    // 0x01: withdrawal requests
+    if !execution_requests.withdrawals.is_empty() {
+        let mut entry = vec![0x01u8];
+        entry.extend_from_slice(&execution_requests.withdrawals.as_ssz_bytes());
+        result.push(entry);
+    }
+
+    // 0x02: consolidation requests
+    if !execution_requests.consolidations.is_empty() {
+        let mut entry = vec![0x02u8];
+        entry.extend_from_slice(&execution_requests.consolidations.as_ssz_bytes());
+        result.push(entry);
+    }
+
+    result
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2218,5 +2266,94 @@ mod tests {
         let enum_state = MinimalEthSpec::electra_into_state(state);
         let idx = get_beacon_proposer_index_electra::<MinimalEthSpec>(&enum_state);
         assert_eq!(idx.0, 0, "only validator must be the proposer");
+    }
+
+    // ── get_execution_requests_list ───────────────────────────────────────────
+
+    type TestExecRequests = pharos_types::electra::requests::ExecutionRequests<
+        { MinimalEthSpec::MAX_DEPOSIT_REQUESTS_PER_PAYLOAD },
+        { MinimalEthSpec::MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD },
+        { MinimalEthSpec::MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD },
+    >;
+
+    #[test]
+    fn execution_requests_all_empty_yields_empty_list() {
+        let reqs = TestExecRequests::default();
+        let list = get_execution_requests_list(&reqs);
+        assert!(
+            list.is_empty(),
+            "all-empty execution_requests must produce []"
+        );
+    }
+
+    #[test]
+    fn execution_requests_one_deposit_encodes_correctly() {
+        use pharos_ssz::{Encode, SszList};
+        use pharos_types::electra::requests::DepositRequest;
+
+        let mut reqs = TestExecRequests::default();
+        let deposit = DepositRequest::default(); // all-zero, 192 SSZ bytes
+        reqs.deposits = SszList::from_vec(vec![deposit.clone()]).unwrap();
+
+        let list = get_execution_requests_list(&reqs);
+
+        // Only the deposit entry (0x00) should appear; withdrawal + consolidation empty.
+        assert_eq!(list.len(), 1, "one non-empty request type");
+        let entry = &list[0];
+        assert_eq!(
+            entry[0], 0x00u8,
+            "request type byte must be 0x00 for deposits"
+        );
+
+        // Payload bytes must be SSZ of a one-element list of DepositRequest.
+        let expected_payload = {
+            let tmp: SszList<DepositRequest, { MinimalEthSpec::MAX_DEPOSIT_REQUESTS_PER_PAYLOAD }> =
+                SszList::from_vec(vec![deposit]).unwrap();
+            tmp.as_ssz_bytes()
+        };
+        assert_eq!(
+            &entry[1..],
+            expected_payload.as_slice(),
+            "payload bytes must be SSZ-serialized deposit list"
+        );
+        // DepositRequest is 192 fixed bytes; one-element list has no offset table.
+        assert_eq!(
+            entry[1..].len(),
+            192,
+            "single DepositRequest = 192 SSZ bytes"
+        );
+    }
+
+    #[test]
+    fn execution_requests_all_types_correct_order() {
+        use pharos_ssz::SszList;
+        use pharos_types::electra::requests::{
+            ConsolidationRequest, DepositRequest, WithdrawalRequest,
+        };
+
+        let mut reqs = TestExecRequests::default();
+        reqs.deposits = SszList::from_vec(vec![DepositRequest::default()]).unwrap();
+        reqs.withdrawals = SszList::from_vec(vec![WithdrawalRequest::default()]).unwrap();
+        reqs.consolidations = SszList::from_vec(vec![ConsolidationRequest::default()]).unwrap();
+
+        let list = get_execution_requests_list(&reqs);
+        assert_eq!(list.len(), 3, "all three request types present");
+        assert_eq!(list[0][0], 0x00u8, "deposits first");
+        assert_eq!(list[1][0], 0x01u8, "withdrawals second");
+        assert_eq!(list[2][0], 0x02u8, "consolidations third");
+    }
+
+    #[test]
+    fn execution_requests_skip_empty_preserves_order() {
+        use pharos_ssz::SszList;
+        use pharos_types::electra::requests::ConsolidationRequest;
+
+        let mut reqs = TestExecRequests::default();
+        // Only consolidations non-empty (deposits + withdrawals empty → skipped).
+        reqs.consolidations = SszList::from_vec(vec![ConsolidationRequest::default()]).unwrap();
+
+        let list = get_execution_requests_list(&reqs);
+        assert_eq!(list.len(), 1, "only consolidation entry");
+        assert_eq!(list[0][0], 0x02u8, "type byte must be 0x02");
     }
 }

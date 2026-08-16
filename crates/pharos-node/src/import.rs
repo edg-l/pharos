@@ -564,10 +564,46 @@ where
     // The fork-choice WRITE guard is now dropped (on_block_result consumed it).
 
     // (f) For execution-layer blocks, push the execution payload to the engine driver.
-    // Deneb blocks use engine_newPayloadV3 (with blob gas + versioned hashes);
-    // Capella blocks use engine_newPayloadV2 (with withdrawals); Bellatrix uses V1.
+    // Electra blocks use engine_newPayloadV4 (EIP-7685 executionRequests);
+    // Deneb blocks use engine_newPayloadV3 (blob gas + versioned hashes);
+    // Capella blocks use engine_newPayloadV2 (withdrawals); Bellatrix uses V1.
     // Per `D-engine-v2-dispatch` (docs/decisions.md M6-Capella section).
-    if let Some(deneb_payload) = E::get_deneb_execution_payload(signed_block) {
+    // NOTE: Electra MUST be checked before Deneb — both return `DenebExecutionPayload`
+    // (Electra reuses the same payload type); the electra arm short-circuits the chain.
+    if let (Some(electra_payload), Some(req_encoded)) = (
+        E::get_electra_execution_payload(signed_block),
+        E::get_electra_execution_requests_encoded(signed_block),
+    ) {
+        // Electra block: V4 wire format (V3-shaped payload + executionRequests).
+        use pharos_engine::NewPayloadWire;
+        use pharos_kzg::kzg_commitment_to_versioned_hash;
+        let vh_hex: Vec<String> = kzg_commitments
+            .iter()
+            .map(|c| {
+                let h = kzg_commitment_to_versioned_hash(&c.into_inner());
+                crate::engine_driver::hash_to_hex(pharos_utils::Hash256::from_array(h))
+            })
+            .collect();
+        let pbbr_hex = crate::engine_driver::hash_to_hex(parent_root);
+        let wire: pharos_engine::types::ExecutionPayloadV3 = electra_payload.into();
+        let execution_requests_hex: Vec<String> = req_encoded
+            .into_iter()
+            .map(|b| crate::engine_driver::bytes_to_data_hex(&b))
+            .collect();
+        let req = NewPayloadRequest {
+            block_root,
+            payload: NewPayloadWire::V4 {
+                payload: wire,
+                versioned_hashes: vh_hex,
+                parent_beacon_block_root: pbbr_hex,
+                execution_requests: execution_requests_hex,
+            },
+            _marker: std::marker::PhantomData,
+        };
+        if payload_tx.try_send(req).is_err() {
+            warn!(%block_root, "import_block: payload_tx full or closed; dropping newPayloadV4");
+        }
+    } else if let Some(deneb_payload) = E::get_deneb_execution_payload(signed_block) {
         // Deneb block: V3 wire format (includes blobGasUsed, excessBlobGas).
         // Derive versioned hashes from the blob KZG commitments (already extracted for DA gate).
         use pharos_engine::{ExecutionPayloadV3, NewPayloadWire};

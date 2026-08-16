@@ -22,7 +22,7 @@ pub use jwt::{JwtSecret, load_jwt_secret};
 pub use types::{
     BlobAndProofV1, BlobsBundleV1, BlockHeader, ExecutionPayloadV1, ExecutionPayloadV2,
     ExecutionPayloadV3, ForkchoiceStateV1, ForkchoiceUpdatedV1Response, GetPayloadV2Response,
-    GetPayloadV3Response, PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3,
-    PayloadIdV1, PayloadStatusStatus, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
-    WithdrawalV1,
+    GetPayloadV3Response, GetPayloadV4Response, PayloadAttributesV1, PayloadAttributesV2,
+    PayloadAttributesV3, PayloadIdV1, PayloadStatusStatus, PayloadStatusV1, SyncingStatus,
+    TransitionConfigurationV1, WithdrawalV1,
 };

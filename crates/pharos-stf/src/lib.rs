@@ -32,6 +32,7 @@ pub use capella::state_transition::{
     GetExpectedWithdrawalsDispatch,
 };
 pub use deneb::state_transition::{DenebDispatch, DenebJaFDispatch, DenebProcessSlotsDispatch};
+pub use electra::helpers::get_execution_requests_list;
 pub use electra::state_transition::{
     ElectraDispatch, ElectraJaFDispatch, ElectraProcessSlotsDispatch,
 };

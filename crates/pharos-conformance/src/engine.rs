@@ -153,24 +153,29 @@ pub fn enumerate_engine_yaml(specs_dir: &Path, row_ordinal: u32) -> Vec<CaseTask
                 "engine_forkchoiceUpdatedV3",
                 "engine_getPayloadV3",
             ];
-            const V4_PLUS: &[&str] = &[
-                "engine_newPayloadV4",
-                "engine_forkchoiceUpdatedV4",
-                "engine_getPayloadV4",
-            ];
+            // V4 methods in scope for M12-Electra (Prague/EIP-7685).
+            const V4_IN_SCOPE: &[&str] = &["engine_newPayloadV4", "engine_getPayloadV4"];
+            // V4 methods still deferred (no FCU V4 in Prague; FCU V3 handles it).
+            const V4_DEFERRED: &[&str] = &["engine_forkchoiceUpdatedV4"];
 
             let is_v1 = method_name.ends_with("V1");
             let is_v2_in_scope = V2_IN_SCOPE.contains(&method_name.as_str());
             let is_v3_in_scope = V3_IN_SCOPE.contains(&method_name.as_str());
+            let is_v4_in_scope = V4_IN_SCOPE.contains(&method_name.as_str());
             let is_unversioned = UNVERSIONED.contains(&method_name.as_str());
             let is_deferred = DEFERRED_V1.contains(&method_name.as_str())
-                || V4_PLUS.contains(&method_name.as_str());
+                || V4_DEFERRED.contains(&method_name.as_str());
 
             for ex in method.examples {
                 let case_ordinal = ordinal;
                 ordinal += 1;
 
-                if is_deferred || (!is_v1 && !is_v2_in_scope && !is_v3_in_scope && !is_unversioned)
+                if is_deferred
+                    || (!is_v1
+                        && !is_v2_in_scope
+                        && !is_v3_in_scope
+                        && !is_v4_in_scope
+                        && !is_unversioned)
                 {
                     tasks.push(CaseTask {
                         row_ordinal,
@@ -355,24 +360,25 @@ fn run_method_examples(method: &YamlMethod, result: &mut CategoryResult) {
         "engine_getPayloadV3",
     ];
 
-    // V4+ methods not yet in scope (Prague+).
-    const V4_PLUS: &[&str] = &[
-        "engine_newPayloadV4",
-        "engine_forkchoiceUpdatedV4",
-        "engine_getPayloadV4",
-    ];
+    // V4 methods in scope for M12-Electra (Prague/EIP-7685).
+    const V4_IN_SCOPE: &[&str] = &["engine_newPayloadV4", "engine_getPayloadV4"];
+    // V4 methods still deferred (no FCU V4 in Prague; FCU V3 handles it).
+    const V4_DEFERRED: &[&str] = &["engine_forkchoiceUpdatedV4"];
 
     let is_v1 = name.ends_with("V1");
     let is_v2_in_scope = V2_IN_SCOPE.contains(&name.as_str());
     let is_v3_in_scope = V3_IN_SCOPE.contains(&name.as_str());
+    let is_v4_in_scope = V4_IN_SCOPE.contains(&name.as_str());
     let is_unversioned = UNVERSIONED.contains(&name.as_str());
-    let is_deferred = DEFERRED_V1.contains(&name.as_str()) || V4_PLUS.contains(&name.as_str());
+    let is_deferred = DEFERRED_V1.contains(&name.as_str()) || V4_DEFERRED.contains(&name.as_str());
 
     for ex in &method.examples {
         let label = format!("{name}/{}", ex.name);
 
         // Skip deferred/out-of-scope methods.
-        if is_deferred || (!is_v1 && !is_v2_in_scope && !is_v3_in_scope && !is_unversioned) {
+        if is_deferred
+            || (!is_v1 && !is_v2_in_scope && !is_v3_in_scope && !is_v4_in_scope && !is_unversioned)
+        {
             result.skip += 1;
             result.skip_reasons.insert(
                 label,
@@ -705,6 +711,55 @@ async fn dispatch_engine_call(
                 .await
                 .map_err(|e| e.to_string())?;
             serde_json::to_value(transition_config).map_err(|e| e.to_string())
+        }
+        "engine_newPayloadV4" => {
+            let payload = params_to_execution_payload_v3(_params.get(0));
+            // params[1]: expectedBlobVersionedHashes — array of hex hash strings.
+            let versioned_hashes: Vec<String> = _params
+                .get(1)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            // params[2]: parentBeaconBlockRoot — hex hash string.
+            let parent_beacon_block_root = _params
+                .get(2)
+                .and_then(Value::as_str)
+                .unwrap_or("0x0000000000000000000000000000000000000000000000000000000000000000")
+                .to_string();
+            // params[3]: executionRequests — array of hex-encoded request byte strings.
+            let execution_requests: Vec<String> = _params
+                .get(3)
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let status = client
+                .new_payload(
+                    NewPayloadVersion::V4,
+                    NewPayloadWire::V4 {
+                        payload,
+                        versioned_hashes,
+                        parent_beacon_block_root,
+                        execution_requests,
+                    },
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(status).map_err(|e| e.to_string())
+        }
+        "engine_getPayloadV4" => {
+            let id = params_to_payload_id(_params.get(0));
+            let response = client.get_payload_v4(id).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(response).map_err(|e| e.to_string())
         }
         _ => {
             // Unknown V1 method — this should not happen for in-scope methods.

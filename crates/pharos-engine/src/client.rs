@@ -20,8 +20,8 @@ use crate::jwt::{JwtSecret, sign_token};
 use crate::types::{
     BlobAndProofV1, BlockHeader, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
     ForkchoiceStateV1, ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response,
-    PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, PayloadStatusV1,
-    SyncingStatus, TransitionConfigurationV1,
+    GetPayloadV4Response, PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3,
+    PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
 };
 
 const ENGINE_RPC_TIMEOUT: Duration = Duration::from_secs(8);
@@ -33,12 +33,14 @@ pub const DEFAULT_ENGINE_CAPABILITIES: &[&str] = &[
     "engine_newPayloadV1",
     "engine_newPayloadV2",
     "engine_newPayloadV3",
+    "engine_newPayloadV4",
     "engine_forkchoiceUpdatedV1",
     "engine_forkchoiceUpdatedV2",
     "engine_forkchoiceUpdatedV3",
     "engine_getPayloadV1",
     "engine_getPayloadV2",
     "engine_getPayloadV3",
+    "engine_getPayloadV4",
     "engine_getBlobsV1",
     "engine_exchangeCapabilities",
     "engine_exchangeTransitionConfigurationV1",
@@ -46,7 +48,8 @@ pub const DEFAULT_ENGINE_CAPABILITIES: &[&str] = &[
 
 // ── Version enums ────────────────────────────────────────────────────────────
 
-/// Version selector for `engine_newPayload*`. Bellatrix uses V1; Capella uses V2; Deneb uses V3.
+/// Version selector for `engine_newPayload*`. Bellatrix uses V1; Capella uses V2; Deneb uses V3;
+/// Electra / Prague uses V4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NewPayloadVersion {
     V1,
@@ -55,6 +58,8 @@ pub enum NewPayloadVersion {
     /// Deneb / Cancun: `engine_newPayloadV3` with `ExecutionPayloadV3` + versioned hashes
     /// + parent beacon block root.
     V3,
+    /// Electra / Prague: `engine_newPayloadV4` — same payload type as V3 + `executionRequests`.
+    V4,
 }
 
 /// Version selector for `engine_forkchoiceUpdated*`. Bellatrix uses V1; Capella uses V2;
@@ -69,7 +74,7 @@ pub enum ForkchoiceUpdatedVersion {
 }
 
 /// Version selector for `engine_getPayload*`. Bellatrix uses V1; Capella uses V2;
-/// Deneb uses V3.
+/// Deneb uses V3; Electra / Prague uses V4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GetPayloadVersion {
     V1,
@@ -77,6 +82,8 @@ pub enum GetPayloadVersion {
     V2,
     /// Deneb / Cancun: `engine_getPayloadV3` returning `{executionPayload, blockValue, blobsBundle, shouldOverrideBuilder}`.
     V3,
+    /// Electra / Prague: `engine_getPayloadV4` — V3 + `executionRequests`.
+    V4,
 }
 
 // ── NewPayloadWire ────────────────────────────────────────────────────────────
@@ -101,6 +108,23 @@ pub enum NewPayloadWire {
         versioned_hashes: Vec<String>,
         /// `parentBeaconBlockRoot`: 32-byte hex DATA string.
         parent_beacon_block_root: String,
+    },
+    /// Electra / Prague: payload + versioned hashes + parent beacon block root +
+    /// `executionRequests`.
+    ///
+    /// Per `execution-apis/src/engine/prague.md` newPayloadV4:
+    /// params[0] = executionPayload (V3 type, byte-identical with Deneb),
+    /// params[1] = expectedBlobVersionedHashes,
+    /// params[2] = parentBeaconBlockRoot,
+    /// params[3] = executionRequests (EIP-7685 hex-encoded request list).
+    V4 {
+        payload: ExecutionPayloadV3,
+        versioned_hashes: Vec<String>,
+        parent_beacon_block_root: String,
+        /// `executionRequests`: `Array of DATA` — EIP-7685 encoded, one hex string per request
+        /// type. Empty lists are omitted. Each entry: `0x || request_type_byte ||
+        /// ssz_serialized_requests`.
+        execution_requests: Vec<String>,
     },
 }
 
@@ -234,9 +258,37 @@ impl EngineClient {
         .await
     }
 
+    /// `engine_newPayloadV4` — Electra / Prague execution payload.
+    ///
+    /// Per `execution-apis/src/engine/prague.md`:
+    /// params: (executionPayload, expectedBlobVersionedHashes, parentBeaconBlockRoot,
+    ///          executionRequests)
+    ///
+    /// The payload type is `ExecutionPayloadV3` (byte-identical with Deneb);
+    /// `executionRequests` is the EIP-7685 request list as hex DATA strings.
+    pub async fn new_payload_v4(
+        &self,
+        payload: ExecutionPayloadV3,
+        versioned_hashes: Vec<String>,
+        parent_beacon_block_root: String,
+        execution_requests: Vec<String>,
+    ) -> Result<PayloadStatusV1, EngineError> {
+        self.rpc_call(
+            "engine_newPayloadV4",
+            serde_json::json!([
+                payload,
+                versioned_hashes,
+                parent_beacon_block_root,
+                execution_requests
+            ]),
+        )
+        .await
+    }
+
     /// `engine_newPayload*` dispatch per version.
     ///
-    /// V1: Bellatrix; V2: Capella (withdrawals); V3: Deneb (blob gas + versioned hashes).
+    /// V1: Bellatrix; V2: Capella (withdrawals); V3: Deneb (blob gas + versioned hashes);
+    /// V4: Electra / Prague (+ executionRequests).
     /// Returns an error if the version/payload combination is invalid.
     pub async fn new_payload(
         &self,
@@ -256,6 +308,23 @@ impl EngineClient {
             ) => {
                 self.new_payload_v3(p, versioned_hashes, parent_beacon_block_root)
                     .await
+            }
+            (
+                NewPayloadVersion::V4,
+                NewPayloadWire::V4 {
+                    payload: p,
+                    versioned_hashes,
+                    parent_beacon_block_root,
+                    execution_requests,
+                },
+            ) => {
+                self.new_payload_v4(
+                    p,
+                    versioned_hashes,
+                    parent_beacon_block_root,
+                    execution_requests,
+                )
+                .await
             }
             _ => Err(EngineError::UnexpectedResponse(
                 "new_payload: version/payload mismatch".into(),
@@ -361,6 +430,17 @@ impl EngineClient {
         self.rpc_call("engine_getPayloadV3", [id]).await
     }
 
+    /// `engine_getPayloadV4` — Electra / Prague block production.
+    ///
+    /// Returns `{executionPayload, blockValue, blobsBundle, shouldOverrideBuilder, executionRequests}`
+    /// per `execution-apis/src/engine/prague.md`.
+    pub async fn get_payload_v4(
+        &self,
+        id: PayloadIdV1,
+    ) -> Result<GetPayloadV4Response, EngineError> {
+        self.rpc_call("engine_getPayloadV4", [id]).await
+    }
+
     /// `engine_getBlobsV1` — retrieve blobs from the local EL blob pool.
     ///
     /// Per `execution-apis/src/engine/cancun.md`:
@@ -403,6 +483,13 @@ impl EngineClient {
                 // callers wanting the V3 path must use `get_payload_v3` directly.
                 Err(EngineError::UnexpectedResponse(
                     "get_payload(V3): use get_payload_v3 directly for the V3 envelope".into(),
+                ))
+            }
+            GetPayloadVersion::V4 => {
+                // V4 returns a V3-envelope + executionRequests; callers must use
+                // `get_payload_v4` directly.
+                Err(EngineError::UnexpectedResponse(
+                    "get_payload(V4): use get_payload_v4 directly for the V4 envelope".into(),
                 ))
             }
         }

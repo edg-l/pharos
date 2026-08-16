@@ -20,8 +20,8 @@ use pharos_engine::{
     EngineError, EngineHandle, ForkchoiceUpdatedVersion, NewPayloadVersion, NewPayloadWire,
     types::{
         BlobsBundleV1, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
-        ForkchoiceStateV1, GetPayloadV3Response, PayloadAttributesV1, PayloadAttributesV2,
-        PayloadAttributesV3, PayloadIdV1, WithdrawalV1,
+        ForkchoiceStateV1, GetPayloadV3Response, GetPayloadV4Response, PayloadAttributesV1,
+        PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, WithdrawalV1,
     },
 };
 use pharos_fork_choice::{
@@ -147,6 +147,58 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
         })
     }
 
+    /// Override the default: call `engine_newPayloadV4` with the Electra payload
+    /// (same V3 wire type as Deneb), versioned hashes, parent beacon block root,
+    /// and the EIP-7685 `executionRequests` list.
+    ///
+    /// Per `execution-apis/src/engine/prague.md` engine_newPayloadV4.
+    fn notify_new_payload_electra<
+        const MAX_BYTES_PER_TRANSACTION: u64,
+        const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+        const BYTES_PER_LOGS_BLOOM: u64,
+        const MAX_EXTRA_DATA_BYTES: u64,
+        const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+        const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
+        const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,
+        const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64,
+    >(
+        &self,
+        payload: &pharos_types::deneb::ExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+        >,
+        versioned_hashes: &[[u8; 32]],
+        parent_beacon_block_root: pharos_types::phase0::primitives::Root,
+        execution_requests: &pharos_types::electra::requests::ExecutionRequests<
+            MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+            MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+            MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+        >,
+    ) -> pharos_stf::PayloadVerificationStatus {
+        let wire: ExecutionPayloadV3 = payload.clone().into();
+        let vh_hex: Vec<String> = versioned_hashes
+            .iter()
+            .map(|h| bytes_to_data_hex(h))
+            .collect();
+        let pbbr_hex = bytes_to_data_hex(parent_beacon_block_root.as_slice());
+        // Encode EIP-7685 execution requests as hex DATA strings (skip-empty rule applied
+        // inside get_execution_requests_list).
+        let req_bytes = pharos_stf::get_execution_requests_list(execution_requests);
+        let execution_requests_hex: Vec<String> = req_bytes
+            .into_iter()
+            .map(|b| bytes_to_data_hex(&b))
+            .collect();
+        self.new_payload_wire(NewPayloadWire::V4 {
+            payload: wire,
+            versioned_hashes: vh_hex,
+            parent_beacon_block_root: pbbr_hex,
+            execution_requests: execution_requests_hex,
+        })
+    }
+
     /// Override the default: call `engine_getBlobsV1` on the local EL blob pool.
     ///
     /// Returns one `Option<(blob_bytes, proof_bytes)>` per versioned hash.  `None`
@@ -203,6 +255,7 @@ impl ExecutionEngineHandle {
             NewPayloadWire::V1(_) => NewPayloadVersion::V1,
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
             NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
+            NewPayloadWire::V4 { .. } => NewPayloadVersion::V4,
         };
         match self.engine.new_payload_blocking(version, wire) {
             Ok(status) => {
@@ -747,6 +800,46 @@ pub fn prepare_execution_payload_v3(
     Ok((execution_payload, blobs_bundle, value))
 }
 
+/// Prepare an Electra execution payload: FCU V3 + `engine_getPayloadV4`.
+///
+/// Steps:
+/// 1. Call `engine_forkchoiceUpdatedV3(fcu_state, Some(attrs))` (Electra reuses FCU V3
+///    per `execution-apis/src/engine/prague.md`: "Changes to the `engine_forkchoiceUpdatedV3`
+///    method" — no V4 FCU exists for Prague).
+/// 2. Extract `payloadId` — if absent returns `PreparePayloadError::PayloadNotReady`.
+/// 3. Call `engine_getPayloadV4(payload_id)` and return `(ExecutionPayloadV3,
+///    BlobsBundleV1, block_value, executionRequests)`.
+///
+/// Per `execution-apis/src/engine/prague.md`.
+pub fn prepare_execution_payload_v4(
+    engine: &EngineHandle,
+    fcu_state: ForkchoiceStateV1,
+    attrs: PayloadAttributesV3,
+) -> Result<
+    (
+        ExecutionPayloadV3,
+        BlobsBundleV1,
+        pharos_utils::Uint256,
+        Vec<String>,
+    ),
+    PreparePayloadError,
+> {
+    // Electra uses FCU V3 — no separate FCU V4 method exists for Prague.
+    let fcu_resp = engine.forkchoice_updated_v3_blocking(fcu_state, Some(attrs))?;
+    let payload_id: PayloadIdV1 = fcu_resp
+        .payload_id
+        .ok_or(PreparePayloadError::PayloadNotReady)?;
+    let GetPayloadV4Response {
+        execution_payload,
+        block_value,
+        blobs_bundle,
+        execution_requests,
+        ..
+    } = engine.get_payload_v4_blocking(payload_id)?;
+    let value: pharos_utils::Uint256 = block_value.parse().unwrap_or(pharos_utils::Uint256::ZERO);
+    Ok((execution_payload, blobs_bundle, value, execution_requests))
+}
+
 // ── maybe_emit_head_change ────────────────────────────────────────────────────
 
 /// Recompute and emit a `HeadChange` if `new_head != prev_head`.
@@ -968,6 +1061,7 @@ pub async fn run_engine_driver_loop<E: EthSpec, P: PowBlockProvider + Send + Syn
                     NewPayloadWire::V1(_) => NewPayloadVersion::V1,
                     NewPayloadWire::V2(_) => NewPayloadVersion::V2,
                     NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
+                    NewPayloadWire::V4 { .. } => NewPayloadVersion::V4,
                 };
                 let np_result = tokio::task::spawn_blocking(move || {
                     engine_clone.new_payload_blocking(version, payload_wire)
@@ -1291,6 +1385,7 @@ mod tests {
             NewPayloadWire::V1(_) => NewPayloadVersion::V1,
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
             NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
+            NewPayloadWire::V4 { .. } => NewPayloadVersion::V4,
         };
         assert_eq!(version, NewPayloadVersion::V1);
     }
@@ -1321,6 +1416,7 @@ mod tests {
             NewPayloadWire::V1(_) => NewPayloadVersion::V1,
             NewPayloadWire::V2(_) => NewPayloadVersion::V2,
             NewPayloadWire::V3 { .. } => NewPayloadVersion::V3,
+            NewPayloadWire::V4 { .. } => NewPayloadVersion::V4,
         };
         assert_eq!(version, NewPayloadVersion::V2);
     }

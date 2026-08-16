@@ -764,6 +764,35 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
         signed: &Self::SignedBeaconBlock,
     ) -> Option<Self::DenebExecutionPayload>;
 
+    /// Extract a clone of the Electra `ExecutionPayload` from a fork-enum `SignedBeaconBlock`.
+    ///
+    /// Returns `Some(payload)` for Electra blocks; `None` for all earlier forks.
+    ///
+    /// The Electra execution payload is structurally identical to the Deneb payload
+    /// (same type, re-exported from `deneb::execution_payload`); `DenebExecutionPayload`
+    /// is reused as the associated type. The `execution_requests` field lives in the block
+    /// BODY, not the payload (EIP-7685), so it is NOT included here.
+    ///
+    /// Used by the block-ingestion loop to push the V3-shaped wire payload to the engine
+    /// driver via `engine_newPayloadV4`.
+    fn get_electra_execution_payload(
+        signed: &Self::SignedBeaconBlock,
+    ) -> Option<Self::DenebExecutionPayload>;
+
+    /// Extract the EIP-7685 execution request list from an Electra `SignedBeaconBlock`.
+    ///
+    /// Returns a `Vec<Vec<u8>>` where each entry is `request_type_byte ||
+    /// ssz_serialized_request_list` (the EIP-7685 wire format).  Empty request types
+    /// are OMITTED (skip-empty rule). Returns `None` for all pre-Electra forks.
+    ///
+    /// The encoding mirrors `get_execution_requests_list` in `pharos-stf`; it is
+    /// duplicated here so `pharos-types` can encode without depending on `pharos-stf`.
+    /// Callers in `pharos-node` can then convert each `Vec<u8>` entry to a hex DATA
+    /// string for the Engine API V4 `executionRequests` parameter.
+    fn get_electra_execution_requests_encoded(
+        signed: &Self::SignedBeaconBlock,
+    ) -> Option<Vec<Vec<u8>>>;
+
     /// Extract the slot from a fork-enum `SignedBeaconBlock` without knowing the fork.
     ///
     /// The fork-enum `SignedBeaconBlockView::message()` is intentionally unimplemented
@@ -1837,6 +1866,54 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Electra(_) => None,
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
+            }
+        }
+
+        fn get_electra_execution_payload(
+            signed: &Self::SignedBeaconBlock,
+        ) -> Option<Self::DenebExecutionPayload> {
+            match signed {
+                // Electra reuses the Deneb ExecutionPayload type (re-exported from
+                // deneb::execution_payload). The payload is type-identical; the
+                // execution_requests field lives in the block BODY (EIP-7685).
+                crate::state::$signed::Electra(b) => Some(b.message.body.execution_payload.clone()),
+                crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
+            }
+        }
+
+        fn get_electra_execution_requests_encoded(
+            signed: &Self::SignedBeaconBlock,
+        ) -> Option<Vec<Vec<u8>>> {
+            use pharos_ssz::{Encode, SszSequence as _};
+            match signed {
+                crate::state::$signed::Electra(b) => {
+                    let reqs = &b.message.body.execution_requests;
+                    let mut result: Vec<Vec<u8>> = Vec::new();
+                    // 0x00: deposit requests
+                    if !reqs.deposits.is_empty() {
+                        let mut entry = vec![0x00u8];
+                        entry.extend_from_slice(&reqs.deposits.as_ssz_bytes());
+                        result.push(entry);
+                    }
+                    // 0x01: withdrawal requests
+                    if !reqs.withdrawals.is_empty() {
+                        let mut entry = vec![0x01u8];
+                        entry.extend_from_slice(&reqs.withdrawals.as_ssz_bytes());
+                        result.push(entry);
+                    }
+                    // 0x02: consolidation requests
+                    if !reqs.consolidations.is_empty() {
+                        let mut entry = vec![0x02u8];
+                        entry.extend_from_slice(&reqs.consolidations.as_ssz_bytes());
+                        result.push(entry);
+                    }
+                    Some(result)
+                }
+                _ => None,
             }
         }
 

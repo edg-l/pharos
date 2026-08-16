@@ -612,6 +612,25 @@ pub struct GetPayloadV3Response {
     pub should_override_builder: bool,
 }
 
+// ── GetPayloadV4Response ──────────────────────────────────────────────────────
+
+/// Response to `engine_getPayloadV4` per `execution-apis/src/engine/prague.md`.
+///
+/// Extends `GetPayloadV3Response` with `executionRequests` — the EIP-7685
+/// encoded execution request list for the block. Each entry is `0x`-prefixed
+/// hex DATA: `request_type_byte || ssz_serialized_request_list`.
+/// An empty request list is represented as `[]` (per spec).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPayloadV4Response {
+    pub execution_payload: ExecutionPayloadV3,
+    pub block_value: String,
+    pub blobs_bundle: BlobsBundleV1,
+    pub should_override_builder: bool,
+    /// `executionRequests: Array of DATA` — EIP-7685 request list.
+    pub execution_requests: Vec<String>,
+}
+
 // ── From<deneb::ExecutionPayload> for ExecutionPayloadV3 ──────────────────────
 
 /// Convert a Deneb SSZ `ExecutionPayload` to the Engine API `ExecutionPayloadV3`

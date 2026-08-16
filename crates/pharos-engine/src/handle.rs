@@ -34,9 +34,9 @@ use crate::client::{
 use crate::error::EngineError;
 use crate::types::{
     BlobAndProofV1, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
-    ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response, PayloadAttributesV1,
-    PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, PayloadStatusV1, SyncingStatus,
-    TransitionConfigurationV1,
+    ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response, GetPayloadV4Response,
+    PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, PayloadStatusV1,
+    SyncingStatus, TransitionConfigurationV1,
 };
 
 /// Capacity of the EngineHandle → actor request channel.
@@ -99,6 +99,12 @@ pub enum EngineRequest {
     GetPayloadV3 {
         id: PayloadIdV1,
         reply: oneshot::Sender<Result<GetPayloadV3Response, EngineError>>,
+    },
+    /// `engine_getPayloadV4` — Electra / Prague block production.
+    /// Returns `{executionPayload, blockValue, blobsBundle, shouldOverrideBuilder, executionRequests}`.
+    GetPayloadV4 {
+        id: PayloadIdV1,
+        reply: oneshot::Sender<Result<GetPayloadV4Response, EngineError>>,
     },
     /// `engine_getBlobsV1` — retrieve blobs from the local EL blob pool.
     GetBlobsV1 {
@@ -288,6 +294,17 @@ impl EngineHandle {
         id: PayloadIdV1,
     ) -> Result<GetPayloadV3Response, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::GetPayloadV3 { id, reply })
+    }
+
+    /// Sync `engine_getPayloadV4` — Electra / Prague block production.
+    ///
+    /// Returns `{executionPayload, blockValue, blobsBundle, shouldOverrideBuilder, executionRequests}`
+    /// per prague.md.
+    pub fn get_payload_v4_blocking(
+        &self,
+        id: PayloadIdV1,
+    ) -> Result<GetPayloadV4Response, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetPayloadV4 { id, reply })
     }
 
     /// Sync `engine_getBlobsV1` — retrieve blobs from the local EL blob pool.
@@ -481,6 +498,9 @@ async fn dispatch(client: &EngineClient, req: EngineRequest) {
         }
         EngineRequest::GetPayloadV3 { id, reply } => {
             let _ = reply.send(client.get_payload_v3(id).await);
+        }
+        EngineRequest::GetPayloadV4 { id, reply } => {
+            let _ = reply.send(client.get_payload_v4(id).await);
         }
         EngineRequest::GetBlobsV1 {
             versioned_hashes,
