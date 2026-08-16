@@ -306,6 +306,51 @@ mod tests {
 
     // ── tests ──────────────────────────────────────────────────────────────────
 
+    /// Parity guard: `is_slashable_pair` must agree with the spec-conformance
+    /// predicate `pharos_stf::is_slashable_attestation_data` across the full
+    /// source/target/distinctness matrix. The slasher checks BOTH surround
+    /// directions in one call, so it equals the spec predicate evaluated in both
+    /// orderings (`d1→d2 || d2→d1`). This prevents the live slasher from silently
+    /// desyncing from the STF if the slashing rules ever change upstream.
+    #[test]
+    fn is_slashable_pair_matches_stf_predicate() {
+        use pharos_ssz::TreeHash;
+        use pharos_stf::phase0::predicates::is_slashable_attestation_data;
+
+        for s1 in 0..4u64 {
+            for t1 in s1..s1 + 4 {
+                for s2 in 0..4u64 {
+                    for t2 in s2..s2 + 4 {
+                        for distinct in [false, true] {
+                            let d1 = make_att_data_distinct(s1, t1, 0x11);
+                            let d2 = make_att_data_distinct(s2, t2, if distinct { 0x22 } else { 0x11 });
+
+                            let rec = AttestRecord {
+                                source_epoch: d1.source.epoch.0,
+                                target_epoch: d1.target.epoch.0,
+                                data_root: d1.tree_hash_root().into_inner(),
+                                indexed: make_indexed(d1.clone(), 0),
+                            };
+                            let new_root = d2.tree_hash_root().into_inner();
+
+                            let slasher_slashable = !matches!(
+                                is_slashable_pair(&rec, d2.source.epoch.0, d2.target.epoch.0, new_root),
+                                SlashKind::None
+                            );
+                            let spec_slashable = is_slashable_attestation_data(&d1, &d2)
+                                || is_slashable_attestation_data(&d2, &d1);
+
+                            assert_eq!(
+                                slasher_slashable, spec_slashable,
+                                "parity mismatch: d1=({s1},{t1}) d2=({s2},{t2}) distinct={distinct}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Two attestations by the same validator for the SAME target epoch but
     /// DIFFERENT data → exactly one double-vote slashing inserted into op_pools.
     #[test]
