@@ -69,11 +69,13 @@ type MinForkSignedBeaconBlock = ForkSignedBeaconBlock<
 fn electra_vc_and_stf_signing_roots_match() {
     // Build a concrete minimal electra signed block with non-trivial
     // variable-length electra fields (EIP-7549 attestation + EIP-7685 requests).
-    let mut block = MinimalBeaconBlock::default();
-    block.slot = Slot(40);
-    block.proposer_index = ValidatorIndex(7);
-    block.parent_root = Root::from_array([0xAB; 32]);
-    block.state_root = Root::from_array([0xCD; 32]);
+    let mut block = MinimalBeaconBlock {
+        slot: Slot(40),
+        proposer_index: ValidatorIndex(7),
+        parent_root: Root::from_array([0xAB; 32]),
+        state_root: Root::from_array([0xCD; 32]),
+        ..Default::default()
+    };
 
     // EIP-7549 attestation: aggregation_bits + committee_bits set.
     let mut agg_bits = Bitlist::<8192>::with_capacity(3);
@@ -82,16 +84,20 @@ fn electra_vc_and_stf_signing_roots_match() {
     }
     let mut committee_bits = Bitvector::<4>::new();
     committee_bits.set(1, true);
-    let mut att = ElectraAttestation::<8192, 4>::default();
-    att.aggregation_bits = agg_bits;
-    att.committee_bits = committee_bits;
+    let mut att = ElectraAttestation::<8192, 4> {
+        aggregation_bits: agg_bits,
+        committee_bits,
+        ..Default::default()
+    };
     att.data.index = CommitteeIndex(0);
     block.body.attestations = SszList::from_items(vec![att]).unwrap();
 
     // EIP-7685 execution_requests: one deposit request.
-    let mut reqs = ExecutionRequests::<8192, 16, 2>::default();
     let dep = DepositRequest::default();
-    reqs.deposits = SszList::from_items(vec![dep]).unwrap();
+    let reqs = ExecutionRequests::<8192, 16, 2> {
+        deposits: SszList::from_items(vec![dep]).unwrap(),
+        ..Default::default()
+    };
     block.body.execution_requests = reqs;
 
     let signed = MinimalSignedBeaconBlock {
