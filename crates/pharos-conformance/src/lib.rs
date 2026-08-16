@@ -282,6 +282,13 @@ fn enumerate_row(
             row_ordinal,
         )),
 
+        // ── fulu/fork (upgrade_to_fulu fixtures under fulu/fork/fork) ───────────
+        ("fulu", "fork", preset) => Some(transition::enumerate_fork_upgrade_fulu(
+            root,
+            preset,
+            row_ordinal,
+        )),
+
         // ── light_client ──────────────────────────────────────────────────────
         (fork, "light_client", preset) => Some(light_client::enumerate_light_client(
             root,

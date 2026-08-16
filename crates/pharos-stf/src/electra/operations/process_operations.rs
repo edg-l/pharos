@@ -109,6 +109,7 @@ pub fn process_operations_electra<
     >,
     verify_signatures: bool,
     runtime_cfg: &RuntimeConfig,
+    proposer_override: Option<pharos_types::phase0::ValidatorIndex>,
 ) -> Result<(), StateTransitionError>
 where
     E: BeaconSpec<
@@ -221,7 +222,7 @@ where
             PENDING_PARTIAL_WITHDRAWALS_LIMIT,
             PENDING_CONSOLIDATIONS_LIMIT,
             E,
-        >(state, slashing, verify_signatures)?;
+        >(state, slashing, verify_signatures, proposer_override)?;
     }
 
     // Step 3: Attester slashings — electra handler (EIP-7549).
@@ -242,7 +243,7 @@ where
             PENDING_CONSOLIDATIONS_LIMIT,
             MAX_AGGREGATION_BITS,
             E,
-        >(state, slashing, verify_signatures)?;
+        >(state, slashing, verify_signatures, proposer_override)?;
     }
 
     // Step 4: Attestations — electra handler (EIP-7549).
@@ -264,7 +265,7 @@ where
             MAX_AGGREGATION_BITS,
             MAX_COMMITTEES_PER_SLOT,
             E,
-        >(state, attestation, verify_signatures)?;
+        >(state, attestation, verify_signatures, proposer_override)?;
     }
 
     // Step 5: Deposits — electra handler (EIP-6110 PendingDeposit append).

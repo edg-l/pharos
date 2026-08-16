@@ -207,6 +207,23 @@ pub fn row_table() -> &'static [RowSpec] {
         r("fulu", "ssz_static", "mainnet"), // 131
         r("fulu", "ssz_static", "minimal"), // 132
         r("fulu", "kzg", "-"),              // 133
+        // M13-Fulu Phase 3b: STF + epoch + transition + fork conformance.
+        r("fulu", "operations", "mainnet"),
+        r("fulu", "operations", "minimal"),
+        r("fulu", "epoch_processing", "mainnet"),
+        r("fulu", "epoch_processing", "minimal"),
+        r("fulu", "transition", "mainnet"),
+        r("fulu", "transition", "minimal"),
+        r("fulu", "rewards", "mainnet"),
+        r("fulu", "rewards", "minimal"),
+        r("fulu", "finality", "mainnet"),
+        r("fulu", "finality", "minimal"),
+        r("fulu", "fork", "mainnet"),
+        r("fulu", "fork", "minimal"),
+        r("fulu", "sanity", "mainnet"),
+        r("fulu", "sanity", "minimal"),
+        r("fulu", "random", "mainnet"),
+        r("fulu", "random", "minimal"),
     ];
     TABLE
 }
@@ -370,6 +387,22 @@ mod tests {
             ("fulu", "ssz_static", "mainnet"),
             ("fulu", "ssz_static", "minimal"),
             ("fulu", "kzg", "-"),
+            ("fulu", "operations", "mainnet"),
+            ("fulu", "operations", "minimal"),
+            ("fulu", "epoch_processing", "mainnet"),
+            ("fulu", "epoch_processing", "minimal"),
+            ("fulu", "transition", "mainnet"),
+            ("fulu", "transition", "minimal"),
+            ("fulu", "rewards", "mainnet"),
+            ("fulu", "rewards", "minimal"),
+            ("fulu", "finality", "mainnet"),
+            ("fulu", "finality", "minimal"),
+            ("fulu", "fork", "mainnet"),
+            ("fulu", "fork", "minimal"),
+            ("fulu", "sanity", "mainnet"),
+            ("fulu", "sanity", "minimal"),
+            ("fulu", "random", "mainnet"),
+            ("fulu", "random", "minimal"),
         ];
 
         let table = row_table();
@@ -449,9 +482,11 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 135 (fulu/kzg added after fulu/ssz_static rows).
+    /// Total row count is exactly 151 (135 + 16 M13-Fulu Phase 3b STF rows:
+    /// operations, epoch_processing, transition, rewards, finality, fork,
+    /// sanity, random — each mainnet + minimal).
     #[test]
-    fn row_count_is_135() {
-        assert_eq!(row_table().len(), 135);
+    fn row_count_is_151() {
+        assert_eq!(row_table().len(), 151);
     }
 }

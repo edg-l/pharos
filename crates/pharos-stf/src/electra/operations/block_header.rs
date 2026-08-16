@@ -58,6 +58,7 @@ pub fn process_block_header_electra<
     block_proposer_index: ValidatorIndex,
     block_parent_root: Root,
     block_body_root: Root,
+    proposer_override: Option<ValidatorIndex>,
 ) -> Result<(), StateTransitionError>
 where
     E: BeaconSpec<
@@ -94,9 +95,12 @@ where
         });
     }
 
-    // Verify proposer index using the Electra proposer computation.
-    let proposer_index =
-        get_beacon_proposer_index_electra::<E>(&E::electra_into_state(state.clone()));
+    // Verify proposer index. Fulu (EIP-7917) passes the precomputed lookahead
+    // proposer via `proposer_override`; electra re-elects on demand.
+    let proposer_index = match proposer_override {
+        Some(p) => p,
+        None => get_beacon_proposer_index_electra::<E>(&E::electra_into_state(state.clone())),
+    };
     if block_proposer_index != proposer_index {
         return Err(StateTransitionError::InvalidBlockHeader {
             reason: BlockHeaderInvalidReason::ProposerIndexMismatch,

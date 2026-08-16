@@ -21,10 +21,10 @@ use pharos_types::{BeaconSpec, MainnetBeaconSpec, MinimalBeaconSpec};
 
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_bellatrix_signed_block, load_capella_signed_block,
-    load_deneb_signed_block, load_electra_signed_block, load_phase0_signed_block,
-    load_pre_post_altair_state, load_pre_post_bellatrix_state, load_pre_post_capella_state,
-    load_pre_post_deneb_state, load_pre_post_electra_state, load_pre_post_phase0_state,
-    run_blocks_case, walk_category,
+    load_deneb_signed_block, load_electra_signed_block, load_fulu_signed_block,
+    load_phase0_signed_block, load_pre_post_altair_state, load_pre_post_bellatrix_state,
+    load_pre_post_capella_state, load_pre_post_deneb_state, load_pre_post_electra_state,
+    load_pre_post_fulu_state, load_pre_post_phase0_state, run_blocks_case, walk_category,
 };
 use crate::fs_util::dir_name;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
@@ -214,6 +214,34 @@ pub fn enumerate_finality(
                         &MainnetBeaconSpec::default_runtime_config(),
                         load_pre_post_electra_state::<MainnetBeaconSpec>,
                         load_electra_signed_block::<MainnetBeaconSpec>,
+                    )
+                }),
+                ("fulu", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    run_blocks_case::<MainnetBeaconSpec, _, _>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                        &MainnetBeaconSpec::default_runtime_config(),
+                        load_pre_post_fulu_state::<MainnetBeaconSpec>,
+                        load_fulu_signed_block::<MainnetBeaconSpec>,
+                    )
+                }),
+                ("fulu", _) => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    run_blocks_case::<MinimalBeaconSpec, _, _>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                        &MinimalBeaconSpec::default_runtime_config(),
+                        load_pre_post_fulu_state::<MinimalBeaconSpec>,
+                        load_fulu_signed_block::<MinimalBeaconSpec>,
                     )
                 }),
                 _ => Box::new(move || {

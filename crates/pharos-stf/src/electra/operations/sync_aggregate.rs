@@ -65,6 +65,7 @@ pub fn process_sync_aggregate_electra<
     >,
     sync_aggregate: &SyncAggregate<SYNC_COMMITTEE_SIZE>,
     verify_signatures: bool,
+    proposer_override: Option<ValidatorIndex>,
 ) -> Result<(), StateTransitionError>
 where
     E: BeaconSpec<
@@ -96,9 +97,13 @@ where
         >,
     BLSPubkey: Default + Clone,
 {
-    // Electra proposer index over the enum state (before mutation).
-    let proposer_index =
-        get_beacon_proposer_index_electra::<E>(&E::electra_into_state(state.clone()));
+    // Proposer index over the enum state (before mutation). Fulu (EIP-7917)
+    // passes the precomputed lookahead proposer via `proposer_override`; electra
+    // re-elects on demand.
+    let proposer_index = match proposer_override {
+        Some(p) => p,
+        None => get_beacon_proposer_index_electra::<E>(&E::electra_into_state(state.clone())),
+    };
 
     // Project to altair for the reward arithmetic + BLS verification.
     let mut altair = electra_state_to_altair::<

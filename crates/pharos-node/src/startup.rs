@@ -111,6 +111,10 @@ where
         + pharos_ssz::TreeHash,
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, NullExecutionEngine>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
@@ -202,6 +206,10 @@ where
         + pharos_ssz::TreeHash,
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, NullExecutionEngine>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
@@ -322,6 +330,10 @@ where
         + pharos_ssz::TreeHash,
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, NullExecutionEngine>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, NullExecutionEngine>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {

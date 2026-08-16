@@ -23,8 +23,9 @@ use pharos_stf::{
     BellatrixDispatch, BellatrixJaFDispatch, BellatrixProcessSlotsDispatch,
     BellatrixUpgradeDispatch, CapellaDispatch, CapellaJaFDispatch, CapellaProcessSlotsDispatch,
     CapellaUpgradeDispatch, DenebDispatch, DenebProcessSlotsDispatch, DenebUpgradeDispatch,
-    ElectraDispatch, ElectraProcessSlotsDispatch, ForkEpochs, NullExecutionEngine,
-    Phase0UpgradeDispatch, process_slots_fork, state_transition,
+    ElectraDispatch, ElectraProcessSlotsDispatch, ElectraUpgradeDispatch, ForkEpochs, FuluDispatch,
+    FuluProcessSlotsDispatch, NullExecutionEngine, Phase0UpgradeDispatch, process_slots_fork,
+    state_transition,
 };
 use pharos_storage::{RocksStore, Store as DbStore};
 use pharos_types::phase0::{Attestation, AttesterSlashing, Deposit};
@@ -92,6 +93,10 @@ pub trait ReplayBounds:
             + TreeHash,
         ElectraBeaconState: ElectraDispatch<Self, NullExecutionEngine>
             + ElectraProcessSlotsDispatch<Self>
+            + ElectraUpgradeDispatch<Self>
+            + TreeHash,
+        FuluBeaconState: FuluDispatch<Self, NullExecutionEngine>
+            + FuluProcessSlotsDispatch<Self>
             + TreeHash,
         Phase0BeaconState: Phase0UpgradeDispatch<Self>,
         BellatrixSignedBeaconBlock: Decode
@@ -140,6 +145,10 @@ impl<E> ReplayBounds for E where
             + TreeHash,
         ElectraBeaconState: ElectraDispatch<E, NullExecutionEngine>
             + ElectraProcessSlotsDispatch<E>
+            + ElectraUpgradeDispatch<E>
+            + TreeHash,
+        FuluBeaconState: FuluDispatch<E, NullExecutionEngine>
+            + FuluProcessSlotsDispatch<E>
             + TreeHash,
         Phase0BeaconState: Phase0UpgradeDispatch<E>,
         BellatrixSignedBeaconBlock: Decode

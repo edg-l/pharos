@@ -145,8 +145,15 @@ pub fn enumerate_epoch_processing(
         ("electra", "mainnet") => {
             enumerate_electra_ep_subs_mainnet(root, preset, row_ordinal, &mut ordinal, &mut tasks);
         }
-        _ => {
+        ("electra", _) => {
             enumerate_electra_ep_subs_minimal(root, preset, row_ordinal, &mut ordinal, &mut tasks);
+        }
+        // ── fulu ──────────────────────────────────────────────────────────────
+        ("fulu", "mainnet") => {
+            enumerate_fulu_ep_subs_mainnet(root, preset, row_ordinal, &mut ordinal, &mut tasks);
+        }
+        _ => {
+            enumerate_fulu_ep_subs_minimal(root, preset, row_ordinal, &mut ordinal, &mut tasks);
         }
     }
 
@@ -2418,6 +2425,42 @@ where
         (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
     }
 }
+fn run_fulu_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
+where
+    E: BeaconSpec<FuluBeaconState = S>,
+    S: pharos_ssz::Decode + pharos_ssz::Encode,
+    F: Fn(&mut S) -> Result<(), String>,
+{
+    let (pre, post) = match crate::fixture_walker::load_pre_post_fulu_state::<E>(case_dir) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut pre_inner = match E::into_fulu_state(pre) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not fulu state")),
+    };
+
+    let result = apply(&mut pre_inner);
+
+    let post_bytes = post.map(|p| p.as_ssz_bytes());
+    let current_bytes = E::fulu_into_state(pre_inner).as_ssz_bytes();
+
+    match (result, post_bytes) {
+        (Ok(()), Some(expected)) => {
+            if current_bytes == expected {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!(
+                    "{case_name}: state mismatch after fulu epoch sub-routine"
+                ))
+            }
+        }
+        (Ok(()), None) => CaseResult::Fail(format!("{case_name}: expected Err but got Ok")),
+        (Err(_), None) => CaseResult::Pass,
+        (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
+    }
+}
 fn run_capella_epoch_case<S, E, F>(case_dir: &Path, case_name: &str, apply: &F) -> CaseResult
 where
     E: BeaconSpec<CapellaBeaconState = S>,
@@ -2489,4 +2532,741 @@ where
         (Err(_), None) => CaseResult::Pass,
         (Err(e), Some(_)) => CaseResult::Fail(format!("{case_name}: expected Ok but got Err: {e}")),
     }
+}
+
+// ── fulu epoch sub-step walkers ───────────────────────────────────────────────
+//
+// Fulu's epoch schedule is electra's 14 steps (run on the fulu→electra
+// projection) plus the new `proposer_lookahead` step (run natively on the fulu
+// state). Each inherited step closure projects fulu→electra, runs the electra
+// step function, and merges the result back via `update_fulu_from_electra`.
+
+fn enumerate_fulu_ep_subs_mainnet(
+    root: &Path,
+    preset: &'static str,
+    row_ordinal: u32,
+    ordinal: &mut u32,
+    tasks: &mut Vec<CaseTask>,
+) {
+    use pharos_types::{MainnetBeaconSpec as E, fulu::MainnetBeaconState as S};
+
+    type ApplyFn = fn(&mut S) -> Result<(), String>;
+    // The inherited 14 electra steps run on the fulu→electra projection
+    // (`run_fulu_inherited_ep_step`); the fulu-native `proposer_lookahead` step
+    // runs directly on the fulu state.
+    let subs: &[(&'static str, ApplyFn)] = &[
+        ("justification_and_finalization", |s| {
+            run_fulu_inherited_ep_step(s, "justification_and_finalization")
+        }),
+        ("inactivity_updates", |s| {
+            run_fulu_inherited_ep_step(s, "inactivity_updates")
+        }),
+        ("rewards_and_penalties", |s| {
+            run_fulu_inherited_ep_step(s, "rewards_and_penalties")
+        }),
+        ("registry_updates", |s| {
+            run_fulu_inherited_ep_step(s, "registry_updates")
+        }),
+        ("slashings", |s| run_fulu_inherited_ep_step(s, "slashings")),
+        ("eth1_data_reset", |s| {
+            run_fulu_inherited_ep_step(s, "eth1_data_reset")
+        }),
+        ("pending_deposits", |s| {
+            run_fulu_inherited_ep_step(s, "pending_deposits")
+        }),
+        ("pending_consolidations", |s| {
+            run_fulu_inherited_ep_step(s, "pending_consolidations")
+        }),
+        ("effective_balance_updates", |s| {
+            run_fulu_inherited_ep_step(s, "effective_balance_updates")
+        }),
+        ("slashings_reset", |s| {
+            run_fulu_inherited_ep_step(s, "slashings_reset")
+        }),
+        ("randao_mixes_reset", |s| {
+            run_fulu_inherited_ep_step(s, "randao_mixes_reset")
+        }),
+        ("historical_summaries_update", |s| {
+            run_fulu_inherited_ep_step(s, "historical_summaries_update")
+        }),
+        ("participation_flag_updates", |s| {
+            run_fulu_inherited_ep_step(s, "participation_flag_updates")
+        }),
+        ("sync_committee_updates", |s| {
+            run_fulu_inherited_ep_step(s, "sync_committee_updates")
+        }),
+        ("proposer_lookahead", |s| {
+            pharos_stf::fulu::epoch::process_proposer_lookahead::<
+                E,
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                134_217_728,
+                134_217_728,
+                262_144,
+                64,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+    ];
+
+    for (sub, apply_fn) in subs {
+        let cases: Vec<(PathBuf, _)> = walk_category(
+            root,
+            preset,
+            "fulu",
+            "epoch_processing",
+            Some(sub),
+            epoch_walk_opts(),
+        )
+        .collect();
+
+        for (case_dir, _meta) in cases {
+            let case_ordinal = *ordinal;
+            *ordinal += 1;
+            let case_name = format!(
+                "fulu/epoch_processing/{preset}/{sub}/{}",
+                dir_name(&case_dir)
+            );
+            let apply_fn = *apply_fn;
+
+            let run: CaseFn = Box::new(move || {
+                match run_fulu_epoch_case::<S, E, _>(&case_dir, &case_name, &apply_fn) {
+                    CaseResult::Pass => CaseOutcome::Pass,
+                    CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                }
+            });
+
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+}
+
+fn enumerate_fulu_ep_subs_minimal(
+    root: &Path,
+    preset: &'static str,
+    row_ordinal: u32,
+    ordinal: &mut u32,
+    tasks: &mut Vec<CaseTask>,
+) {
+    use pharos_types::{MinimalBeaconSpec as E, fulu::MinimalBeaconState as S};
+
+    type ApplyFn = fn(&mut S) -> Result<(), String>;
+    let subs: &[(&'static str, ApplyFn)] = &[
+        ("justification_and_finalization", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "justification_and_finalization")
+        }),
+        ("inactivity_updates", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "inactivity_updates")
+        }),
+        ("rewards_and_penalties", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "rewards_and_penalties")
+        }),
+        ("registry_updates", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "registry_updates")
+        }),
+        ("slashings", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "slashings")
+        }),
+        ("eth1_data_reset", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "eth1_data_reset")
+        }),
+        ("pending_deposits", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "pending_deposits")
+        }),
+        ("pending_consolidations", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "pending_consolidations")
+        }),
+        ("effective_balance_updates", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "effective_balance_updates")
+        }),
+        ("slashings_reset", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "slashings_reset")
+        }),
+        ("randao_mixes_reset", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "randao_mixes_reset")
+        }),
+        ("historical_summaries_update", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "historical_summaries_update")
+        }),
+        ("participation_flag_updates", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "participation_flag_updates")
+        }),
+        ("sync_committee_updates", |s| {
+            run_fulu_inherited_ep_step_minimal(s, "sync_committee_updates")
+        }),
+        ("proposer_lookahead", |s| {
+            pharos_stf::fulu::epoch::process_proposer_lookahead::<
+                E,
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                134_217_728,
+                64,
+                64,
+                16,
+            >(s)
+            .map_err(|e| format!("{e}"))
+        }),
+    ];
+
+    for (sub, apply_fn) in subs {
+        let cases: Vec<(PathBuf, _)> = walk_category(
+            root,
+            preset,
+            "fulu",
+            "epoch_processing",
+            Some(sub),
+            epoch_walk_opts(),
+        )
+        .collect();
+
+        for (case_dir, _meta) in cases {
+            let case_ordinal = *ordinal;
+            *ordinal += 1;
+            let case_name = format!(
+                "fulu/epoch_processing/{preset}/{sub}/{}",
+                dir_name(&case_dir)
+            );
+            let apply_fn = *apply_fn;
+
+            let run: CaseFn = Box::new(move || {
+                match run_fulu_epoch_case::<S, E, _>(&case_dir, &case_name, &apply_fn) {
+                    CaseResult::Pass => CaseOutcome::Pass,
+                    CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                }
+            });
+
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+}
+
+/// Run one inherited (electra) epoch sub-step on a fulu MAINNET state via the
+/// fulu→electra projection: project, run the electra step, merge back.
+fn run_fulu_inherited_ep_step(
+    s: &mut pharos_types::fulu::MainnetBeaconState,
+    step: &str,
+) -> Result<(), String> {
+    use pharos_stf::altair::epoch::{
+        process_eth1_data_reset as altair_eth1_reset,
+        process_inactivity_updates as altair_inactivity,
+        process_justification_and_finalization as altair_jf,
+        process_participation_flag_updates as altair_participation_flags,
+        process_randao_mixes_reset as altair_randao, process_slashings_reset as altair_slash_reset,
+    };
+    use pharos_stf::capella::epoch::process_historical_summaries_update;
+    use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
+    use pharos_stf::deneb::epoch::process_rewards_and_penalties_deneb;
+    use pharos_stf::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
+    use pharos_stf::electra::epoch::effective_balance_updates::process_effective_balance_updates as ebu_e;
+    use pharos_stf::electra::epoch::pending_consolidations::process_pending_consolidations as pc_e;
+    use pharos_stf::electra::epoch::pending_deposits::process_pending_deposits as pd_e;
+    use pharos_stf::electra::epoch::registry_updates::process_registry_updates as ru_e;
+    use pharos_stf::electra::epoch::slashings::process_slashings as sl_e;
+    use pharos_stf::electra::epoch::sync_committee_updates::process_sync_committee_updates as scu_e;
+    use pharos_stf::electra::helpers::{electra_state_to_deneb, update_electra_from_deneb};
+    use pharos_stf::fulu::{fulu_state_to_electra, update_fulu_from_electra};
+    use pharos_types::MainnetBeaconSpec as E;
+
+    let mut e = fulu_state_to_electra(s);
+    let r: Result<(), String> = match step {
+        "justification_and_finalization" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_jf::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(&mut a)
+                .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "inactivity_updates" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_inactivity::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "rewards_and_penalties" => {
+            let mut d = electra_state_to_deneb(&e);
+            process_rewards_and_penalties_deneb::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                E,
+            >(&mut d)
+            .map_err(|x| format!("{x}"))?;
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "registry_updates" => ru_e::<
+            8192,
+            16_777_216,
+            2048,
+            1_099_511_627_776,
+            65536,
+            8192,
+            4,
+            512,
+            256,
+            32,
+            134_217_728,
+            134_217_728,
+            262_144,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        "slashings" => sl_e::<
+            8192,
+            16_777_216,
+            2048,
+            1_099_511_627_776,
+            65536,
+            8192,
+            4,
+            512,
+            256,
+            32,
+            134_217_728,
+            134_217_728,
+            262_144,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        "eth1_data_reset" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_eth1_reset::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "pending_deposits" => pd_e::<
+            8192,
+            16_777_216,
+            2048,
+            1_099_511_627_776,
+            65536,
+            8192,
+            4,
+            512,
+            256,
+            32,
+            134_217_728,
+            134_217_728,
+            262_144,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        "pending_consolidations" => pc_e::<
+            8192,
+            16_777_216,
+            2048,
+            1_099_511_627_776,
+            65536,
+            8192,
+            4,
+            512,
+            256,
+            32,
+            134_217_728,
+            134_217_728,
+            262_144,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        "effective_balance_updates" => ebu_e::<
+            8192,
+            16_777_216,
+            2048,
+            1_099_511_627_776,
+            65536,
+            8192,
+            4,
+            512,
+            256,
+            32,
+            134_217_728,
+            134_217_728,
+            262_144,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        "slashings_reset" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_slash_reset::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "randao_mixes_reset" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_randao::<8192, 16_777_216, 2048, 1_099_511_627_776, 65536, 8192, 4, 512, E>(
+                &mut a,
+            )
+            .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "historical_summaries_update" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            process_historical_summaries_update::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                E,
+            >(&mut c)
+            .map_err(|x| format!("{x}"))?;
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "participation_flag_updates" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_participation_flags::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                E,
+            >(&mut a)
+            .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "sync_committee_updates" => scu_e::<
+            8192,
+            16_777_216,
+            2048,
+            1_099_511_627_776,
+            65536,
+            8192,
+            4,
+            512,
+            256,
+            32,
+            134_217_728,
+            134_217_728,
+            262_144,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        other => Err(format!("unknown fulu epoch step: {other}")),
+    };
+    r?;
+    update_fulu_from_electra(s, e);
+    Ok(())
+}
+
+/// Run one inherited (electra) epoch sub-step on a fulu MINIMAL state.
+fn run_fulu_inherited_ep_step_minimal(
+    s: &mut pharos_types::fulu::MinimalBeaconState,
+    step: &str,
+) -> Result<(), String> {
+    use pharos_stf::altair::epoch::{
+        process_eth1_data_reset as altair_eth1_reset,
+        process_inactivity_updates as altair_inactivity,
+        process_justification_and_finalization as altair_jf,
+        process_participation_flag_updates as altair_participation_flags,
+        process_randao_mixes_reset as altair_randao, process_slashings_reset as altair_slash_reset,
+    };
+    use pharos_stf::capella::epoch::process_historical_summaries_update;
+    use pharos_stf::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
+    use pharos_stf::deneb::epoch::process_rewards_and_penalties_deneb;
+    use pharos_stf::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
+    use pharos_stf::electra::epoch::effective_balance_updates::process_effective_balance_updates as ebu_e;
+    use pharos_stf::electra::epoch::pending_consolidations::process_pending_consolidations as pc_e;
+    use pharos_stf::electra::epoch::pending_deposits::process_pending_deposits as pd_e;
+    use pharos_stf::electra::epoch::registry_updates::process_registry_updates as ru_e;
+    use pharos_stf::electra::epoch::slashings::process_slashings as sl_e;
+    use pharos_stf::electra::epoch::sync_committee_updates::process_sync_committee_updates as scu_e;
+    use pharos_stf::electra::helpers::{electra_state_to_deneb, update_electra_from_deneb};
+    use pharos_stf::fulu::{fulu_state_to_electra, update_fulu_from_electra};
+    use pharos_types::MinimalBeaconSpec as E;
+
+    let mut e = fulu_state_to_electra(s);
+    let r: Result<(), String> = match step {
+        "justification_and_finalization" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_jf::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "inactivity_updates" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_inactivity::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "rewards_and_penalties" => {
+            let mut d = electra_state_to_deneb(&e);
+            process_rewards_and_penalties_deneb::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                E,
+            >(&mut d)
+            .map_err(|x| format!("{x}"))?;
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "registry_updates" => ru_e::<
+            64,
+            16_777_216,
+            32,
+            1_099_511_627_776,
+            64,
+            64,
+            4,
+            32,
+            256,
+            32,
+            134_217_728,
+            64,
+            64,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        "slashings" => sl_e::<
+            64,
+            16_777_216,
+            32,
+            1_099_511_627_776,
+            64,
+            64,
+            4,
+            32,
+            256,
+            32,
+            134_217_728,
+            64,
+            64,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        "eth1_data_reset" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_eth1_reset::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "pending_deposits" => pd_e::<
+            64,
+            16_777_216,
+            32,
+            1_099_511_627_776,
+            64,
+            64,
+            4,
+            32,
+            256,
+            32,
+            134_217_728,
+            64,
+            64,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        "pending_consolidations" => pc_e::<
+            64,
+            16_777_216,
+            32,
+            1_099_511_627_776,
+            64,
+            64,
+            4,
+            32,
+            256,
+            32,
+            134_217_728,
+            64,
+            64,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        "effective_balance_updates" => ebu_e::<
+            64,
+            16_777_216,
+            32,
+            1_099_511_627_776,
+            64,
+            64,
+            4,
+            32,
+            256,
+            32,
+            134_217_728,
+            64,
+            64,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        "slashings_reset" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_slash_reset::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "randao_mixes_reset" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_randao::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(&mut a)
+                .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "historical_summaries_update" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            process_historical_summaries_update::<
+                64,
+                16_777_216,
+                32,
+                1_099_511_627_776,
+                64,
+                64,
+                4,
+                32,
+                256,
+                32,
+                E,
+            >(&mut c)
+            .map_err(|x| format!("{x}"))?;
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "participation_flag_updates" => {
+            let mut d = electra_state_to_deneb(&e);
+            let mut c = deneb_state_to_capella(&d);
+            let mut a = capella_state_to_altair(&c);
+            altair_participation_flags::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, E>(
+                &mut a,
+            )
+            .map_err(|x| format!("{x}"))?;
+            update_capella_from_altair(&mut c, a);
+            update_deneb_from_capella(&mut d, c);
+            update_electra_from_deneb(&mut e, d);
+            Ok(())
+        }
+        "sync_committee_updates" => scu_e::<
+            64,
+            16_777_216,
+            32,
+            1_099_511_627_776,
+            64,
+            64,
+            4,
+            32,
+            256,
+            32,
+            134_217_728,
+            64,
+            64,
+            E,
+        >(&mut e)
+        .map_err(|x| format!("{x}")),
+        other => Err(format!("unknown fulu epoch step: {other}")),
+    };
+    r?;
+    update_fulu_from_electra(s, e);
+    Ok(())
 }

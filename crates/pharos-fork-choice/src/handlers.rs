@@ -78,6 +78,7 @@ where
     E::CapellaBeaconState: pharos_stf::CapellaJaFDispatch<E>,
     E::DenebBeaconState: pharos_stf::DenebJaFDispatch<E>,
     E::ElectraBeaconState: pharos_stf::ElectraJaFDispatch<E>,
+    E::FuluBeaconState: pharos_stf::FuluJaFDispatch<E>,
     E::BeaconBlock: BeaconBlockView,
     E::Phase0BeaconBlockBody:
         BeaconBlockBodyView<Attestation = pharos_types::phase0::Attestation<2048>>,
@@ -190,7 +191,9 @@ where
         pharos_stf::CapellaProcessSlotsDispatch<E> + pharos_stf::CapellaUpgradeDispatch<E>,
     E::DenebBeaconState:
         pharos_stf::DenebProcessSlotsDispatch<E> + pharos_stf::DenebUpgradeDispatch<E>,
-    E::ElectraBeaconState: pharos_stf::ElectraProcessSlotsDispatch<E>,
+    E::ElectraBeaconState:
+        pharos_stf::ElectraProcessSlotsDispatch<E> + pharos_stf::ElectraUpgradeDispatch<E>,
+    E::FuluBeaconState: pharos_stf::FuluProcessSlotsDispatch<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
@@ -286,8 +289,10 @@ where
     E::DenebBeaconState: pharos_stf::DenebJaFDispatch<E>
         + pharos_stf::DenebProcessSlotsDispatch<E>
         + pharos_stf::DenebUpgradeDispatch<E>,
-    E::ElectraBeaconState:
-        pharos_stf::ElectraJaFDispatch<E> + pharos_stf::ElectraProcessSlotsDispatch<E>,
+    E::ElectraBeaconState: pharos_stf::ElectraJaFDispatch<E>
+        + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>,
+    E::FuluBeaconState: pharos_stf::FuluJaFDispatch<E> + pharos_stf::FuluProcessSlotsDispatch<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
@@ -585,7 +590,9 @@ where
         pharos_stf::CapellaProcessSlotsDispatch<E> + pharos_stf::CapellaUpgradeDispatch<E>,
     E::DenebBeaconState:
         pharos_stf::DenebProcessSlotsDispatch<E> + pharos_stf::DenebUpgradeDispatch<E>,
-    E::ElectraBeaconState: pharos_stf::ElectraProcessSlotsDispatch<E>,
+    E::ElectraBeaconState:
+        pharos_stf::ElectraProcessSlotsDispatch<E> + pharos_stf::ElectraUpgradeDispatch<E>,
+    E::FuluBeaconState: pharos_stf::FuluProcessSlotsDispatch<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
@@ -674,7 +681,9 @@ where
         pharos_stf::CapellaProcessSlotsDispatch<E> + pharos_stf::CapellaUpgradeDispatch<E>,
     E::DenebBeaconState:
         pharos_stf::DenebProcessSlotsDispatch<E> + pharos_stf::DenebUpgradeDispatch<E>,
-    E::ElectraBeaconState: pharos_stf::ElectraProcessSlotsDispatch<E>,
+    E::ElectraBeaconState:
+        pharos_stf::ElectraProcessSlotsDispatch<E> + pharos_stf::ElectraUpgradeDispatch<E>,
+    E::FuluBeaconState: pharos_stf::FuluProcessSlotsDispatch<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {
@@ -753,7 +762,9 @@ where
         pharos_stf::CapellaProcessSlotsDispatch<E> + pharos_stf::CapellaUpgradeDispatch<E>,
     E::DenebBeaconState:
         pharos_stf::DenebProcessSlotsDispatch<E> + pharos_stf::DenebUpgradeDispatch<E>,
-    E::ElectraBeaconState: pharos_stf::ElectraProcessSlotsDispatch<E>,
+    E::ElectraBeaconState:
+        pharos_stf::ElectraProcessSlotsDispatch<E> + pharos_stf::ElectraUpgradeDispatch<E>,
+    E::FuluBeaconState: pharos_stf::FuluProcessSlotsDispatch<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlockBody: BeaconBlockBodyView<Attestation = Attestation<2048>>,
 {

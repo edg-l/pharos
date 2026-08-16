@@ -1,43 +1,49 @@
-//! `process_block` for Electra.
+//! `process_block` for Fulu.
 //!
-//! Per `specs/electra/beacon-chain.md` Block processing (`:1203-1215`).
+//! Per `specs/fulu/beacon-chain.md` Block processing.
 //!
-//! Process-block step order (same as Deneb + EIP-6110/7002/7251/7549/7685 changes):
-//! 1. `process_block_header` (electra proposer index)
-//! 2. `process_withdrawals(state, block.body.execution_payload)` — [Modified in Electra:EIP7251]
-//! 3. `process_execution_payload(state, block.body, ...)` — [Modified in Electra:EIP6110/7691/7685]
+//! Fulu `process_block` step order (identical to Electra, with the fulu
+//! `process_execution_payload` and `process_operations` substituted):
+//! 1. `process_block_header` (electra proposer index — EIP-7917 reads from lookahead)
+//! 2. `process_withdrawals(state, block.body.execution_payload)` — [Electra:EIP7251]
+//! 3. `process_execution_payload(state, block.body, ...)` — [Fulu:EIP7892 epoch-dependent blob limit]
 //! 4. `process_randao`
 //! 5. `process_eth1_data`
-//! 6. `process_operations` — [Modified in Electra:EIP6110/7002/7549/7251]
+//! 6. `process_operations` — [Electra:EIP6110/7002/7549/7251 re-exported]
 //! 7. `process_sync_aggregate`
 //!
-//! `process_randao` and `process_eth1_data` are unchanged since Altair; they only
-//! read `body.randao_reveal` / `body.eth1_data`, so we build a thin altair block
-//! body carrying just those fields (the electra attestation shape has no altair
-//! representation, but those steps never touch attestations).
+//! The fulu body is the electra `BeaconBlockBody` type. The fulu state carries
+//! an extra `proposer_lookahead` field; all other fields are identical to electra
+//! so the electra sub-operations accept it via the projection helpers where
+//! needed, or directly when operating on the shared-field subset.
 
 use pharos_ssz::{SszSequence as _, TreeHash as _};
 use pharos_types::{
     BeaconSpec,
     altair::BeaconState as AltairBeaconState,
     config::RuntimeConfig,
-    electra::{BeaconBlock, BeaconState},
+    electra::{BeaconBlock, BeaconBlockBody},
+    fulu::BeaconState,
 };
 
 use crate::altair::block::{process_eth1_data_altair, process_randao_altair};
 use crate::bellatrix::execution_engine::{ExecutionEngine, PayloadVerificationStatus};
 use crate::electra::helpers::{electra_state_to_altair, update_electra_from_altair};
-use crate::electra::operations::execution_payload::process_execution_payload;
 use crate::electra::operations::process_operations_electra;
 use crate::electra::operations::{
     process_block_header_electra, process_sync_aggregate_electra, process_withdrawals_electra,
 };
 use crate::error::StateTransitionError;
+use crate::fulu::operations::process_execution_payload_fulu;
+use crate::fulu::{fulu_state_to_electra, update_fulu_from_electra};
 
-/// `process_block` per `specs/electra/beacon-chain.md:1203-1215`.
+/// `process_block` per `specs/fulu/beacon-chain.md`.
 ///
-/// Exact per-step order as specified.
+/// Uses the fulu `process_execution_payload` (EIP-7892 epoch-dependent blob limit).
+/// All other steps delegate to the electra implementations, operating on the fulu
+/// state's electra-shared fields directly or via the projection helpers.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 pub fn process_block<
     const MAX_PROPOSER_SLASHINGS: u64,
     const MAX_ATTESTER_SLASHINGS_ELECTRA: u64,
@@ -69,6 +75,7 @@ pub fn process_block<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    const LOOKAHEAD_WINDOW: u64,
     E,
     EE,
 >(
@@ -86,6 +93,7 @@ pub fn process_block<
         PENDING_DEPOSITS_LIMIT,
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
     >,
     block: &BeaconBlock<
         MAX_PROPOSER_SLASHINGS,
@@ -149,7 +157,7 @@ where
                 BYTES_PER_LOGS_BLOOM,
                 MAX_EXTRA_DATA_BYTES,
             >,
-            ElectraBeaconState = BeaconState<
+            ElectraBeaconState = pharos_types::electra::BeaconState<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
                 ETH1_DATA_VOTES_LIMIT,
@@ -164,9 +172,25 @@ where
                 PENDING_PARTIAL_WITHDRAWALS_LIMIT,
                 PENDING_CONSOLIDATIONS_LIMIT,
             >,
+            FuluBeaconState = BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                PENDING_DEPOSITS_LIMIT,
+                PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+                PENDING_CONSOLIDATIONS_LIMIT,
+                LOOKAHEAD_WINDOW,
+            >,
         >,
     E::AltairBeaconState: pharos_ssz::TreeHash,
-    pharos_types::electra::BeaconBlockBody<
+    BeaconBlockBody<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS_ELECTRA,
         MAX_ATTESTATIONS_ELECTRA,
@@ -191,8 +215,48 @@ where
     pharos_utils::BLSPubkey: Default + Clone,
     EE: ExecutionEngine,
 {
-    // Step 1: process_block_header — electra proposer index.
+    // [Modified in Fulu:EIP7917] the proposer for this slot is read from the
+    // precomputed lookahead BEFORE any block processing mutates state (the
+    // electra on-demand election would otherwise see intra-block balance changes
+    // and diverge from the fixed lookahead proposer). Threaded into both
+    // process_block_header and process_sync_aggregate as `proposer_override`.
+    let fulu_proposer = crate::fulu::helpers::get_beacon_proposer_index::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+        E,
+    >(state);
+
+    // Step 1: process_block_header — operates on the electra-projected state with
+    // the fulu lookahead proposer injected via `proposer_override`.
     let body_root = block.body.tree_hash_root();
+    let mut electra_for_header = fulu_state_to_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >(state);
     process_block_header_electra::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
@@ -209,15 +273,47 @@ where
         PENDING_CONSOLIDATIONS_LIMIT,
         E,
     >(
-        state,
+        &mut electra_for_header,
         block.slot,
         block.proposer_index,
         block.parent_root,
         body_root,
-        None,
+        Some(fulu_proposer),
     )?;
+    update_fulu_from_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >(state, electra_for_header);
 
-    // Step 2: process_withdrawals — electra (EIP-7251 partial-withdrawal sweep).
+    // Step 2: process_withdrawals — operates on the electra-projected state.
+    let mut electra_for_withdrawals = fulu_state_to_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >(state);
     process_withdrawals_electra::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
@@ -236,10 +332,26 @@ where
         MAX_TRANSACTIONS_PER_PAYLOAD,
         MAX_WITHDRAWALS_PER_PAYLOAD,
         E,
-    >(state, &block.body.execution_payload)?;
+    >(&mut electra_for_withdrawals, &block.body.execution_payload)?;
+    update_fulu_from_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >(state, electra_for_withdrawals);
 
-    // Step 3: process_execution_payload — electra (EIP-6110/7691/7685).
-    let payload_status = Some(process_execution_payload::<
+    // Step 3: process_execution_payload — fulu version (EIP-7892 epoch-dependent blob limit).
+    let payload_status = Some(process_execution_payload_fulu::<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS_ELECTRA,
         MAX_ATTESTATIONS_ELECTRA,
@@ -270,14 +382,14 @@ where
         PENDING_DEPOSITS_LIMIT,
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
         E,
         EE,
     >(state, &block.body, execution_engine, runtime_cfg)?);
 
+    // Steps 4–5: process_randao + process_eth1_data — delegate via altair projection.
     // Build a thin altair block body carrying only the fields process_randao /
-    // process_eth1_data read. Attestations/slashings/deposits are left empty —
-    // those steps never touch them (the electra attestation shape has no altair
-    // representation).
+    // process_eth1_data read.
     let altair_body = pharos_types::altair::BeaconBlockBody::<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS_ELECTRA,
@@ -299,27 +411,19 @@ where
         sync_aggregate: block.body.sync_aggregate.clone(),
     };
 
-    // Step 4: process_randao.
-    //
-    // The randao reveal must be verified against the ELECTRA proposer (16-bit
-    // effective-balance-weighted shuffle), so we verify the signature here using
-    // `get_beacon_proposer_index_electra` and then mix in via the altair helper
-    // with `verify_signatures = false` (the mix step is fork-agnostic). Delegating
-    // verification to `process_randao_altair` would use the altair 8-bit proposer
-    // and fail every signed block.
+    // Step 4: process_randao — [Modified in Fulu:EIP7917] the randao reveal is
+    // verified against the lookahead proposer (`fulu_proposer`), NOT a re-elected
+    // electra proposer; then mix via the altair helper with verify_signatures=false.
     if verify_signatures {
-        use crate::electra::helpers::get_beacon_proposer_index_electra;
         use crate::phase0::accessors::{compute_domain, compute_epoch_at_slot};
         use crate::phase0::helpers::DOMAIN_RANDAO;
         use pharos_ssz::TreeHash;
         use pharos_types::phase0::SigningData;
 
         let epoch = compute_epoch_at_slot(state.slot, E::SLOTS_PER_EPOCH);
-        let proposer_index =
-            get_beacon_proposer_index_electra::<E>(&E::electra_into_state(state.clone()));
         let proposer = state
             .validators
-            .get(proposer_index.0 as usize)
+            .get(fulu_proposer.0 as usize)
             .ok_or(StateTransitionError::InvalidRandaoReveal)?;
         let fork_version = if epoch < state.fork.epoch {
             state.fork.previous_version.into_inner()
@@ -343,7 +447,24 @@ where
         }
     }
 
-    let mut altair_state = electra_state_to_altair(state);
+    // Project fulu→electra→altair for randao/eth1 mutation.
+    let mut electra_for_randao = fulu_state_to_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >(state);
+    let mut altair_state = electra_state_to_altair(&electra_for_randao);
     process_randao_altair::<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS_ELECTRA,
@@ -383,7 +504,7 @@ where
         E,
     >(&mut altair_state, &altair_body)?;
 
-    // Sync altair-mutated shared fields back into electra state.
+    // Sync altair-mutated shared fields back fulu state.
     update_electra_from_altair::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
@@ -398,9 +519,42 @@ where
         PENDING_DEPOSITS_LIMIT,
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
-    >(state, altair_state);
+    >(&mut electra_for_randao, altair_state);
+    update_fulu_from_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >(state, electra_for_randao);
 
-    // Step 6: process_operations — electra (EIP-6110/7002/7549/7251).
+    // Step 6: process_operations — electra re-export (unchanged from electra).
+    // Operates on the electra-projected state.
+    let mut electra_for_ops = fulu_state_to_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >(state);
     process_operations_electra::<
         MAX_PROPOSER_SLASHINGS,
         MAX_ATTESTER_SLASHINGS_ELECTRA,
@@ -433,9 +587,47 @@ where
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
         E,
-    >(state, &block.body, verify_signatures, runtime_cfg, None)?;
+    >(
+        &mut electra_for_ops,
+        &block.body,
+        verify_signatures,
+        runtime_cfg,
+        Some(fulu_proposer),
+    )?;
+    update_fulu_from_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >(state, electra_for_ops);
 
     // Step 7: process_sync_aggregate — electra handler (electra proposer reward).
+    let mut electra_for_sync = fulu_state_to_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >(state);
     process_sync_aggregate_electra::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
@@ -451,7 +643,28 @@ where
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
         E,
-    >(state, &block.body.sync_aggregate, verify_signatures, None)?;
+    >(
+        &mut electra_for_sync,
+        &block.body.sync_aggregate,
+        verify_signatures,
+        Some(fulu_proposer),
+    )?;
+    update_fulu_from_electra::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
+    >(state, electra_for_sync);
 
     Ok(payload_status)
 }

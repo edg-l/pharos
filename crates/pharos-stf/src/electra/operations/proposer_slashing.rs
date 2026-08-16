@@ -6,7 +6,11 @@
 //! which internally derives the proposer reward via the Electra proposer index.
 
 use pharos_ssz::SszSequence;
-use pharos_types::{BeaconSpec, electra::BeaconState, phase0::ProposerSlashing};
+use pharos_types::{
+    BeaconSpec,
+    electra::BeaconState,
+    phase0::{ProposerSlashing, ValidatorIndex},
+};
 
 use crate::electra::helpers::slash_validator_electra;
 use crate::error::{ProposerSlashingInvalidReason, StateTransitionError};
@@ -52,6 +56,7 @@ pub fn process_proposer_slashing_electra<
     >,
     slashing: &ProposerSlashing,
     verify_signatures: bool,
+    proposer_override: Option<ValidatorIndex>,
 ) -> Result<(), StateTransitionError>
 where
     E: BeaconSpec<
@@ -166,5 +171,5 @@ where
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
         E,
-    >(state, proposer_idx, None)
+    >(state, proposer_idx, None, proposer_override)
 }

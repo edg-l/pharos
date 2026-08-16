@@ -16,6 +16,7 @@ pub mod capella;
 pub mod deneb;
 pub mod electra;
 pub mod error;
+pub mod fulu;
 pub mod phase0;
 
 pub use altair::light_client_dispatch::{
@@ -39,6 +40,10 @@ pub use electra::helpers::{
 pub use electra::state_transition::{
     ElectraDispatch, ElectraGetExpectedWithdrawalsDispatch, ElectraJaFDispatch,
     ElectraProcessBlockForProduction, ElectraProcessSlotsDispatch,
+};
+pub use fulu::epoch::FuluJaFDispatch;
+pub use fulu::state_transition::{
+    FuluDispatch, FuluProcessBlockForProduction, FuluProcessSlotsDispatch,
 };
 pub use phase0::block::process_block;
 pub use phase0::epoch::justification_and_finalization::process_justification_and_finalization;
@@ -585,6 +590,112 @@ where
     }
 }
 
+/// Dispatch trait for upgrading an Electra state to Fulu.
+///
+/// Implemented via blanket impl on `electra::BeaconState<...>`. Called from
+/// `process_slots_fork` when it reaches the Fulu fork epoch boundary
+/// (`D-live-fork-trigger-in-state-transition` — an electra-state + fulu-block
+/// crossing must upgrade live).
+pub trait ElectraUpgradeDispatch<E: BeaconSpec>: Sized {
+    /// Upgrade `self` (Electra inner state) to a Fulu inner state.
+    fn upgrade_to_fulu_dispatch(
+        self,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<E::FuluBeaconState, StateTransitionError>;
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    const LOOKAHEAD_WINDOW: u64,
+    E,
+> ElectraUpgradeDispatch<E>
+    for pharos_types::electra::BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+    >
+where
+    E: BeaconSpec<
+            ElectraBeaconState = pharos_types::electra::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                PENDING_DEPOSITS_LIMIT,
+                PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+                PENDING_CONSOLIDATIONS_LIMIT,
+            >,
+            FuluBeaconState = pharos_types::fulu::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                PENDING_DEPOSITS_LIMIT,
+                PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+                PENDING_CONSOLIDATIONS_LIMIT,
+                LOOKAHEAD_WINDOW,
+            >,
+        >,
+    pharos_utils::BLSPubkey: Default + Clone,
+{
+    fn upgrade_to_fulu_dispatch(
+        self,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<E::FuluBeaconState, StateTransitionError> {
+        fulu::upgrade::upgrade_to_fulu::<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            PENDING_DEPOSITS_LIMIT,
+            PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+            PENDING_CONSOLIDATIONS_LIMIT,
+            LOOKAHEAD_WINDOW,
+            E,
+        >(self, runtime_cfg)
+    }
+}
+
 /// `state_transition` per `specs/phase0/beacon-chain.md:1370-1393`.
 ///
 /// Dispatches on the `BeaconState` fork variant:
@@ -647,7 +758,11 @@ where
         + TreeHash,
     E::DenebBeaconState:
         DenebDispatch<E, EE> + DenebProcessSlotsDispatch<E> + DenebUpgradeDispatch<E> + TreeHash,
-    E::ElectraBeaconState: ElectraDispatch<E, EE> + ElectraProcessSlotsDispatch<E> + TreeHash,
+    E::ElectraBeaconState: ElectraDispatch<E, EE>
+        + ElectraProcessSlotsDispatch<E>
+        + ElectraUpgradeDispatch<E>
+        + TreeHash,
+    E::FuluBeaconState: FuluDispatch<E, EE> + FuluProcessSlotsDispatch<E> + TreeHash,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
 {
     // Advance the state through any fork boundaries to the block's target slot.
@@ -773,9 +888,22 @@ where
                 break 'dispatch (wrapped, payload_status);
             }
             ForkVariant::Fulu => {
-                // Fulu STF lands in M13-Fulu Phase 2-4; until then the state
-                // transition is unsupported for fulu states.
-                return Err(StateTransitionError::UnsupportedFork);
+                // Unwrap fork-enum state and block to their inner fulu types.
+                let fulu_signed = E::unwrap_fulu_signed_block(signed_block)
+                    .ok_or(StateTransitionError::UnsupportedFork)?;
+                let fulu_inner =
+                    E::into_fulu_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+                // Apply the fulu state transition via the `FuluDispatch` blanket impl.
+                let (updated, payload_status) = fulu_inner.apply_signed_block(
+                    fulu_signed,
+                    execution_engine,
+                    validate_result,
+                    runtime_cfg,
+                )?;
+                // Wrap the result back into the fork-enum + invalidate the root cache.
+                let mut wrapped = E::fulu_into_state(updated);
+                wrapped.invalidate_root_cache();
+                break 'dispatch (wrapped, payload_status);
             }
         }
         // Phase0 falls through here; reset root cache before unifying exit.
@@ -896,6 +1024,7 @@ where
     E::CapellaBeaconState: CapellaProcessBlockForProduction<E, EE> + TreeHash,
     E::DenebBeaconState: DenebProcessBlockForProduction<E, EE> + TreeHash,
     E::ElectraBeaconState: ElectraProcessBlockForProduction<E, EE> + TreeHash,
+    E::FuluBeaconState: FuluProcessBlockForProduction<E, EE> + TreeHash,
 {
     use pharos_types::views::ForkVariant;
 
@@ -978,8 +1107,18 @@ where
             Ok(wrapped)
         }
         ForkVariant::Fulu => {
-            // Fulu block production lands in M13-Fulu Phase 4.
-            Err(StateTransitionError::UnsupportedFork)
+            let fulu_block =
+                E::unwrap_fulu_block(block).ok_or(StateTransitionError::UnsupportedFork)?;
+            let mut fulu_inner =
+                E::into_fulu_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+            fulu_inner.process_block_for_production_fulu(
+                fulu_block,
+                execution_engine,
+                runtime_cfg,
+            )?;
+            let mut wrapped = E::fulu_into_state(fulu_inner);
+            wrapped.invalidate_root_cache();
+            Ok(wrapped)
         }
     }
 }
@@ -1000,6 +1139,7 @@ where
     E::CapellaBeaconState: CapellaJaFDispatch<E>,
     E::DenebBeaconState: DenebJaFDispatch<E>,
     E::ElectraBeaconState: ElectraJaFDispatch<E>,
+    E::FuluBeaconState: FuluJaFDispatch<E>,
     E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
             Attestation = pharos_types::phase0::Attestation<2048>,
         >,
@@ -1041,8 +1181,10 @@ where
             Ok(())
         }
         ForkVariant::Fulu => {
-            // Fulu epoch processing lands in M13-Fulu Phase 4.
-            Err(EpochProcessingError::UnsupportedFork)
+            let mut inner = E::into_fulu_state(state.clone()).expect("fork_variant is Fulu");
+            inner.process_jaf_fulu()?;
+            *state = E::fulu_into_state(inner);
+            Ok(())
         }
     }
 }
@@ -1088,7 +1230,8 @@ where
     E::BellatrixBeaconState: BellatrixProcessSlotsDispatch<E>,
     E::CapellaBeaconState: CapellaProcessSlotsDispatch<E> + CapellaUpgradeDispatch<E>,
     E::DenebBeaconState: DenebProcessSlotsDispatch<E> + DenebUpgradeDispatch<E>,
-    E::ElectraBeaconState: ElectraProcessSlotsDispatch<E>,
+    E::ElectraBeaconState: ElectraProcessSlotsDispatch<E> + ElectraUpgradeDispatch<E>,
+    E::FuluBeaconState: FuluProcessSlotsDispatch<E>,
     E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
     E::AltairBeaconState: AltairUpgradeDispatch<E>,
     E::BellatrixBeaconState: BellatrixUpgradeDispatch<E>,
@@ -1131,10 +1274,8 @@ where
             ForkVariant::Bellatrix => boundary_slot_if(fork_epochs.capella, current_slot),
             ForkVariant::Capella => boundary_slot_if(fork_epochs.deneb, current_slot),
             ForkVariant::Deneb => boundary_slot_if(fork_epochs.electra, current_slot),
-            // Electra→Fulu boundary handling (upgrade_to_fulu) lands in M13-Fulu
-            // Phase 4; until then Electra is the last fork that triggers a
-            // boundary upgrade.
-            ForkVariant::Electra => None,
+            ForkVariant::Electra => boundary_slot_if(fork_epochs.fulu, current_slot),
+            // Fulu is the last plumbed fork; no successor boundary upgrade.
             ForkVariant::Fulu => None,
         };
 
@@ -1175,8 +1316,9 @@ where
                 *state = E::electra_into_state(inner);
             }
             ForkVariant::Fulu => {
-                // Fulu slot processing lands in M13-Fulu Phase 2-4.
-                return Err(StateTransitionError::UnsupportedFork);
+                let mut inner = E::into_fulu_state(state.clone()).expect("fork_variant is Fulu");
+                inner.process_slots_fulu(step_target, runtime_cfg)?;
+                *state = E::fulu_into_state(inner);
             }
         }
 
@@ -1216,12 +1358,13 @@ where
                         *state = E::electra_into_state(upgraded);
                     }
                     ForkVariant::Electra => {
-                        // Electra is the last plumbed fork (Fulu upgrade lands in
-                        // M13-Fulu Phase 4); no successor boundary.
-                        break;
+                        let inner =
+                            E::into_electra_state(state.clone()).expect("fork_variant is Electra");
+                        let upgraded = inner.upgrade_to_fulu_dispatch(runtime_cfg)?;
+                        *state = E::fulu_into_state(upgraded);
                     }
                     ForkVariant::Fulu => {
-                        // Fulu is the last fork variant; no successor boundary.
+                        // Fulu is the last plumbed fork variant; no successor boundary.
                         break;
                     }
                 }

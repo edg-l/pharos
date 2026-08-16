@@ -5373,6 +5373,7 @@ fn electra_op_table_mainnet() -> Vec<(
                     block.proposer_index,
                     block.parent_root,
                     body_root,
+                    None,
                 );
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
                 altair_op_outcome(
@@ -5433,7 +5434,7 @@ fn electra_op_table_mainnet() -> Vec<(
                     134_217_728,
                     262_144,
                     E,
-                >(&mut pre, &op, bls_verify(&meta));
+                >(&mut pre, &op, bls_verify(&meta), None);
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
                 altair_op_outcome(
                     result,
@@ -5609,7 +5610,7 @@ fn electra_op_table_mainnet() -> Vec<(
                     134_217_728,
                     262_144,
                     E,
-                >(&mut pre, &op, bls_verify(&meta));
+                >(&mut pre, &op, bls_verify(&meta), None);
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
                 altair_op_outcome(
                     result,
@@ -5670,7 +5671,7 @@ fn electra_op_table_mainnet() -> Vec<(
                     131_072, // MAX_AGGREGATION_BITS mainnet (2048 * 64)
                     64,      // MAX_COMMITTEES_PER_SLOT mainnet
                     E,
-                >(&mut pre, &op, bls_verify(&meta));
+                >(&mut pre, &op, bls_verify(&meta), None);
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
                 altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
             }),
@@ -5724,7 +5725,7 @@ fn electra_op_table_mainnet() -> Vec<(
                     262_144,
                     131_072, // MAX_AGGREGATION_BITS mainnet (2048 * 64)
                     E,
-                >(&mut pre, &op, bls_verify(&meta));
+                >(&mut pre, &op, bls_verify(&meta), None);
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
                 altair_op_outcome(
                     result,
@@ -6140,6 +6141,7 @@ fn electra_op_table_minimal() -> Vec<(
                     block.proposer_index,
                     block.parent_root,
                     body_root,
+                    None,
                 );
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
                 altair_op_outcome(
@@ -6200,7 +6202,7 @@ fn electra_op_table_minimal() -> Vec<(
                     64,
                     64,
                     E,
-                >(&mut pre, &op, bls_verify(&meta));
+                >(&mut pre, &op, bls_verify(&meta), None);
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
                 altair_op_outcome(
                     result,
@@ -6376,7 +6378,7 @@ fn electra_op_table_minimal() -> Vec<(
                     64,
                     64,
                     E,
-                >(&mut pre, &op, bls_verify(&meta));
+                >(&mut pre, &op, bls_verify(&meta), None);
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
                 altair_op_outcome(
                     result,
@@ -6437,7 +6439,7 @@ fn electra_op_table_minimal() -> Vec<(
                     8192,        // MAX_AGGREGATION_BITS minimal (2048 * 4)
                     4,           // MAX_COMMITTEES_PER_SLOT minimal
                     E,
-                >(&mut pre, &op, bls_verify(&meta));
+                >(&mut pre, &op, bls_verify(&meta), None);
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
                 altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
             }),
@@ -6491,7 +6493,7 @@ fn electra_op_table_minimal() -> Vec<(
                     64,          // PENDING_CONSOLIDATIONS_LIMIT minimal
                     8192,        // MAX_AGGREGATION_BITS minimal (2048 * 4)
                     E,
-                >(&mut pre, &op, bls_verify(&meta));
+                >(&mut pre, &op, bls_verify(&meta), None);
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
                 altair_op_outcome(
                     result,
@@ -6884,6 +6886,1252 @@ pub fn enumerate_operations(
         ("deneb", "minimal") => enumerate_operations_deneb(root, "minimal", row_ordinal),
         ("electra", "mainnet") => enumerate_operations_electra(root, "mainnet", row_ordinal),
         ("electra", "minimal") => enumerate_operations_electra(root, "minimal", row_ordinal),
+        ("fulu", "mainnet") => enumerate_operations_fulu(root, "mainnet", row_ordinal),
+        ("fulu", "minimal") => enumerate_operations_fulu(root, "minimal", row_ordinal),
         _ => Vec::new(),
     }
+}
+
+// ── Fulu operations ───────────────────────────────────────────────────────────
+//
+// Fulu's per-operation logic is electra's (the fulu block body IS the electra
+// body, and every op except `process_execution_payload` is re-exported from
+// electra). The fulu fixtures decode the pre/post states as `fulu::BeaconState`
+// (which carries the extra `proposer_lookahead` field). Each inherited op runs
+// on the fulu→electra projection (`fulu_state_to_electra` → electra op →
+// `update_fulu_from_electra`); `execution_payload` runs the fulu
+// (EIP-7892 epoch-dependent blob limit) variant directly on the fulu state.
+
+#[allow(clippy::type_complexity)]
+fn fulu_op_table_mainnet() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)> {
+    use pharos_stf::electra::operations::{
+        process_attestation_electra, process_attester_slashing_electra,
+        process_block_header_electra, process_consolidation_request, process_deposit_electra,
+        process_deposit_request, process_proposer_slashing_electra, process_sync_aggregate_electra,
+        process_voluntary_exit_electra, process_withdrawal_request,
+    };
+    use pharos_stf::fulu::{fulu_state_to_electra, update_fulu_from_electra};
+    use pharos_types::MainnetBeaconSpec as E;
+
+    macro_rules! load_pre_post {
+        ($case_dir:expr, $case_name:expr) => {{
+            let pre = match load_ssz_snappy::<pharos_types::fulu::MainnetBeaconState>(
+                &$case_dir,
+                "pre.ssz_snappy",
+            ) {
+                Ok(v) => v,
+                Err(e) => return crate::task::CaseOutcome::Fail(format!("{}: {e}", $case_name)),
+            };
+            let post_bytes = if $case_dir.join("post.ssz_snappy").exists() {
+                match load_ssz_snappy::<pharos_types::fulu::MainnetBeaconState>(
+                    &$case_dir,
+                    "post.ssz_snappy",
+                ) {
+                    Ok(v) => Some(E::fulu_into_state(v).as_ssz_bytes()),
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{}: {e}", $case_name));
+                    }
+                }
+            } else {
+                None
+            };
+            (pre, post_bytes)
+        }};
+    }
+
+    vec![
+        (
+            "block_header",
+            Box::new(|case_dir, case_name, _meta| {
+                use pharos_ssz::TreeHash as _;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let block = match load_ssz_snappy::<pharos_types::fulu::MainnetBeaconBlock>(
+                    &case_dir,
+                    "block.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let fulu_proposer = pharos_stf::fulu::helpers::get_beacon_proposer_index::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    64,
+                    E,
+                >(&pre);
+                let mut electra = fulu_state_to_electra(&pre);
+                let body_root = block.body.tree_hash_root();
+                let result = process_block_header_electra::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    E,
+                >(
+                    &mut electra,
+                    block.slot,
+                    block.proposer_index,
+                    block.parent_root,
+                    body_root,
+                    Some(fulu_proposer),
+                );
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "block_header",
+                )
+            }),
+        ),
+        (
+            "proposer_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::phase0::ProposerSlashing;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<ProposerSlashing>(
+                    &case_dir,
+                    "proposer_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_proposer_slashing_electra::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta), None);
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "proposer_slashing",
+                )
+            }),
+        ),
+        (
+            "deposit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::phase0::Deposit;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<Deposit<33>>(&case_dir, "deposit.ssz_snappy") {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_deposit_electra::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta));
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "deposit")
+            }),
+        ),
+        (
+            "voluntary_exit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::phase0::SignedVoluntaryExit;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<SignedVoluntaryExit>(
+                    &case_dir,
+                    "voluntary_exit.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_voluntary_exit_electra::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    E,
+                >(
+                    &mut electra,
+                    &op,
+                    bls_verify(&meta),
+                    &E::default_runtime_config(),
+                );
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "voluntary_exit",
+                )
+            }),
+        ),
+        (
+            "sync_aggregate",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::altair::MainnetSyncAggregate;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<MainnetSyncAggregate>(
+                    &case_dir,
+                    "sync_aggregate.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let fulu_proposer = pharos_stf::fulu::helpers::get_beacon_proposer_index::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    64,
+                    E,
+                >(&pre);
+                let mut electra = fulu_state_to_electra(&pre);
+                let result =
+                    process_sync_aggregate_electra::<
+                        8192,
+                        16_777_216,
+                        2048,
+                        1_099_511_627_776,
+                        65536,
+                        8192,
+                        4,
+                        512,
+                        256,
+                        32,
+                        134_217_728,
+                        134_217_728,
+                        262_144,
+                        E,
+                    >(&mut electra, &op, bls_verify(&meta), Some(fulu_proposer));
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "sync_aggregate",
+                )
+            }),
+        ),
+        (
+            "attestation",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::MainnetAttestation;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<MainnetAttestation>(
+                    &case_dir,
+                    "attestation.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_attestation_electra::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    131_072,
+                    64,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta), None);
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+            }),
+        ),
+        (
+            "attester_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::MainnetAttesterSlashing;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<MainnetAttesterSlashing>(
+                    &case_dir,
+                    "attester_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_attester_slashing_electra::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    131_072,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta), None);
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attester_slashing",
+                )
+            }),
+        ),
+        (
+            "deposit_request",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::requests::DepositRequest;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<DepositRequest>(
+                    &case_dir,
+                    "deposit_request.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_deposit_request::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta));
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "deposit_request",
+                )
+            }),
+        ),
+        (
+            "withdrawal_request",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::requests::WithdrawalRequest;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<WithdrawalRequest>(
+                    &case_dir,
+                    "withdrawal_request.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_withdrawal_request::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta));
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "withdrawal_request",
+                )
+            }),
+        ),
+        (
+            "consolidation_request",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::requests::ConsolidationRequest;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<ConsolidationRequest>(
+                    &case_dir,
+                    "consolidation_request.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_consolidation_request::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta));
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "consolidation_request",
+                )
+            }),
+        ),
+        (
+            "execution_payload",
+            Box::new(|case_dir, case_name, _meta| {
+                use pharos_stf::FixedExecutionEngine;
+                use pharos_stf::fulu::operations::process_execution_payload_fulu;
+                use pharos_types::electra::MainnetBeaconBlockBody;
+
+                let execution_valid = read_execution_valid(&case_dir);
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let body =
+                    match load_ssz_snappy::<MainnetBeaconBlockBody>(&case_dir, "body.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let engine = FixedExecutionEngine(execution_valid);
+                let mut pre = pre;
+                let result =
+                    process_execution_payload_fulu::<
+                        16,
+                        1,
+                        8,
+                        16,
+                        16,
+                        2048,
+                        33,
+                        512,
+                        1_073_741_824,
+                        1_048_576,
+                        256,
+                        32,
+                        16,
+                        16,
+                        4096,
+                        131072,
+                        64,
+                        8192,
+                        16,
+                        2,
+                        8192,
+                        16_777_216,
+                        2048,
+                        1_099_511_627_776,
+                        65536,
+                        8192,
+                        4,
+                        134_217_728,
+                        134_217_728,
+                        262_144,
+                        64,
+                        E,
+                        FixedExecutionEngine,
+                    >(&mut pre, &body, &engine, &E::default_runtime_config());
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result.map(|_| ()),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "execution_payload",
+                )
+            }),
+        ),
+        (
+            "withdrawals",
+            Box::new(|case_dir, case_name, _meta| {
+                use pharos_stf::electra::operations::process_withdrawals_electra;
+                use pharos_types::electra::execution_payload::MainnetExecutionPayload;
+
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let payload = match load_ssz_snappy::<MainnetExecutionPayload>(
+                    &case_dir,
+                    "execution_payload.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_withdrawals_electra::<
+                    8192,
+                    16_777_216,
+                    2048,
+                    1_099_511_627_776,
+                    65536,
+                    8192,
+                    4,
+                    512,
+                    256,
+                    32,
+                    134_217_728,
+                    134_217_728,
+                    262_144,
+                    1_073_741_824,
+                    1_048_576,
+                    16,
+                    E,
+                >(&mut electra, &payload);
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "withdrawals")
+            }),
+        ),
+    ]
+}
+
+#[allow(clippy::type_complexity)]
+fn fulu_op_table_minimal() -> Vec<(
+    &'static str,
+    Box<
+        dyn Fn(
+                std::path::PathBuf,
+                String,
+                Option<crate::fixture_walker::MetaYaml>,
+            ) -> crate::task::CaseOutcome
+            + Send
+            + Sync,
+    >,
+)> {
+    use pharos_stf::electra::operations::{
+        process_attestation_electra, process_attester_slashing_electra,
+        process_block_header_electra, process_consolidation_request, process_deposit_electra,
+        process_deposit_request, process_proposer_slashing_electra, process_sync_aggregate_electra,
+        process_voluntary_exit_electra, process_withdrawal_request,
+    };
+    use pharos_stf::fulu::{fulu_state_to_electra, update_fulu_from_electra};
+    use pharos_types::MinimalBeaconSpec as E;
+
+    macro_rules! load_pre_post {
+        ($case_dir:expr, $case_name:expr) => {{
+            let pre = match load_ssz_snappy::<pharos_types::fulu::MinimalBeaconState>(
+                &$case_dir,
+                "pre.ssz_snappy",
+            ) {
+                Ok(v) => v,
+                Err(e) => return crate::task::CaseOutcome::Fail(format!("{}: {e}", $case_name)),
+            };
+            let post_bytes = if $case_dir.join("post.ssz_snappy").exists() {
+                match load_ssz_snappy::<pharos_types::fulu::MinimalBeaconState>(
+                    &$case_dir,
+                    "post.ssz_snappy",
+                ) {
+                    Ok(v) => Some(E::fulu_into_state(v).as_ssz_bytes()),
+                    Err(e) => {
+                        return crate::task::CaseOutcome::Fail(format!("{}: {e}", $case_name));
+                    }
+                }
+            } else {
+                None
+            };
+            (pre, post_bytes)
+        }};
+    }
+
+    vec![
+        (
+            "block_header",
+            Box::new(|case_dir, case_name, _meta| {
+                use pharos_ssz::TreeHash as _;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let block = match load_ssz_snappy::<pharos_types::fulu::MinimalBeaconBlock>(
+                    &case_dir,
+                    "block.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let fulu_proposer = pharos_stf::fulu::helpers::get_beacon_proposer_index::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    16,
+                    E,
+                >(&pre);
+                let mut electra = fulu_state_to_electra(&pre);
+                let body_root = block.body.tree_hash_root();
+                let result = process_block_header_electra::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    E,
+                >(
+                    &mut electra,
+                    block.slot,
+                    block.proposer_index,
+                    block.parent_root,
+                    body_root,
+                    Some(fulu_proposer),
+                );
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "block_header",
+                )
+            }),
+        ),
+        (
+            "proposer_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::phase0::ProposerSlashing;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<ProposerSlashing>(
+                    &case_dir,
+                    "proposer_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_proposer_slashing_electra::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta), None);
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "proposer_slashing",
+                )
+            }),
+        ),
+        (
+            "deposit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::phase0::Deposit;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<Deposit<33>>(&case_dir, "deposit.ssz_snappy") {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_deposit_electra::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta));
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "deposit")
+            }),
+        ),
+        (
+            "voluntary_exit",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::phase0::SignedVoluntaryExit;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<SignedVoluntaryExit>(
+                    &case_dir,
+                    "voluntary_exit.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_voluntary_exit_electra::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    E,
+                >(
+                    &mut electra,
+                    &op,
+                    bls_verify(&meta),
+                    &E::default_runtime_config(),
+                );
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "voluntary_exit",
+                )
+            }),
+        ),
+        (
+            "sync_aggregate",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::altair::MinimalSyncAggregate;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<MinimalSyncAggregate>(
+                    &case_dir,
+                    "sync_aggregate.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let fulu_proposer = pharos_stf::fulu::helpers::get_beacon_proposer_index::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    16,
+                    E,
+                >(&pre);
+                let mut electra = fulu_state_to_electra(&pre);
+                let result =
+                    process_sync_aggregate_electra::<
+                        64,
+                        16_777_216,
+                        32,
+                        1_099_511_627_776,
+                        64,
+                        64,
+                        4,
+                        32,
+                        256,
+                        32,
+                        134_217_728,
+                        64,
+                        64,
+                        E,
+                    >(&mut electra, &op, bls_verify(&meta), Some(fulu_proposer));
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "sync_aggregate",
+                )
+            }),
+        ),
+        (
+            "attestation",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::MinimalAttestation;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<MinimalAttestation>(
+                    &case_dir,
+                    "attestation.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_attestation_electra::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    8192,
+                    4,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta), None);
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+            }),
+        ),
+        (
+            "attester_slashing",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::MinimalAttesterSlashing;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<MinimalAttesterSlashing>(
+                    &case_dir,
+                    "attester_slashing.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_attester_slashing_electra::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    8192,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta), None);
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attester_slashing",
+                )
+            }),
+        ),
+        (
+            "deposit_request",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::requests::DepositRequest;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<DepositRequest>(
+                    &case_dir,
+                    "deposit_request.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_deposit_request::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta));
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "deposit_request",
+                )
+            }),
+        ),
+        (
+            "withdrawal_request",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::requests::WithdrawalRequest;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<WithdrawalRequest>(
+                    &case_dir,
+                    "withdrawal_request.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_withdrawal_request::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta));
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "withdrawal_request",
+                )
+            }),
+        ),
+        (
+            "consolidation_request",
+            Box::new(|case_dir, case_name, meta| {
+                use pharos_types::electra::requests::ConsolidationRequest;
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let op = match load_ssz_snappy::<ConsolidationRequest>(
+                    &case_dir,
+                    "consolidation_request.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_consolidation_request::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    E,
+                >(&mut electra, &op, bls_verify(&meta));
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result,
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "consolidation_request",
+                )
+            }),
+        ),
+        (
+            "execution_payload",
+            Box::new(|case_dir, case_name, _meta| {
+                use pharos_stf::FixedExecutionEngine;
+                use pharos_stf::fulu::operations::process_execution_payload_fulu;
+                use pharos_types::electra::MinimalBeaconBlockBody;
+
+                let execution_valid = read_execution_valid(&case_dir);
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let body =
+                    match load_ssz_snappy::<MinimalBeaconBlockBody>(&case_dir, "body.ssz_snappy") {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}"));
+                        }
+                    };
+                let engine = FixedExecutionEngine(execution_valid);
+                let mut pre = pre;
+                let result =
+                    process_execution_payload_fulu::<
+                        16,
+                        1,
+                        8,
+                        16,
+                        16,
+                        2048,
+                        33,
+                        32,
+                        1_073_741_824,
+                        1_048_576,
+                        256,
+                        32,
+                        4,
+                        16,
+                        4096,
+                        8192,
+                        4,
+                        8192,
+                        16,
+                        2,
+                        64,
+                        16_777_216,
+                        32,
+                        1_099_511_627_776,
+                        64,
+                        64,
+                        4,
+                        134_217_728,
+                        64,
+                        64,
+                        16,
+                        E,
+                        FixedExecutionEngine,
+                    >(&mut pre, &body, &engine, &E::default_runtime_config());
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(
+                    result.map(|_| ()),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "execution_payload",
+                )
+            }),
+        ),
+        (
+            "withdrawals",
+            Box::new(|case_dir, case_name, _meta| {
+                use pharos_stf::electra::operations::process_withdrawals_electra;
+                use pharos_types::electra::execution_payload::MinimalExecutionPayload;
+
+                let (pre, post_bytes) = load_pre_post!(case_dir, case_name);
+                let payload = match load_ssz_snappy::<MinimalExecutionPayload>(
+                    &case_dir,
+                    "execution_payload.ssz_snappy",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::task::CaseOutcome::Fail(format!("{case_name}: {e}")),
+                };
+                let mut electra = fulu_state_to_electra(&pre);
+                let result = process_withdrawals_electra::<
+                    64,
+                    16_777_216,
+                    32,
+                    1_099_511_627_776,
+                    64,
+                    64,
+                    4,
+                    32,
+                    256,
+                    32,
+                    134_217_728,
+                    64,
+                    64,
+                    1_073_741_824,
+                    1_048_576,
+                    4,
+                    E,
+                >(&mut electra, &payload);
+                let mut pre = pre;
+                update_fulu_from_electra(&mut pre, electra);
+                let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
+                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "withdrawals")
+            }),
+        ),
+    ]
+}
+
+/// Enumerate all fulu operation cases for one preset.
+fn enumerate_operations_fulu(
+    root: &std::path::Path,
+    preset: &str,
+    row_ordinal: u32,
+) -> Vec<crate::task::CaseTask> {
+    let table = if preset == "mainnet" {
+        fulu_op_table_mainnet()
+    } else {
+        fulu_op_table_minimal()
+    };
+    let mut case_ordinal: u32 = 0;
+    let mut tasks = Vec::new();
+    for (sub, apply) in table {
+        let apply = std::sync::Arc::new(apply);
+        let sub_tasks = enumerate_op(
+            root,
+            "fulu",
+            preset,
+            sub,
+            row_ordinal,
+            &mut case_ordinal,
+            electra_ops_walk_opts(),
+            move |dir, name, meta| apply(dir, name, meta),
+        );
+        tasks.extend(sub_tasks);
+    }
+    tasks
 }

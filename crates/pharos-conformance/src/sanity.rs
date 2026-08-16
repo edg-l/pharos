@@ -37,9 +37,10 @@ use pharos_types::{
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
     load_bellatrix_state, load_capella_signed_block, load_capella_state, load_deneb_signed_block,
-    load_deneb_state, load_electra_signed_block, load_electra_state, load_phase0_signed_block,
-    load_pre_post_altair_state, load_pre_post_bellatrix_state, load_pre_post_capella_state,
-    load_pre_post_deneb_state, load_pre_post_electra_state, load_pre_post_phase0_state,
+    load_deneb_state, load_electra_signed_block, load_electra_state, load_fulu_signed_block,
+    load_fulu_state, load_phase0_signed_block, load_pre_post_altair_state,
+    load_pre_post_bellatrix_state, load_pre_post_capella_state, load_pre_post_deneb_state,
+    load_pre_post_electra_state, load_pre_post_fulu_state, load_pre_post_phase0_state,
     run_blocks_case, walk_category,
 };
 use crate::fs_util::dir_name;
@@ -237,6 +238,34 @@ pub fn enumerate_sanity(
                         load_electra_signed_block::<MainnetBeaconSpec>,
                     )
                 }),
+                ("fulu", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    run_blocks_case::<MainnetBeaconSpec, _, _>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                        &MainnetBeaconSpec::default_runtime_config(),
+                        load_pre_post_fulu_state::<MainnetBeaconSpec>,
+                        load_fulu_signed_block::<MainnetBeaconSpec>,
+                    )
+                }),
+                ("fulu", _) => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    run_blocks_case::<MinimalBeaconSpec, _, _>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                        &MinimalBeaconSpec::default_runtime_config(),
+                        load_pre_post_fulu_state::<MinimalBeaconSpec>,
+                        load_fulu_signed_block::<MinimalBeaconSpec>,
+                    )
+                }),
                 _ => Box::new(move || {
                     let Some(n) = blocks_count else {
                         return CaseOutcome::Skip;
@@ -364,6 +393,24 @@ pub fn enumerate_sanity(
                                 CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                             }
                         })
+                    }
+                    ("fulu", "mainnet") => {
+                        Box::new(
+                            move || match run_fulu_slots_case_mainnet(&case_dir, &case_name) {
+                                CaseResult::Pass => CaseOutcome::Pass,
+                                CaseResult::Skip => CaseOutcome::Skip,
+                                CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                            },
+                        )
+                    }
+                    ("fulu", _) => {
+                        Box::new(
+                            move || match run_fulu_slots_case_minimal(&case_dir, &case_name) {
+                                CaseResult::Pass => CaseOutcome::Pass,
+                                CaseResult::Skip => CaseOutcome::Skip,
+                                CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                            },
+                        )
                     }
                     _ => Box::new(move || {
                         match run_electra_slots_case_minimal(&case_dir, &case_name) {
@@ -859,6 +906,106 @@ fn run_electra_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResul
         return CaseResult::Fail(format!("{case_name}: process_slots failed: {e}"));
     }
     let final_state = E::electra_into_state(pre_inner);
+    if final_state.as_ssz_bytes() == expected.as_ssz_bytes() {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
+    }
+}
+
+fn run_fulu_slots_case_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
+    use pharos_stf::fulu::state_transition::process_slots_fulu_with_cfg;
+    use pharos_types::MainnetBeaconSpec as E;
+
+    let slots_path = case_dir.join("slots.yaml");
+    let slots_count: u64 = match read_u64_yaml(&slots_path) {
+        Ok(n) => n,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let pre_state = match load_fulu_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_fulu_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let mut pre_inner = match E::into_fulu_state(pre_state) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not fulu state")),
+    };
+    let target_slot = Slot(pre_inner.slot.0 + slots_count);
+    if let Err(e) = process_slots_fulu_with_cfg::<
+        8192,
+        16_777_216,
+        2048,
+        1_099_511_627_776,
+        65536,
+        8192,
+        4,
+        512,
+        256,
+        32,
+        134_217_728,
+        134_217_728,
+        262_144,
+        64,
+        E,
+    >(&mut pre_inner, target_slot, &E::default_runtime_config())
+    {
+        return CaseResult::Fail(format!("{case_name}: process_slots failed: {e}"));
+    }
+    let final_state = E::fulu_into_state(pre_inner);
+    if final_state.as_ssz_bytes() == expected.as_ssz_bytes() {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
+    }
+}
+
+fn run_fulu_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
+    use pharos_stf::fulu::state_transition::process_slots_fulu_with_cfg;
+    use pharos_types::MinimalBeaconSpec as E;
+
+    let slots_path = case_dir.join("slots.yaml");
+    let slots_count: u64 = match read_u64_yaml(&slots_path) {
+        Ok(n) => n,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let pre_state = match load_fulu_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_fulu_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let mut pre_inner = match E::into_fulu_state(pre_state) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: pre is not fulu state")),
+    };
+    let target_slot = Slot(pre_inner.slot.0 + slots_count);
+    if let Err(e) = process_slots_fulu_with_cfg::<
+        64,
+        16_777_216,
+        32,
+        1_099_511_627_776,
+        64,
+        64,
+        4,
+        32,
+        256,
+        32,
+        134_217_728,
+        64,
+        64,
+        16,
+        E,
+    >(&mut pre_inner, target_slot, &E::default_runtime_config())
+    {
+        return CaseResult::Fail(format!("{case_name}: process_slots failed: {e}"));
+    }
+    let final_state = E::fulu_into_state(pre_inner);
     if final_state.as_ssz_bytes() == expected.as_ssz_bytes() {
         CaseResult::Pass
     } else {

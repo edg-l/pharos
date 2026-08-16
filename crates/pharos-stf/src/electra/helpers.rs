@@ -1274,6 +1274,7 @@ pub fn slash_validator_electra<
     >,
     slashed_index: ValidatorIndex,
     whistleblower_index: Option<ValidatorIndex>,
+    proposer_override: Option<ValidatorIndex>,
 ) -> Result<(), StateTransitionError>
 where
     E: BeaconSpec<
@@ -1377,9 +1378,11 @@ where
         PENDING_CONSOLIDATIONS_LIMIT,
     >(state, slashed_index, penalty)?;
 
-    // Proposer via electra get_beacon_proposer_index over the enum state.
-    let proposer_index =
-        get_beacon_proposer_index_electra::<E>(&E::electra_into_state(state.clone()));
+    // Proposer via electra get_beacon_proposer_index over the enum state, unless a
+    // locked-in proposer is supplied (fulu EIP-7917 deterministic proposer lookahead).
+    let proposer_index = proposer_override.unwrap_or_else(|| {
+        get_beacon_proposer_index_electra::<E>(&E::electra_into_state(state.clone()))
+    });
 
     let whistleblower_idx = whistleblower_index.unwrap_or(proposer_index);
     // [Modified in Electra:EIP7251] whistleblower reward quotient.

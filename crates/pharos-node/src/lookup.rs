@@ -213,6 +213,11 @@ where
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, EE>
         + pharos_stf::ElectraJaFDispatch<E>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, EE>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock:
@@ -432,6 +437,11 @@ where
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, EE>
         + pharos_stf::ElectraJaFDispatch<E>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, EE>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock:
@@ -580,6 +590,11 @@ where
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, EE>
         + pharos_stf::ElectraJaFDispatch<E>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, EE>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock:
@@ -731,6 +746,11 @@ async fn fetch_and_walk<E, P, EE, PP>(
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, EE>
         + pharos_stf::ElectraJaFDispatch<E>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, EE>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock:
@@ -943,6 +963,11 @@ async fn drain_and_replay<E, P, EE, PP>(
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, EE>
         + pharos_stf::ElectraJaFDispatch<E>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, EE>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
         + pharos_ssz::TreeHash,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock:

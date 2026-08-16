@@ -237,11 +237,14 @@ where
             pending_deposits: SszList::default(),
             pending_partial_withdrawals: SszList::default(),
             pending_consolidations: SszList::default(),
-            proposer_lookahead: SszVector::from_vec_tree(vec![
+            // `proposer_lookahead` holds `ValidatorIndex` (a basic u64, packed
+            // 4-per-chunk), which the tree backend rejects; use the naive
+            // backend (basic vectors stay naive per `D-tree-backend-fields`).
+            proposer_lookahead: SszVector::from_vec(vec![
                 ValidatorIndex::default();
                 LOOKAHEAD_WINDOW as usize
             ])
-            .expect("default proposer_lookahead tree init"),
+            .expect("default proposer_lookahead init"),
             cached_root: CachedRoot::default(),
         }
     }

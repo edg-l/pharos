@@ -385,6 +385,15 @@ where
     load_pre_post_state::<E, E::ElectraBeaconState, _>(dir, E::electra_into_state)
 }
 
+pub fn load_pre_post_fulu_state<E: BeaconSpec>(
+    dir: &Path,
+) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
+where
+    E::FuluBeaconState: Decode,
+{
+    load_pre_post_state::<E, E::FuluBeaconState, _>(dir, E::fulu_into_state)
+}
+
 pub fn load_electra_state<E: BeaconSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
 where
     E::ElectraBeaconState: Decode,
@@ -400,6 +409,23 @@ where
     E::ElectraSignedBeaconBlock: Decode,
 {
     load_signed_block::<E, E::ElectraSignedBeaconBlock, _>(dir, name, E::electra_into_signed_block)
+}
+
+pub fn load_fulu_state<E: BeaconSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+where
+    E::FuluBeaconState: Decode,
+{
+    load_state::<E, E::FuluBeaconState, _>(dir, name, E::fulu_into_state)
+}
+
+pub fn load_fulu_signed_block<E: BeaconSpec>(
+    dir: &Path,
+    name: &str,
+) -> Result<E::SignedBeaconBlock, String>
+where
+    E::FuluSignedBeaconBlock: Decode,
+{
+    load_signed_block::<E, E::FuluSignedBeaconBlock, _>(dir, name, E::fulu_into_signed_block)
 }
 
 // ── Generic block-sequence case runner ──────────────────────────────────────────
@@ -456,6 +482,12 @@ where
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::ElectraJaFDispatch<E>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + TreeHash
+        + Decode,
+    E::FuluBeaconState: pharos_stf::FuluDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::FuluJaFDispatch<E>
+        + pharos_stf::FuluProcessSlotsDispatch<E>
         + TreeHash
         + Decode,
     E::Phase0BeaconState: Decode + Phase0UpgradeDispatch<E>,

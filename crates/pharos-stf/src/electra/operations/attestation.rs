@@ -84,6 +84,7 @@ pub fn process_attestation_electra<
     >,
     attestation: &pharos_types::electra::Attestation<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT>,
     verify_signatures: bool,
+    proposer_override: Option<ValidatorIndex>,
 ) -> Result<(), StateTransitionError>
 where
     E: BeaconSpec<
@@ -329,8 +330,10 @@ where
     let proposer_reward_denominator =
         (E::WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * E::WEIGHT_DENOMINATOR / PROPOSER_WEIGHT;
     let proposer_reward = Gwei(proposer_reward_numerator / proposer_reward_denominator);
-    let proposer_index =
-        get_beacon_proposer_index_electra::<E>(&E::electra_into_state(state.clone()));
+    // Fulu (EIP-7917) supplies the locked-in proposer; electra elects on-demand.
+    let proposer_index = proposer_override.unwrap_or_else(|| {
+        get_beacon_proposer_index_electra::<E>(&E::electra_into_state(state.clone()))
+    });
 
     increase_balance_electra::<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -389,6 +392,7 @@ pub fn process_attester_slashing_electra<
     >,
     slashing: &AttesterSlashing<MAX_AGGREGATION_BITS>,
     verify_signatures: bool,
+    proposer_override: Option<ValidatorIndex>,
 ) -> Result<(), StateTransitionError>
 where
     E: BeaconSpec<
@@ -471,7 +475,7 @@ where
                 PENDING_PARTIAL_WITHDRAWALS_LIMIT,
                 PENDING_CONSOLIDATIONS_LIMIT,
                 E,
-            >(state, *index, None)?;
+            >(state, *index, None, proposer_override)?;
             slashed_any = true;
         }
     }
