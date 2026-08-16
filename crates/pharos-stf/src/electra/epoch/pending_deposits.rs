@@ -14,6 +14,8 @@
 //! entries are reattached at the END). `deposit_balance_to_consume` carries the
 //! leftover churn forward only when the churn break fired, else resets to 0.
 
+use std::collections::HashMap;
+
 use pharos_ssz::{SszList, SszSequence, SszVector};
 use pharos_types::{
     EthSpec,
@@ -206,6 +208,22 @@ where
     // inside the loop without aliasing the iterated list.
     let pending_deposits: Vec<PendingDeposit> = state.pending_deposits.iter().cloned().collect();
 
+    // Build a pubkey -> validator-index map ONCE to replace the per-deposit O(N)
+    // `validators.iter().find(...)` status read below. Keyed by an OWNED
+    // `BLSPubkey` (not a borrowed slice) because the registry GROWS during this
+    // loop — `apply_pending_deposit` appends a new validator on the new-pubkey
+    // path — and a slice-keyed map would alias `state.validators` across the
+    // `&mut state` call. First-write-wins (`or_insert`) reproduces the
+    // first-match result of `position()`/`find()`. After each deposit that grew
+    // the registry we register the freshly-appended validator (always at the new
+    // last index, and always a previously-absent pubkey) so a later same-pubkey
+    // deposit in this same loop is NOT served a stale "absent" answer.
+    let mut pubkey_to_index: HashMap<BLSPubkey, usize> =
+        HashMap::with_capacity(state.validators.len());
+    for (i, v) in state.validators.iter().enumerate() {
+        pubkey_to_index.entry(v.pubkey).or_insert(i);
+    }
+
     for deposit in &pending_deposits {
         // Do not process deposit requests if Eth1 bridge deposits are not yet
         // applied.
@@ -230,7 +248,10 @@ where
         let pubkey = pubkey_from_vector(&deposit.pubkey);
         let mut is_validator_exited = false;
         let mut is_validator_withdrawn = false;
-        if let Some(validator) = state.validators.iter().find(|v| v.pubkey == pubkey) {
+        if let Some(validator) = pubkey_to_index
+            .get(&pubkey)
+            .and_then(|&i| state.validators.get(i))
+        {
             is_validator_exited = validator.exit_epoch.0 < FAR_FUTURE_EPOCH;
             is_validator_withdrawn = validator.withdrawable_epoch.0 < next_epoch.0;
         }
@@ -266,8 +287,12 @@ where
                 break;
             }
 
-            // Consume churn and apply deposit.
+            // Consume churn and apply deposit. This is the ONLY branch that can
+            // append a new validator (the withdrawn branch is always a top-up of
+            // an already-present validator). Snapshot the length so we can keep
+            // `pubkey_to_index` consistent if a new validator was registered.
             processed_amount += deposit.amount.0;
+            let len_before = state.validators.len();
             apply_pending_deposit::<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -284,6 +309,12 @@ where
                 PENDING_CONSOLIDATIONS_LIMIT,
                 E,
             >(state, deposit)?;
+            // A freshly-appended validator lands at `len_before` and its pubkey
+            // was previously absent, so `or_insert` keeps first-match semantics
+            // and prevents a later same-pubkey deposit from reading a stale miss.
+            if state.validators.len() > len_before {
+                pubkey_to_index.entry(pubkey).or_insert(len_before);
+            }
         }
 
         // Regardless of how the deposit was handled, we move on in the queue.

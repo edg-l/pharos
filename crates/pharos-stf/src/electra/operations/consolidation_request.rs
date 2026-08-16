@@ -21,6 +21,8 @@
 //! Churn / credential / compounding logic is reused from `electra::helpers`
 //! (Phase 2a); none of it is reimplemented here.
 
+use std::collections::HashMap;
+
 use pharos_ssz::SszSequence;
 use pharos_types::{
     EthSpec,
@@ -75,6 +77,7 @@ pub fn is_valid_switch_to_compounding_request<
         PENDING_CONSOLIDATIONS_LIMIT,
     >,
     consolidation_request: &ConsolidationRequest,
+    pubkey_to_index: &HashMap<&[u8], usize>,
 ) -> bool {
     // Switch to compounding requires source and target be equal.
     if consolidation_request.source_pubkey.as_slice()
@@ -84,11 +87,9 @@ pub fn is_valid_switch_to_compounding_request<
     }
 
     // Verify pubkey exists.
-    let source_pubkey = consolidation_request.source_pubkey.as_slice();
-    let source_index = match state
-        .validators
-        .iter()
-        .position(|v| v.pubkey.as_slice() == source_pubkey)
+    let source_index = match pubkey_to_index
+        .get(consolidation_request.source_pubkey.as_slice())
+        .copied()
     {
         Some(i) => i,
         None => return false,
@@ -179,6 +180,18 @@ where
         >,
     >,
 {
+    // Build a pubkey -> validator-index map ONCE so the up-to-three source-pubkey
+    // scans and the target-pubkey scan below are O(1) each instead of O(N) each.
+    // First-write-wins (`or_insert`) reproduces `position()`'s first-match result.
+    // The registry is NEVER mutated by a consolidation request (it only edits an
+    // exit epoch and pushes to `pending_consolidations`), so the map cannot go
+    // stale within this call. Keyed by raw pubkey bytes because the request
+    // pubkeys are `SszVector<u8, 48>` while validator pubkeys are `BLSPubkey`.
+    let mut pubkey_to_index: HashMap<&[u8], usize> = HashMap::with_capacity(state.validators.len());
+    for (i, v) in state.validators.iter().enumerate() {
+        pubkey_to_index.entry(v.pubkey.as_slice()).or_insert(i);
+    }
+
     // Switch-to-compounding path is checked FIRST: a valid self-request switches
     // the source to a 0x02 credential and returns immediately.
     if is_valid_switch_to_compounding_request::<
@@ -196,13 +209,11 @@ where
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
         E,
-    >(state, consolidation_request)
+    >(state, consolidation_request, &pubkey_to_index)
     {
-        let source_pubkey = consolidation_request.source_pubkey.as_slice();
-        let source_index = state
-            .validators
-            .iter()
-            .position(|v| v.pubkey.as_slice() == source_pubkey)
+        let source_index = pubkey_to_index
+            .get(consolidation_request.source_pubkey.as_slice())
+            .copied()
             .ok_or(StateTransitionError::SlotOutOfRange)?;
         switch_to_compounding_validator_electra::<
             SLOTS_PER_HISTORICAL_ROOT,
@@ -255,20 +266,16 @@ where
     }
 
     // Verify pubkeys exist.
-    let source_pubkey = consolidation_request.source_pubkey.as_slice();
-    let target_pubkey = consolidation_request.target_pubkey.as_slice();
-    let source_index = match state
-        .validators
-        .iter()
-        .position(|v| v.pubkey.as_slice() == source_pubkey)
+    let source_index = match pubkey_to_index
+        .get(consolidation_request.source_pubkey.as_slice())
+        .copied()
     {
         Some(i) => ValidatorIndex(i as u64),
         None => return Ok(()),
     };
-    let target_index = match state
-        .validators
-        .iter()
-        .position(|v| v.pubkey.as_slice() == target_pubkey)
+    let target_index = match pubkey_to_index
+        .get(consolidation_request.target_pubkey.as_slice())
+        .copied()
     {
         Some(i) => ValidatorIndex(i as u64),
         None => return Ok(()),
