@@ -26,10 +26,12 @@ pub mod optimistic;
 pub mod random;
 pub mod report;
 pub mod rewards;
+pub mod rows;
 pub mod sanity;
 pub mod shuffling;
 pub mod snappy;
 pub mod ssz_generic_types;
+pub mod task;
 pub mod transition;
 pub mod yaml_util;
 
