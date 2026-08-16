@@ -196,8 +196,15 @@ pub fn row_table() -> &'static [RowSpec] {
         r("electra", "light_client", "minimal"), // 125
         r("electra", "merkle_proof", "mainnet"), // 126
         r("electra", "merkle_proof", "minimal"), // 127
+        // M12-Electra Phase 7: networking + fast_confirmation placeholder rows.
+        // `electra/networking` is gossip/req-resp coverage deferred to M13.
+        // `electra/fast_confirmation` (minimal only) is a new upstream category
+        // introduced in v1.7.0 with no cross-client library support yet.
+        r("electra", "networking", "mainnet"),        // 128
+        r("electra", "networking", "minimal"),        // 129
+        r("electra", "fast_confirmation", "minimal"), // 130
         // ── future forks (placeholders) ──────────────────────────────────────
-        r("fulu", "ssz_static", "-"), // 128
+        r("fulu", "ssz_static", "-"), // 131
     ];
     TABLE
 }
@@ -353,6 +360,10 @@ mod tests {
             ("electra", "light_client", "minimal"),
             ("electra", "merkle_proof", "mainnet"),
             ("electra", "merkle_proof", "minimal"),
+            // electra placeholder categories (networking + fast_confirmation)
+            ("electra", "networking", "mainnet"),
+            ("electra", "networking", "minimal"),
+            ("electra", "fast_confirmation", "minimal"),
             // future placeholders
             ("fulu", "ssz_static", "-"),
         ];
@@ -434,9 +445,9 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 130 (after M12-Electra Phase 6e added 4 rows).
+    /// Total row count is exactly 133 (after M12-Electra Phase 7 added 3 placeholder rows).
     #[test]
-    fn row_count_is_130() {
-        assert_eq!(row_table().len(), 130);
+    fn row_count_is_133() {
+        assert_eq!(row_table().len(), 133);
     }
 }

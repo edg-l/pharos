@@ -2,8 +2,8 @@
 //!
 //! Fixture path: `{root}/{preset}/{fork}/sync/optimistic/pyspec_tests/{case}/`
 //!
-//! Forks covered: bellatrix, capella (both mainnet + minimal).
-//! Higher forks (deneb, electra, fulu) are skipped — types not yet landed.
+//! Forks covered: bellatrix, capella, deneb, electra (both mainnet + minimal).
+//! Higher forks (fulu+) are skipped — types not yet landed.
 //!
 //! # Step types
 //!
@@ -47,13 +47,15 @@ use std::path::{Path, PathBuf};
 
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_state,
-    load_capella_state, load_phase0_state, load_ssz_snappy, walk_category,
+    load_capella_state, load_deneb_state, load_electra_state, load_phase0_state, load_ssz_snappy,
+    walk_category,
 };
 use crate::fs_util::dir_name;
 use crate::task::{CaseFn, CaseOutcome, CaseTask};
 use pharos_fork_choice::{
     HashMapPowBlockProvider, PayloadStatus, Store, apply_invalid_payload, get_forkchoice_store,
-    get_head, is_optimistic, on_attestation, on_block, on_tick, promote_valid_ancestors,
+    get_head, is_optimistic, on_attestation, on_attestation_electra, on_block, on_tick,
+    promote_valid_ancestors,
 };
 use pharos_ssz::{Decode, TreeHash};
 use pharos_stf::phase0::BeaconStateWrite;
@@ -71,12 +73,12 @@ use pharos_utils::Hash256;
 /// as `run_optimistic_mainnet` / `run_optimistic_minimal`. Called by the Phase 7
 /// flat work-pool.
 ///
-/// Walk order: bellatrix cases (0..n), then capella cases (n..m).
+/// Walk order: bellatrix cases (0..n), capella (n..m), deneb (m..p), electra (p..q).
 pub fn enumerate_optimistic(root: &Path, preset: &'static str, row_ordinal: u32) -> Vec<CaseTask> {
     let mut tasks = Vec::new();
     let mut ordinal: u32 = 0;
 
-    for fork in ["bellatrix", "capella"] {
+    for fork in ["bellatrix", "capella", "deneb", "electra"] {
         let cases: Vec<(PathBuf, _)> = walk_category(
             root,
             preset,
@@ -131,11 +133,42 @@ enum CaseResult {
     Fail(String),
 }
 
+// ── Electra attestation feed ──────────────────────────────────────────────────
+
+/// Preset-specific electra attestation feed for the optimistic runner.
+/// Feeds block body electra attestations into the fork-choice store via
+/// `on_attestation_electra` with the correct const generics per preset.
+trait OptimisticElectraFeed: EthSpec {
+    fn feed_electra_attestations(store: &mut Store<Self>, signed: &Self::ElectraSignedBeaconBlock);
+}
+
+impl OptimisticElectraFeed for MainnetEthSpec {
+    fn feed_electra_attestations(
+        store: &mut Store<Self>,
+        signed: &pharos_types::electra::MainnetSignedBeaconBlock,
+    ) {
+        for att in signed.message.body.attestations.as_slice() {
+            let _ = on_attestation_electra::<131072, 64, Self>(store, att, true);
+        }
+    }
+}
+
+impl OptimisticElectraFeed for MinimalEthSpec {
+    fn feed_electra_attestations(
+        store: &mut Store<Self>,
+        signed: &pharos_types::electra::MinimalSignedBeaconBlock,
+    ) {
+        for att in signed.message.body.attestations.as_slice() {
+            let _ = on_attestation_electra::<8192, 4, Self>(store, att, true);
+        }
+    }
+}
+
 // ── Case driver ───────────────────────────────────────────────────────────────
 
 fn run_optimistic_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
-    E: EthSpec,
+    E: EthSpec + OptimisticElectraFeed,
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: pharos_stf::AltairDispatch<E>
         + pharos_stf::AltairJaFDispatch<E>
@@ -157,11 +190,13 @@ where
         + pharos_stf::DenebJaFDispatch<E>
         + pharos_stf::DenebProcessSlotsDispatch<E>
         + pharos_stf::DenebUpgradeDispatch<E>
-        + pharos_ssz::TreeHash,
+        + pharos_ssz::TreeHash
+        + Decode,
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, pharos_stf::NullExecutionEngine>
         + pharos_stf::ElectraJaFDispatch<E>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
+        + pharos_ssz::TreeHash
+        + Decode,
     E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
     E::Phase0BeaconBlockBody: TreeHash
@@ -194,21 +229,46 @@ where
         >,
     E::CapellaSignedBeaconBlock:
         Decode + Clone + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: Decode + BeaconBlockView<Body = E::DenebBeaconBlockBody> + TreeHash,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock:
+        Decode + Clone + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::ElectraBeaconBlock: Decode + BeaconBlockView + TreeHash,
+    E::ElectraSignedBeaconBlock: Decode + Clone,
     E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
 {
-    // Load anchor state: capella first, then bellatrix, then altair, then phase0.
+    // Load anchor state: electra first, then deneb, capella, bellatrix, altair, phase0.
     let anchor_state: E::BeaconState =
-        match load_capella_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+        match load_electra_state::<E>(case_dir, "anchor_state.ssz_snappy") {
             Ok(s) => s,
-            Err(_) => match load_bellatrix_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+            Err(_) => match load_deneb_state::<E>(case_dir, "anchor_state.ssz_snappy") {
                 Ok(s) => s,
-                Err(_) => match load_altair_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                Err(_) => match load_capella_state::<E>(case_dir, "anchor_state.ssz_snappy") {
                     Ok(s) => s,
-                    Err(_) => match load_phase0_state::<E>(case_dir, "anchor_state.ssz_snappy") {
-                        Ok(s) => s,
-                        Err(_) => return CaseResult::Skip,
-                    },
+                    Err(_) => {
+                        match load_bellatrix_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                            Ok(s) => s,
+                            Err(_) => {
+                                match load_altair_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                                    Ok(s) => s,
+                                    Err(_) => {
+                                        match load_phase0_state::<E>(
+                                            case_dir,
+                                            "anchor_state.ssz_snappy",
+                                        ) {
+                                            Ok(s) => s,
+                                            Err(_) => return CaseResult::Skip,
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 },
             },
         };
@@ -224,7 +284,11 @@ where
             Ok(b) => b,
             Err(_) => return CaseResult::Skip,
         };
-        if let Ok(b) = E::CapellaBeaconBlock::from_ssz_bytes(&raw) {
+        if let Ok(b) = E::ElectraBeaconBlock::from_ssz_bytes(&raw) {
+            E::electra_into_block(b)
+        } else if let Ok(b) = E::DenebBeaconBlock::from_ssz_bytes(&raw) {
+            E::deneb_into_block(b)
+        } else if let Ok(b) = E::CapellaBeaconBlock::from_ssz_bytes(&raw) {
             E::capella_into_block(b)
         } else if let Ok(b) = E::BellatrixBeaconBlock::from_ssz_bytes(&raw) {
             E::bellatrix_into_block(b)
@@ -315,13 +379,121 @@ where
                 let block_file = format!("{block}.ssz_snappy");
                 let cfg = E::default_runtime_config();
 
-                // Decode the block: try capella (raw inner type), then bellatrix
-                // (already wrapped as E::SignedBeaconBlock), then altair, then skip.
-                //
-                // Using the raw inner type for capella gives typed access to
-                // Attestation<2048> (concrete type, not an associated type without
-                // a Clone bound).  Same pattern as `run_capella_case` in fork_choice.rs.
-                if let Ok(cap_inner) =
+                // Decode the block: try electra first, then deneb, capella, bellatrix,
+                // altair, skip. Using raw inner types gives typed access to attestations
+                // and block_root without calling .message() on the fork-enum (which panics).
+                if let Ok(electra_inner) =
+                    load_ssz_snappy::<E::ElectraSignedBeaconBlock>(case_dir, &block_file)
+                {
+                    let electra_wrapped = E::electra_into_signed_block(electra_inner.clone());
+                    let parent_root = electra_inner.message().parent_root();
+                    let pre_state = match store.block_states.get(&parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: electra block {block}: parent state for {parent_root} not found in store"
+                            ));
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &electra_wrapped,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let post_state = match post_state_result {
+                        Ok((ps, _)) => ps,
+                        Err(e) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: electra block {block}: state_transition failed: {e:?}"
+                            ));
+                        }
+                    };
+                    let now = store.time;
+                    let block_root = electra_inner.message().tree_hash_root();
+                    if on_block::<E, HashMapPowBlockProvider>(
+                        &mut store,
+                        &electra_wrapped,
+                        post_state,
+                        now,
+                        &pow_provider,
+                    )
+                    .is_ok()
+                    {
+                        let el_hash = store
+                            .blocks
+                            .get(&block_root)
+                            .and_then(|b| E::get_execution_block_hash(b))
+                            .unwrap_or_default();
+                        if el_hash != Hash256::default() {
+                            el_hash_to_cl_root.insert(el_hash, block_root);
+                            if let Some((status, lvh)) = el_hash_to_verdict.get(&el_hash).cloned() {
+                                apply_payload_verdict(&mut store, block_root, &status, lvh);
+                            }
+                        }
+                        // Feed block attestations via the electra path (EIP-7549).
+                        E::feed_electra_attestations(&mut store, &electra_inner);
+                    }
+                } else if let Ok(deneb_inner) =
+                    load_ssz_snappy::<E::DenebSignedBeaconBlock>(case_dir, &block_file)
+                {
+                    let deneb_wrapped = E::deneb_into_signed_block(deneb_inner.clone());
+                    let parent_root = deneb_inner.message().parent_root();
+                    let pre_state = match store.block_states.get(&parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: deneb block {block}: parent state for {parent_root} not found in store"
+                            ));
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &deneb_wrapped,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let (post_state, attestations) = match post_state_result {
+                        Ok((ps, _)) => {
+                            let atts: Vec<Attestation<2048>> =
+                                deneb_inner.message().body().attestations().to_vec();
+                            (ps, atts)
+                        }
+                        Err(e) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: deneb block {block}: state_transition failed: {e:?}"
+                            ));
+                        }
+                    };
+                    let now = store.time;
+                    let block_root = deneb_inner.message().tree_hash_root();
+                    if on_block::<E, HashMapPowBlockProvider>(
+                        &mut store,
+                        &deneb_wrapped,
+                        post_state,
+                        now,
+                        &pow_provider,
+                    )
+                    .is_ok()
+                    {
+                        let el_hash = store
+                            .blocks
+                            .get(&block_root)
+                            .and_then(|b| E::get_execution_block_hash(b))
+                            .unwrap_or_default();
+                        if el_hash != Hash256::default() {
+                            el_hash_to_cl_root.insert(el_hash, block_root);
+                            if let Some((status, lvh)) = el_hash_to_verdict.get(&el_hash).cloned() {
+                                apply_payload_verdict(&mut store, block_root, &status, lvh);
+                            }
+                        }
+                        for att in &attestations {
+                            let _ = on_attestation::<E>(&mut store, att, true);
+                        }
+                    }
+                } else if let Ok(cap_inner) =
                     load_ssz_snappy::<E::CapellaSignedBeaconBlock>(case_dir, &block_file)
                 {
                     let cap_wrapped = E::capella_into_signed_block(cap_inner.clone());
@@ -343,8 +515,6 @@ where
                     );
                     let (post_state, attestations) = match post_state_result {
                         Ok((ps, _)) => {
-                            // cap_inner is E::CapellaSignedBeaconBlock, body().attestations()
-                            // returns &[Attestation<2048>] via the concrete capella type.
                             let atts: Vec<Attestation<2048>> =
                                 cap_inner.message().body().attestations().to_vec();
                             (ps, atts)
