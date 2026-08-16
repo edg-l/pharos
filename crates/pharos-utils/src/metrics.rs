@@ -136,7 +136,7 @@ pub fn describe_metrics() {
     describe_counter!(
         METRIC_SLASHER_DETECTIONS_TOTAL,
         Unit::Count,
-        "Number of slashable attestation pairs detected, by kind (double_vote or surround_vote)"
+        "Number of slashings detected, by kind (double_vote, surround_vote, or proposer_double_block)"
     );
 }
 

@@ -54,6 +54,37 @@ pub fn blob_sidecar_key(root: &Root, index: u64) -> [u8; 40] {
     key
 }
 
+/// Encodes a `(slot, proposer_index, header_root)` triple as the 48-byte
+/// compound key used in the `slasher-proposers` CF (Phase B slasher).
+///
+/// Layout: `slot.to_be_bytes()[0..8] || proposer_index.to_be_bytes()[0..8] ||
+/// header_root[0..32]`.
+///
+/// The 16-byte `slot || proposer_index` prefix groups every distinct header a
+/// proposer signed at a slot; the 32-byte `header_root` suffix keeps two
+/// distinct blocks (a double-block) under separate keys so both survive and the
+/// prefix scan finds the slashable pair.
+///
+/// Per `D-slasher-proposer-index-cf`.
+pub fn slasher_proposer_key(slot: Slot, proposer_index: u64, header_root: &Root) -> [u8; 48] {
+    let mut key = [0u8; 48];
+    key[..8].copy_from_slice(&slot.0.to_be_bytes());
+    key[8..16].copy_from_slice(&proposer_index.to_be_bytes());
+    key[16..48].copy_from_slice(header_root.as_slice());
+    key
+}
+
+/// Returns the 16-byte `slot || proposer_index` prefix used to prefix-scan the
+/// `slasher-proposers` CF for every header a proposer signed at a slot.
+///
+/// Per `D-slasher-proposer-index-cf`.
+pub fn slasher_proposer_prefix(slot: Slot, proposer_index: u64) -> [u8; 16] {
+    let mut prefix = [0u8; 16];
+    prefix[..8].copy_from_slice(&slot.0.to_be_bytes());
+    prefix[8..16].copy_from_slice(&proposer_index.to_be_bytes());
+    prefix
+}
+
 /// Parses a big-endian 8-byte slice back into a `Slot`.
 ///
 /// Returns `StorageError::InvalidKeyLength` if `bytes.len() != 8`.

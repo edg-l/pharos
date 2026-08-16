@@ -9,6 +9,7 @@
 use pharos_types::EthSpec;
 use pharos_types::PayloadStatus;
 use pharos_types::deneb::BlobSidecar;
+use pharos_types::phase0::operations::SignedBeaconBlockHeader;
 use pharos_types::phase0::primitives::{Root, Slot};
 
 use crate::error::StorageError;
@@ -489,4 +490,37 @@ pub trait Store<E: EthSpec>: Send + Sync + 'static {
     /// The `slot_to_block_root` index is NOT pruned (it is navigational and
     /// must persist indefinitely per `D-blob-store-cf-keyed-by-root-index`).
     fn prune_blob_sidecars_below_slot(&self, prune_slot: Slot) -> Result<(), StorageError>;
+
+    // ── Slasher proposer index (Phase B, --slasher) ─────────────────────────────
+
+    /// Store one `SignedBeaconBlockHeader` in the proposer index, keyed by
+    /// `(slot, proposer_index, header_root)`.
+    ///
+    /// `header_root` is the `tree_hash_root()` of the `message` field. Two
+    /// distinct headers a proposer signed at the same slot land under the same
+    /// `slot || proposer_index` prefix with different `header_root` suffixes, so
+    /// both survive and `slasher_proposer_headers_at` can return them together.
+    ///
+    /// Per `D-slasher-proposer-index-cf`.
+    fn put_slasher_proposer_header(
+        &self,
+        slot: Slot,
+        proposer_index: u64,
+        header_root: Root,
+        header: &SignedBeaconBlockHeader,
+    ) -> Result<(), StorageError>;
+
+    /// Return every `SignedBeaconBlockHeader` stored for `(slot, proposer_index)`.
+    ///
+    /// Implemented via a RocksDB prefix iterator on the 16-byte
+    /// `slot || proposer_index` key prefix. Returns an empty vec when the
+    /// proposer signed no (recorded) block at this slot. Two or more results
+    /// with distinct `message` roots are a slashable proposer double-block.
+    ///
+    /// Per `D-slasher-proposer-index-cf`.
+    fn slasher_proposer_headers_at(
+        &self,
+        slot: Slot,
+        proposer_index: u64,
+    ) -> Result<Vec<SignedBeaconBlockHeader>, StorageError>;
 }

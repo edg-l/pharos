@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use pharos_ssz::{Decode, Encode};
 use pharos_types::deneb::BlobSidecar;
+use pharos_types::phase0::operations::SignedBeaconBlockHeader;
 use pharos_types::phase0::primitives::{Root, Slot};
 use pharos_types::{BeaconStateView, EthSpec, PayloadStatus};
 use rocksdb::{
@@ -23,12 +24,15 @@ use crate::cf::{
     CF_LC_FINALITY_UPDATE_DENEB, CF_LC_FINALITY_UPDATE_ELECTRA, CF_LC_OPTIMISTIC_UPDATE,
     CF_LC_OPTIMISTIC_UPDATE_CAPELLA, CF_LC_OPTIMISTIC_UPDATE_DENEB,
     CF_LC_OPTIMISTIC_UPDATE_ELECTRA, CF_LC_UPDATE, CF_LC_UPDATE_CAPELLA, CF_LC_UPDATE_DENEB,
-    CF_LC_UPDATE_ELECTRA, CF_METADATA, CF_PAYLOAD_STATUS, CF_RESTORE_POINTS, CF_SLOT_TO_BLOCK_ROOT,
-    CF_STATE_SUMMARY, CF_STATES, LC_LATEST_KEY, all_cfs,
+    CF_LC_UPDATE_ELECTRA, CF_METADATA, CF_PAYLOAD_STATUS, CF_RESTORE_POINTS, CF_SLASHER_PROPOSERS,
+    CF_SLOT_TO_BLOCK_ROOT, CF_STATE_SUMMARY, CF_STATES, LC_LATEST_KEY, all_cfs,
 };
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
-use crate::keys::{blob_sidecar_key, parse_slot_key, root_key, slot_key};
+use crate::keys::{
+    blob_sidecar_key, parse_slot_key, root_key, slasher_proposer_key, slasher_proposer_prefix,
+    slot_key,
+};
 use crate::migrations::{MIGRATION_BASELINE, run_migrations};
 use crate::state_summary::StateSummary;
 use crate::store::{ColdMigrationBatch, Store};
@@ -73,7 +77,14 @@ use crate::transition::BlockTransition;
 ///   version-bump-only migration (no new CFs, no data move) — proves the
 ///   migration walk with a real registry entry. Opening a v6 database now
 ///   MIGRATES forward to v7 in place instead of erroring.
-pub(crate) const SCHEMA_VERSION: u32 = 7;
+/// - v8 (M11 Phase 9): added the `slasher-proposers` CF for the opt-in
+///   (`--slasher`) chain-history replay slasher's proposer double-block index,
+///   per `D-slasher-proposer-index-cf`. Opening a v7 database MIGRATES forward
+///   to v8 in place: the new CF is auto-created by
+///   `create_missing_column_families` and the v7→v8 migration bumps the version
+///   stamp (no data move). The proposer index is rebuilt from scratch on each
+///   `--slasher` replay, so an empty CF after migration is correct.
+pub(crate) const SCHEMA_VERSION: u32 = 8;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -1182,6 +1193,45 @@ impl<E: EthSpec> Store<E> for RocksStore {
         }
         Ok(())
     }
+
+    // ── Slasher proposer index (Phase B) ──────────────────────────────────────
+
+    fn put_slasher_proposer_header(
+        &self,
+        slot: Slot,
+        proposer_index: u64,
+        header_root: Root,
+        header: &SignedBeaconBlockHeader,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_SLASHER_PROPOSERS)?;
+        let key = slasher_proposer_key(slot, proposer_index, &header_root);
+        self.db.put_cf(cf, key, header.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn slasher_proposer_headers_at(
+        &self,
+        slot: Slot,
+        proposer_index: u64,
+    ) -> Result<Vec<SignedBeaconBlockHeader>, StorageError> {
+        let cf = self.cf_handle(CF_SLASHER_PROPOSERS)?;
+        let prefix = slasher_proposer_prefix(slot, proposer_index);
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(&prefix, Direction::Forward));
+
+        let mut headers = Vec::new();
+        for item in iter {
+            let (k, v) = item?;
+            // Stop when the key no longer carries the 16-byte (slot || proposer) prefix.
+            if k.len() < 16 || k[..16] != prefix {
+                break;
+            }
+            let header = SignedBeaconBlockHeader::from_ssz_bytes(&v)?;
+            headers.push(header);
+        }
+        Ok(headers)
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -1221,7 +1271,7 @@ mod tests {
     }
 
     /// Opening a database written with schema v1 (before the `payload-status` CF was added)
-    /// must return `SchemaMismatch { found: 1, expected: 7 }` — v1 is below the
+    /// must return `SchemaMismatch { found: 1, expected: 8 }` — v1 is below the
     /// migration baseline, so it stays on the resync path.
     #[test]
     fn schema_v1_returns_mismatch() {
@@ -1269,15 +1319,15 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 1,
-                    expected: 7
+                    expected: 8
                 })
             ),
-            "expected SchemaMismatch{{found:1,expected:7}}, got {result:?}"
+            "expected SchemaMismatch{{found:1,expected:8}}, got {result:?}"
         );
     }
 
     /// Opening a database written with schema v2 (before the v3 CFs were added)
-    /// must return `SchemaMismatch { found: 2, expected: 7 }` — v2 is below the
+    /// must return `SchemaMismatch { found: 2, expected: 8 }` — v2 is below the
     /// migration baseline, so it stays on the resync path.
     #[test]
     fn schema_v2_returns_mismatch() {
@@ -1330,10 +1380,10 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 2,
-                    expected: 7
+                    expected: 8
                 })
             ),
-            "expected SchemaMismatch{{found:2,expected:7}}, got {result:?}"
+            "expected SchemaMismatch{{found:2,expected:8}}, got {result:?}"
         );
     }
 
@@ -1411,10 +1461,11 @@ mod tests {
         u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes"))
     }
 
-    /// A v6-stamped DB must migrate forward: `open` succeeds and the stored
-    /// version is bumped to the current `SCHEMA_VERSION` (7).
+    /// A v6-stamped DB must migrate forward across the whole registry: `open`
+    /// succeeds and the stored version is bumped to the current
+    /// `SCHEMA_VERSION` (8, via v6→v7→v8).
     #[test]
-    fn migration_walk_v6_to_v7() {
+    fn migration_walk_v6_to_v8() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("chain_db_v6");
 
@@ -1428,10 +1479,32 @@ mod tests {
 
         assert_eq!(
             read_db_version(&store),
-            7,
-            "after migrating a v6 DB the stamped version must be 7"
+            8,
+            "after migrating a v6 DB the stamped version must be 8"
         );
-        assert_eq!(SCHEMA_VERSION, 7, "SCHEMA_VERSION must be 7");
+        assert_eq!(SCHEMA_VERSION, 8, "SCHEMA_VERSION must be 8");
+    }
+
+    /// A v7-stamped DB must migrate forward one step to v8 (the slasher CF is
+    /// auto-created on open; the migration only bumps the version stamp).
+    #[test]
+    fn migration_walk_v7_to_v8() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("chain_db_v7");
+
+        stamp_db_version(&db_path, 7);
+
+        let store = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
+            path: db_path,
+            create_if_missing: false,
+        })
+        .expect("v7 db must migrate forward and open");
+
+        assert_eq!(
+            read_db_version(&store),
+            8,
+            "after migrating a v7 DB the stamped version must be 8"
+        );
     }
 
     /// The migration registry must start at the baseline and be contiguous:
@@ -1482,10 +1555,10 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 5,
-                    expected: 7
+                    expected: 8
                 })
             ),
-            "v5 is pre-baseline: expected SchemaMismatch{{found:5,expected:7}}, got {result:?}"
+            "v5 is pre-baseline: expected SchemaMismatch{{found:5,expected:8}}, got {result:?}"
         );
     }
 
@@ -1508,10 +1581,10 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 999,
-                    expected: 7
+                    expected: 8
                 })
             ),
-            "future version must hard-error: expected SchemaMismatch{{found:999,expected:7}}, got {result:?}"
+            "future version must hard-error: expected SchemaMismatch{{found:999,expected:8}}, got {result:?}"
         );
     }
 }

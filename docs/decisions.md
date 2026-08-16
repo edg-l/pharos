@@ -4065,3 +4065,72 @@ block production in 6d and proposer-lookahead in 6e); all proposer-selection sit
 route through the electra accessor on electra states. The serialization path itself is
 sound — proven by the `electra_signing_root_repro.rs` regression test (VC-side and
 STF-side signing roots are byte-identical).
+
+## M11 Phase 9 — Slasher Phase B (chain-history replay, opt-in `--slasher`)
+
+### D-slasher-proposer-index-cf — proposer double-block index is a new RocksDB CF (schema v8)
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+Phase B's proposer double-block detector needs to remember every block header a proposer
+signed at each slot over the replayed history. The Phase A attestation slasher is purely
+in-memory with a bounded eviction window; the proposer history is the "higher-storage"
+half of the roadmap's opt-in slasher, so it is persisted in a dedicated column family
+`slasher-proposers` rather than an in-memory map. Key layout is
+`slot (8 B BE) || proposer_index (8 B BE) || header_root (32 B)`, value SSZ
+`SignedBeaconBlockHeader`. The 16-byte `slot || proposer_index` prefix groups every header
+a proposer signed at a slot; the 32-byte `header_root` suffix keeps two distinct blocks (a
+double-block) under separate keys so both survive and a prefix scan finds the slashable
+pair. Adding the CF bumped `SCHEMA_VERSION` 7→8; the v7→v8 migration is identity (the CF
+is auto-created by `create_missing_column_families` on open, and the index is rebuilt from
+scratch on each `--slasher` replay so an empty CF after migration is correct). Storage cost
+is one `SignedBeaconBlockHeader` (~112 B SSZ) per stored block over the retained history,
+which is the roadmap's "~10 GB higher-storage" path on mainnet.
+
+### D-slasher-replay-reuses-phase-a-detector — replay feeds the Phase A `AttestationSlasher`, no duplicated double/surround logic
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+The plan requires reusing the Phase 8 detection cores, not reimplementing them. The replay
+scanner (`ChainReplaySlasher`) holds its own `Arc<AttestationSlasher<E>>` (sharing the
+node's `op_pools`) and feeds each historical block's attestations through
+`AttestationSlasher::observe`, the exact entry point the live gossip path uses. The
+double-vote / surround-vote predicate (`is_slashable_pair`) lives in one place
+(`slasher/mod.rs`). Attestation→`IndexedAttestation` conversion reuses
+`pharos_stf::phase0::accessors::get_indexed_attestation` against the per-slot state from
+`StateRegenService::state_at_slot` (which itself reuses `replay_to`), so no STF or committee
+logic is duplicated either. Detected `AttesterSlashing`s and `ProposerSlashing`s flow into
+`op_pools` and increment `pharos_slasher_detections_total` (kinds `double_vote`,
+`surround_vote`, `proposer_double_block`).
+
+### D-slasher-replay-att-scope — attestation replay covers phase0..deneb; electra attestations observed on gossip
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+Block-replay attestation extraction (`block_phase0_attestations`) covers the phase0-family
+`Attestation<2048>` shape, which is identical for phase0 through deneb, via the per-fork
+`unwrap_*_signed_block` borrowing accessors. Electra blocks carry the EIP-7549 aggregated
+`Attestation<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT>` whose const generics are
+preset-dependent runtime constants (`E::MAX_AGGREGATION_BITS_ELECTRA`,
+`E::MAX_COMMITTEES_PER_SLOT`) and therefore cannot be supplied to the const-generic
+`get_indexed_attestation_electra` indexer in fully-generic `E` replay code. Electra block
+attestations are instead observed by the always-on Phase A gossip path
+(`HostImpl::validate_attestation` feeds the same `AttestationSlasher`), so this is a
+fork-coverage boundary of the *replay* path, not a slashing-detection gap. Proposer
+double-block detection is fully fork-agnostic (it operates on `SignedBeaconBlockHeader`)
+and covers every fork including electra.
+
+### D-slasher-replay-one-shot-at-startup — Phase B replay is a single startup pass gated by `--slasher`
+
+**Status**: Accepted. **Date**: 2026-06-14.
+
+The `--slasher` flag (default off) gates the entire Phase B path in `main.rs`. When off,
+only the always-on Phase A in-memory attestation slasher (inside `HostImpl`, fed from
+gossip) runs. When on, a one-shot background task (`run_replay`, inside `spawn_blocking`)
+walks the stored block history from `anchor_slot` (metadata lower bound on a
+checkpoint-synced node) to the current wall-clock slot, feeding every block's header and
+attestations through the detectors. Errors are logged, never propagated, so a slasher
+failure never takes the node down. Live (post-startup) blocks continue to be covered by the
+always-on Phase A gossip detector; a continuous replay loop driven off the head-watch is a
+later refinement and not required for the Phase B checkpoint (replay-detects-historical-
+double-block + proposer-double-block, flag-off-skips).

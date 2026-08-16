@@ -27,6 +27,9 @@
 //! node-internal functionality.  Phase B (chain-history replay, `--slasher`
 //! flag) may be promoted to `crates/pharos-slasher` if it grows storage-heavy.
 
+pub mod proposer;
+pub mod replay;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

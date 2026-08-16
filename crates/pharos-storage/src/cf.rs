@@ -188,7 +188,28 @@ pub const CF_LC_FINALITY_UPDATE_ELECTRA: &str = "electra-latest-finality-update"
 /// Single-row CF storing the latest SSZ-encoded Electra `LightClientOptimisticUpdate`.
 pub const CF_LC_OPTIMISTIC_UPDATE_ELECTRA: &str = "electra-latest-optimistic-update";
 
-/// Returns all twenty-nine column-family names in declaration order.
+// ── Schema v8 column families (M11 Phase 9 — slasher Phase B) ─────────────────
+//
+// One new CF added for the opt-in (`--slasher`) chain-history replay slasher:
+//   `slasher-proposers` — per-`(slot, proposer)` block-header index used by the
+//   proposer double-block detector. Opening a v7 DB triggers the v7→v8 forward
+//   migration (the CF is auto-created by `create_missing_column_families`).
+//
+// Per `D-slasher-proposer-index-cf`.
+
+/// Proposer-header index for the Phase B slasher.
+///
+/// Per schema v8 (`D-slasher-proposer-index-cf`, M11 Phase 9):
+/// key = `slot` (8 B big-endian) `||` `proposer_index` (8 B big-endian) `||`
+/// `header_root` (32 B), value = SSZ `SignedBeaconBlockHeader`.
+///
+/// The 16-byte `slot || proposer_index` prefix enables a RocksDB prefix
+/// iterator that returns every distinct block header a proposer signed at a
+/// given slot. Two entries under the same prefix with different `header_root`
+/// suffixes are a slashable proposer double-block.
+pub const CF_SLASHER_PROPOSERS: &str = "slasher-proposers";
+
+/// Returns all thirty column-family names in declaration order.
 ///
 /// Used when opening the database with `DB::open_cf_descriptors` so every CF
 /// is registered. The ordering does not affect correctness; RocksDB looks up
@@ -196,7 +217,10 @@ pub const CF_LC_OPTIMISTIC_UPDATE_ELECTRA: &str = "electra-latest-optimistic-upd
 ///
 /// Per `D-schema-v6-migration`: the full v6 CF set (25 v5 CFs + 4 new Electra LC) is
 /// declared here so a fresh v6 DB opens with all CFs at first boot.
-pub fn all_cfs() -> [&'static str; 29] {
+///
+/// Per `D-slasher-proposer-index-cf` (v8): the `slasher-proposers` CF is appended,
+/// so a fresh v8 DB opens with all thirty CFs at first boot.
+pub fn all_cfs() -> [&'static str; 30] {
     [
         CF_DEFAULT,
         CF_BLOCKS,
@@ -227,5 +251,6 @@ pub fn all_cfs() -> [&'static str; 29] {
         CF_LC_UPDATE_ELECTRA,
         CF_LC_FINALITY_UPDATE_ELECTRA,
         CF_LC_OPTIMISTIC_UPDATE_ELECTRA,
+        CF_SLASHER_PROPOSERS,
     ]
 }

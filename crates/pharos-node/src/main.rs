@@ -163,6 +163,19 @@ struct Args {
     #[arg(long, default_value_t = false)]
     no_freezer: bool,
 
+    /// Enable the opt-in chain-history replay slasher (Phase B).
+    ///
+    /// When set, on startup the node walks its stored block history (via the
+    /// `slot_to_block_root` index) and feeds every block's proposer header and
+    /// attestations through the slasher's double/surround/proposer-double-block
+    /// detectors, persisting the proposer-header index to the `slasher-proposers`
+    /// RocksDB CF. This catches slashings the live gossip path never observed,
+    /// at the cost of higher storage (roughly the proposer-header index over the
+    /// retained history). The always-on Phase A in-memory attestation slasher
+    /// runs regardless of this flag. Default: off.
+    #[arg(long, default_value_t = false)]
+    slasher: bool,
+
     /// Enable backward state backfill (genesis-ward historical state
     /// reconstruction).
     ///
@@ -1459,6 +1472,74 @@ async fn main() -> anyhow::Result<()> {
         );
     } else {
         info!("--no-freezer: hot/cold migration disabled");
+    }
+
+    // ── Slasher Phase B: chain-history replay (opt-in, --slasher) ──────────────
+    //
+    // Gated entirely behind `--slasher` (M11 Phase 9). When off, only the
+    // always-on Phase A in-memory attestation slasher (inside HostImpl, fed from
+    // gossip) runs and this replay path is skipped. When on, a one-shot
+    // background pass walks the stored block history (anchor_slot → head) and
+    // feeds each block's proposer header + attestations through the persistent
+    // proposer detector and the (separate) Phase A attestation detector, sharing
+    // the node's `op_pools` so detected slashings are block-includable.
+    if args.slasher {
+        use pharos_node::slasher::AttestationSlasher;
+        use pharos_node::slasher::proposer::ProposerSlasher;
+        use pharos_node::slasher::replay::{ChainReplaySlasher, run_replay};
+
+        // Scan range: anchor_slot (lower bound on a checkpoint-synced node) up to
+        // the current wall-clock slot. Empty slots in the index are skipped by the
+        // scanner, so over-scanning to the wall slot is safe.
+        let anchor_slot = <RocksStore as pharos_storage::Store<MainnetEthSpec>>::get_metadata(
+            &store_arc,
+            b"anchor_slot",
+        )
+        .ok()
+        .flatten()
+        .and_then(|v| v.try_into().ok().map(u64::from_be_bytes))
+        .unwrap_or(0);
+        let head_slot = {
+            let s = fork_choice.read();
+            pharos_fork_choice::get_current_slot(&s)
+        };
+
+        let slasher_op_pools = Arc::clone(&host.op_pools);
+        let slasher_store = Arc::clone(&store_arc);
+        let slasher_regen = Arc::new(StateRegenService::<MainnetEthSpec>::new(
+            Arc::clone(&store_arc),
+            Arc::clone(&fork_choice),
+            Arc::new(runtime_cfg.clone()),
+        ));
+        let proposer = ProposerSlasher::<MainnetEthSpec>::new(
+            Arc::clone(&slasher_store),
+            Arc::clone(&slasher_op_pools),
+        );
+        let attestation = Arc::new(AttestationSlasher::<MainnetEthSpec>::new(Arc::clone(
+            &slasher_op_pools,
+        )));
+        let chain_slasher = Arc::new(ChainReplaySlasher::<MainnetEthSpec>::new(
+            slasher_store,
+            proposer,
+            attestation,
+            slasher_regen,
+        ));
+
+        tokio::spawn(async move {
+            run_replay::<MainnetEthSpec>(
+                chain_slasher,
+                pharos_types::phase0::primitives::Slot(anchor_slot),
+                head_slot,
+            )
+            .await;
+        });
+        info!(
+            anchor_slot,
+            head_slot = %head_slot,
+            "--slasher: chain-history replay scheduled"
+        );
+    } else {
+        info!("--slasher: chain-history replay disabled (Phase A in-memory slasher still active)");
     }
 
     // ── Blob prune loop (W8: separate head-watch loop per D-blob-store-cf-keyed-by-root-index)
