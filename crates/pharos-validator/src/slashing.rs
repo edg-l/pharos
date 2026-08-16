@@ -247,8 +247,10 @@ impl SlashingProtection for SqliteSlashingProtection {
         let src_i = source_epoch as i64;
         let tgt_i = target_epoch as i64;
 
-        // BEGIN IMMEDIATE: all checks and the INSERT run in one atomic transaction.
-        let tx = conn.unchecked_transaction()?;
+        // BEGIN IMMEDIATE: take the write lock at transaction start (not lazily at
+        // first write as DEFERRED would), so check-then-insert is atomic at the DB
+        // level and not solely reliant on the in-process Mutex.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         // Check low watermarks.
         let row: Option<(Option<i64>, Option<i64>)> = tx
