@@ -57,8 +57,7 @@ async fn mock_produce_block(
     // `BeaconBlock` SSZ), so the mock must return a decodable one. A default
     // bellatrix block suffices — the test only asserts the slashing-record /
     // publish ordering, not block contents.
-    let block_ssz =
-        MainnetBeaconBlock::Bellatrix(BellatrixBeaconBlock::default()).as_ssz_bytes();
+    let block_ssz = MainnetBeaconBlock::Bellatrix(BellatrixBeaconBlock::default()).as_ssz_bytes();
     let body = json!({
         "version": "bellatrix",
         "data": {
