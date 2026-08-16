@@ -94,6 +94,7 @@ use rayon::prelude::*;
 use crate::error::ConformanceError;
 use crate::fs_util::{dir_name, read_dir_sorted};
 use crate::snappy::decompress_raw;
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
 use crate::yaml_util::read_root_from_file;
 
 /// Result of running all ssz_static tests for one preset.
@@ -102,6 +103,123 @@ pub struct StaticResult {
     pub fail: u64,
     pub skip: u64,
     pub failures: Vec<String>,
+}
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per ssz_static case in the same walk-order as the
+/// corresponding `run_*_ssz_static_*` function. Called by the Phase 7 flat
+/// work-pool.
+///
+/// `fork` must be one of `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`,
+/// `"deneb"`, or `"electra"`. The walk mirrors the relevant
+/// `run_*_ssz_static_*` function exactly: type → suite → case, sorted.
+///
+/// - `Ok(true)`  → `CaseOutcome::Pass`
+/// - `Ok(false)` → `CaseOutcome::Skip`
+/// - `Err(e)`    → `CaseOutcome::Fail("`{case_label}`: {e}")`
+#[allow(dead_code)]
+pub fn enumerate_ssz_static(
+    root: &Path,
+    fork: &'static str,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    // Resolve the base directory for this (fork, preset) pair, mirroring how
+    // lib.rs builds the path for each `run_*` variant.
+    let base = match fork {
+        "phase0" | "altair" => root.join(preset).join(fork).join("ssz_static"),
+        _ => root.join(preset).join(fork).join("ssz_static"),
+    };
+    if !base.is_dir() {
+        return Vec::new();
+    }
+
+    let type_dirs = read_dir_sorted(&base).unwrap_or_default();
+    let mut tasks = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    for type_dir in type_dirs {
+        let type_name: String = dir_name(&type_dir);
+        let suite_dirs = read_dir_sorted(&type_dir).unwrap_or_default();
+        for suite_dir in suite_dirs {
+            let suite_name: String = dir_name(&suite_dir);
+            let case_dirs = read_dir_sorted(&suite_dir).unwrap_or_default();
+            for case_dir in case_dirs {
+                let case_name = dir_name(&case_dir);
+                let case_label =
+                    format!("{preset}/{fork}/ssz_static/{type_name}/{suite_name}/{case_name}");
+                let case_ordinal = ordinal;
+                ordinal += 1;
+
+                let preset_owned = preset;
+                let type_name_owned = type_name.clone();
+                let run: CaseFn = Box::new(move || {
+                    let result = dispatch_for_fork(
+                        fork,
+                        preset_owned,
+                        &type_name_owned,
+                        &case_dir,
+                        &case_label,
+                    );
+                    match result {
+                        Ok(true) => CaseOutcome::Pass,
+                        Ok(false) => CaseOutcome::Skip,
+                        Err(e) => CaseOutcome::Fail(format!("`{case_label}`: {e}")),
+                    }
+                });
+                tasks.push(CaseTask {
+                    row_ordinal,
+                    case_ordinal,
+                    run,
+                });
+            }
+        }
+    }
+
+    tasks
+}
+
+/// Route a single case to the correct per-fork dispatch function.
+///
+/// Mirrors the logic in the various `run_*_static_case` fns, which all read
+/// `serialized.ssz_snappy` + `roots.yaml` and then call the relevant
+/// `dispatch_*` function.
+#[allow(dead_code)]
+fn dispatch_for_fork(
+    fork: &str,
+    preset: &str,
+    type_name: &str,
+    case_dir: &std::path::Path,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    let ssz_snappy = case_dir.join("serialized.ssz_snappy");
+    if !ssz_snappy.exists() {
+        return Ok(false);
+    }
+    let roots_yaml = case_dir.join("roots.yaml");
+    if !roots_yaml.exists() {
+        return Ok(false);
+    }
+
+    let compressed = std::fs::read(&ssz_snappy)?;
+    let ssz_bytes = decompress_raw(&compressed)?;
+    let expected_root = read_root_from_file(&roots_yaml)?;
+
+    match fork {
+        "phase0" => dispatch(preset, type_name, &ssz_bytes, &expected_root, case_label),
+        "altair" => dispatch_altair(preset, type_name, &ssz_bytes, &expected_root, case_label),
+        "bellatrix" => {
+            dispatch_bellatrix(preset, type_name, &ssz_bytes, &expected_root, case_label)
+        }
+        "capella" => dispatch_capella(preset, type_name, &ssz_bytes, &expected_root, case_label),
+        "deneb" => dispatch_deneb(preset, type_name, &ssz_bytes, &expected_root, case_label),
+        "electra" => dispatch_electra(preset, type_name, &ssz_bytes, &expected_root, case_label),
+        _ => {
+            eprintln!("enumerate_ssz_static: unknown fork {fork}");
+            Ok(false)
+        }
+    }
 }
 
 /// Run all phase0 ssz_static tests for a given preset.
@@ -2174,3 +2292,54 @@ fn dispatch_electra_minimal(
 }
 
 // Helpers `read_dir_sorted` and `dir_name` are shared via the `fs_util` module.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+    use crate::task::CaseOutcome;
+
+    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
+        let mut pass = 0u64;
+        let mut fail = 0u64;
+        let mut skip = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => pass += 1,
+                CaseOutcome::Fail(_) => fail += 1,
+                CaseOutcome::Skip => skip += 1,
+            }
+        }
+        (pass, fail, skip)
+    }
+
+    #[test]
+    fn enumerate_ssz_static_phase0_mainnet_parity() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let mainnet_dir = root.join("mainnet");
+        let run_result = run_ssz_static_preset(&mainnet_dir, "mainnet");
+        let (ep, ef, es) = drain_tasks(enumerate_ssz_static(&root, "phase0", "mainnet", 1));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_ssz_static phase0/mainnet counts differ from run_ssz_static_preset"
+        );
+    }
+
+    #[test]
+    fn enumerate_ssz_static_phase0_minimal_parity() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let minimal_dir = root.join("minimal");
+        let run_result = run_ssz_static_preset(&minimal_dir, "minimal");
+        let (ep, ef, es) = drain_tasks(enumerate_ssz_static(&root, "phase0", "minimal", 2));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_ssz_static phase0/minimal counts differ from run_ssz_static_preset"
+        );
+    }
+}
