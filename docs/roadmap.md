@@ -987,7 +987,14 @@ The server MUST NOT return 400 on an unrecognised-but-spec-listed topic.
 - Rewards endpoints (`beacon/rewards/*`) -> **M8**.
 - `beacon/execution_payload_*` (ePBS) -> **deferred**.
 
-### M8 — Validator client (separate binary)
+### M9 — Validator client (separate binary) — **DONE** (shipped as M9-Validator)
+> Numbering note: this milestone shipped as **M9-Validator** (v0.13.0). The
+> unplanned **M-Storage** (hot/cold persistence) and **M8-OptimisticSync**
+> interludes consumed slots between the Beacon API (M7) and here, so what this
+> roadmap drafted as "M8 — Validator client" landed at M9. The forward fork
+> milestones below (Electra/Fulu/Productionization) keep their labels; the
+> roadmap-vs-shipped numbering drift is tracked in `docs/decisions.md` /
+> `CLAUDE.md` milestone blocks, which are authoritative for what shipped.
 - Duties, signing, EIP-3076 slashing protection interchange.
 - Keystore loading (EIP-2335).
 - **ENR `syncnets` key** (deferred from M3b spec audit Task 9.7): populate

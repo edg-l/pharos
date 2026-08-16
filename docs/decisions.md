@@ -3168,3 +3168,166 @@ state value ensures the fork digest is correct for Ethereum mainnet and real
 devnets. This matches the same reasoning as the `get_genesis` endpoint fix
 (commit `4d1a2b3` in M7). Mock tests use a fixed non-zero `TEST_GVR` constant
 to exercise the digest computation path.
+
+## M9-Validator decisions
+
+In-house validator client (`pharos-vc` binary) + the beacon-node production
+surface it drives: operation pools, live Engine-API V2 block production, CL
+block/attestation assembly via STF reuse, validator/beacon production REST
+endpoints, EIP-2335 keystores, rusqlite slashing protection, duty scheduling,
+doppelganger detection. Plan: `docs/m9-validator-plan.md`. Live
+bellatrix→capella devnet acceptance (lighthouse v8.1.3 + ethrex v13) is the
+gate; see `D-vc-proposer-slot-alignment` for the one live-only correctness bug
+the devnet surfaced.
+
+### D-vc-separate-process — VC↔BN topology is separate-process HTTP
+
+**Status**: Accepted. **Date**: 2026-06-06. (OQ1 resolved.)
+
+`pharos-vc` is a standalone binary that talks to the beacon node only over the
+Beacon REST API (`--beacon-node <url>`, failover-ordered list). No in-process
+coupling, no shared state. Matches the standard CL deployment model and lets the
+VC run against any spec-compliant BN; the BN's 503 contract
+(`D-503-on-optimistic-or-syncing`) is the sole liveness signal.
+
+### D-op-pools-in-memory — in-memory operation pools, aggregate-on-insert
+
+**Status**: Accepted. **Date**: 2026-06-06.
+
+`OperationPools<E>` (`pharos-node/src/op_pools.rs`) holds attestations, proposer/
+attester slashings, voluntary exits, BLS-to-exec changes, and sync-committee
+contributions in memory, fed from the gossip-accept path. Attestations merge
+on insert only when `AttestationData` matches and aggregation bits are disjoint
+(no double-count). Pools are volatile (rebuilt from gossip after restart); no
+persistence — block production drains them at assembly time.
+
+### D-process-block-verify-flag — thread `verify_signatures: bool` through process_block
+
+**Status**: Accepted. **Date**: 2026-06-06.
+
+The per-fork `process_block` takes a `verify_signatures: bool`. Block production
+runs the STF with signature verification OFF (the proposer's own sigs aren't
+attached yet) to compute the post-state and `state_root`; the node re-runs with
+verification ON when the signed block is imported. One STF, two modes — no
+divergent "production" code path that could drift from consensus.
+
+### D-produce-empty-then-fill-stf — build block by STF reuse, not a bespoke assembler
+
+**Status**: Accepted. **Date**: 2026-06-06.
+
+`produce_block` assembles an empty block shell, fills it from the operation pools
++ the live execution payload, then runs the real STF to obtain the `state_root`.
+No parallel block-builder logic: the same `process_block` that validates on
+import produces on the way out, so a produced block re-imports VALID by
+construction (verified by `produce_block_signed_*_validated_capella`).
+
+### D-keystore-eip2335-in-house — in-house EIP-2335 keystore decryption
+
+**Status**: Accepted. **Date**: 2026-06-06.
+
+Keystore decrypt is hand-rolled in `pharos-validator/src/keystore.rs`: parse
+`crypto.kdf` (scrypt or pbkdf2), derive the key, AES-128-CTR decrypt, verify the
+SHA-256 checksum before use. Deps are primitives only (`aes`, `scrypt`,
+`pbkdf2`, `sha2`) — no wallet/keystore crate. Consistent with the project's
+"own everything with a conformance vector" principle.
+
+### D-slashing-sqlite-separate-file — slashing protection in a separate rusqlite file
+
+**Status**: Accepted. **Date**: 2026-06-06.
+
+Slashing protection is a `rusqlite` DB in its own file under the VC data dir
+(distinct from the BN's RocksDB chain store, per the locked storage decision).
+Implements the EIP-3076 interchange import/export and surround/double-vote
+checks; validated by the vendored `slashing-protection-interchange-tests`
+(`tests/interchange_conformance.rs`, `scripts/fetch-interchange-tests.sh`).
+
+### D-commit-before-sign — record in the slashing DB before signing
+
+**Status**: Accepted. **Date**: 2026-06-06.
+
+The VC writes the proposal/attestation record to the slashing DB and only signs
+if that write succeeds and passes the slashing check. The DB is the final
+authority on "may I sign this", so a crash between commit and broadcast can never
+produce an un-recorded signature — the safe direction across restarts and reorgs.
+
+### D-doppelganger-bn-liveness-endpoint — doppelganger via the BN liveness endpoint
+
+**Status**: Accepted. **Date**: 2026-06-06. (OQ4 resolved.)
+
+Doppelganger protection polls the BN's `POST /eth/v1/validator/liveness/{epoch}`
+(added in Phase 5) rather than sniffing gossip directly — the standard mechanism
+for a separate-process VC. `--doppelganger-protection` (default on) holds off
+signing for the first 2 complete epochs and aborts FATALLY if any local
+validator appears live elsewhere. The devnet runs it OFF (single signer per key,
+disjoint partition).
+
+### D-503-on-optimistic-or-syncing — production endpoints 503 when optimistic or syncing
+
+**Status**: Accepted. **Date**: 2026-06-06.
+
+`ChainStateApi::is_optimistic_node` / syncing status gate the validator
+production endpoints: they MUST return HTTP 503 when the node is optimistic or
+syncing (`pharos-api/src/state.rs`). The VC treats 503 as "do not sign". This is
+the write-side counterpart to M8's read gate and the mechanism that makes a
+checkpoint-synced VC safe against a still-syncing EL.
+
+### D-register-validator-accept-and-store — register_validator stores, no relay
+
+**Status**: Accepted. **Date**: 2026-06-06. (OQ5 resolved.)
+
+`POST /eth/v1/validator/register_validator` accepts and stores the fee recipient
++ gas limit in an `Arc<RwLock<HashMap<BLSPubkey, ExecutionAddress>>>` in
+`NodeChainState`; there is no builder/relay forwarding (no MEV-Boost yet). Fee
+recipient flows into `prepare_execution_payload`.
+
+### D-eth1-data-default / D-no-deposit-source — no eth1 following, zero new deposits
+
+**Status**: Accepted. **Date**: 2026-06-06. (OQ6 resolved; deferred to M11.)
+
+Pharos does not follow the eth1 deposit contract. Produced blocks carry a
+default `eth1_data` (vote for the current value) and zero new deposits — valid on
+a genesis-funded devnet where the full validator set exists at genesis. Real
+deposit following is an M11 productionization item.
+
+### D-syncnets-enr-on-subscription — syncnets ENR updated on sync-committee subscription
+
+**Status**: Accepted. **Date**: 2026-06-06.
+
+When the VC subscribes to sync-committee subnets, the BN updates the `syncnets`
+bitfield in its ENR (reusing the M3b `update_enr_eth2` path) so peers discover
+the node on the right subnets. Mirrors the existing attnets/subnet-rotation
+machinery rather than introducing a parallel ENR mutation path.
+
+### D-vc-proposer-slot-alignment — slot-align the VC loop so proposals fire at t≈0
+
+**Status**: Accepted. **Date**: 2026-06-06. (Live-only correctness bug; the M9
+analogue of the M5-follow / M6-Capella devnet bugs.)
+
+`run_vc_loop` originally used a free-running `tokio::time::interval(slot)`, which
+ticks relative to VC startup and therefore carries a fixed phase offset against
+true slot boundaries. The proposer path fired at that arbitrary offset (~4.3s
+into the slot on the failing run) plus health-check RTTs, pushing block
+publication past lighthouse's t=1/3 attestation cutoff. Attesters then voted the
+parent, the pharos block accrued `head_weight: 0`, and lighthouse's
+proposer-boost re-org dropped it one slot later — the block was spec-valid and
+gossip-delivered, but never stuck. Fix: at the top of the loop compute the next
+slot boundary and `sleep_until_into_slot(start, 0)`, dispatching the proposer at
+t≈0; the attester/aggregate paths already self-aligned via `sleep_until_into_slot`
+and are unchanged. Verified live (commit `e77691c`): all 9 pharos-vc proposals —
+including capella slots 35/47/53/61 — were received by lighthouse over gossip and
+kept canonical with 0 re-orgs over 2+ epochs; every proposal fired 2–5 ms into
+its slot.
+
+### D-genesis-cold-start-phase0-only — `--genesis-state-path` decodes only a phase0 genesis (deferred)
+
+**Status**: Accepted (known limitation). **Date**: 2026-06-06.
+
+The cold-start path (`pharos-node/src/main.rs:363`) hardcodes
+`Phase0MainnetBeaconState::from_ssz_bytes`, so `--genesis-state-path` only works
+for a phase0 genesis blob. A post-phase0 genesis (e.g. the bellatrix-genesis
+devnet) fails with `extra bytes: N remaining`. Live nodes use
+`--checkpoint-sync-url` instead, whose anchor decode IS fork-aware (via the
+`Eth-Consensus-Version` header); at epoch 0 lighthouse serves the genesis state
+as the finalized checkpoint, so checkpoint-sync covers the genesis case.
+Fork-aware cold-start decode (dispatch on the runtime-config fork schedule) is
+deferred to M11.
