@@ -1105,6 +1105,289 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct MainnetEthSpec;
 
+/// Emit the fork-enum dispatch methods of the `EthSpec` impl. These method
+/// bodies are identical for every preset (they only plumb the preset's
+/// concrete `BeaconState`/`BeaconBlock`/`SignedBeaconBlock`/`ExecutionPayload`
+/// enum types), so each preset impl invokes this rather than re-typing them.
+macro_rules! impl_fork_dispatch {
+    ($state:ident, $block:ident, $signed:ident, $exec:ident) => {
+        fn phase0_into_state(s: Self::Phase0BeaconState) -> Self::BeaconState {
+            crate::state::$state::Phase0(s)
+        }
+
+        fn phase0_into_signed_block(s: Self::Phase0SignedBeaconBlock) -> Self::SignedBeaconBlock {
+            crate::state::$signed::Phase0(s)
+        }
+
+        fn phase0_into_block(s: Self::Phase0BeaconBlock) -> Self::BeaconBlock {
+            crate::state::$block::Phase0(s)
+        }
+
+        fn signed_block_message(signed: &Self::SignedBeaconBlock) -> Self::BeaconBlock {
+            use crate::state::{$block as B, $signed as S};
+            match signed {
+                S::Phase0(b) => B::Phase0(b.message.clone()),
+                S::Altair(b) => B::Altair(b.message.clone()),
+                S::Bellatrix(b) => B::Bellatrix(b.message.clone()),
+                S::Capella(b) => B::Capella(b.message.clone()),
+            }
+        }
+
+        fn unwrap_phase0_signed_block(
+            s: &Self::SignedBeaconBlock,
+        ) -> Option<&Self::Phase0SignedBeaconBlock> {
+            match s {
+                crate::state::$signed::Phase0(inner) => Some(inner),
+                crate::state::$signed::Altair(_) => None,
+                crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Capella(_) => None,
+            }
+        }
+
+        fn unwrap_altair_signed_block(
+            s: &Self::SignedBeaconBlock,
+        ) -> Option<&Self::AltairSignedBeaconBlock> {
+            match s {
+                crate::state::$signed::Altair(inner) => Some(inner),
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Capella(_) => None,
+            }
+        }
+
+        fn unwrap_altair_state(s: &Self::BeaconState) -> Option<&Self::AltairBeaconState> {
+            match s {
+                crate::state::$state::Altair(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Capella(_) => None,
+            }
+        }
+
+        fn into_phase0_state(s: Self::BeaconState) -> Option<Self::Phase0BeaconState> {
+            match s {
+                crate::state::$state::Phase0(inner) => Some(inner),
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Capella(_) => None,
+            }
+        }
+
+        fn into_altair_state(s: Self::BeaconState) -> Option<Self::AltairBeaconState> {
+            match s {
+                crate::state::$state::Altair(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Capella(_) => None,
+            }
+        }
+
+        fn into_bellatrix_state(s: Self::BeaconState) -> Option<Self::BellatrixBeaconState> {
+            match s {
+                crate::state::$state::Bellatrix(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Capella(_) => None,
+            }
+        }
+
+        fn altair_into_state(s: Self::AltairBeaconState) -> Self::BeaconState {
+            crate::state::$state::Altair(s)
+        }
+
+        fn altair_into_block(s: Self::AltairBeaconBlock) -> Self::BeaconBlock {
+            crate::state::$block::Altair(s)
+        }
+
+        fn altair_into_signed_block(s: Self::AltairSignedBeaconBlock) -> Self::SignedBeaconBlock {
+            crate::state::$signed::Altair(s)
+        }
+
+        fn unwrap_bellatrix_signed_block(
+            s: &Self::SignedBeaconBlock,
+        ) -> Option<&Self::BellatrixSignedBeaconBlock> {
+            match s {
+                crate::state::$signed::Bellatrix(inner) => Some(inner),
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
+                crate::state::$signed::Capella(_) => None,
+            }
+        }
+
+        fn unwrap_bellatrix_state(s: &Self::BeaconState) -> Option<&Self::BellatrixBeaconState> {
+            match s {
+                crate::state::$state::Bellatrix(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Capella(_) => None,
+            }
+        }
+
+        fn bellatrix_into_state(s: Self::BellatrixBeaconState) -> Self::BeaconState {
+            crate::state::$state::Bellatrix(s)
+        }
+
+        fn bellatrix_into_block(s: Self::BellatrixBeaconBlock) -> Self::BeaconBlock {
+            crate::state::$block::Bellatrix(s)
+        }
+
+        fn bellatrix_into_signed_block(
+            s: Self::BellatrixSignedBeaconBlock,
+        ) -> Self::SignedBeaconBlock {
+            crate::state::$signed::Bellatrix(s)
+        }
+
+        fn unwrap_phase0_block(s: &Self::BeaconBlock) -> Option<&Self::Phase0BeaconBlock> {
+            match s {
+                crate::state::$block::Phase0(inner) => Some(inner),
+                crate::state::$block::Altair(_) => None,
+                crate::state::$block::Bellatrix(_) => None,
+                crate::state::$block::Capella(_) => None,
+            }
+        }
+
+        fn unwrap_altair_block(s: &Self::BeaconBlock) -> Option<&Self::AltairBeaconBlock> {
+            match s {
+                crate::state::$block::Altair(inner) => Some(inner),
+                crate::state::$block::Phase0(_) => None,
+                crate::state::$block::Bellatrix(_) => None,
+                crate::state::$block::Capella(_) => None,
+            }
+        }
+
+        fn unwrap_bellatrix_block(s: &Self::BeaconBlock) -> Option<&Self::BellatrixBeaconBlock> {
+            match s {
+                crate::state::$block::Bellatrix(inner) => Some(inner),
+                crate::state::$block::Phase0(_) => None,
+                crate::state::$block::Altair(_) => None,
+                crate::state::$block::Capella(_) => None,
+            }
+        }
+
+        fn is_merge_transition_block(
+            pre_state: &Self::BeaconState,
+            block: &Self::BeaconBlock,
+        ) -> bool {
+            use crate::bellatrix::ExecutionPayloadHeader;
+            let bellatrix_state = match Self::unwrap_bellatrix_state(pre_state) {
+                Some(s) => s,
+                None => return false,
+            };
+            let bellatrix_block = match Self::unwrap_bellatrix_block(block) {
+                Some(b) => b,
+                None => return false,
+            };
+            let header_default = ExecutionPayloadHeader::<256, 32>::default();
+            let merge_complete = bellatrix_state.latest_execution_payload_header != header_default;
+            let empty_payload = crate::bellatrix::$exec::default();
+            !merge_complete && bellatrix_block.body.execution_payload != empty_payload
+        }
+
+        fn get_execution_block_hash(block: &Self::BeaconBlock) -> Option<pharos_utils::Hash256> {
+            match block {
+                crate::state::$block::Bellatrix(b) => Some(b.body.execution_payload.block_hash),
+                crate::state::$block::Capella(b) => Some(b.body.execution_payload.block_hash),
+                crate::state::$block::Phase0(_) => None,
+                crate::state::$block::Altair(_) => None,
+            }
+        }
+
+        fn get_execution_payload_parent_hash(
+            block: &Self::BeaconBlock,
+        ) -> Option<pharos_utils::Hash256> {
+            match block {
+                crate::state::$block::Bellatrix(b) => Some(b.body.execution_payload.parent_hash),
+                crate::state::$block::Capella(b) => Some(b.body.execution_payload.parent_hash),
+                crate::state::$block::Phase0(_) => None,
+                crate::state::$block::Altair(_) => None,
+            }
+        }
+
+        fn get_execution_payload(
+            signed: &Self::SignedBeaconBlock,
+        ) -> Option<Self::ExecutionPayload> {
+            match signed {
+                crate::state::$signed::Bellatrix(b) => {
+                    Some(b.message.body.execution_payload.clone())
+                }
+                crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
+            }
+        }
+
+        fn get_capella_execution_payload(
+            signed: &Self::SignedBeaconBlock,
+        ) -> Option<Self::CapellaExecutionPayload> {
+            match signed {
+                crate::state::$signed::Capella(b) => Some(b.message.body.execution_payload.clone()),
+                crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
+            }
+        }
+
+        fn signed_block_slot(signed: &Self::SignedBeaconBlock) -> crate::phase0::Slot {
+            match signed {
+                crate::state::$signed::Phase0(b) => b.message.slot,
+                crate::state::$signed::Altair(b) => b.message.slot,
+                crate::state::$signed::Bellatrix(b) => b.message.slot,
+                crate::state::$signed::Capella(b) => b.message.slot,
+            }
+        }
+
+        fn capella_into_state(s: Self::CapellaBeaconState) -> Self::BeaconState {
+            crate::state::$state::Capella(s)
+        }
+
+        fn capella_into_block(s: Self::CapellaBeaconBlock) -> Self::BeaconBlock {
+            crate::state::$block::Capella(s)
+        }
+
+        fn capella_into_signed_block(s: Self::CapellaSignedBeaconBlock) -> Self::SignedBeaconBlock {
+            crate::state::$signed::Capella(s)
+        }
+
+        fn unwrap_capella_signed_block(
+            s: &Self::SignedBeaconBlock,
+        ) -> Option<&Self::CapellaSignedBeaconBlock> {
+            match s {
+                crate::state::$signed::Capella(inner) => Some(inner),
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
+                crate::state::$signed::Bellatrix(_) => None,
+            }
+        }
+
+        fn unwrap_capella_state(s: &Self::BeaconState) -> Option<&Self::CapellaBeaconState> {
+            match s {
+                crate::state::$state::Capella(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+            }
+        }
+
+        fn into_capella_state(s: Self::BeaconState) -> Option<Self::CapellaBeaconState> {
+            match s {
+                crate::state::$state::Capella(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+            }
+        }
+
+        fn unwrap_capella_block(s: &Self::BeaconBlock) -> Option<&Self::CapellaBeaconBlock> {
+            match s {
+                crate::state::$block::Capella(inner) => Some(inner),
+                crate::state::$block::Phase0(_) => None,
+                crate::state::$block::Altair(_) => None,
+                crate::state::$block::Bellatrix(_) => None,
+            }
+        }
+    };
+}
+
 impl EthSpec for MainnetEthSpec {
     // -- Misc --
     /// `MAX_COMMITTEES_PER_SLOT` from `presets/mainnet/phase0.yaml:6`.
@@ -1355,283 +1638,12 @@ impl EthSpec for MainnetEthSpec {
         }
     }
 
-    fn phase0_into_state(s: Self::Phase0BeaconState) -> Self::BeaconState {
-        crate::state::MainnetBeaconState::Phase0(s)
-    }
-
-    fn phase0_into_signed_block(s: Self::Phase0SignedBeaconBlock) -> Self::SignedBeaconBlock {
-        crate::state::MainnetSignedBeaconBlock::Phase0(s)
-    }
-
-    fn phase0_into_block(s: Self::Phase0BeaconBlock) -> Self::BeaconBlock {
-        crate::state::MainnetBeaconBlock::Phase0(s)
-    }
-
-    fn signed_block_message(signed: &Self::SignedBeaconBlock) -> Self::BeaconBlock {
-        use crate::state::{MainnetBeaconBlock as B, MainnetSignedBeaconBlock as S};
-        match signed {
-            S::Phase0(b) => B::Phase0(b.message.clone()),
-            S::Altair(b) => B::Altair(b.message.clone()),
-            S::Bellatrix(b) => B::Bellatrix(b.message.clone()),
-            S::Capella(b) => B::Capella(b.message.clone()),
-        }
-    }
-
-    fn unwrap_phase0_signed_block(
-        s: &Self::SignedBeaconBlock,
-    ) -> Option<&Self::Phase0SignedBeaconBlock> {
-        match s {
-            crate::state::MainnetSignedBeaconBlock::Phase0(inner) => Some(inner),
-            crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Bellatrix(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn unwrap_altair_signed_block(
-        s: &Self::SignedBeaconBlock,
-    ) -> Option<&Self::AltairSignedBeaconBlock> {
-        match s {
-            crate::state::MainnetSignedBeaconBlock::Altair(inner) => Some(inner),
-            crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Bellatrix(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn unwrap_altair_state(s: &Self::BeaconState) -> Option<&Self::AltairBeaconState> {
-        match s {
-            crate::state::MainnetBeaconState::Altair(inner) => Some(inner),
-            crate::state::MainnetBeaconState::Phase0(_) => None,
-            crate::state::MainnetBeaconState::Bellatrix(_) => None,
-            crate::state::MainnetBeaconState::Capella(_) => None,
-        }
-    }
-
-    fn into_phase0_state(s: Self::BeaconState) -> Option<Self::Phase0BeaconState> {
-        match s {
-            crate::state::MainnetBeaconState::Phase0(inner) => Some(inner),
-            crate::state::MainnetBeaconState::Altair(_) => None,
-            crate::state::MainnetBeaconState::Bellatrix(_) => None,
-            crate::state::MainnetBeaconState::Capella(_) => None,
-        }
-    }
-
-    fn into_altair_state(s: Self::BeaconState) -> Option<Self::AltairBeaconState> {
-        match s {
-            crate::state::MainnetBeaconState::Altair(inner) => Some(inner),
-            crate::state::MainnetBeaconState::Phase0(_) => None,
-            crate::state::MainnetBeaconState::Bellatrix(_) => None,
-            crate::state::MainnetBeaconState::Capella(_) => None,
-        }
-    }
-
-    fn into_bellatrix_state(s: Self::BeaconState) -> Option<Self::BellatrixBeaconState> {
-        match s {
-            crate::state::MainnetBeaconState::Bellatrix(inner) => Some(inner),
-            crate::state::MainnetBeaconState::Phase0(_) => None,
-            crate::state::MainnetBeaconState::Altair(_) => None,
-            crate::state::MainnetBeaconState::Capella(_) => None,
-        }
-    }
-
-    fn altair_into_state(s: Self::AltairBeaconState) -> Self::BeaconState {
-        crate::state::MainnetBeaconState::Altair(s)
-    }
-
-    fn altair_into_block(s: Self::AltairBeaconBlock) -> Self::BeaconBlock {
-        crate::state::MainnetBeaconBlock::Altair(s)
-    }
-
-    fn altair_into_signed_block(s: Self::AltairSignedBeaconBlock) -> Self::SignedBeaconBlock {
-        crate::state::MainnetSignedBeaconBlock::Altair(s)
-    }
-
-    fn unwrap_bellatrix_signed_block(
-        s: &Self::SignedBeaconBlock,
-    ) -> Option<&Self::BellatrixSignedBeaconBlock> {
-        match s {
-            crate::state::MainnetSignedBeaconBlock::Bellatrix(inner) => Some(inner),
-            crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn unwrap_bellatrix_state(s: &Self::BeaconState) -> Option<&Self::BellatrixBeaconState> {
-        match s {
-            crate::state::MainnetBeaconState::Bellatrix(inner) => Some(inner),
-            crate::state::MainnetBeaconState::Phase0(_) => None,
-            crate::state::MainnetBeaconState::Altair(_) => None,
-            crate::state::MainnetBeaconState::Capella(_) => None,
-        }
-    }
-
-    fn bellatrix_into_state(s: Self::BellatrixBeaconState) -> Self::BeaconState {
-        crate::state::MainnetBeaconState::Bellatrix(s)
-    }
-
-    fn bellatrix_into_block(s: Self::BellatrixBeaconBlock) -> Self::BeaconBlock {
-        crate::state::MainnetBeaconBlock::Bellatrix(s)
-    }
-
-    fn bellatrix_into_signed_block(s: Self::BellatrixSignedBeaconBlock) -> Self::SignedBeaconBlock {
-        crate::state::MainnetSignedBeaconBlock::Bellatrix(s)
-    }
-
-    fn unwrap_phase0_block(s: &Self::BeaconBlock) -> Option<&Self::Phase0BeaconBlock> {
-        match s {
-            crate::state::MainnetBeaconBlock::Phase0(inner) => Some(inner),
-            crate::state::MainnetBeaconBlock::Altair(_) => None,
-            crate::state::MainnetBeaconBlock::Bellatrix(_) => None,
-            crate::state::MainnetBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn unwrap_altair_block(s: &Self::BeaconBlock) -> Option<&Self::AltairBeaconBlock> {
-        match s {
-            crate::state::MainnetBeaconBlock::Altair(inner) => Some(inner),
-            crate::state::MainnetBeaconBlock::Phase0(_) => None,
-            crate::state::MainnetBeaconBlock::Bellatrix(_) => None,
-            crate::state::MainnetBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn unwrap_bellatrix_block(s: &Self::BeaconBlock) -> Option<&Self::BellatrixBeaconBlock> {
-        match s {
-            crate::state::MainnetBeaconBlock::Bellatrix(inner) => Some(inner),
-            crate::state::MainnetBeaconBlock::Phase0(_) => None,
-            crate::state::MainnetBeaconBlock::Altair(_) => None,
-            crate::state::MainnetBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn is_merge_transition_block(pre_state: &Self::BeaconState, block: &Self::BeaconBlock) -> bool {
-        use crate::bellatrix::ExecutionPayloadHeader;
-        let bellatrix_state = match Self::unwrap_bellatrix_state(pre_state) {
-            Some(s) => s,
-            None => return false,
-        };
-        let bellatrix_block = match Self::unwrap_bellatrix_block(block) {
-            Some(b) => b,
-            None => return false,
-        };
-        let header_default = ExecutionPayloadHeader::<256, 32>::default();
-        let merge_complete = bellatrix_state.latest_execution_payload_header != header_default;
-        let empty_payload = crate::bellatrix::MainnetExecutionPayload::default();
-        !merge_complete && bellatrix_block.body.execution_payload != empty_payload
-    }
-
-    fn get_execution_block_hash(block: &Self::BeaconBlock) -> Option<pharos_utils::Hash256> {
-        match block {
-            crate::state::MainnetBeaconBlock::Bellatrix(b) => {
-                Some(b.body.execution_payload.block_hash)
-            }
-            crate::state::MainnetBeaconBlock::Capella(b) => {
-                Some(b.body.execution_payload.block_hash)
-            }
-            crate::state::MainnetBeaconBlock::Phase0(_) => None,
-            crate::state::MainnetBeaconBlock::Altair(_) => None,
-        }
-    }
-
-    fn get_execution_payload_parent_hash(
-        block: &Self::BeaconBlock,
-    ) -> Option<pharos_utils::Hash256> {
-        match block {
-            crate::state::MainnetBeaconBlock::Bellatrix(b) => {
-                Some(b.body.execution_payload.parent_hash)
-            }
-            crate::state::MainnetBeaconBlock::Capella(b) => {
-                Some(b.body.execution_payload.parent_hash)
-            }
-            crate::state::MainnetBeaconBlock::Phase0(_) => None,
-            crate::state::MainnetBeaconBlock::Altair(_) => None,
-        }
-    }
-
-    fn get_execution_payload(signed: &Self::SignedBeaconBlock) -> Option<Self::ExecutionPayload> {
-        match signed {
-            crate::state::MainnetSignedBeaconBlock::Bellatrix(b) => {
-                Some(b.message.body.execution_payload.clone())
-            }
-            crate::state::MainnetSignedBeaconBlock::Capella(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
-        }
-    }
-
-    fn get_capella_execution_payload(
-        signed: &Self::SignedBeaconBlock,
-    ) -> Option<Self::CapellaExecutionPayload> {
-        match signed {
-            crate::state::MainnetSignedBeaconBlock::Capella(b) => {
-                Some(b.message.body.execution_payload.clone())
-            }
-            crate::state::MainnetSignedBeaconBlock::Bellatrix(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
-        }
-    }
-
-    fn signed_block_slot(signed: &Self::SignedBeaconBlock) -> crate::phase0::Slot {
-        match signed {
-            crate::state::MainnetSignedBeaconBlock::Phase0(b) => b.message.slot,
-            crate::state::MainnetSignedBeaconBlock::Altair(b) => b.message.slot,
-            crate::state::MainnetSignedBeaconBlock::Bellatrix(b) => b.message.slot,
-            crate::state::MainnetSignedBeaconBlock::Capella(b) => b.message.slot,
-        }
-    }
-
-    fn capella_into_state(s: Self::CapellaBeaconState) -> Self::BeaconState {
-        crate::state::MainnetBeaconState::Capella(s)
-    }
-
-    fn capella_into_block(s: Self::CapellaBeaconBlock) -> Self::BeaconBlock {
-        crate::state::MainnetBeaconBlock::Capella(s)
-    }
-
-    fn capella_into_signed_block(s: Self::CapellaSignedBeaconBlock) -> Self::SignedBeaconBlock {
-        crate::state::MainnetSignedBeaconBlock::Capella(s)
-    }
-
-    fn unwrap_capella_signed_block(
-        s: &Self::SignedBeaconBlock,
-    ) -> Option<&Self::CapellaSignedBeaconBlock> {
-        match s {
-            crate::state::MainnetSignedBeaconBlock::Capella(inner) => Some(inner),
-            crate::state::MainnetSignedBeaconBlock::Phase0(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Altair(_) => None,
-            crate::state::MainnetSignedBeaconBlock::Bellatrix(_) => None,
-        }
-    }
-
-    fn unwrap_capella_state(s: &Self::BeaconState) -> Option<&Self::CapellaBeaconState> {
-        match s {
-            crate::state::MainnetBeaconState::Capella(inner) => Some(inner),
-            crate::state::MainnetBeaconState::Phase0(_) => None,
-            crate::state::MainnetBeaconState::Altair(_) => None,
-            crate::state::MainnetBeaconState::Bellatrix(_) => None,
-        }
-    }
-
-    fn into_capella_state(s: Self::BeaconState) -> Option<Self::CapellaBeaconState> {
-        match s {
-            crate::state::MainnetBeaconState::Capella(inner) => Some(inner),
-            crate::state::MainnetBeaconState::Phase0(_) => None,
-            crate::state::MainnetBeaconState::Altair(_) => None,
-            crate::state::MainnetBeaconState::Bellatrix(_) => None,
-        }
-    }
-
-    fn unwrap_capella_block(s: &Self::BeaconBlock) -> Option<&Self::CapellaBeaconBlock> {
-        match s {
-            crate::state::MainnetBeaconBlock::Capella(inner) => Some(inner),
-            crate::state::MainnetBeaconBlock::Phase0(_) => None,
-            crate::state::MainnetBeaconBlock::Altair(_) => None,
-            crate::state::MainnetBeaconBlock::Bellatrix(_) => None,
-        }
-    }
+    impl_fork_dispatch!(
+        MainnetBeaconState,
+        MainnetBeaconBlock,
+        MainnetSignedBeaconBlock,
+        MainnetExecutionPayload
+    );
 
     // Fork-enum types (D7 / Task 1.9)
     type BeaconState = crate::state::MainnetBeaconState;
@@ -1996,283 +2008,12 @@ impl EthSpec for MinimalEthSpec {
         }
     }
 
-    fn phase0_into_state(s: Self::Phase0BeaconState) -> Self::BeaconState {
-        crate::state::MinimalBeaconState::Phase0(s)
-    }
-
-    fn phase0_into_signed_block(s: Self::Phase0SignedBeaconBlock) -> Self::SignedBeaconBlock {
-        crate::state::MinimalSignedBeaconBlock::Phase0(s)
-    }
-
-    fn phase0_into_block(s: Self::Phase0BeaconBlock) -> Self::BeaconBlock {
-        crate::state::MinimalBeaconBlock::Phase0(s)
-    }
-
-    fn signed_block_message(signed: &Self::SignedBeaconBlock) -> Self::BeaconBlock {
-        use crate::state::{MinimalBeaconBlock as B, MinimalSignedBeaconBlock as S};
-        match signed {
-            S::Phase0(b) => B::Phase0(b.message.clone()),
-            S::Altair(b) => B::Altair(b.message.clone()),
-            S::Bellatrix(b) => B::Bellatrix(b.message.clone()),
-            S::Capella(b) => B::Capella(b.message.clone()),
-        }
-    }
-
-    fn unwrap_phase0_signed_block(
-        s: &Self::SignedBeaconBlock,
-    ) -> Option<&Self::Phase0SignedBeaconBlock> {
-        match s {
-            crate::state::MinimalSignedBeaconBlock::Phase0(inner) => Some(inner),
-            crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn unwrap_altair_signed_block(
-        s: &Self::SignedBeaconBlock,
-    ) -> Option<&Self::AltairSignedBeaconBlock> {
-        match s {
-            crate::state::MinimalSignedBeaconBlock::Altair(inner) => Some(inner),
-            crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn unwrap_altair_state(s: &Self::BeaconState) -> Option<&Self::AltairBeaconState> {
-        match s {
-            crate::state::MinimalBeaconState::Altair(inner) => Some(inner),
-            crate::state::MinimalBeaconState::Phase0(_) => None,
-            crate::state::MinimalBeaconState::Bellatrix(_) => None,
-            crate::state::MinimalBeaconState::Capella(_) => None,
-        }
-    }
-
-    fn into_phase0_state(s: Self::BeaconState) -> Option<Self::Phase0BeaconState> {
-        match s {
-            crate::state::MinimalBeaconState::Phase0(inner) => Some(inner),
-            crate::state::MinimalBeaconState::Altair(_) => None,
-            crate::state::MinimalBeaconState::Bellatrix(_) => None,
-            crate::state::MinimalBeaconState::Capella(_) => None,
-        }
-    }
-
-    fn into_altair_state(s: Self::BeaconState) -> Option<Self::AltairBeaconState> {
-        match s {
-            crate::state::MinimalBeaconState::Altair(inner) => Some(inner),
-            crate::state::MinimalBeaconState::Phase0(_) => None,
-            crate::state::MinimalBeaconState::Bellatrix(_) => None,
-            crate::state::MinimalBeaconState::Capella(_) => None,
-        }
-    }
-
-    fn into_bellatrix_state(s: Self::BeaconState) -> Option<Self::BellatrixBeaconState> {
-        match s {
-            crate::state::MinimalBeaconState::Bellatrix(inner) => Some(inner),
-            crate::state::MinimalBeaconState::Phase0(_) => None,
-            crate::state::MinimalBeaconState::Altair(_) => None,
-            crate::state::MinimalBeaconState::Capella(_) => None,
-        }
-    }
-
-    fn altair_into_state(s: Self::AltairBeaconState) -> Self::BeaconState {
-        crate::state::MinimalBeaconState::Altair(s)
-    }
-
-    fn altair_into_block(s: Self::AltairBeaconBlock) -> Self::BeaconBlock {
-        crate::state::MinimalBeaconBlock::Altair(s)
-    }
-
-    fn altair_into_signed_block(s: Self::AltairSignedBeaconBlock) -> Self::SignedBeaconBlock {
-        crate::state::MinimalSignedBeaconBlock::Altair(s)
-    }
-
-    fn unwrap_bellatrix_signed_block(
-        s: &Self::SignedBeaconBlock,
-    ) -> Option<&Self::BellatrixSignedBeaconBlock> {
-        match s {
-            crate::state::MinimalSignedBeaconBlock::Bellatrix(inner) => Some(inner),
-            crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn unwrap_bellatrix_state(s: &Self::BeaconState) -> Option<&Self::BellatrixBeaconState> {
-        match s {
-            crate::state::MinimalBeaconState::Bellatrix(inner) => Some(inner),
-            crate::state::MinimalBeaconState::Phase0(_) => None,
-            crate::state::MinimalBeaconState::Altair(_) => None,
-            crate::state::MinimalBeaconState::Capella(_) => None,
-        }
-    }
-
-    fn bellatrix_into_state(s: Self::BellatrixBeaconState) -> Self::BeaconState {
-        crate::state::MinimalBeaconState::Bellatrix(s)
-    }
-
-    fn bellatrix_into_block(s: Self::BellatrixBeaconBlock) -> Self::BeaconBlock {
-        crate::state::MinimalBeaconBlock::Bellatrix(s)
-    }
-
-    fn bellatrix_into_signed_block(s: Self::BellatrixSignedBeaconBlock) -> Self::SignedBeaconBlock {
-        crate::state::MinimalSignedBeaconBlock::Bellatrix(s)
-    }
-
-    fn unwrap_phase0_block(s: &Self::BeaconBlock) -> Option<&Self::Phase0BeaconBlock> {
-        match s {
-            crate::state::MinimalBeaconBlock::Phase0(inner) => Some(inner),
-            crate::state::MinimalBeaconBlock::Altair(_) => None,
-            crate::state::MinimalBeaconBlock::Bellatrix(_) => None,
-            crate::state::MinimalBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn unwrap_altair_block(s: &Self::BeaconBlock) -> Option<&Self::AltairBeaconBlock> {
-        match s {
-            crate::state::MinimalBeaconBlock::Altair(inner) => Some(inner),
-            crate::state::MinimalBeaconBlock::Phase0(_) => None,
-            crate::state::MinimalBeaconBlock::Bellatrix(_) => None,
-            crate::state::MinimalBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn unwrap_bellatrix_block(s: &Self::BeaconBlock) -> Option<&Self::BellatrixBeaconBlock> {
-        match s {
-            crate::state::MinimalBeaconBlock::Bellatrix(inner) => Some(inner),
-            crate::state::MinimalBeaconBlock::Phase0(_) => None,
-            crate::state::MinimalBeaconBlock::Altair(_) => None,
-            crate::state::MinimalBeaconBlock::Capella(_) => None,
-        }
-    }
-
-    fn is_merge_transition_block(pre_state: &Self::BeaconState, block: &Self::BeaconBlock) -> bool {
-        use crate::bellatrix::ExecutionPayloadHeader;
-        let bellatrix_state = match Self::unwrap_bellatrix_state(pre_state) {
-            Some(s) => s,
-            None => return false,
-        };
-        let bellatrix_block = match Self::unwrap_bellatrix_block(block) {
-            Some(b) => b,
-            None => return false,
-        };
-        let header_default = ExecutionPayloadHeader::<256, 32>::default();
-        let merge_complete = bellatrix_state.latest_execution_payload_header != header_default;
-        let empty_payload = crate::bellatrix::MinimalExecutionPayload::default();
-        !merge_complete && bellatrix_block.body.execution_payload != empty_payload
-    }
-
-    fn get_execution_block_hash(block: &Self::BeaconBlock) -> Option<pharos_utils::Hash256> {
-        match block {
-            crate::state::MinimalBeaconBlock::Bellatrix(b) => {
-                Some(b.body.execution_payload.block_hash)
-            }
-            crate::state::MinimalBeaconBlock::Capella(b) => {
-                Some(b.body.execution_payload.block_hash)
-            }
-            crate::state::MinimalBeaconBlock::Phase0(_) => None,
-            crate::state::MinimalBeaconBlock::Altair(_) => None,
-        }
-    }
-
-    fn get_execution_payload_parent_hash(
-        block: &Self::BeaconBlock,
-    ) -> Option<pharos_utils::Hash256> {
-        match block {
-            crate::state::MinimalBeaconBlock::Bellatrix(b) => {
-                Some(b.body.execution_payload.parent_hash)
-            }
-            crate::state::MinimalBeaconBlock::Capella(b) => {
-                Some(b.body.execution_payload.parent_hash)
-            }
-            crate::state::MinimalBeaconBlock::Phase0(_) => None,
-            crate::state::MinimalBeaconBlock::Altair(_) => None,
-        }
-    }
-
-    fn get_execution_payload(signed: &Self::SignedBeaconBlock) -> Option<Self::ExecutionPayload> {
-        match signed {
-            crate::state::MinimalSignedBeaconBlock::Bellatrix(b) => {
-                Some(b.message.body.execution_payload.clone())
-            }
-            crate::state::MinimalSignedBeaconBlock::Capella(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
-        }
-    }
-
-    fn get_capella_execution_payload(
-        signed: &Self::SignedBeaconBlock,
-    ) -> Option<Self::CapellaExecutionPayload> {
-        match signed {
-            crate::state::MinimalSignedBeaconBlock::Capella(b) => {
-                Some(b.message.body.execution_payload.clone())
-            }
-            crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
-        }
-    }
-
-    fn signed_block_slot(signed: &Self::SignedBeaconBlock) -> crate::phase0::Slot {
-        match signed {
-            crate::state::MinimalSignedBeaconBlock::Phase0(b) => b.message.slot,
-            crate::state::MinimalSignedBeaconBlock::Altair(b) => b.message.slot,
-            crate::state::MinimalSignedBeaconBlock::Bellatrix(b) => b.message.slot,
-            crate::state::MinimalSignedBeaconBlock::Capella(b) => b.message.slot,
-        }
-    }
-
-    fn capella_into_state(s: Self::CapellaBeaconState) -> Self::BeaconState {
-        crate::state::MinimalBeaconState::Capella(s)
-    }
-
-    fn capella_into_block(s: Self::CapellaBeaconBlock) -> Self::BeaconBlock {
-        crate::state::MinimalBeaconBlock::Capella(s)
-    }
-
-    fn capella_into_signed_block(s: Self::CapellaSignedBeaconBlock) -> Self::SignedBeaconBlock {
-        crate::state::MinimalSignedBeaconBlock::Capella(s)
-    }
-
-    fn unwrap_capella_signed_block(
-        s: &Self::SignedBeaconBlock,
-    ) -> Option<&Self::CapellaSignedBeaconBlock> {
-        match s {
-            crate::state::MinimalSignedBeaconBlock::Capella(inner) => Some(inner),
-            crate::state::MinimalSignedBeaconBlock::Phase0(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Altair(_) => None,
-            crate::state::MinimalSignedBeaconBlock::Bellatrix(_) => None,
-        }
-    }
-
-    fn unwrap_capella_state(s: &Self::BeaconState) -> Option<&Self::CapellaBeaconState> {
-        match s {
-            crate::state::MinimalBeaconState::Capella(inner) => Some(inner),
-            crate::state::MinimalBeaconState::Phase0(_) => None,
-            crate::state::MinimalBeaconState::Altair(_) => None,
-            crate::state::MinimalBeaconState::Bellatrix(_) => None,
-        }
-    }
-
-    fn into_capella_state(s: Self::BeaconState) -> Option<Self::CapellaBeaconState> {
-        match s {
-            crate::state::MinimalBeaconState::Capella(inner) => Some(inner),
-            crate::state::MinimalBeaconState::Phase0(_) => None,
-            crate::state::MinimalBeaconState::Altair(_) => None,
-            crate::state::MinimalBeaconState::Bellatrix(_) => None,
-        }
-    }
-
-    fn unwrap_capella_block(s: &Self::BeaconBlock) -> Option<&Self::CapellaBeaconBlock> {
-        match s {
-            crate::state::MinimalBeaconBlock::Capella(inner) => Some(inner),
-            crate::state::MinimalBeaconBlock::Phase0(_) => None,
-            crate::state::MinimalBeaconBlock::Altair(_) => None,
-            crate::state::MinimalBeaconBlock::Bellatrix(_) => None,
-        }
-    }
+    impl_fork_dispatch!(
+        MinimalBeaconState,
+        MinimalBeaconBlock,
+        MinimalSignedBeaconBlock,
+        MinimalExecutionPayload
+    );
 
     // Fork-enum types (D7 / Task 1.9)
     type BeaconState = crate::state::MinimalBeaconState;
