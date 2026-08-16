@@ -59,7 +59,7 @@ fn make_snapshot(head_slot: u64) -> ForkChoiceSnapshot {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// Opening a fresh DB writes schema_version=7; reopening reads it back.
+/// Opening a fresh DB writes schema_version=8; reopening reads it back.
 ///
 /// Version history:
 /// - v1 (M3a): initial schema.
@@ -71,8 +71,9 @@ fn make_snapshot(head_slot: u64) -> ForkChoiceSnapshot {
 /// - v6 (M12-Electra Phase 6e): added electra LC CFs per `D-schema-v6-electra-lc-cfs`.
 /// - v7 (M11 Phase 4): seed of the forward-only migration framework (identity
 ///   migration, no new CFs).
+/// - v8 (M11 Phase 9): added `slasher-proposers` CF for the chain-replay slasher.
 #[test]
-fn open_empty_db_writes_schema_version_7() {
+fn open_empty_db_writes_schema_version_8() {
     let dir = tempfile::tempdir().expect("tempdir");
     {
         let _store = open(dir.path());
@@ -82,7 +83,7 @@ fn open_empty_db_writes_schema_version_7() {
     let val = <S as Store<E>>::get_metadata(&store, b"schema_version")
         .expect("get schema_version")
         .expect("schema_version must be present");
-    assert_eq!(val, 7u32.to_le_bytes(), "schema_version must be 7 LE");
+    assert_eq!(val, 8u32.to_le_bytes(), "schema_version must be 8 LE");
 }
 
 /// Store a `StateSummary`, retrieve it, assert field equality.
@@ -269,7 +270,7 @@ fn schema_mismatch_detected() {
     match result {
         Err(StorageError::SchemaMismatch { found, expected }) => {
             assert_eq!(found, 99, "found must be 99");
-            assert_eq!(expected, 7, "expected must be 7");
+            assert_eq!(expected, 8, "expected must be 8");
         }
         other => panic!("expected SchemaMismatch, got {other:?}"),
     }
