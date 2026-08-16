@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  SPEC_TESTS_TAG: v1.7.0-alpha.8
+  PHAROS_SPEC_TESTS: ~/.cache/pharos-spec-tests
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: make fmt-check
+
+  clippy:
+    name: clippy (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, "1.86"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-${{ matrix.toolchain }}
+      - name: cargo clippy
+        run: make lint
+
+  test:
+    name: test (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, "1.86"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.toolchain }}
+      - name: cargo test --workspace
+        run: make test
+
+  conformance:
+    name: conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: conformance-stable
+      - name: Restore spec-test fixtures
+        id: cache-spec-tests
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pharos-spec-tests
+          key: spec-tests-${{ env.SPEC_TESTS_TAG }}
+      - name: Fetch spec-test fixtures (on cache miss)
+        if: steps.cache-spec-tests.outputs.cache-hit != 'true'
+        run: ./scripts/fetch-spec-tests.sh
+      - name: Run conformance suite
+        run: make test-conf
+
+  fuzz-smoke:
+    name: fuzz-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: fuzz-nightly
+      - name: Build fuzz targets
+        run: make fuzz-build
+      - name: Run fuzz smoke (30 s each)
+        run: make fuzz-smoke
