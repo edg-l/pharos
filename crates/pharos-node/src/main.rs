@@ -931,8 +931,10 @@ async fn main() -> anyhow::Result<()> {
         let cmd = handle.command_sender();
         let sched = Arc::clone(&fork_schedule);
         let nid = node_id;
+        let sps = runtime_cfg.seconds_per_slot;
         tokio::spawn(async move {
-            run_subnet_rotation_loop::<MainnetBeaconSpec>(cmd, sched, nid, genesis_time_secs).await;
+            run_subnet_rotation_loop::<MainnetBeaconSpec>(cmd, sched, nid, genesis_time_secs, sps)
+                .await;
         });
     }
 
@@ -943,8 +945,10 @@ async fn main() -> anyhow::Result<()> {
         let cmd = handle.command_sender();
         let disc = discovery_handle.clone();
         let sched = Arc::clone(&fork_schedule);
+        let sps = runtime_cfg.seconds_per_slot;
         tokio::spawn(async move {
-            run_fork_migration_loop::<MainnetBeaconSpec>(cmd, disc, sched, genesis_time_secs).await;
+            run_fork_migration_loop::<MainnetBeaconSpec>(cmd, disc, sched, genesis_time_secs, sps)
+                .await;
         });
     }
 
@@ -957,12 +961,14 @@ async fn main() -> anyhow::Result<()> {
         let disc = discovery_handle.clone();
         let sched = Arc::clone(&fork_schedule);
         let max_blobs_electra = runtime_cfg.max_blobs_per_block_electra;
+        let sps = runtime_cfg.seconds_per_slot;
         tokio::spawn(async move {
             run_bpo_migration_loop::<MainnetBeaconSpec>(
                 cmd,
                 disc,
                 sched,
                 genesis_time_secs,
+                sps,
                 max_blobs_electra,
             )
             .await;

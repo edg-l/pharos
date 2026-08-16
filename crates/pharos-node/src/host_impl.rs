@@ -417,7 +417,13 @@ impl<E: BeaconSpec> HostImpl<E> {
             return Epoch(0);
         }
         let elapsed_ms = (now_secs - genesis_time_secs).saturating_mul(1000);
-        let slot_ms = E::SLOT_DURATION_MS.max(1);
+        // Use the RUNTIME-config slot duration, not the compile-time
+        // `E::SLOT_DURATION_MS` (mainnet 12s). On a network with a different
+        // `SECONDS_PER_SLOT` (e.g. a 6s devnet) the compile-time value makes the
+        // wall-clock epoch advance at the wrong rate, so the node computes a
+        // stale fork digest and fails to peer across a fork boundary. Mirrors
+        // the slot math already used by `is_not_from_future_slot` / gossip timing.
+        let slot_ms = (self.runtime_cfg.seconds_per_slot.saturating_mul(1000)).max(1);
         let elapsed_slots = elapsed_ms / slot_ms;
         Epoch(elapsed_slots / E::SLOTS_PER_EPOCH)
     }

@@ -62,6 +62,7 @@ pub async fn run_fork_migration_loop<E: BeaconSpec>(
     discovery: DiscoveryHandle,
     fork_schedule: Arc<ForkSchedule>,
     genesis_time_secs: u64,
+    seconds_per_slot: u64,
 ) {
     // If altair, bellatrix, capella, deneb, and electra are all FAR_FUTURE_EPOCH,
     // no migrations will ever occur; exit immediately to avoid a useless spinning loop.
@@ -74,7 +75,10 @@ pub async fn run_fork_migration_loop<E: BeaconSpec>(
         return;
     }
 
-    let slot_ms = E::SLOT_DURATION_MS;
+    // Runtime slot duration (config), NOT compile-time `E::SLOT_DURATION_MS`
+    // (mainnet 12s): on a non-12s network the wrong value advances the epoch at
+    // the wrong rate, firing fork/topic/ENR migrations at the wrong wall time.
+    let slot_ms = seconds_per_slot.saturating_mul(1000).max(1);
     let slots_per_epoch = E::SLOTS_PER_EPOCH;
     let mut interval = tokio::time::interval(Duration::from_millis(slot_ms));
 
@@ -279,6 +283,7 @@ pub async fn run_bpo_migration_loop<E: BeaconSpec>(
     discovery: DiscoveryHandle,
     fork_schedule: Arc<ForkSchedule>,
     genesis_time_secs: u64,
+    seconds_per_slot: u64,
     max_blobs_per_block_electra: u64,
 ) {
     let migrations =
@@ -287,7 +292,10 @@ pub async fn run_bpo_migration_loop<E: BeaconSpec>(
         return;
     }
 
-    let slot_ms = E::SLOT_DURATION_MS;
+    // Runtime slot duration (config), NOT compile-time `E::SLOT_DURATION_MS`
+    // (mainnet 12s): on a non-12s network the wrong value advances the epoch at
+    // the wrong rate, firing fork/topic/ENR migrations at the wrong wall time.
+    let slot_ms = seconds_per_slot.saturating_mul(1000).max(1);
     let slots_per_epoch = E::SLOTS_PER_EPOCH;
     let mut interval = tokio::time::interval(Duration::from_millis(slot_ms));
 

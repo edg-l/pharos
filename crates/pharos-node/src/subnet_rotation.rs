@@ -50,8 +50,12 @@ pub async fn run_subnet_rotation_loop<E: BeaconSpec>(
     fork_schedule: Arc<ForkSchedule>,
     node_id: NodeId,
     genesis_time_secs: u64,
+    seconds_per_slot: u64,
 ) {
-    let slot_ms = E::SLOT_DURATION_MS;
+    // Runtime slot duration (config), NOT compile-time `E::SLOT_DURATION_MS`
+    // (mainnet 12s): the wrong value rotates subnets at the wrong wall-clock
+    // epoch on a non-12s network.
+    let slot_ms = seconds_per_slot.saturating_mul(1000).max(1);
     let slots_per_epoch = E::SLOTS_PER_EPOCH;
     let mut interval = tokio::time::interval(Duration::from_millis(slot_ms));
 
