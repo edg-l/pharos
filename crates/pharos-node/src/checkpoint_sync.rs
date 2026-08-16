@@ -394,6 +394,15 @@ fn decode_state<E: EthSpec>(
             let root = state.tree_hash_root();
             Ok((state, root))
         }
+        "deneb" => {
+            let inner = E::DenebBeaconState::from_ssz_bytes(bytes)
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            let state = E::deneb_into_state(inner)
+                .into_tree_backend()
+                .map_err(|e| CheckpointSyncError::Ssz(e.to_string()))?;
+            let root = state.tree_hash_root();
+            Ok((state, root))
+        }
         other => Err(CheckpointSyncError::UnsupportedFork(other.to_owned())),
     }
 }
@@ -850,8 +859,8 @@ mod tests {
                     let sb = sb.clone();
                     async move {
                         let mut headers = HeaderMap::new();
-                        // Return a truly unknown fork header.
-                        headers.insert("Eth-Consensus-Version", "deneb".parse().unwrap());
+                        // Use a truly unknown fork name (not a supported fork).
+                        headers.insert("Eth-Consensus-Version", "electra".parse().unwrap());
                         (StatusCode::OK, headers, (*sb).clone())
                     }
                 }
@@ -866,8 +875,8 @@ mod tests {
         handle.abort();
 
         assert!(
-            matches!(result, Err(CheckpointSyncError::UnsupportedFork(ref s)) if s == "deneb"),
-            "expected UnsupportedFork(deneb), got {result:?}"
+            matches!(result, Err(CheckpointSyncError::UnsupportedFork(ref s)) if s == "electra"),
+            "expected UnsupportedFork(electra), got {result:?}"
         );
     }
 

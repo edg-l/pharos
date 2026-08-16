@@ -498,7 +498,7 @@ where
         altair_fork_epoch: u64::MAX,
         bellatrix_fork_epoch: u64::MAX,
         capella_fork_epoch: u64::MAX,
-        runtime_cfg: RuntimeConfig::default(),
+        runtime_cfg: runtime_cfg.clone(),
     })
 }
 
