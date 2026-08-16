@@ -28,8 +28,9 @@ use rayon::prelude::*;
 
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_bellatrix_signed_block, load_capella_signed_block,
-    load_phase0_signed_block, load_pre_post_altair_state, load_pre_post_bellatrix_state,
-    load_pre_post_capella_state, load_pre_post_phase0_state, walk_category,
+    load_deneb_signed_block, load_phase0_signed_block, load_pre_post_altair_state,
+    load_pre_post_bellatrix_state, load_pre_post_capella_state, load_pre_post_deneb_state,
+    load_pre_post_phase0_state, walk_category,
 };
 use crate::fs_util::dir_name;
 
@@ -683,6 +684,178 @@ where
     for i in 0..blocks_count {
         let block_file = format!("blocks_{i}.ssz_snappy");
         let block = match load_capella_signed_block::<E>(case_dir, &block_file) {
+            Ok(v) => v,
+            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+        };
+        let state = current.take().unwrap();
+        match state_transition::<E, pharos_stf::NullExecutionEngine>(
+            state,
+            &block,
+            &pharos_stf::NullExecutionEngine,
+            validate_result,
+            &E::default_runtime_config(),
+        ) {
+            Ok((new_state, _)) => current = Some(new_state),
+            Err(e) => {
+                block_error = Some(format!("{e}"));
+                break;
+            }
+        }
+    }
+
+    match (block_error, post) {
+        (None, Some(expected)) => {
+            let state = current.unwrap();
+            if state.as_ssz_bytes() == expected.as_ssz_bytes() {
+                CaseResult::Pass
+            } else {
+                CaseResult::Fail(format!("{case_name}: state mismatch after block sequence"))
+            }
+        }
+        (None, None) => CaseResult::Fail(format!(
+            "{case_name}: expected a block to fail but all blocks applied successfully"
+        )),
+        (Some(_), None) => CaseResult::Pass,
+        (Some(e), Some(_)) => {
+            CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
+        }
+    }
+}
+
+// ── Deneb finality entry points ───────────────────────────────────────────────
+
+/// Run all deneb finality tests for the mainnet preset.
+pub fn run_finality_deneb_mainnet(root: &Path) -> FinalityResult {
+    run_finality_deneb_preset::<MainnetEthSpec>(root, "mainnet")
+}
+
+/// Run all deneb finality tests for the minimal preset.
+pub fn run_finality_deneb_minimal(root: &Path) -> FinalityResult {
+    run_finality_deneb_preset::<MinimalEthSpec>(root, "minimal")
+}
+
+fn run_finality_deneb_preset<E>(root: &Path, preset: &'static str) -> FinalityResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + AltairProcessSlotsDispatch<E>
+        + AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::DenebSignedBeaconBlock: Decode,
+    E::Phase0BeaconState: Decode + Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+{
+    let cases: Vec<_> = walk_category(
+        root,
+        preset,
+        "deneb",
+        "finality",
+        Some("finality"),
+        WalkOpts::default(),
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("deneb/finality/finality/{preset}/{}", dir_name(&case_dir));
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+            run_deneb_finality_blocks_case::<E>(
+                &case_dir,
+                &case_name,
+                blocks_count,
+                validate_result,
+            )
+        })
+        .collect();
+
+    let mut out = FinalityResult::new();
+    for outcome in outcomes {
+        match outcome {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+            CaseResult::Skip => out.skip += 1,
+        }
+    }
+    out
+}
+
+fn run_deneb_finality_blocks_case<E>(
+    case_dir: &Path,
+    case_name: &str,
+    blocks_count: u64,
+    validate_result: bool,
+) -> CaseResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + AltairProcessSlotsDispatch<E>
+        + AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::DenebSignedBeaconBlock: Decode,
+    E::Phase0BeaconState: Decode + Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+{
+    let (pre, post) = match load_pre_post_deneb_state::<E>(case_dir) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut current: Option<E::BeaconState> = Some(pre);
+    let mut block_error: Option<String> = None;
+
+    for i in 0..blocks_count {
+        let block_file = format!("blocks_{i}.ssz_snappy");
+        let block = match load_deneb_signed_block::<E>(case_dir, &block_file) {
             Ok(v) => v,
             Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
         };

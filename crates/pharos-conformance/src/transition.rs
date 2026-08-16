@@ -37,6 +37,7 @@ use pharos_ssz::Encode;
 use pharos_stf::altair::upgrade::upgrade_to_altair;
 use pharos_stf::bellatrix::upgrade::upgrade_to_bellatrix;
 use pharos_stf::capella::upgrade::upgrade_to_capella;
+use pharos_stf::deneb::upgrade::upgrade_to_deneb;
 use pharos_stf::{
     AltairProcessSlotsDispatch, AltairUpgradeDispatch, BellatrixProcessSlotsDispatch,
     BellatrixUpgradeDispatch, CapellaProcessSlotsDispatch, CapellaUpgradeDispatch,
@@ -51,8 +52,8 @@ use rayon::prelude::*;
 
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
-    load_bellatrix_state, load_capella_signed_block, load_capella_state, load_phase0_signed_block,
-    load_phase0_state, walk_category,
+    load_bellatrix_state, load_capella_signed_block, load_capella_state, load_deneb_signed_block,
+    load_deneb_state, load_phase0_signed_block, load_phase0_state, walk_category,
 };
 use crate::fs_util::dir_name;
 use crate::snappy::decompress_raw;
@@ -1108,6 +1109,328 @@ where
     } else {
         CaseResult::Fail(format!(
             "{case_name}: state mismatch after capella transition"
+        ))
+    }
+}
+
+// ── Deneb transition entry points ─────────────────────────────────────────────
+
+/// Run deneb transition tests for the mainnet preset.
+pub fn run_transition_deneb_mainnet(root: &Path) -> TransitionResult {
+    run_deneb_transition_impl(root, "mainnet", &run_deneb_case_mainnet)
+}
+
+/// Run deneb transition tests for the minimal preset.
+pub fn run_transition_deneb_minimal(root: &Path) -> TransitionResult {
+    run_deneb_transition_impl(root, "minimal", &run_deneb_case_minimal)
+}
+
+fn run_deneb_transition_impl(
+    root: &Path,
+    preset: &'static str,
+    run_case: &(dyn Fn(&Path, &str, Epoch, u64) -> CaseResult + Sync),
+) -> TransitionResult {
+    let cases: Vec<_> = walk_category(
+        root,
+        preset,
+        "deneb",
+        "transition",
+        Some("core"),
+        WalkOpts {
+            meta_required: true,
+            inner_dir: Some("pyspec_tests"),
+        },
+    )
+    .collect();
+
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, meta)| {
+            let case_name = format!("deneb/transition/core/{preset}/{}", dir_name(&case_dir));
+            let fork_epoch = match meta.as_ref().and_then(|m| m.fork_epoch) {
+                Some(e) => Epoch(e),
+                None => return CaseResult::Skip,
+            };
+            let blocks_count = match meta.as_ref().and_then(|m| m.blocks_count) {
+                Some(n) => n,
+                None => return CaseResult::Skip,
+            };
+            run_case(&case_dir, &case_name, fork_epoch, blocks_count)
+        })
+        .collect();
+
+    let mut out = TransitionResult::new();
+    for outcome in outcomes {
+        match outcome {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+            CaseResult::Skip => out.skip += 1,
+        }
+    }
+    out
+}
+
+fn run_deneb_case_mainnet(
+    case_dir: &Path,
+    case_name: &str,
+    fork_epoch: Epoch,
+    blocks_count: u64,
+) -> CaseResult {
+    type E = MainnetEthSpec;
+
+    let pre = match load_capella_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_deneb_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(s) => s,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut cfg = E::default_runtime_config();
+    cfg.deneb_fork_epoch = fork_epoch.0;
+    let fork_slot = Slot(fork_epoch.0 * E::SLOTS_PER_EPOCH);
+
+    run_deneb_transition_blocks::<E, _>(
+        case_dir,
+        case_name,
+        DenebBlocksCaseParams {
+            current: pre,
+            expected,
+            fork_slot,
+            blocks_count,
+        },
+        |capella_inner, cfg| {
+            upgrade_to_deneb::<
+                8192,
+                16_777_216,
+                2048,
+                1_099_511_627_776,
+                65536,
+                8192,
+                4,
+                512,
+                256,
+                32,
+                E,
+            >(capella_inner, cfg)
+            .map(E::deneb_into_state)
+            .map_err(|e| format!("{e}"))
+        },
+        &cfg,
+    )
+}
+
+fn run_deneb_case_minimal(
+    case_dir: &Path,
+    case_name: &str,
+    fork_epoch: Epoch,
+    blocks_count: u64,
+) -> CaseResult {
+    type E = MinimalEthSpec;
+
+    let pre = match load_capella_state::<E>(case_dir, "pre.ssz_snappy") {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let expected = match load_deneb_state::<E>(case_dir, "post.ssz_snappy") {
+        Ok(s) => s,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    let mut cfg = E::default_runtime_config();
+    cfg.deneb_fork_epoch = fork_epoch.0;
+    let fork_slot = Slot(fork_epoch.0 * E::SLOTS_PER_EPOCH);
+
+    run_deneb_transition_blocks::<E, _>(
+        case_dir,
+        case_name,
+        DenebBlocksCaseParams {
+            current: pre,
+            expected,
+            fork_slot,
+            blocks_count,
+        },
+        |capella_inner, cfg| {
+            upgrade_to_deneb::<64, 16_777_216, 32, 1_099_511_627_776, 64, 64, 4, 32, 256, 32, E>(
+                capella_inner,
+                cfg,
+            )
+            .map(E::deneb_into_state)
+            .map_err(|e| format!("{e}"))
+        },
+        &cfg,
+    )
+}
+
+// ── Deneb shared block-sequence runner ────────────────────────────────────────
+
+struct DenebBlocksCaseParams<S> {
+    current: S,
+    expected: S,
+    fork_slot: Slot,
+    blocks_count: u64,
+}
+
+/// Drive the block sequence through the capella → deneb fork transition.
+fn run_deneb_transition_blocks<E, F>(
+    case_dir: &Path,
+    case_name: &str,
+    params: DenebBlocksCaseParams<E::BeaconState>,
+    do_upgrade: F,
+    cfg: &pharos_types::config::RuntimeConfig,
+) -> CaseResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateView,
+    E::AltairBeaconState:
+        pharos_stf::AltairDispatch<E> + AltairProcessSlotsDispatch<E> + AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + BellatrixProcessSlotsDispatch<E>
+        + BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_ssz::Decode
+        + pharos_types::views::BeaconStateView
+        + pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + CapellaProcessSlotsDispatch<E>
+        + CapellaUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::DenebBeaconState: pharos_ssz::Decode
+        + pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::CapellaSignedBeaconBlock: pharos_ssz::Decode,
+    E::DenebSignedBeaconBlock: pharos_ssz::Decode,
+    E::Phase0BeaconState: Phase0UpgradeDispatch<E>,
+    E::BeaconState:
+        pharos_stf::phase0::BeaconStateWrite + pharos_ssz::TreeHash + pharos_ssz::Encode,
+    E::Phase0BeaconBlock: pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: pharos_ssz::TreeHash
+        + pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+            AttesterSlashing = pharos_types::phase0::AttesterSlashing<2048>,
+            Deposit = pharos_types::phase0::Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: pharos_ssz::Decode
+        + pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    F: Fn(
+        E::CapellaBeaconState,
+        &pharos_types::config::RuntimeConfig,
+    ) -> Result<E::BeaconState, String>,
+{
+    let DenebBlocksCaseParams {
+        mut current,
+        expected,
+        fork_slot,
+        blocks_count,
+    } = params;
+    let mut did_upgrade = false;
+
+    for i in 0..blocks_count {
+        let block_file = format!("blocks_{i}.ssz_snappy");
+        let block_slot = match peek_block_slot(case_dir, &block_file) {
+            Some(s) => s,
+            None => {
+                return CaseResult::Fail(format!(
+                    "{case_name}: failed to peek slot from {block_file}"
+                ));
+            }
+        };
+
+        if !did_upgrade && block_slot >= fork_slot {
+            let mut capella_inner = match E::into_capella_state(current) {
+                Some(s) => s,
+                None => {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: state is already deneb before upgrade"
+                    ));
+                }
+            };
+            if capella_inner.slot() < fork_slot {
+                if let Err(e) = capella_inner.process_slots_capella(fork_slot) {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: process_slots to fork before block {i}: {e}"
+                    ));
+                }
+            }
+            match do_upgrade(capella_inner, cfg) {
+                Ok(s) => current = s,
+                Err(e) => return CaseResult::Fail(format!("{case_name}: upgrade_to_deneb: {e}")),
+            }
+            did_upgrade = true;
+        }
+
+        if !did_upgrade {
+            let block = match load_capella_signed_block::<E>(case_dir, &block_file) {
+                Ok(v) => v,
+                Err(e) => return CaseResult::Fail(format!("{case_name}: block {i}: {e}")),
+            };
+            match pharos_stf::state_transition::<E, pharos_stf::NullExecutionEngine>(
+                current,
+                &block,
+                &pharos_stf::NullExecutionEngine,
+                false,
+                cfg,
+            ) {
+                Ok((s, _)) => current = s,
+                Err(e) => {
+                    return CaseResult::Fail(format!("{case_name}: block {i} (capella): {e}"));
+                }
+            }
+        } else {
+            let block = match load_deneb_signed_block::<E>(case_dir, &block_file) {
+                Ok(v) => v,
+                Err(e) => return CaseResult::Fail(format!("{case_name}: block {i}: {e}")),
+            };
+            match pharos_stf::state_transition::<E, pharos_stf::NullExecutionEngine>(
+                current,
+                &block,
+                &pharos_stf::NullExecutionEngine,
+                false,
+                cfg,
+            ) {
+                Ok((s, _)) => current = s,
+                Err(e) => {
+                    return CaseResult::Fail(format!("{case_name}: block {i} (deneb): {e}"));
+                }
+            }
+        }
+    }
+
+    if !did_upgrade {
+        let mut capella_inner = match E::into_capella_state(current) {
+            Some(s) => s,
+            None => {
+                return CaseResult::Fail(format!("{case_name}: already deneb before upgrade"));
+            }
+        };
+        if capella_inner.slot() < fork_slot {
+            if let Err(e) = capella_inner.process_slots_capella(fork_slot) {
+                return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
+            }
+        }
+        match do_upgrade(capella_inner, cfg) {
+            Ok(s) => current = s,
+            Err(e) => return CaseResult::Fail(format!("{case_name}: upgrade_to_deneb: {e}")),
+        }
+    }
+
+    let expected_bytes = {
+        let deneb = match E::into_deneb_state(expected) {
+            Some(s) => s,
+            None => return CaseResult::Fail(format!("{case_name}: expected state not deneb")),
+        };
+        E::deneb_into_state(deneb).as_ssz_bytes()
+    };
+
+    if current.as_ssz_bytes() == expected_bytes {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!(
+            "{case_name}: state mismatch after deneb transition"
         ))
     }
 }

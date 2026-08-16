@@ -8,10 +8,7 @@
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
-    config::RuntimeConfig,
-    deneb::BeaconState,
-    phase0::SignedVoluntaryExit,
+    EthSpec, config::RuntimeConfig, deneb::BeaconState, phase0::SignedVoluntaryExit,
 };
 
 use crate::deneb::helpers::initiate_validator_exit_deneb;

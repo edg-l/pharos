@@ -354,6 +354,47 @@ where
     Ok(E::capella_into_signed_block(inner))
 }
 
+/// Load `pre.ssz_snappy` and optionally `post.ssz_snappy` as deneb
+/// `BeaconState`s, wrapped in the fork-enum.
+pub fn load_pre_post_deneb_state<E: EthSpec>(
+    dir: &Path,
+) -> Result<(E::BeaconState, Option<E::BeaconState>), String>
+where
+    E::DenebBeaconState: Decode,
+{
+    let pre_inner: E::DenebBeaconState = load_ssz_snappy(dir, "pre.ssz_snappy")?;
+    let pre = E::deneb_into_state(pre_inner);
+    let post = if dir.join("post.ssz_snappy").exists() {
+        let post_inner: E::DenebBeaconState = load_ssz_snappy(dir, "post.ssz_snappy")?;
+        Some(E::deneb_into_state(post_inner))
+    } else {
+        None
+    };
+    Ok((pre, post))
+}
+
+/// Load `<name>.ssz_snappy` as a deneb `BeaconState`, wrapped in the fork-enum.
+pub fn load_deneb_state<E: EthSpec>(dir: &Path, name: &str) -> Result<E::BeaconState, String>
+where
+    E::DenebBeaconState: Decode,
+{
+    let inner: E::DenebBeaconState = load_ssz_snappy(dir, name)?;
+    Ok(E::deneb_into_state(inner))
+}
+
+/// Decode a single `<name>.ssz_snappy` file as a deneb `SignedBeaconBlock`,
+/// then wrap it in the fork-enum `E::SignedBeaconBlock`.
+pub fn load_deneb_signed_block<E: EthSpec>(
+    dir: &Path,
+    name: &str,
+) -> Result<E::SignedBeaconBlock, String>
+where
+    E::DenebSignedBeaconBlock: Decode,
+{
+    let inner: E::DenebSignedBeaconBlock = load_ssz_snappy(dir, name)?;
+    Ok(E::deneb_into_signed_block(inner))
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Decode a single `<name>.ssz_snappy` file inside `dir`.

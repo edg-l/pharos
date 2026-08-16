@@ -91,6 +91,11 @@ pub fn get_attestation_participation_flag_indices<
     >,
     data: &AttestationData,
     inclusion_delay: u64,
+    // EIP-7045 (Deneb): when `true`, the `TIMELY_TARGET_FLAG_INDEX` condition
+    // drops its `inclusion_delay <= SLOTS_PER_EPOCH` gate (the target flag is
+    // set for any matching target regardless of inclusion distance). Altair /
+    // Bellatrix / Capella pass `false`.
+    eip7045_target_flag: bool,
 ) -> Result<Vec<usize>, StateTransitionError>
 where
     E: EthSpec<
@@ -156,7 +161,9 @@ where
         flag_indices.push(pharos_types::altair::constants::TIMELY_SOURCE_FLAG_INDEX);
     }
     // TIMELY_TARGET_FLAG_INDEX = 1
-    if is_matching_target && inclusion_delay <= E::SLOTS_PER_EPOCH {
+    // [Modified in Deneb:EIP7045] the inclusion-delay gate is dropped for the
+    // target flag when `eip7045_target_flag` is set.
+    if is_matching_target && (eip7045_target_flag || inclusion_delay <= E::SLOTS_PER_EPOCH) {
         flag_indices.push(pharos_types::altair::constants::TIMELY_TARGET_FLAG_INDEX);
     }
     // TIMELY_HEAD_FLAG_INDEX = 2

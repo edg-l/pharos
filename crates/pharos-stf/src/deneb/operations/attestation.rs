@@ -65,29 +65,29 @@ pub fn process_attestation<
 ) -> Result<(), StateTransitionError>
 where
     E: EthSpec<
-        AltairBeaconState = pharos_types::altair::BeaconState<
-            SLOTS_PER_HISTORICAL_ROOT,
-            HISTORICAL_ROOTS_LIMIT,
-            ETH1_DATA_VOTES_LIMIT,
-            VALIDATOR_REGISTRY_LIMIT,
-            EPOCHS_PER_HISTORICAL_VECTOR,
-            EPOCHS_PER_SLASHINGS_VECTOR,
-            JUSTIFICATION_BITS_LENGTH,
-            SYNC_COMMITTEE_SIZE,
+            AltairBeaconState = pharos_types::altair::BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+            DenebBeaconState = BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
         >,
-        DenebBeaconState = BeaconState<
-            SLOTS_PER_HISTORICAL_ROOT,
-            HISTORICAL_ROOTS_LIMIT,
-            ETH1_DATA_VOTES_LIMIT,
-            VALIDATOR_REGISTRY_LIMIT,
-            EPOCHS_PER_HISTORICAL_VECTOR,
-            EPOCHS_PER_SLASHINGS_VECTOR,
-            JUSTIFICATION_BITS_LENGTH,
-            SYNC_COMMITTEE_SIZE,
-            BYTES_PER_LOGS_BLOOM,
-            MAX_EXTRA_DATA_BYTES,
-        >,
-    >,
 {
     let data = &attestation.data;
 
@@ -183,7 +183,7 @@ where
         JUSTIFICATION_BITS_LENGTH,
         SYNC_COMMITTEE_SIZE,
         E,
-    >(&altair, data, inclusion_delay)?;
+    >(&altair, data, inclusion_delay, true)?;
 
     if verify_signatures {
         // Build sorted attesting indices.
@@ -229,7 +229,11 @@ where
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
             E,
-        >(state, crate::phase0::helpers::DOMAIN_BEACON_ATTESTER, Some(data.target.epoch));
+        >(
+            state,
+            crate::phase0::helpers::DOMAIN_BEACON_ATTESTER,
+            Some(data.target.epoch),
+        );
 
         use pharos_ssz::{SszList, TreeHash};
         use pharos_types::phase0::{IndexedAttestation, SigningData};

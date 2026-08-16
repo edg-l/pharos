@@ -280,7 +280,10 @@ where
         MAX_TRANSACTIONS_PER_PAYLOAD,
         MAX_WITHDRAWALS_PER_PAYLOAD,
         E,
-    >(&mut capella, &deneb_execution_payload_to_capella(&block.body.execution_payload))?;
+    >(
+        &mut capella,
+        &deneb_execution_payload_to_capella(&block.body.execution_payload),
+    )?;
     // Sync withdrawal mutations back.
     update_deneb_from_capella::<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -547,9 +550,7 @@ pub fn deneb_block_to_capella_block<
     MAX_WITHDRAWALS_PER_PAYLOAD,
     MAX_BLS_TO_EXECUTION_CHANGES,
 > {
-    use pharos_types::capella::{
-        BeaconBlock as CapellaBlock, BeaconBlockBody as CapellaBody,
-    };
+    use pharos_types::capella::{BeaconBlock as CapellaBlock, BeaconBlockBody as CapellaBody};
 
     let body = &block.body;
     let capella_payload = deneb_execution_payload_to_capella(&body.execution_payload);

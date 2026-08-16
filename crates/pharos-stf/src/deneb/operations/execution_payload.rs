@@ -16,7 +16,9 @@ use pharos_kzg::kzg_commitment_to_versioned_hash;
 use pharos_ssz::{SszSequence, TreeHash};
 use pharos_types::{
     EthSpec,
-    deneb::{BeaconBlockBody, BeaconState, execution_payload::ExecutionPayloadHeader as DenebHeader},
+    deneb::{
+        BeaconBlockBody, BeaconState, execution_payload::ExecutionPayloadHeader as DenebHeader,
+    },
 };
 
 use crate::bellatrix::execution_engine::{ExecutionEngine, PayloadVerificationStatus};

@@ -33,8 +33,7 @@ use pharos_stf::{
     BellatrixProcessBlockForProduction, BellatrixProcessSlotsDispatch, BellatrixUpgradeDispatch,
     CapellaProcessBlockForProduction, CapellaProcessSlotsDispatch, CapellaUpgradeDispatch,
     DenebProcessSlotsDispatch, ForkEpochs, GetExpectedWithdrawalsDispatch, Phase0UpgradeDispatch,
-    StateTransitionError,
-    phase0::state_write::BeaconStateWrite, process_slots_fork,
+    StateTransitionError, phase0::state_write::BeaconStateWrite, process_slots_fork,
 };
 use pharos_stf::{
     compute_epoch_at_slot, compute_start_slot_at_epoch, get_active_validator_indices,

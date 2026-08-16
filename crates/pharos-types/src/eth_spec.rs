@@ -1275,6 +1275,9 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Unwrap a fork-enum `BeaconState` to the inner deneb variant.
     fn unwrap_deneb_state(s: &Self::BeaconState) -> Option<&Self::DenebBeaconState>;
 
+    /// Unwrap a fork-enum `BeaconState` to the inner deneb variant (by value).
+    fn into_deneb_state(s: Self::BeaconState) -> Option<Self::DenebBeaconState>;
+
     /// Wrap a concrete deneb `BeaconState` into the fork-enum `BeaconState`.
     fn deneb_into_state(s: Self::DenebBeaconState) -> Self::BeaconState;
 
@@ -1605,6 +1608,16 @@ macro_rules! impl_fork_dispatch {
         }
 
         fn unwrap_deneb_state(s: &Self::BeaconState) -> Option<&Self::DenebBeaconState> {
+            match s {
+                crate::state::$state::Deneb(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Capella(_) => None,
+            }
+        }
+
+        fn into_deneb_state(s: Self::BeaconState) -> Option<Self::DenebBeaconState> {
             match s {
                 crate::state::$state::Deneb(inner) => Some(inner),
                 crate::state::$state::Phase0(_) => None,
@@ -2305,8 +2318,8 @@ impl EthSpec for MinimalEthSpec {
             capella_fork_version: Self::CAPELLA_FORK_VERSION,
             capella_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (minimal real epoch loaded from config at runtime)
             deneb_fork_version: Self::DENEB_FORK_VERSION,
-            deneb_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH
-            max_blobs_per_block: 6,     // minimal default
+            deneb_fork_epoch: u64::MAX,              // FAR_FUTURE_EPOCH
+            max_blobs_per_block: 6,                  // minimal default
             max_per_epoch_activation_churn_limit: 4, // configs/minimal.yaml: MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT
             // configs/minimal.yaml: large TTD to prevent accidental merge on test networks
             terminal_total_difficulty: pharos_utils::Uint256::from_str(

@@ -1527,6 +1527,27 @@ fn dispatch_deneb_mainnet(
             check::<DenebMainnetSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
         }
         "BeaconState" => check::<DenebMainnetBeaconState>(ssz_bytes, expected_root, case_label),
+        // Deneb LC types (mainnet)
+        "LightClientHeader" => {
+            use pharos_types::deneb::light_client::MainnetLightClientHeader as DenebMainnetLCHeader;
+            check::<DenebMainnetLCHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientBootstrap" => {
+            use pharos_types::deneb::light_client::MainnetLightClientBootstrap as DenebMainnetLCBootstrap;
+            check::<DenebMainnetLCBootstrap>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientUpdate" => {
+            use pharos_types::deneb::light_client::MainnetLightClientUpdate as DenebMainnetLCUpdate;
+            check::<DenebMainnetLCUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientFinalityUpdate" => {
+            use pharos_types::deneb::light_client::MainnetLightClientFinalityUpdate as DenebMainnetLCFinalityUpdate;
+            check::<DenebMainnetLCFinalityUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientOptimisticUpdate" => {
+            use pharos_types::deneb::light_client::MainnetLightClientOptimisticUpdate as DenebMainnetLCOptimisticUpdate;
+            check::<DenebMainnetLCOptimisticUpdate>(ssz_bytes, expected_root, case_label)
+        }
         _ => {
             eprintln!("skipping mainnet/deneb/ssz_static/{type_name}: not in dispatch table");
             Ok(false)
@@ -1651,6 +1672,27 @@ fn dispatch_deneb_minimal(
             check::<DenebMinimalSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
         }
         "BeaconState" => check::<DenebMinimalBeaconState>(ssz_bytes, expected_root, case_label),
+        // Deneb LC types (minimal)
+        "LightClientHeader" => {
+            use pharos_types::deneb::light_client::MinimalLightClientHeader as DenebMinimalLCHeader;
+            check::<DenebMinimalLCHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientBootstrap" => {
+            use pharos_types::deneb::light_client::MinimalLightClientBootstrap as DenebMinimalLCBootstrap;
+            check::<DenebMinimalLCBootstrap>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientUpdate" => {
+            use pharos_types::deneb::light_client::MinimalLightClientUpdate as DenebMinimalLCUpdate;
+            check::<DenebMinimalLCUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientFinalityUpdate" => {
+            use pharos_types::deneb::light_client::MinimalLightClientFinalityUpdate as DenebMinimalLCFinalityUpdate;
+            check::<DenebMinimalLCFinalityUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientOptimisticUpdate" => {
+            use pharos_types::deneb::light_client::MinimalLightClientOptimisticUpdate as DenebMinimalLCOptimisticUpdate;
+            check::<DenebMinimalLCOptimisticUpdate>(ssz_bytes, expected_root, case_label)
+        }
         _ => {
             eprintln!("skipping minimal/deneb/ssz_static/{type_name}: not in dispatch table");
             Ok(false)

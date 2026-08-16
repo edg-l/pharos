@@ -147,7 +147,7 @@ where
         JUSTIFICATION_BITS_LENGTH,
         SYNC_COMMITTEE_SIZE,
         E,
-    >(state, data, inclusion_delay)?;
+    >(state, data, inclusion_delay, false)?;
 
     // Verify signature via indexed attestation.
     // The indexed attestation functions require E::BeaconState — we wrap the

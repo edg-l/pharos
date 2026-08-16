@@ -177,7 +177,7 @@ where
             JUSTIFICATION_BITS_LENGTH,
             SYNC_COMMITTEE_SIZE,
             E,
-        >(&post, data, inclusion_delay)?;
+        >(&post, data, inclusion_delay, false)?;
 
         // Compute attesting indices for this attestation.
         let committee = get_beacon_committee_altair::<

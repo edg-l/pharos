@@ -11,23 +11,19 @@ pub mod registry_updates;
 
 use pharos_ssz::SszSequence;
 use pharos_types::{
-    EthSpec,
-    altair::BeaconState as AltairBeaconState,
-    capella::BeaconState as CapellaBeaconState,
-    config::RuntimeConfig,
-    deneb::BeaconState,
-    phase0::ValidatorIndex,
+    EthSpec, altair::BeaconState as AltairBeaconState, capella::BeaconState as CapellaBeaconState,
+    config::RuntimeConfig, deneb::BeaconState, phase0::ValidatorIndex,
 };
 use pharos_utils::{BLSPubkey, Gwei};
 
 use crate::altair::epoch;
 use crate::capella::epoch::process_historical_summaries_update;
+use crate::deneb::epoch::registry_updates::process_registry_updates;
 use crate::deneb::helpers::{
     decrease_balance_deneb, deneb_state_to_capella, get_current_epoch_deneb,
     get_inactivity_penalty_deltas_deneb, get_total_active_balance_deneb, increase_balance_deneb,
     update_deneb_from_capella,
 };
-use crate::deneb::epoch::registry_updates::process_registry_updates;
 use crate::error::EpochProcessingError;
 
 /// `process_epoch` for Deneb.
@@ -757,7 +753,11 @@ where
                 SYNC_COMMITTEE_SIZE,
                 BYTES_PER_LOGS_BLOOM,
                 MAX_EXTRA_DATA_BYTES,
-            >(state, pharos_types::phase0::ValidatorIndex(i as u64), total_rewards[i]);
+            >(
+                state,
+                pharos_types::phase0::ValidatorIndex(i as u64),
+                total_rewards[i],
+            );
         }
         if total_penalties[i].0 > 0 {
             decrease_balance_deneb::<
@@ -771,7 +771,11 @@ where
                 SYNC_COMMITTEE_SIZE,
                 BYTES_PER_LOGS_BLOOM,
                 MAX_EXTRA_DATA_BYTES,
-            >(state, pharos_types::phase0::ValidatorIndex(i as u64), total_penalties[i]);
+            >(
+                state,
+                pharos_types::phase0::ValidatorIndex(i as u64),
+                total_penalties[i],
+            );
         }
     }
 

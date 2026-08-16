@@ -997,8 +997,8 @@ where
                         *state = E::capella_into_state(upgraded);
                     }
                     ForkVariant::Capella => {
-                        let inner = E::into_capella_state(state.clone())
-                            .expect("fork_variant is Capella");
+                        let inner =
+                            E::into_capella_state(state.clone()).expect("fork_variant is Capella");
                         let upgraded = inner.upgrade_to_deneb_dispatch(runtime_cfg)?;
                         *state = E::deneb_into_state(upgraded);
                     }

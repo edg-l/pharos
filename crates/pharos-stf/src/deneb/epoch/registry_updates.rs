@@ -8,12 +8,7 @@
 //! This prevents a sudden massive validator activation burst.
 
 use pharos_ssz::SszSequence;
-use pharos_types::{
-    EthSpec,
-    config::RuntimeConfig,
-    deneb::BeaconState,
-    phase0::ValidatorIndex,
-};
+use pharos_types::{EthSpec, config::RuntimeConfig, deneb::BeaconState, phase0::ValidatorIndex};
 
 use crate::deneb::helpers::{get_current_epoch_deneb, initiate_validator_exit_deneb};
 use crate::error::EpochProcessingError;
@@ -100,8 +95,7 @@ where
 
         if is_eligible_for_activation_queue::<E>(&v) {
             let mut updated = v.clone();
-            updated.activation_eligibility_epoch =
-                pharos_types::phase0::Epoch(current_epoch.0 + 1);
+            updated.activation_eligibility_epoch = pharos_types::phase0::Epoch(current_epoch.0 + 1);
             state.validators = state
                 .validators
                 .with_set(index, updated)
@@ -153,8 +147,9 @@ where
         .count() as u64;
     let validator_churn_limit =
         (active_count / E::CHURN_LIMIT_QUOTIENT).max(E::MIN_PER_EPOCH_CHURN_LIMIT);
-    let churn_limit =
-        runtime_cfg.max_per_epoch_activation_churn_limit.min(validator_churn_limit) as usize;
+    let churn_limit = runtime_cfg
+        .max_per_epoch_activation_churn_limit
+        .min(validator_churn_limit) as usize;
 
     for &index in activation_queue.iter().take(churn_limit) {
         let mut v = state

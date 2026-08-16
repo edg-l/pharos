@@ -2081,6 +2081,411 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
             .push(Row::placeholder("deneb", "merkle_proof", "minimal"));
     }
 
+    // ── deneb/transition ─────────────────────────────────────────────────────
+    if filter.matches("deneb", "transition", "mainnet") {
+        let result = transition::run_transition_deneb_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "transition",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "transition", "mainnet"));
+    }
+
+    if filter.matches("deneb", "transition", "minimal") {
+        let result = transition::run_transition_deneb_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "transition",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "transition", "minimal"));
+    }
+
+    // ── deneb/operations ─────────────────────────────────────────────────────
+    if filter.matches("deneb", "operations", "mainnet") {
+        let result = operations::run_operations_deneb_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "operations",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "operations", "mainnet"));
+    }
+
+    if filter.matches("deneb", "operations", "minimal") {
+        let result = operations::run_operations_deneb_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "operations",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "operations", "minimal"));
+    }
+
+    // ── deneb/epoch_processing ────────────────────────────────────────────────
+    if filter.matches("deneb", "epoch_processing", "mainnet") {
+        let result = epoch_processing::run_epoch_processing_deneb_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "epoch_processing",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "epoch_processing", "mainnet"));
+    }
+
+    if filter.matches("deneb", "epoch_processing", "minimal") {
+        let result = epoch_processing::run_epoch_processing_deneb_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "epoch_processing",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "epoch_processing", "minimal"));
+    }
+
+    // ── deneb/sanity ──────────────────────────────────────────────────────────
+    if filter.matches("deneb", "sanity", "mainnet") {
+        let result = sanity::run_sanity_deneb_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "sanity",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "sanity", "mainnet"));
+    }
+
+    if filter.matches("deneb", "sanity", "minimal") {
+        let result = sanity::run_sanity_deneb_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "sanity",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "sanity", "minimal"));
+    }
+
+    // ── deneb/finality ────────────────────────────────────────────────────────
+    if filter.matches("deneb", "finality", "mainnet") {
+        let result = finality::run_finality_deneb_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "finality",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "finality", "mainnet"));
+    }
+
+    if filter.matches("deneb", "finality", "minimal") {
+        let result = finality::run_finality_deneb_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "finality",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "finality", "minimal"));
+    }
+
+    // ── deneb/random ──────────────────────────────────────────────────────────
+    if filter.matches("deneb", "random", "mainnet") {
+        let result = random::run_random_deneb_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "random",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "random", "mainnet"));
+    }
+
+    if filter.matches("deneb", "random", "minimal") {
+        let result = random::run_random_deneb_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "random",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "random", "minimal"));
+    }
+
+    // ── deneb/rewards ─────────────────────────────────────────────────────────
+    if filter.matches("deneb", "rewards", "mainnet") {
+        let result = rewards::run_rewards_deneb_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "rewards",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "rewards", "mainnet"));
+    }
+
+    if filter.matches("deneb", "rewards", "minimal") {
+        let result = rewards::run_rewards_deneb_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "rewards",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "rewards", "minimal"));
+    }
+
+    // ── deneb/fork_choice ─────────────────────────────────────────────────────
+    if filter.matches("deneb", "fork_choice", "mainnet") {
+        let result = fork_choice::run_fork_choice_deneb_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "fork_choice",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "fork_choice", "mainnet"));
+    }
+
+    if filter.matches("deneb", "fork_choice", "minimal") {
+        let result = fork_choice::run_fork_choice_deneb_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "fork_choice",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "fork_choice", "minimal"));
+    }
+
+    // ── deneb/light_client ────────────────────────────────────────────────────
+    if filter.matches("deneb", "light_client", "mainnet") {
+        let result = light_client::run_light_client_deneb_mainnet(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "light_client",
+            "mainnet",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "light_client", "mainnet"));
+    }
+
+    if filter.matches("deneb", "light_client", "minimal") {
+        let result = light_client::run_light_client_deneb_minimal(&root);
+        let had_failures = result.fail > 0;
+        report.rows.push(Row::live(
+            "deneb",
+            "light_client",
+            "minimal",
+            result.pass,
+            result.fail,
+            result.skip,
+        ));
+        report.failures.extend(result.failures);
+        if bail && had_failures {
+            fill_future_placeholders(&mut report);
+            return report;
+        }
+    } else {
+        report
+            .rows
+            .push(Row::placeholder("deneb", "light_client", "minimal"));
+    }
+
     // ── placeholder rows for future categories ────────────────────────────────
     fill_future_placeholders(&mut report);
 
@@ -2193,6 +2598,25 @@ fn fill_future_placeholders(report: &mut Report) {
         // deneb/merkle_proof
         ("deneb", "merkle_proof", "mainnet"),
         ("deneb", "merkle_proof", "minimal"),
+        // deneb Phase 2 runners
+        ("deneb", "transition", "mainnet"),
+        ("deneb", "transition", "minimal"),
+        ("deneb", "operations", "mainnet"),
+        ("deneb", "operations", "minimal"),
+        ("deneb", "epoch_processing", "mainnet"),
+        ("deneb", "epoch_processing", "minimal"),
+        ("deneb", "sanity", "mainnet"),
+        ("deneb", "sanity", "minimal"),
+        ("deneb", "finality", "mainnet"),
+        ("deneb", "finality", "minimal"),
+        ("deneb", "random", "mainnet"),
+        ("deneb", "random", "minimal"),
+        ("deneb", "rewards", "mainnet"),
+        ("deneb", "rewards", "minimal"),
+        ("deneb", "fork_choice", "mainnet"),
+        ("deneb", "fork_choice", "minimal"),
+        ("deneb", "light_client", "mainnet"),
+        ("deneb", "light_client", "minimal"),
     ]
     .iter()
     .copied()
@@ -2307,6 +2731,26 @@ fn all_categories() -> &'static [(&'static str, &'static str, &'static str)] {
         // deneb/merkle_proof
         ("deneb", "merkle_proof", "mainnet"),
         ("deneb", "merkle_proof", "minimal"),
+        // deneb categories (Phase 2 conformance runners)
+        ("deneb", "transition", "mainnet"),
+        ("deneb", "transition", "minimal"),
+        ("deneb", "operations", "mainnet"),
+        ("deneb", "operations", "minimal"),
+        ("deneb", "epoch_processing", "mainnet"),
+        ("deneb", "epoch_processing", "minimal"),
+        ("deneb", "sanity", "mainnet"),
+        ("deneb", "sanity", "minimal"),
+        ("deneb", "finality", "mainnet"),
+        ("deneb", "finality", "minimal"),
+        ("deneb", "random", "mainnet"),
+        ("deneb", "random", "minimal"),
+        ("deneb", "rewards", "mainnet"),
+        ("deneb", "rewards", "minimal"),
+        ("deneb", "fork_choice", "mainnet"),
+        ("deneb", "fork_choice", "minimal"),
+        // deneb light_client
+        ("deneb", "light_client", "mainnet"),
+        ("deneb", "light_client", "minimal"),
         // future forks (placeholders)
         ("electra", "ssz_static", "-"),
         ("fulu", "ssz_static", "-"),

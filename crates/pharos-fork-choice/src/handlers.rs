@@ -268,8 +268,7 @@ where
     E::CapellaBeaconState: pharos_stf::CapellaJaFDispatch<E>
         + pharos_stf::CapellaProcessSlotsDispatch<E>
         + pharos_stf::CapellaUpgradeDispatch<E>,
-    E::DenebBeaconState:
-        pharos_stf::DenebJaFDispatch<E> + pharos_stf::DenebProcessSlotsDispatch<E>,
+    E::DenebBeaconState: pharos_stf::DenebJaFDispatch<E> + pharos_stf::DenebProcessSlotsDispatch<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
     E::Phase0BeaconBlock: BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,

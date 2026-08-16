@@ -460,8 +460,8 @@ impl<E: EthSpec> HostImpl<E> {
             pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
         E::BellatrixBeaconState:
             pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
-        E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>
-            + pharos_stf::CapellaUpgradeDispatch<E>,
+        E::CapellaBeaconState:
+            pharos_stf::CapellaProcessSlotsDispatch<E> + pharos_stf::CapellaUpgradeDispatch<E>,
         E::DenebBeaconState: pharos_stf::DenebProcessSlotsDispatch<E>,
         E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
         E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
@@ -502,8 +502,8 @@ impl<E: EthSpec> HostImpl<E> {
             pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
         E::BellatrixBeaconState:
             pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
-        E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>
-            + pharos_stf::CapellaUpgradeDispatch<E>,
+        E::CapellaBeaconState:
+            pharos_stf::CapellaProcessSlotsDispatch<E> + pharos_stf::CapellaUpgradeDispatch<E>,
         E::DenebBeaconState: pharos_stf::DenebProcessSlotsDispatch<E>,
         E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
         E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
@@ -565,8 +565,8 @@ impl<E: EthSpec> HostImpl<E> {
             pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
         E::BellatrixBeaconState:
             pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
-        E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>
-            + pharos_stf::CapellaUpgradeDispatch<E>,
+        E::CapellaBeaconState:
+            pharos_stf::CapellaProcessSlotsDispatch<E> + pharos_stf::CapellaUpgradeDispatch<E>,
         E::DenebBeaconState: pharos_stf::DenebProcessSlotsDispatch<E>,
         E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
         E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
@@ -753,8 +753,8 @@ where
         pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
     E::BellatrixBeaconState:
         pharos_stf::BellatrixProcessSlotsDispatch<E> + pharos_stf::BellatrixUpgradeDispatch<E>,
-    E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>
-        + pharos_stf::CapellaUpgradeDispatch<E>,
+    E::CapellaBeaconState:
+        pharos_stf::CapellaProcessSlotsDispatch<E> + pharos_stf::CapellaUpgradeDispatch<E>,
     E::DenebBeaconState: pharos_stf::DenebProcessSlotsDispatch<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
@@ -1151,8 +1151,8 @@ where
         E::BeaconState: pharos_stf::phase0::state_write::BeaconStateWrite + pharos_ssz::TreeHash,
         E::AltairBeaconState: pharos_stf::AltairProcessSlotsDispatch<E>,
         E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>,
-        E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>
-            + pharos_stf::CapellaUpgradeDispatch<E>,
+        E::CapellaBeaconState:
+            pharos_stf::CapellaProcessSlotsDispatch<E> + pharos_stf::CapellaUpgradeDispatch<E>,
         E::DenebBeaconState: pharos_stf::DenebProcessSlotsDispatch<E>,
         E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
                 Attestation = pharos_types::phase0::Attestation<2048>,

@@ -18,12 +18,13 @@ use pharos_types::{
     views::BeaconBlockBodyView,
 };
 
+use crate::altair::operations::process_deposit;
+use crate::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
 use crate::capella::operations::{
-    process_bls_to_execution_change, process_attester_slashing_capella as process_attester_slashing_deneb,
+    process_attester_slashing_capella as process_attester_slashing_deneb,
+    process_bls_to_execution_change,
     process_proposer_slashing_capella as process_proposer_slashing_deneb,
 };
-use crate::altair::operations::{process_deposit};
-use crate::capella::helpers::{capella_state_to_altair, update_capella_from_altair};
 use crate::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
 use crate::error::StateTransitionError;
 

@@ -35,11 +35,13 @@ use pharos_fork_choice::{
     HashMapPowBlockProvider, NoopPowBlockProvider, PowBlock, Store, get_forkchoice_store, get_head,
     on_attestation, on_attester_slashing, on_block, on_tick, should_override_forkchoice_update,
 };
-use pharos_ssz::{Decode, TreeHash};
+use pharos_kzg::KzgVerifier;
+use pharos_ssz::{Decode, SszList, SszSequence, TreeHash};
 use pharos_stf::phase0::BeaconStateWrite;
 use pharos_stf::{NullExecutionEngine, state_transition};
 use pharos_types::{
     BeaconStateView, EthSpec, MainnetEthSpec, MinimalEthSpec,
+    deneb::{Blob, KZGCommitment},
     phase0::{Attestation, AttesterSlashing, Checkpoint, Deposit, Epoch, Root, Slot},
     views::{BeaconBlockBodyView, BeaconBlockView, SignedBeaconBlockView},
 };
@@ -48,7 +50,8 @@ use rayon::prelude::*;
 
 use crate::fixture_walker::{
     WalkOpts, load_altair_signed_block, load_altair_state, load_bellatrix_signed_block,
-    load_bellatrix_state, load_capella_state, load_phase0_state, load_ssz_snappy, walk_category,
+    load_bellatrix_state, load_capella_state, load_deneb_state, load_phase0_state, load_ssz_snappy,
+    walk_category,
 };
 use crate::fs_util::{dir_name, read_dir_sorted};
 
@@ -530,7 +533,7 @@ where
             Step::Tick { tick, .. } => {
                 on_tick::<E>(&mut store, tick);
             }
-            Step::Block { block, valid } => {
+            Step::Block { block, valid, .. } => {
                 // Decode as the inner type (altair first, phase0 fallback) so
                 // we can access body attestations for the post-block feed-through.
                 // The fork-enum `message()` panics, so we keep the inner ref.
@@ -884,7 +887,7 @@ where
                 };
                 pow_provider.blocks.insert(pow_block.block_hash, pow_block);
             }
-            Step::Block { block, valid } => {
+            Step::Block { block, valid, .. } => {
                 let block_file = format!("{block}.ssz_snappy");
                 let cfg = E::default_runtime_config();
 
@@ -1270,6 +1273,10 @@ enum Step {
     Block {
         block: String,
         valid: bool,
+        /// Deneb (EIP-4844): optional `blobs_<root>.ssz_snappy` file name.
+        blobs: Option<String>,
+        /// Deneb (EIP-4844): optional byte48 hex proofs for the blobs.
+        proofs: Vec<String>,
     },
     Attestation {
         attestation: String,
@@ -1339,9 +1346,20 @@ fn parse_step(val: &serde_yaml_ng::Value) -> Result<Step, String> {
         });
     }
     if let Some(block) = map.get("block").and_then(value_as_str) {
+        // Deneb (EIP-4844) block steps may carry `blobs` (a file name) and
+        // `proofs` (byte48 hex). These feed `is_data_available`; absent fields
+        // mean empty lists per `tests/formats/fork_choice/README.md`.
+        let blobs = map.get("blobs").and_then(value_as_str);
+        let proofs = map
+            .get("proofs")
+            .and_then(|v| v.as_sequence())
+            .map(|seq| seq.iter().filter_map(value_as_str).collect())
+            .unwrap_or_default();
         return Ok(Step::Block {
             block,
             valid: read_valid(map),
+            blobs,
+            proofs,
         });
     }
     if let Some(attestation) = map.get("attestation").and_then(value_as_str) {
@@ -1464,6 +1482,61 @@ fn value_as_str(v: &serde_yaml_ng::Value) -> Option<String> {
 
 fn read_valid(map: &serde_yaml_ng::Mapping) -> bool {
     map.get("valid").and_then(|v| v.as_bool()).unwrap_or(true)
+}
+
+/// EIP-4844 data-availability check for the deneb fork-choice test format.
+///
+/// Mirrors `is_data_available` (`specs/deneb/fork-choice.md`): the step-provided
+/// `blobs`/`proofs` are what `retrieve_blobs_and_proofs` returns; absent fields
+/// mean empty lists (`tests/formats/fork_choice/README.md`). Data is available
+/// iff `verify_blob_kzg_proof_batch(blobs, blob_kzg_commitments, proofs)` is
+/// `Ok(true)`; a length mismatch surfaces as `Err`, i.e. not available (this is
+/// how the `invalid_wrong_{blobs,proofs}_length` / `invalid_data_unavailable`
+/// cases are rejected). The blobs file is a `List[Blob, MAX_BLOB_COMMITMENTS_PER_BLOCK]`
+/// (4096 both presets).
+fn deneb_data_available(
+    case_dir: &Path,
+    blobs_name: Option<&str>,
+    proofs_hex: &[String],
+    commitments: &[KZGCommitment],
+) -> bool {
+    let blobs: Vec<[u8; 131_072]> = match blobs_name {
+        Some(name) => {
+            let file = format!("{name}.ssz_snappy");
+            match load_ssz_snappy::<SszList<Blob, 4096>>(case_dir, &file) {
+                Ok(list) => {
+                    let mut out = Vec::with_capacity(list.len());
+                    for blob in list.as_slice() {
+                        let mut arr = [0u8; 131_072];
+                        arr.copy_from_slice(blob.as_slice());
+                        out.push(arr);
+                    }
+                    out
+                }
+                Err(_) => return false,
+            }
+        }
+        None => Vec::new(),
+    };
+
+    let mut proofs: Vec<[u8; 48]> = Vec::with_capacity(proofs_hex.len());
+    for p in proofs_hex {
+        let hex = p.strip_prefix("0x").unwrap_or(p);
+        match hex::decode(hex) {
+            Ok(bytes) if bytes.len() == 48 => {
+                let mut arr = [0u8; 48];
+                arr.copy_from_slice(&bytes);
+                proofs.push(arr);
+            }
+            _ => return false,
+        }
+    }
+
+    let commitments: Vec<[u8; 48]> = commitments.iter().map(|c| (*c).into()).collect();
+
+    KzgVerifier::mainnet()
+        .verify_blob_kzg_proof_batch(&blobs, &commitments, &proofs)
+        .unwrap_or(false)
 }
 
 // ── Capella fork-choice entry points ──────────────────────────────────────────
@@ -1786,12 +1859,803 @@ where
             Step::Tick { tick, .. } => {
                 on_tick::<E>(&mut store, tick);
             }
-            Step::Block { block, valid } => {
+            Step::Block { block, valid, .. } => {
                 let block_file = format!("{block}.ssz_snappy");
                 let cfg = E::default_runtime_config();
 
                 // Try capella first, then bellatrix, then altair, then phase0.
                 if let Ok(capella_inner) =
+                    load_ssz_snappy::<E::CapellaSignedBeaconBlock>(case_dir, &block_file)
+                {
+                    let capella_inner_wrapped = E::capella_into_signed_block(capella_inner.clone());
+                    let parent_root = capella_inner.message().parent_root();
+                    let pre_state = match store.block_states.get(&parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &capella_inner_wrapped,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let (post_state, attestations) = match post_state_result {
+                        Ok((ps, _)) => {
+                            let atts: Vec<Attestation<2048>> =
+                                capella_inner.message().body().attestations().to_vec();
+                            (ps, atts)
+                        }
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, HashMapPowBlockProvider>(
+                        &mut store,
+                        &capella_inner_wrapped,
+                        post_state,
+                        now,
+                        &pow_provider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            for att in &attestations {
+                                let _ = on_attestation::<E>(&mut store, att, true);
+                            }
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                } else if let Ok(bellatrix_inner) =
+                    load_bellatrix_signed_block::<E>(case_dir, &block_file)
+                {
+                    let bellatrix_parent_root = E::unwrap_bellatrix_signed_block(&bellatrix_inner)
+                        .map(|inner| inner.message().parent_root())
+                        .unwrap_or_default();
+                    let pre_state = match store.block_states.get(&bellatrix_parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &bellatrix_inner,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let (post_state, attestations) = match post_state_result {
+                        Ok((ps, _)) => {
+                            let atts: Vec<Attestation<2048>> = if let Some(inner) =
+                                E::unwrap_bellatrix_signed_block(&bellatrix_inner)
+                            {
+                                inner.message().body().attestations().to_vec()
+                            } else {
+                                vec![]
+                            };
+                            (ps, atts)
+                        }
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, HashMapPowBlockProvider>(
+                        &mut store,
+                        &bellatrix_inner,
+                        post_state,
+                        now,
+                        &pow_provider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            for att in &attestations {
+                                let _ = on_attestation::<E>(&mut store, att, true);
+                            }
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                } else if let Ok(altair_inner) =
+                    load_altair_signed_block::<E>(case_dir, &block_file)
+                {
+                    let altair_parent_root = E::unwrap_altair_signed_block(&altair_inner)
+                        .map(|inner| inner.message().parent_root())
+                        .unwrap_or_default();
+                    let pre_state = match store.block_states.get(&altair_parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &altair_inner,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let (post_state, attestations) = match post_state_result {
+                        Ok((ps, _)) => {
+                            let atts: Vec<Attestation<2048>> =
+                                if let Some(inner) = E::unwrap_altair_signed_block(&altair_inner) {
+                                    inner.message().body().attestations().to_vec()
+                                } else {
+                                    vec![]
+                                };
+                            (ps, atts)
+                        }
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, HashMapPowBlockProvider>(
+                        &mut store,
+                        &altair_inner,
+                        post_state,
+                        now,
+                        &pow_provider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            for att in &attestations {
+                                let _ = on_attestation::<E>(&mut store, att, true);
+                            }
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                } else {
+                    // phase0 fallback
+                    let phase0_inner: E::Phase0SignedBeaconBlock =
+                        match load_ssz_snappy(case_dir, &block_file) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                return CaseResult::Fail(format!("{case_name}: {e}"));
+                            }
+                        };
+                    let signed = E::phase0_into_signed_block(phase0_inner.clone());
+                    let pre_state = match store
+                        .block_states
+                        .get(&phase0_inner.message().parent_root())
+                        .cloned()
+                    {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &signed,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let post_state = match post_state_result {
+                        Ok((ps, _)) => ps,
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, HashMapPowBlockProvider>(
+                        &mut store,
+                        &signed,
+                        post_state,
+                        now,
+                        &pow_provider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            for att in phase0_inner.message().body().attestations() {
+                                let _ = on_attestation::<E>(&mut store, att, true);
+                            }
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                }
+            }
+            Step::Attestation { attestation, valid } => {
+                let att: Attestation<2048> =
+                    match load_ssz_snappy(case_dir, &format!("{attestation}.ssz_snappy")) {
+                        Ok(a) => a,
+                        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+                    };
+                let outcome = on_attestation::<E>(&mut store, &att, false);
+                match (outcome.is_ok(), valid) {
+                    (true, true) | (false, false) => {}
+                    (false, true) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attestation({attestation}) failed but valid=true"
+                        ));
+                    }
+                    (true, false) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attestation({attestation}) succeeded but valid=false"
+                        ));
+                    }
+                }
+            }
+            Step::AttesterSlashing {
+                attester_slashing,
+                valid,
+            } => {
+                let slashing: AttesterSlashing<2048> =
+                    match load_ssz_snappy(case_dir, &format!("{attester_slashing}.ssz_snappy")) {
+                        Ok(a) => a,
+                        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+                    };
+                let outcome = on_attester_slashing::<E>(&mut store, &slashing);
+                match (outcome.is_ok(), valid) {
+                    (true, true) | (false, false) => {}
+                    (false, true) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attester_slashing({attester_slashing}) failed but valid=true"
+                        ));
+                    }
+                    (true, false) => {
+                        return CaseResult::Fail(format!(
+                            "{case_name}: on_attester_slashing({attester_slashing}) succeeded but valid=false"
+                        ));
+                    }
+                }
+            }
+            Step::Checks(checks) => {
+                if let Err(e) = run_bellatrix_checks::<E>(&store, &checks) {
+                    return CaseResult::Fail(format!("{case_name}: {e}"));
+                }
+            }
+            Step::PowBlock(name) => {
+                let file = format!("{name}.ssz_snappy");
+                let pow_block: PowBlock = match load_ssz_snappy(case_dir, &file) {
+                    Ok(b) => b,
+                    Err(_) => return CaseResult::Skip,
+                };
+                pow_provider.blocks.insert(pow_block.block_hash, pow_block);
+            }
+            Step::Unknown(_) => {
+                return CaseResult::Skip;
+            }
+        }
+    }
+
+    CaseResult::Pass
+}
+
+// ── Deneb fork-choice entry points ───────────────────────────────────────────
+
+/// Run all deneb fork-choice sub-categories for the mainnet preset.
+pub fn run_fork_choice_deneb_mainnet(root: &Path) -> ForkChoiceResult {
+    run_deneb_fork_choice_preset::<MainnetEthSpec>(root, "mainnet")
+}
+
+/// Run all deneb fork-choice sub-categories for the minimal preset.
+pub fn run_fork_choice_deneb_minimal(root: &Path) -> ForkChoiceResult {
+    run_deneb_fork_choice_preset::<MinimalEthSpec>(root, "minimal")
+}
+
+fn run_deneb_fork_choice_preset<E>(root: &Path, preset: &'static str) -> ForkChoiceResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    let fork = "deneb";
+    let base = root.join(preset).join(fork).join("fork_choice");
+
+    let sub_categories: Vec<PathBuf> = if base.is_dir() {
+        read_dir_sorted(&base).unwrap_or_default()
+    } else {
+        return ForkChoiceResult::new();
+    };
+
+    let mut total = ForkChoiceResult::new();
+    for sub_path in sub_categories {
+        if !sub_path.is_dir() {
+            continue;
+        }
+        let sub = match sub_path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_owned(),
+            None => continue,
+        };
+        total.merge(run_deneb_sub_category::<E>(root, preset, fork, &sub));
+    }
+    total
+}
+
+fn run_deneb_sub_category<E>(
+    root: &Path,
+    preset: &'static str,
+    fork: &'static str,
+    sub_category: &str,
+) -> ForkChoiceResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    let cases: Vec<_> = walk_category(
+        root,
+        preset,
+        fork,
+        "fork_choice",
+        Some(sub_category),
+        WalkOpts {
+            meta_required: false,
+            inner_dir: Some("pyspec_tests"),
+        },
+    )
+    .collect();
+    let outcomes: Vec<CaseResult> = cases
+        .into_par_iter()
+        .map(|(case_dir, _meta)| {
+            let case_name = format!(
+                "{fork}/fork_choice/{sub_category}/{preset}/{}",
+                dir_name(&case_dir)
+            );
+            run_deneb_case::<E>(&case_dir, &case_name)
+        })
+        .collect();
+    let mut out = ForkChoiceResult::new();
+    for outcome in outcomes {
+        match outcome {
+            CaseResult::Pass => out.pass += 1,
+            CaseResult::Skip => out.skip += 1,
+            CaseResult::Fail(msg) => {
+                out.fail += 1;
+                out.failures.push(msg);
+            }
+        }
+    }
+    out
+}
+
+/// Case driver for deneb fork-choice fixtures.
+///
+/// Tries deneb anchor state/block first, then capella, bellatrix, altair, phase0.
+fn run_deneb_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
+where
+    E: EthSpec,
+    E::BeaconState: BeaconStateWrite + TreeHash + Clone,
+    E::AltairBeaconState: pharos_stf::AltairDispatch<E>
+        + pharos_stf::AltairJaFDispatch<E>
+        + pharos_stf::AltairProcessSlotsDispatch<E>
+        + pharos_stf::AltairUpgradeDispatch<E>
+        + Decode,
+    E::BellatrixBeaconState: pharos_stf::BellatrixDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::BellatrixJaFDispatch<E>
+        + pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::CapellaBeaconState: pharos_stf::CapellaDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::CapellaJaFDispatch<E>
+        + pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + Decode,
+    E::DenebBeaconState: pharos_stf::DenebDispatch<E, pharos_stf::NullExecutionEngine>
+        + pharos_stf::DenebJaFDispatch<E>
+        + pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_ssz::TreeHash
+        + Decode,
+    E::Phase0BeaconState: Decode + pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlock: Decode + BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::Phase0BeaconBlockBody: TreeHash
+        + BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::Phase0SignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::AltairBeaconBlock: BeaconBlockView<Body = E::AltairBeaconBlockBody>,
+    E::AltairBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::AltairSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
+    E::BellatrixBeaconBlock: BeaconBlockView<Body = E::BellatrixBeaconBlockBody>,
+    E::BellatrixBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::BellatrixSignedBeaconBlock:
+        Decode + SignedBeaconBlockView<Message = E::BellatrixBeaconBlock>,
+    E::CapellaBeaconBlock: BeaconBlockView<Body = E::CapellaBeaconBlockBody>,
+    E::CapellaBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::CapellaSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::CapellaBeaconBlock>,
+    E::DenebBeaconBlock: BeaconBlockView<Body = E::DenebBeaconBlockBody>,
+    E::DenebBeaconBlockBody: BeaconBlockBodyView<
+            Attestation = Attestation<2048>,
+            AttesterSlashing = AttesterSlashing<2048>,
+            Deposit = Deposit<33>,
+        >,
+    E::DenebSignedBeaconBlock: Decode + SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
+    E::BeaconBlock: BeaconBlockView + TreeHash + Clone,
+    E::SignedBeaconBlock: SignedBeaconBlockView<Message = E::BeaconBlock>,
+{
+    // Load anchor state: deneb first, then capella, bellatrix, altair, phase0.
+    let anchor_state: E::BeaconState =
+        match load_deneb_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+            Ok(s) => s,
+            Err(_) => match load_capella_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                Ok(s) => s,
+                Err(_) => match load_bellatrix_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                    Ok(s) => s,
+                    Err(_) => match load_altair_state::<E>(case_dir, "anchor_state.ssz_snappy") {
+                        Ok(s) => s,
+                        Err(_) => match load_phase0_state::<E>(case_dir, "anchor_state.ssz_snappy")
+                        {
+                            Ok(s) => s,
+                            Err(_) => return CaseResult::Skip,
+                        },
+                    },
+                },
+            },
+        };
+
+    // Load anchor block: deneb first, then capella, bellatrix, altair, phase0.
+    let anchor_block: E::BeaconBlock = {
+        use pharos_ssz::Decode as _;
+        let compressed = match std::fs::read(case_dir.join("anchor_block.ssz_snappy")) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        let raw = match crate::snappy::decompress_raw(&compressed) {
+            Ok(b) => b,
+            Err(_) => return CaseResult::Skip,
+        };
+        if let Ok(b) = E::DenebBeaconBlock::from_ssz_bytes(&raw) {
+            E::deneb_into_block(b)
+        } else if let Ok(b) = E::CapellaBeaconBlock::from_ssz_bytes(&raw) {
+            E::capella_into_block(b)
+        } else if let Ok(b) = E::BellatrixBeaconBlock::from_ssz_bytes(&raw) {
+            E::bellatrix_into_block(b)
+        } else if let Ok(b) = E::AltairBeaconBlock::from_ssz_bytes(&raw) {
+            E::altair_into_block(b)
+        } else if let Ok(b) = E::Phase0BeaconBlock::from_ssz_bytes(&raw) {
+            E::phase0_into_block(b)
+        } else {
+            return CaseResult::Skip;
+        }
+    };
+
+    if anchor_block.state_root() != anchor_state.tree_hash_root() {
+        return CaseResult::Skip;
+    }
+    let mut store: Store<E> = get_forkchoice_store::<E>(anchor_state, anchor_block);
+
+    let rtcfg = E::default_runtime_config();
+    store.set_terminal_config(
+        rtcfg.terminal_total_difficulty,
+        rtcfg.terminal_block_hash,
+        rtcfg.terminal_block_hash_activation_epoch,
+    );
+
+    let mut pow_provider = HashMapPowBlockProvider {
+        blocks: std::collections::HashMap::new(),
+    };
+
+    let steps_path = case_dir.join("steps.yaml");
+    let steps = match parse_steps(&steps_path) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+
+    for step in steps {
+        match step {
+            Step::Tick { tick, .. } => {
+                on_tick::<E>(&mut store, tick);
+            }
+            Step::Block {
+                block,
+                valid,
+                blobs,
+                proofs,
+            } => {
+                let block_file = format!("{block}.ssz_snappy");
+                let cfg = E::default_runtime_config();
+
+                // Try deneb first, then capella, bellatrix, altair, phase0.
+                if let Ok(deneb_inner) =
+                    load_ssz_snappy::<E::DenebSignedBeaconBlock>(case_dir, &block_file)
+                {
+                    let deneb_wrapped = E::deneb_into_signed_block(deneb_inner.clone());
+                    let parent_root = deneb_inner.message().parent_root();
+                    let pre_state = match store.block_states.get(&parent_root).cloned() {
+                        Some(s) => s,
+                        None => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: on_block({block}) missing parent state"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    // EIP-4844 data-availability check (deneb fork-choice test
+                    // format): `is_data_available` runs
+                    // `verify_blob_kzg_proof_batch` over the step-provided
+                    // blobs/proofs vs the block's `blob_kzg_commitments`. A
+                    // data-unavailable block must be rejected; fold it into the
+                    // `valid` expectation before state-transition/on_block.
+                    let commitments = deneb_inner.message().body().blob_kzg_commitments_slice();
+                    if !deneb_data_available(case_dir, blobs.as_deref(), &proofs, commitments) {
+                        if valid {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: block({block}) data unavailable but valid=true"
+                            ));
+                        } else {
+                            continue;
+                        }
+                    }
+                    let post_state_result = state_transition::<E, NullExecutionEngine>(
+                        pre_state,
+                        &deneb_wrapped,
+                        &NullExecutionEngine,
+                        true,
+                        &cfg,
+                    );
+                    let (post_state, attestations) = match post_state_result {
+                        Ok((ps, _)) => {
+                            let atts: Vec<Attestation<2048>> =
+                                deneb_inner.message().body().attestations().to_vec();
+                            (ps, atts)
+                        }
+                        Err(e) => {
+                            if valid {
+                                return CaseResult::Fail(format!(
+                                    "{case_name}: state_transition({block}) failed but valid=true: {e}"
+                                ));
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let now = store.time;
+                    let outcome = on_block::<E, HashMapPowBlockProvider>(
+                        &mut store,
+                        &deneb_wrapped,
+                        post_state,
+                        now,
+                        &pow_provider,
+                    );
+                    match (outcome, valid) {
+                        (Ok(()), true) => {
+                            for att in &attestations {
+                                let _ = on_attestation::<E>(&mut store, att, true);
+                            }
+                        }
+                        (Err(e), true) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) failed but valid=true: {e}"
+                            ));
+                        }
+                        (Ok(()), false) => {
+                            return CaseResult::Fail(format!(
+                                "{case_name}: on_block({block}) succeeded but valid=false"
+                            ));
+                        }
+                        (Err(_), false) => {}
+                    }
+                } else if let Ok(capella_inner) =
                     load_ssz_snappy::<E::CapellaSignedBeaconBlock>(case_dir, &block_file)
                 {
                     let capella_inner_wrapped = E::capella_into_signed_block(capella_inner.clone());
