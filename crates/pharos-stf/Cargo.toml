@@ -15,6 +15,7 @@ pharos-storage.workspace = true
 pharos-kzg.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
+metrics.workspace = true
 
 [dev-dependencies]
 snap.workspace = true

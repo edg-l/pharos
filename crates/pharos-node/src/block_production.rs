@@ -1252,7 +1252,8 @@ fn build_fcu_state<E: EthSpec>(
     head_root: Root,
 ) -> pharos_engine::types::ForkchoiceStateV1
 where
-    E::BeaconBlock: BeaconBlockView,
+    E::BeaconBlock: BeaconBlockView + Clone,
+    E::BeaconState: pharos_types::BeaconStateView,
 {
     let store = fc_store.read();
     let head_block_hash = hash_to_hex(execution_block_hash_at_root(&store, head_root));

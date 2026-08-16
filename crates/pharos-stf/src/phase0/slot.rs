@@ -3,6 +3,7 @@
 
 use pharos_ssz::TreeHash;
 use pharos_types::{BeaconStateView, EthSpec, phase0::Slot, views::BeaconBlockBodyView};
+use pharos_utils::metrics::METRIC_STF_PROCESS_EPOCH_SECONDS;
 
 use crate::error::{EpochProcessingError, StateTransitionError};
 use crate::phase0::{epoch::process_epoch, state_write::BeaconStateWrite};
@@ -64,10 +65,13 @@ where
         process_slot::<E>(state)?;
         // Process epoch on the start slot of the next epoch.
         if (state.slot().0 + 1) % E::SLOTS_PER_EPOCH == 0 {
+            let _pe_start = std::time::Instant::now();
             process_epoch::<E>(state).map_err(|e: EpochProcessingError| match e {
                 EpochProcessingError::Ssz(s) => StateTransitionError::Ssz(s),
                 other => StateTransitionError::EpochProcessing { reason: other },
             })?;
+            metrics::histogram!(METRIC_STF_PROCESS_EPOCH_SECONDS)
+                .record(_pe_start.elapsed().as_secs_f64());
         }
         state.set_slot(Slot(state.slot().0 + 1));
     }

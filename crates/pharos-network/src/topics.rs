@@ -191,7 +191,7 @@ impl GossipTopic {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Map a `GossipTopicKind` to its wire-format name string.
-fn topic_kind_name(kind: &GossipTopicKind) -> String {
+pub(crate) fn topic_kind_name(kind: &GossipTopicKind) -> String {
     match kind {
         GossipTopicKind::BeaconBlock => "beacon_block".to_string(),
         GossipTopicKind::BeaconAggregateAndProof => "beacon_aggregate_and_proof".to_string(),

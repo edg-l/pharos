@@ -9,6 +9,7 @@ use pharos_types::{
     phase0::{Epoch, Root, Slot},
     views::BeaconBlockView,
 };
+use pharos_utils::metrics::METRIC_FORK_CHOICE_GET_HEAD_SECONDS;
 
 use crate::store::Store;
 
@@ -397,6 +398,8 @@ where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,
 {
+    let _t0 = std::time::Instant::now();
+
     let blocks = get_filtered_block_tree(store);
     let children_idx = children_index::<E>(&blocks);
     // Memoize weights for the duration of this call: weights are constant within
@@ -404,9 +407,9 @@ where
     // `get_weight` (itself O(validators)) once per child per descent level.
     let mut weights: HashMap<Root, u64> = HashMap::new();
     let mut head = effective_base(store);
-    loop {
+    let result = loop {
         let Some(children) = children_idx.get(&head) else {
-            return head; // No children → head is a leaf.
+            break head; // No children → head is a leaf.
         };
 
         // Max by (weight, root) — higher root breaks ties per spec.
@@ -420,7 +423,10 @@ where
                 (w, *root)
             })
             .expect("children index never stores empty child lists");
-    }
+    };
+
+    metrics::histogram!(METRIC_FORK_CHOICE_GET_HEAD_SECONDS).record(_t0.elapsed().as_secs_f64());
+    result
 }
 
 // ── calculate_committee_fraction ─────────────────────────────────────────────

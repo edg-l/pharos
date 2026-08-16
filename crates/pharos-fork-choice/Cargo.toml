@@ -14,3 +14,4 @@ pharos-ssz.workspace = true
 pharos-stf.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+metrics.workspace = true

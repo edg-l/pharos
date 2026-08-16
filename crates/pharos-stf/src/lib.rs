@@ -90,6 +90,9 @@ use pharos_types::{
 
 use phase0::state_write::BeaconStateWrite;
 
+// ── Metrics constants (re-exported from pharos-utils) ────────────────────────
+use pharos_utils::metrics::METRIC_STF_PROCESS_BLOCK_SECONDS;
+
 // ── ForkEpochs ────────────────────────────────────────────────────────────────
 
 /// Runtime fork epochs threaded into `process_slots_fork` so the live path can
@@ -659,110 +662,123 @@ where
         runtime_cfg,
     )?;
 
+    // ── process_block dispatch + metric emission ─────────────────────────────
+    // Time the per-fork block-processing step (not including process_slots_fork
+    // above, which accounts for slot advancement rather than block processing).
+    // All branches unify at the labeled block exit so the histogram is recorded
+    // on the single success path. ADR cite: `D-metrics-prometheus-optin` (Phase 5).
+    let _pb_start = std::time::Instant::now();
+
     // Fork dispatch via `fork_variant()`. Cannot pattern-match on a concrete
     // enum variant through the opaque `E::BeaconState` associated type;
     // `fork_variant()` provides the required discriminant.
-    match state.fork_variant() {
-        ForkVariant::Phase0 => {
-            // Unwrap the fork-enum signed block to the concrete phase0 inner type.
-            // The block must be a Phase0 variant; if it isn't, return an error rather
-            // than panic.
-            let phase0_signed = E::unwrap_phase0_signed_block(signed_block)
-                .ok_or(StateTransitionError::UnsupportedFork)?;
-            phase0_state_transition::<E>(&mut state, phase0_signed, validate_result)?;
+    let (result_state, result_payload) = 'dispatch: {
+        match state.fork_variant() {
+            ForkVariant::Phase0 => {
+                // Unwrap the fork-enum signed block to the concrete phase0 inner type.
+                // The block must be a Phase0 variant; if it isn't, return an error rather
+                // than panic.
+                let phase0_signed = E::unwrap_phase0_signed_block(signed_block)
+                    .ok_or(StateTransitionError::UnsupportedFork)?;
+                phase0_state_transition::<E>(&mut state, phase0_signed, validate_result)?;
+                // Phase0 falls through; root cache reset below.
+            }
+            ForkVariant::Altair => {
+                // Unwrap fork-enum state and block to their inner altair types.
+                let altair_signed = E::unwrap_altair_signed_block(signed_block)
+                    .ok_or(StateTransitionError::UnsupportedFork)?;
+                let altair_inner =
+                    E::into_altair_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+                // Apply the altair state transition via the `AltairDispatch` blanket impl.
+                // Phase0/Altair have no execution payload → payload_status = None.
+                let updated = altair_inner.apply_signed_block(altair_signed, validate_result)?;
+                // Wrap the result back into the fork-enum.
+                break 'dispatch (E::altair_into_state(updated), None);
+            }
+            ForkVariant::Bellatrix => {
+                // Unwrap fork-enum state and block to their inner bellatrix types.
+                let bellatrix_signed = E::unwrap_bellatrix_signed_block(signed_block)
+                    .ok_or(StateTransitionError::UnsupportedFork)?;
+                let bellatrix_inner =
+                    E::into_bellatrix_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+                // Apply the bellatrix state transition via the `BellatrixDispatch` blanket impl.
+                let (updated, payload_status) = bellatrix_inner.apply_signed_block(
+                    bellatrix_signed,
+                    execution_engine,
+                    validate_result,
+                    runtime_cfg,
+                )?;
+                // Wrap the result back into the fork-enum + invalidate the root cache.
+                let mut wrapped = E::bellatrix_into_state(updated);
+                wrapped.invalidate_root_cache();
+                break 'dispatch (wrapped, payload_status);
+            }
+            ForkVariant::Capella => {
+                // Unwrap fork-enum state and block to their inner capella types.
+                let capella_signed = E::unwrap_capella_signed_block(signed_block)
+                    .ok_or(StateTransitionError::UnsupportedFork)?;
+                let capella_inner =
+                    E::into_capella_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+                // Apply the capella state transition via the `CapellaDispatch` blanket impl.
+                let (updated, payload_status) = capella_inner.apply_signed_block(
+                    capella_signed,
+                    execution_engine,
+                    validate_result,
+                    runtime_cfg,
+                )?;
+                // Wrap the result back into the fork-enum + invalidate the root cache.
+                let mut wrapped = E::capella_into_state(updated);
+                wrapped.invalidate_root_cache();
+                break 'dispatch (wrapped, payload_status);
+            }
+            ForkVariant::Deneb => {
+                // Unwrap fork-enum state and block to their inner deneb types.
+                let deneb_signed = E::unwrap_deneb_signed_block(signed_block)
+                    .ok_or(StateTransitionError::UnsupportedFork)?;
+                let deneb_inner = E::unwrap_deneb_state(&state)
+                    .ok_or(StateTransitionError::UnsupportedFork)?
+                    .clone();
+                // Apply the deneb state transition via the `DenebDispatch` blanket impl.
+                let (updated, payload_status) = deneb_inner.apply_signed_block(
+                    deneb_signed,
+                    execution_engine,
+                    validate_result,
+                    runtime_cfg,
+                )?;
+                // Wrap the result back into the fork-enum + invalidate the root cache.
+                let mut wrapped = E::deneb_into_state(updated);
+                wrapped.invalidate_root_cache();
+                break 'dispatch (wrapped, payload_status);
+            }
+            ForkVariant::Electra => {
+                // Unwrap fork-enum state and block to their inner electra types.
+                let electra_signed = E::unwrap_electra_signed_block(signed_block)
+                    .ok_or(StateTransitionError::UnsupportedFork)?;
+                let electra_inner =
+                    E::into_electra_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+                // Apply the electra state transition via the `ElectraDispatch` blanket impl.
+                let (updated, payload_status) = electra_inner.apply_signed_block(
+                    electra_signed,
+                    execution_engine,
+                    validate_result,
+                    runtime_cfg,
+                )?;
+                // Wrap the result back into the fork-enum + invalidate the root cache.
+                let mut wrapped = E::electra_into_state(updated);
+                wrapped.invalidate_root_cache();
+                break 'dispatch (wrapped, payload_status);
+            }
         }
-        ForkVariant::Altair => {
-            // Unwrap fork-enum state and block to their inner altair types.
-            let altair_signed = E::unwrap_altair_signed_block(signed_block)
-                .ok_or(StateTransitionError::UnsupportedFork)?;
-            let altair_inner =
-                E::into_altair_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
-            // Apply the altair state transition via the `AltairDispatch` blanket impl.
-            // Phase0/Altair have no execution payload → payload_status = None.
-            let updated = altair_inner.apply_signed_block(altair_signed, validate_result)?;
-            // Wrap the result back into the fork-enum.
-            return Ok((E::altair_into_state(updated), None));
-        }
-        ForkVariant::Bellatrix => {
-            // Unwrap fork-enum state and block to their inner bellatrix types.
-            let bellatrix_signed = E::unwrap_bellatrix_signed_block(signed_block)
-                .ok_or(StateTransitionError::UnsupportedFork)?;
-            let bellatrix_inner =
-                E::into_bellatrix_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
-            // Apply the bellatrix state transition via the `BellatrixDispatch` blanket impl.
-            let (updated, payload_status) = bellatrix_inner.apply_signed_block(
-                bellatrix_signed,
-                execution_engine,
-                validate_result,
-                runtime_cfg,
-            )?;
-            // Wrap the result back into the fork-enum + invalidate the root cache.
-            let mut wrapped = E::bellatrix_into_state(updated);
-            wrapped.invalidate_root_cache();
-            return Ok((wrapped, payload_status));
-        }
-        ForkVariant::Capella => {
-            // Unwrap fork-enum state and block to their inner capella types.
-            let capella_signed = E::unwrap_capella_signed_block(signed_block)
-                .ok_or(StateTransitionError::UnsupportedFork)?;
-            let capella_inner =
-                E::into_capella_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
-            // Apply the capella state transition via the `CapellaDispatch` blanket impl.
-            let (updated, payload_status) = capella_inner.apply_signed_block(
-                capella_signed,
-                execution_engine,
-                validate_result,
-                runtime_cfg,
-            )?;
-            // Wrap the result back into the fork-enum + invalidate the root cache.
-            let mut wrapped = E::capella_into_state(updated);
-            wrapped.invalidate_root_cache();
-            return Ok((wrapped, payload_status));
-        }
-        ForkVariant::Deneb => {
-            // Unwrap fork-enum state and block to their inner deneb types.
-            let deneb_signed = E::unwrap_deneb_signed_block(signed_block)
-                .ok_or(StateTransitionError::UnsupportedFork)?;
-            let deneb_inner = E::unwrap_deneb_state(&state)
-                .ok_or(StateTransitionError::UnsupportedFork)?
-                .clone();
-            // Apply the deneb state transition via the `DenebDispatch` blanket impl.
-            let (updated, payload_status) = deneb_inner.apply_signed_block(
-                deneb_signed,
-                execution_engine,
-                validate_result,
-                runtime_cfg,
-            )?;
-            // Wrap the result back into the fork-enum + invalidate the root cache.
-            let mut wrapped = E::deneb_into_state(updated);
-            wrapped.invalidate_root_cache();
-            return Ok((wrapped, payload_status));
-        }
-        ForkVariant::Electra => {
-            // Unwrap fork-enum state and block to their inner electra types.
-            let electra_signed = E::unwrap_electra_signed_block(signed_block)
-                .ok_or(StateTransitionError::UnsupportedFork)?;
-            let electra_inner =
-                E::into_electra_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
-            // Apply the electra state transition via the `ElectraDispatch` blanket impl.
-            let (updated, payload_status) = electra_inner.apply_signed_block(
-                electra_signed,
-                execution_engine,
-                validate_result,
-                runtime_cfg,
-            )?;
-            // Wrap the result back into the fork-enum + invalidate the root cache.
-            let mut wrapped = E::electra_into_state(updated);
-            wrapped.invalidate_root_cache();
-            return Ok((wrapped, payload_status));
-        }
-    }
-    // STF mutated `state` (phase0 + altair arms operate on `&mut state`); reset
-    // the cached top-level root so the next `cached_tree_hash_root` call
-    // recomputes from the post-STF state.
-    // Phase0 has no execution payload → payload_status = None.
-    state.invalidate_root_cache();
-    Ok((state, None))
+        // Phase0 falls through here; reset root cache before unifying exit.
+        // Phase0 has no execution payload → payload_status = None.
+        state.invalidate_root_cache();
+        (state, None)
+    };
+
+    // Record process_block duration now that all forks share this single exit.
+    metrics::histogram!(METRIC_STF_PROCESS_BLOCK_SECONDS).record(_pb_start.elapsed().as_secs_f64());
+
+    Ok((result_state, result_payload))
 }
 
 /// Phase0 inner state transition.

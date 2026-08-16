@@ -57,11 +57,12 @@ use crate::peer::manager::PeerManager;
 use crate::rpc::handler::handle_request;
 use crate::rpc::types::{RpcRequest, RpcResponse};
 use crate::scoring::{HandshakeFailKind, PeerScorer, RpcErrorKind, RpcMethod, ScoreEvent};
-use crate::topics::{GossipTopic, GossipTopicKind};
+use crate::topics::{GossipTopic, GossipTopicKind, topic_kind_name};
 use crate::types::{
     ConnectionDirection, GOODBYE_CLIENT_SHUTDOWN, GOODBYE_FAULT_ERROR, GOODBYE_IRRELEVANT_NETWORK,
     PeerState,
 };
+use pharos_utils::metrics::{METRIC_GOSSIP_MSG_TOTAL, METRIC_RPC_LATENCY_SECONDS};
 
 use behaviour::{PharosBehaviour, PharosBehaviourEvent};
 
@@ -574,6 +575,18 @@ impl<
                                 tracing::debug!(%message_id, "report_message_validation_result returned false (message not in cache)");
                             }
 
+                            // Increment gossip message counter for accepted messages.
+                            // Label by topic kind name (e.g. "beacon_block").
+                            // ADR cite: `D-metrics-prometheus-optin` (Phase 5).
+                            if matches!(&verdict, GossipVerdict::Accept) {
+                                let topic_label = topic_kind_name(&topic.kind);
+                                metrics::counter!(
+                                    METRIC_GOSSIP_MSG_TOTAL,
+                                    "topic" => topic_label
+                                )
+                                .increment(1);
+                            }
+
                             // Emit topic-specific events for accepted and selected-ignore messages.
                             match &verdict {
                                 GossipVerdict::Accept => {
@@ -910,6 +923,9 @@ impl<
                     let host = Arc::clone(&self.host);
                     let host_metadata = Arc::clone(&self.host_metadata);
                     // Handle synchronously to avoid lifetime complexity with &mut self.
+                    // Time the request handler to record req-resp method latency.
+                    // ADR cite: `D-metrics-prometheus-optin` (Phase 5).
+                    let _rpc_t0 = std::time::Instant::now();
                     let response = handle_request::<E, H, S>(
                         host.as_ref(),
                         &host_metadata,
@@ -919,6 +935,12 @@ impl<
                         negotiated_protocol_id,
                     )
                     .await;
+                    let method_label = format!("{method:?}");
+                    metrics::histogram!(
+                        METRIC_RPC_LATENCY_SECONDS,
+                        "method" => method_label
+                    )
+                    .record(_rpc_t0.elapsed().as_secs_f64());
 
                     // Emit PeerConnected for inbound Status after a successful handshake.
                     //

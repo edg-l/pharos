@@ -15,6 +15,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use pharos_utils::metrics::METRIC_ENGINE_CALL_LATENCY_SECONDS;
+
 use crate::error::EngineError;
 use crate::jwt::{JwtSecret, sign_token};
 use crate::types::{
@@ -161,6 +163,20 @@ impl EngineClient {
     }
 
     async fn rpc_call<P: Serialize, R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: P,
+    ) -> Result<R, EngineError> {
+        let _rpc_start = std::time::Instant::now();
+        let result = self.rpc_call_inner(method, params).await;
+        // Record latency regardless of success/error (label by Engine API method).
+        // ADR cite: `D-metrics-prometheus-optin` (Phase 5).
+        metrics::histogram!(METRIC_ENGINE_CALL_LATENCY_SECONDS, "method" => method.to_owned())
+            .record(_rpc_start.elapsed().as_secs_f64());
+        result
+    }
+
+    async fn rpc_call_inner<P: Serialize, R: DeserializeOwned>(
         &self,
         method: &str,
         params: P,

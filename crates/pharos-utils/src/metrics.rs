@@ -15,8 +15,8 @@
 
 use std::net::SocketAddr;
 
-pub use metrics_exporter_prometheus::BuildError;
 use metrics_exporter_prometheus::PrometheusBuilder;
+pub use metrics_exporter_prometheus::{BuildError, PrometheusHandle};
 
 // ── Histogram bucket set (roadmap § Metrics layer) ───────────────────────────
 // [0.5, 1, 5, 25, 100, 500, 2500] ms expressed in seconds.
@@ -66,6 +66,26 @@ pub fn init_metrics(addr: SocketAddr) -> Result<(), BuildError> {
     describe_metrics();
     register_metrics();
     Ok(())
+}
+
+/// Install the global Prometheus recorder without binding an HTTP listener.
+///
+/// Returns a [`PrometheusHandle`] that can be used in tests to call
+/// [`PrometheusHandle::render`] and inspect metric values without needing a
+/// running HTTP server.
+///
+/// # Errors
+///
+/// Returns [`BuildError`] if the recorder is already installed or the bucket
+/// configuration is invalid.
+pub fn init_metrics_with_handle() -> Result<PrometheusHandle, BuildError> {
+    let handle = PrometheusBuilder::new()
+        .set_buckets(LATENCY_BUCKETS)?
+        .install_recorder()?;
+
+    describe_metrics();
+    register_metrics();
+    Ok(handle)
 }
 
 /// Register human-readable descriptions for every declared metric.

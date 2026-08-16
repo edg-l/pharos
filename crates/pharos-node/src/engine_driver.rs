@@ -507,24 +507,34 @@ pub struct NewPayloadRequest<E: EthSpec> {
 
 /// Derive the `safe_block_hash` for `engine_forkchoiceUpdatedV1`.
 ///
-/// Per `specs/bellatrix/fork-choice.md:93-100`.
+/// Per `specs/bellatrix/fork-choice.md:93-100` and
+/// `consensus-specs/sync/optimistic.md` "Validator assignments / Re-orgs".
 ///
-/// M4a simplification: uses the justified-checkpoint head's EL block hash.
-/// The full `get_safe_execution_block_hash` re-org-aware variant (which
-/// considers proposer-boost state) is deferred to M11 alongside the full
-/// proposer-boost re-org logic.
+/// Implements the re-org-aware form of `get_safe_execution_block_hash`:
+/// 1. Determine the current head via `get_head` (accounts for proposer-boost).
+/// 2. Walk back to the ancestor of that head at the justified epoch using
+///    `get_checkpoint_block` — this is the "safe" canonical ancestor that is
+///    consistent with the current head/proposer-boost view, rather than the
+///    bare `justified_checkpoint.root` (which may differ when proposer boost
+///    promotes a descendant of the justified root).
+/// 3. Apply `latest_verified_ancestor` so an optimistically-imported block is
+///    NEVER sent to the EL as `safe`.
 ///
-/// Resolves `latest_verified_ancestor` of the justified checkpoint root FIRST,
-/// so an optimistically-imported block is NEVER sent to the EL as `safe`.
-/// Per `consensus-specs/sync/optimistic.md` "Validator assignments / Re-orgs":
-/// "the safe block hash MUST be the `latest_verified_ancestor` of the justified
-/// checkpoint block". ADR `D-fcu-safe-finalized-verified-ancestor`.
-///
-/// Per `D-engine-head-driver` ADR: full `get_safe_execution_block_hash` is
-/// deferred to M11.
-pub fn compute_safe_block_hash<E: EthSpec>(store: &FcStore<E>) -> Hash256 {
-    use pharos_fork_choice::{execution_block_hash_at_root, latest_verified_ancestor};
-    let verified = latest_verified_ancestor::<E>(store, store.justified_checkpoint.root);
+/// ADR `D-safe-hash-verified-ancestor`.
+pub fn compute_safe_block_hash<E: EthSpec>(store: &FcStore<E>) -> Hash256
+where
+    E::BeaconBlock: pharos_types::views::BeaconBlockView + Clone,
+    E::BeaconState: pharos_types::BeaconStateView,
+{
+    use pharos_fork_choice::{
+        execution_block_hash_at_root, get_checkpoint_block, get_head, latest_verified_ancestor,
+    };
+    // Get the head root accounting for proposer boost.
+    let head = get_head::<E>(store);
+    // Walk back from the head to the ancestor at the justified epoch.
+    let safe_root = get_checkpoint_block::<E>(store, head, store.justified_checkpoint.epoch);
+    // Resolve latest_verified_ancestor to never send an optimistic block as safe.
+    let verified = latest_verified_ancestor::<E>(store, safe_root);
     execution_block_hash_at_root(store, verified)
 }
 
@@ -858,7 +868,8 @@ fn maybe_emit_head_change<E: EthSpec>(
     prev_head: Root,
     head_tx: &watch::Sender<Option<HeadChange>>,
 ) where
-    E::BeaconBlock: BeaconBlockView,
+    E::BeaconBlock: BeaconBlockView + Clone,
+    E::BeaconState: pharos_types::BeaconStateView,
 {
     if new_head == prev_head {
         return;

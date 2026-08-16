@@ -27,7 +27,9 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use parking_lot::{Mutex, RwLock};
 use pharos_engine::{EngineClient, JwtSecret, spawn_engine_actor};
 use pharos_fork_choice::Store as FcStore;
-use pharos_node::engine_driver::{NewPayloadRequest, run_engine_driver_loop};
+use pharos_node::engine_driver::{
+    NewPayloadRequest, compute_safe_block_hash, run_engine_driver_loop,
+};
 use pharos_ssz::TreeHash;
 use pharos_types::phase0::primitives::Root;
 use pharos_types::state::{BeaconBlock as ForkBeaconBlock, MinimalBeaconState};
@@ -308,4 +310,72 @@ async fn engine_driver_marks_invalid_payload_and_skips_in_get_head() {
 
     // Drop head_tx to allow head_rx to close (stops driver loop).
     drop(head_tx);
+}
+
+// ── safe-hash tests ───────────────────────────────────────────────────────────
+
+/// A Bellatrix head block with `PayloadStatus::NotValidated` must NEVER be
+/// returned as the `safe_block_hash`.
+///
+/// The store has: anchor (Phase0, non-execution) → block_a (Bellatrix,
+/// NotValidated). `compute_safe_block_hash` must resolve via
+/// `latest_verified_ancestor` to the anchor, whose execution hash is the zero
+/// hash (Phase0 has no execution payload).
+///
+/// Per ADR `D-safe-hash-verified-ancestor`.
+// Block fields are set after Default::default(); struct-init syntax cannot
+// express nested fields cleanly.
+#[allow(clippy::field_reassign_with_default)]
+#[test]
+fn compute_safe_block_hash_never_returns_not_validated_head() {
+    use pharos_fork_choice::get_forkchoice_store;
+    use pharos_types::bellatrix::MinimalBeaconBlock as BellatrixBlock;
+    use pharos_types::phase0::{BeaconBlock, Slot};
+    use pharos_utils::Hash256;
+
+    // Build genesis store (Phase0).
+    let genesis_state =
+        MinimalBeaconState::Phase0(pharos_types::phase0::MinimalBeaconState::default());
+    let state_root = genesis_state.tree_hash_root();
+    let mut raw_genesis = BeaconBlock::default();
+    raw_genesis.state_root = state_root;
+    let genesis_block = ForkBeaconBlock::Phase0(raw_genesis);
+    let mut store: FcStore<MinimalEthSpec> =
+        get_forkchoice_store::<MinimalEthSpec>(genesis_state, genesis_block);
+
+    let anchor_root = store.justified_checkpoint.root;
+
+    // Insert a Bellatrix child with a non-zero block_hash (execution-enabled).
+    let exec_block_hash = Hash256::from_array([0xBB; 32]);
+    let mut raw_exec = BellatrixBlock::default();
+    raw_exec.slot = Slot(1);
+    raw_exec.parent_root = anchor_root;
+    raw_exec.body.execution_payload.block_hash = exec_block_hash;
+    let exec_block = ForkBeaconBlock::Bellatrix(raw_exec);
+    let exec_root = exec_block.tree_hash_root();
+    store.blocks.insert(exec_root, exec_block);
+    store
+        .block_states
+        .insert(exec_root, MinimalBeaconState::default());
+    // Mark it NotValidated (optimistic).
+    store.mark_payload_status(exec_root, PayloadStatus::NotValidated);
+    // Give it weight so it would be chosen as head.
+    store
+        .unrealized_justifications
+        .insert(exec_root, store.justified_checkpoint.clone());
+
+    // compute_safe_block_hash must NOT return exec_block_hash because the block
+    // is NotValidated. latest_verified_ancestor walks back to anchor (Phase0,
+    // non-execution → zero hash).
+    let safe = compute_safe_block_hash::<MinimalEthSpec>(&store);
+    assert_ne!(
+        safe, exec_block_hash,
+        "a NotValidated Bellatrix head must never be the safe_block_hash"
+    );
+    // Anchor is Phase0 (no execution payload) → safe hash is the zero hash.
+    assert_eq!(
+        safe,
+        Hash256::default(),
+        "safe_block_hash must be zero (Phase0 anchor) when head is NotValidated"
+    );
 }
