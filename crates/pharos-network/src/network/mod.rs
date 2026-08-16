@@ -47,6 +47,7 @@ use crate::error::NetworkError;
 use crate::gossip::config::gossipsub_behaviour;
 use crate::gossip::{
     dispatch_gossip_message, subscribe_altair_extra_topics, subscribe_base_topics,
+    subscribe_deneb_blob_topics,
 };
 use crate::handle::NetworkHandle;
 use crate::host::{
@@ -2053,9 +2054,21 @@ impl<E: EthSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E>, S: PeerS
         match active_fork {
             Some(crate::types::Fork::Altair)
             | Some(crate::types::Fork::Bellatrix)
-            | Some(crate::types::Fork::Capella)
-            | Some(crate::types::Fork::Deneb) => {
+            | Some(crate::types::Fork::Capella) => {
                 subscribe_altair_extra_topics::<E>(
+                    &mut swarm.behaviour_mut().gossipsub,
+                    fork_digest,
+                    &mut topic_map,
+                )?;
+            }
+            Some(crate::types::Fork::Deneb) => {
+                // Deneb: altair extras + the EIP-4844 blob_sidecar subnets.
+                subscribe_altair_extra_topics::<E>(
+                    &mut swarm.behaviour_mut().gossipsub,
+                    fork_digest,
+                    &mut topic_map,
+                )?;
+                subscribe_deneb_blob_topics::<E>(
                     &mut swarm.behaviour_mut().gossipsub,
                     fork_digest,
                     &mut topic_map,

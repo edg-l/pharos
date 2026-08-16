@@ -151,6 +151,35 @@ pub fn subscribe_altair_extra_topics<E: EthSpec>(
     Ok(())
 }
 
+// ── subscribe_deneb_blob_topics ────────────────────────────────────────────────
+
+/// Subscribe to the Deneb (EIP-4844) `blob_sidecar_<i>` subnet topics under
+/// `fork_digest` and merge them into an existing `topic_map`.
+///
+/// Subscribes `blob_sidecar_<i>` for each subnet `i` in
+/// `0..E::BLOB_SIDECAR_SUBNET_COUNT` (= 6 for both presets). Without this, a
+/// node on a Deneb-or-later fork never receives blob sidecars over gossip, so a
+/// blob-carrying block's data-availability gate can never be satisfied at the
+/// tip (`specs/deneb/p2p-interface.md` blob-sidecar topics).
+pub fn subscribe_deneb_blob_topics<E: EthSpec>(
+    gs: &mut gossipsub::Behaviour,
+    fork_digest: ForkDigest,
+    topic_map: &mut HashMap<TopicHash, GossipTopic>,
+) -> Result<(), NetworkError> {
+    for subnet in 0..E::BLOB_SIDECAR_SUBNET_COUNT {
+        let topic = GossipTopic {
+            fork_digest,
+            kind: GossipTopicKind::BlobSidecar(subnet),
+        };
+        gs.subscribe(&IdentTopic::new(topic.topic_str()))
+            .map_err(|e| {
+                NetworkError::Libp2p(format!("subscribe blob_sidecar_{subnet} failed: {e}"))
+            })?;
+        topic_map.insert(topic.topic_hash(), topic);
+    }
+    Ok(())
+}
+
 // ── dispatch_gossip_message ───────────────────────────────────────────────────
 
 /// SSZ-decode an already-decompressed gossip payload and dispatch to the

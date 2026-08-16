@@ -202,8 +202,10 @@ async fn do_migration<E: EthSpec>(
 /// - altair_fork_version  → `altair_gossip_topics` (5 base + altair extras)
 /// - bellatrix_fork_version → `bellatrix_gossip_topics`
 ///   (5 base + same altair extras, all under the bellatrix digest)
-/// - capella_fork_version (or unknown) → `capella_gossip_topics`
+/// - capella_fork_version → `capella_gossip_topics`
 ///   (5 base + altair extras + `bls_to_execution_change`)
+/// - deneb_fork_version (or unknown) → `deneb_gossip_topics`
+///   (capella topics + `blob_sidecar_<i>` subnets)
 fn topics_for_version<E: EthSpec>(
     version: Version,
     fork_schedule: &ForkSchedule,
@@ -217,9 +219,12 @@ fn topics_for_version<E: EthSpec>(
         bellatrix_gossip_topics::<E>(digest)
     } else if version == fork_schedule.capella_fork_version {
         capella_gossip_topics::<E>(digest)
+    } else if version == fork_schedule.deneb_fork_version {
+        // Deneb adds the EIP-4844 `blob_sidecar_<i>` subnet topics on top of Capella.
+        deneb_gossip_topics::<E>(digest)
     } else {
-        // Deneb and any future fork: same topic shape as Capella (no new gossip topics in Deneb).
-        capella_gossip_topics::<E>(digest)
+        // Any future fork beyond Deneb: same topic shape as Deneb until extended.
+        deneb_gossip_topics::<E>(digest)
     }
 }
 
@@ -353,6 +358,29 @@ pub(crate) fn capella_gossip_topics<E: EthSpec>(capella_digest: ForkDigest) -> V
     topics
 }
 
+/// The deneb gossip topics: capella topics + the EIP-4844 `blob_sidecar_<i>`
+/// subnet topics, all under the deneb fork digest.
+///
+/// Per `specs/deneb/p2p-interface.md`: Deneb adds `blob_sidecar_<subnet_id>` for
+/// each subnet in `0..BLOB_SIDECAR_SUBNET_COUNT` (= 6). Without these, a node
+/// crossing into Deneb never receives blob sidecars over gossip and a
+/// blob-carrying block's data-availability gate can never be satisfied at the tip.
+///
+/// Attestation subnet topics are handled by the subnet rotation driver.
+pub(crate) fn deneb_gossip_topics<E: EthSpec>(deneb_digest: ForkDigest) -> Vec<GossipTopic> {
+    let mut topics = capella_gossip_topics::<E>(deneb_digest);
+
+    // New in Deneb: `blob_sidecar_<i>` for each blob subnet.
+    for subnet in 0..E::BLOB_SIDECAR_SUBNET_COUNT {
+        topics.push(GossipTopic {
+            fork_digest: deneb_digest,
+            kind: GossipTopicKind::BlobSidecar(subnet),
+        });
+    }
+
+    topics
+}
+
 /// Returns the list of altair topics for a given fork digest.
 ///
 /// Public helper used by integration tests to verify that both nodes subscribed
@@ -378,6 +406,15 @@ pub fn bellatrix_topic_list<E: EthSpec>(bellatrix_digest: ForkDigest) -> Vec<Gos
 /// set (5 base + sync_committee_* + light_client_*) plus `bls_to_execution_change`.
 pub fn capella_topic_list<E: EthSpec>(capella_digest: ForkDigest) -> Vec<GossipTopic> {
     capella_gossip_topics::<E>(capella_digest)
+}
+
+/// Returns the list of deneb topics for a given fork digest.
+///
+/// Public helper used by integration tests to verify that the migration
+/// correctly subscribes to the deneb topic set: the capella set plus the
+/// `blob_sidecar_<i>` subnet topics (EIP-4844).
+pub fn deneb_topic_list<E: EthSpec>(deneb_digest: ForkDigest) -> Vec<GossipTopic> {
+    deneb_gossip_topics::<E>(deneb_digest)
 }
 
 // ── Command helpers ───────────────────────────────────────────────────────────
@@ -559,5 +596,53 @@ mod tests {
             altair_kinds, bellatrix_kinds,
             "altair and bellatrix topic lists must have identical topic kinds"
         );
+    }
+
+    /// Deneb topics = capella topics + exactly `BLOB_SIDECAR_SUBNET_COUNT`
+    /// `blob_sidecar_<i>` subnet topics; capella must NOT contain blob topics.
+    /// This guards the bug where the migration subscribed the capella set for
+    /// deneb and never received blob sidecars over gossip.
+    #[test]
+    fn deneb_topic_list_adds_blob_subnets() {
+        use pharos_network::topics::GossipTopicKind;
+        let sched = three_fork_schedule();
+        let gvr = Root::default();
+        let capella_digest = compute_fork_digest(sched.capella_fork_version, &gvr);
+        let deneb_digest = compute_fork_digest(sched.deneb_fork_version, &gvr);
+
+        let capella_topics = capella_topic_list::<MainnetEthSpec>(capella_digest);
+        let deneb_topics = deneb_topic_list::<MainnetEthSpec>(deneb_digest);
+
+        let n_blob = MainnetEthSpec::BLOB_SIDECAR_SUBNET_COUNT as usize;
+        assert_eq!(
+            deneb_topics.len(),
+            capella_topics.len() + n_blob,
+            "deneb must add exactly BLOB_SIDECAR_SUBNET_COUNT blob topics over capella"
+        );
+
+        let blob_count = deneb_topics
+            .iter()
+            .filter(|t| matches!(t.kind, GossipTopicKind::BlobSidecar(_)))
+            .count();
+        assert_eq!(blob_count, n_blob, "deneb must have all blob subnet topics");
+
+        assert!(
+            !capella_topics
+                .iter()
+                .any(|t| matches!(t.kind, GossipTopicKind::BlobSidecar(_))),
+            "capella must not contain blob_sidecar topics"
+        );
+
+        // All blob subnets 0..N present exactly once.
+        for subnet in 0..MainnetEthSpec::BLOB_SIDECAR_SUBNET_COUNT {
+            assert_eq!(
+                deneb_topics
+                    .iter()
+                    .filter(|t| t.kind == GossipTopicKind::BlobSidecar(subnet))
+                    .count(),
+                1,
+                "blob_sidecar_{subnet} must be present exactly once"
+            );
+        }
     }
 }
