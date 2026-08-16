@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pharos_types::BeaconSpec;
-use pharos_types::fork::{ForkSchedule, compute_fork_digest, compute_fork_digest_for_epoch};
+use pharos_types::fork::{ForkSchedule, compute_fork_digest_for_epoch};
 use pharos_types::phase0::ENRForkID;
 use pharos_types::phase0::primitives::Version;
 use pharos_utils::Epoch;
@@ -155,8 +155,31 @@ async fn do_migration<E: BeaconSpec>(
 ) {
     let gvr = fork_schedule.genesis_validators_root;
 
-    let old_digest = compute_fork_digest(old_version, &gvr);
-    let new_digest = compute_fork_digest(new_version, &gvr);
+    // Use the EIP-7892-aware digest: at/after the Fulu fork the digest is the
+    // base XORed with the blob-parameter hash, NOT the plain `compute_fork_digest`.
+    // The NEW (post-boundary) digest is computed at the crossing `epoch`; the OLD
+    // digest at the prior epoch (where the old fork was still current, so it stays
+    // the plain pre-Fulu digest). Must match `HostImpl::current_fork_digest`
+    // (Status/ENR) or peers reject us on the fulu topic set.
+    let old_epoch = Epoch(epoch.0.saturating_sub(1));
+    let old_digest = compute_fork_digest_for_epoch(
+        old_version,
+        &gvr,
+        old_epoch,
+        fork_schedule.fulu_fork_epoch,
+        &fork_schedule.blob_schedule,
+        fork_schedule.electra_fork_epoch,
+        E::MAX_BLOBS_PER_BLOCK_ELECTRA,
+    );
+    let new_digest = compute_fork_digest_for_epoch(
+        new_version,
+        &gvr,
+        epoch,
+        fork_schedule.fulu_fork_epoch,
+        &fork_schedule.blob_schedule,
+        fork_schedule.electra_fork_epoch,
+        E::MAX_BLOBS_PER_BLOCK_ELECTRA,
+    );
 
     info!(
         old_version = ?old_version,
