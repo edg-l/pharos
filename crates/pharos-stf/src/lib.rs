@@ -32,9 +32,12 @@ pub use capella::state_transition::{
     GetExpectedWithdrawalsDispatch,
 };
 pub use deneb::state_transition::{DenebDispatch, DenebJaFDispatch, DenebProcessSlotsDispatch};
-pub use electra::helpers::get_execution_requests_list;
+pub use electra::helpers::{
+    get_beacon_proposer_index_electra, get_execution_requests_list, parse_execution_requests_list,
+};
 pub use electra::state_transition::{
-    ElectraDispatch, ElectraJaFDispatch, ElectraProcessSlotsDispatch,
+    ElectraDispatch, ElectraGetExpectedWithdrawalsDispatch, ElectraJaFDispatch,
+    ElectraProcessBlockForProduction, ElectraProcessSlotsDispatch,
 };
 pub use phase0::block::process_block;
 pub use phase0::epoch::justification_and_finalization::process_justification_and_finalization;
@@ -866,6 +869,7 @@ where
     E::BellatrixBeaconState: BellatrixProcessBlockForProduction<E, EE> + TreeHash,
     E::CapellaBeaconState: CapellaProcessBlockForProduction<E, EE> + TreeHash,
     E::DenebBeaconState: DenebProcessBlockForProduction<E, EE> + TreeHash,
+    E::ElectraBeaconState: ElectraProcessBlockForProduction<E, EE> + TreeHash,
 {
     use pharos_types::views::ForkVariant;
 
@@ -933,7 +937,20 @@ where
             wrapped.invalidate_root_cache();
             Ok(wrapped)
         }
-        ForkVariant::Electra => Err(StateTransitionError::UnsupportedFork),
+        ForkVariant::Electra => {
+            let electra_block =
+                E::unwrap_electra_block(block).ok_or(StateTransitionError::UnsupportedFork)?;
+            let mut electra_inner =
+                E::into_electra_state(state).ok_or(StateTransitionError::UnsupportedFork)?;
+            electra_inner.process_block_for_production_electra(
+                electra_block,
+                execution_engine,
+                runtime_cfg,
+            )?;
+            let mut wrapped = E::electra_into_state(electra_inner);
+            wrapped.invalidate_root_cache();
+            Ok(wrapped)
+        }
     }
 }
 
@@ -2235,5 +2252,109 @@ mod fork_upgrade_tests {
                 // invariant that the minimal test state doesn't satisfy.
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod electra_production_tests {
+    use std::path::{Path, PathBuf};
+
+    use pharos_ssz::{Decode, TreeHash as _};
+    use pharos_types::electra::{MinimalBeaconState, MinimalSignedBeaconBlock};
+    use pharos_types::views::{
+        BeaconBlockView as _, BeaconStateView as _, ForkVariant, SignedBeaconBlockView as _,
+    };
+    use pharos_types::{EthSpec, MinimalEthSpec};
+
+    use super::bellatrix::execution_engine::NullExecutionEngine;
+    use super::{ForkEpochs, process_block_for_production, process_slots_fork};
+
+    fn fixtures_root() -> Option<PathBuf> {
+        let path = if let Ok(val) = std::env::var("PHAROS_SPEC_TESTS") {
+            PathBuf::from(val)
+        } else {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            PathBuf::from(home).join(".cache/pharos-spec-tests")
+        };
+        if path.is_dir() && std::fs::read_dir(&path).ok()?.next().is_some() {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
+    fn load_ssz_snappy<S: Decode>(path: &Path) -> S {
+        let compressed =
+            std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let mut decoder = snap::raw::Decoder::new();
+        let raw = decoder
+            .decompress_vec(&compressed)
+            .unwrap_or_else(|e| panic!("snappy decompress {}: {e}", path.display()));
+        S::from_ssz_bytes(&raw).unwrap_or_else(|e| panic!("ssz decode {}: {e:?}", path.display()))
+    }
+
+    /// Sigs-off electra block production matches the import re-verify.
+    ///
+    /// Loads a real electra `sanity/blocks` fixture (pre-state + single signed
+    /// block + expected post-state) and runs `process_block_for_production`
+    /// (`verify_signatures = false`, the production path) on the fixture block's
+    /// message. The resulting post-state's `tree_hash_root` MUST equal the
+    /// fixture's `post.ssz_snappy` root — i.e. the state a full node computes when
+    /// it re-imports and re-verifies the produced block. This exercises the
+    /// `ForkVariant::Electra` arm of `process_block_for_production` end-to-end
+    /// against the spec oracle.
+    #[test]
+    fn electra_sigs_off_production_matches_import_state_root() {
+        let root = match fixtures_root() {
+            Some(r) => r,
+            None => {
+                eprintln!("electra production: no fixtures found; skipping");
+                return;
+            }
+        };
+        // A single-block sanity case so the NullExecutionEngine (always-Valid) is a
+        // faithful stand-in for the EL.
+        let case_dir =
+            root.join("minimal/electra/sanity/blocks/pyspec_tests/empty_block_transition");
+        if !case_dir.is_dir() {
+            eprintln!("electra production: empty_block_transition case absent; skipping");
+            return;
+        }
+
+        let pre: MinimalBeaconState = load_ssz_snappy(&case_dir.join("pre.ssz_snappy"));
+        let post: MinimalBeaconState = load_ssz_snappy(&case_dir.join("post.ssz_snappy"));
+        let signed: MinimalSignedBeaconBlock =
+            load_ssz_snappy(&case_dir.join("blocks_0.ssz_snappy"));
+
+        let mut pre_enum = MinimalEthSpec::electra_into_state(pre);
+        assert_eq!(pre_enum.fork_variant(), ForkVariant::Electra);
+        let block_enum = MinimalEthSpec::electra_into_block(signed.message().clone());
+        let block_slot = block_enum.slot();
+
+        let runtime_cfg = pharos_types::config::RuntimeConfig {
+            seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+            ..pharos_types::config::RuntimeConfig::default()
+        };
+
+        // Mirror `produce_block` step (b): advance the head state to the proposal
+        // slot before processing the block (the production path is not preceded by
+        // `process_slots` inside `process_block_for_production`).
+        let fork_epochs = ForkEpochs::from_runtime_cfg(&runtime_cfg);
+        process_slots_fork::<MinimalEthSpec>(&mut pre_enum, block_slot, fork_epochs, &runtime_cfg)
+            .expect("process_slots_fork to the block slot must succeed");
+
+        let produced = process_block_for_production::<MinimalEthSpec, NullExecutionEngine>(
+            pre_enum,
+            &block_enum,
+            &NullExecutionEngine,
+            &runtime_cfg,
+        )
+        .expect("sigs-off electra production must succeed on a sanity fixture block");
+
+        assert_eq!(
+            produced.tree_hash_root(),
+            post.tree_hash_root(),
+            "sigs-off electra production post-state root must equal the fixture import root"
+        );
     }
 }

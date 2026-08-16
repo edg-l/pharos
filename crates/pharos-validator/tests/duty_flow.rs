@@ -130,6 +130,42 @@ async fn mock_submit_attestations(
     StatusCode::OK.into_response()
 }
 
+/// `POST /eth/v2/beacon/pool/attestations` — records the EIP-7549
+/// `SingleAttestation` submit and asserts the on-wire shape: each object MUST
+/// carry `committee_index` + `attester_index` and MUST NOT carry the
+/// multi-committee `aggregation_bits` (publishing the wrong shape on the subnet
+/// topic earns an instant peer ban).
+async fn mock_submit_attestations_v2(
+    State(state): State<MockBnState>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap_or(json!(null));
+    let first = parsed.get(0).cloned().unwrap_or(json!(null));
+    assert!(
+        first.get("committee_index").is_some(),
+        "SingleAttestation must carry committee_index; got {parsed}"
+    );
+    assert!(
+        first.get("attester_index").is_some(),
+        "SingleAttestation must carry attester_index; got {parsed}"
+    );
+    assert!(
+        first.get("aggregation_bits").is_none(),
+        "SingleAttestation must NOT carry aggregation_bits (peer-ban hazard); got {parsed}"
+    );
+    assert_eq!(
+        first.get("data").and_then(|d| d.get("index")),
+        Some(&json!("0")),
+        "EIP-7549: data.index must be 0; got {parsed}"
+    );
+    state
+        .call_log
+        .lock()
+        .unwrap()
+        .push("submit_single_attestation".to_string());
+    StatusCode::OK.into_response()
+}
+
 /// `GET /eth/v2/validator/aggregate_attestation` — returns a minimal aggregate.
 async fn mock_aggregate_attestation() -> impl IntoResponse {
     let zero = "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -168,6 +204,10 @@ async fn spawn_mock_bn(state: MockBnState) -> (SocketAddr, tokio::task::JoinHand
         .route(
             "/eth/v1/beacon/pool/attestations",
             post(mock_submit_attestations),
+        )
+        .route(
+            "/eth/v2/beacon/pool/attestations",
+            post(mock_submit_attestations_v2),
         )
         .route(
             "/eth/v2/validator/aggregate_attestation",
@@ -420,7 +460,18 @@ async fn test_attester_slot_slashing_record_before_submit() {
     };
 
     let slot = 42u64;
-    run_attester(&bn, &entry, &duty, slot, &fork, spy_db.as_ref(), 0, 12_000).await;
+    run_attester(
+        &bn,
+        &entry,
+        &duty,
+        slot,
+        &fork,
+        spy_db.as_ref(),
+        0,
+        12_000,
+        false, // is_electra: this test exercises the phase0 v1 attestation path
+    )
+    .await;
 
     let log = call_log.lock().unwrap().clone();
     eprintln!("attester call log: {:?}", log);
@@ -455,6 +506,109 @@ async fn test_attester_slot_slashing_record_before_submit() {
         .iter()
         .position(|s| s == "submit_attestation")
         .expect("submit_attestation in log");
+    assert!(
+        slashing_pos < submit_pos,
+        "slashing record (pos {slashing_pos}) must come before submit (pos {submit_pos})"
+    );
+}
+
+// ── Test 3b: electra attester flow — SingleAttestation on the v2 endpoint ─────
+
+/// At Electra (`is_electra = true`) the attester MUST submit an EIP-7549
+/// `SingleAttestation` to `POST /eth/v2/beacon/pool/attestations` (which the BN
+/// republishes on the `beacon_attestation_{subnet}` subnet topic), NOT the
+/// phase0 multi-committee `Attestation` on the v1 endpoint. The mock v2 handler
+/// asserts the on-wire shape (committee_index + attester_index present,
+/// aggregation_bits absent, data.index == 0). Per `specs/electra/validator.md:282-296`.
+#[tokio::test]
+async fn test_attester_slot_electra_single_attestation() {
+    use pharos_validator::bn_client::AttesterDuty;
+    use pharos_validator::run::run_attester;
+
+    let call_log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mock_state = MockBnState {
+        call_log: Arc::clone(&call_log),
+        produce_503: false,
+    };
+    let (addr, _bn_task) = spawn_mock_bn(mock_state).await;
+
+    let base_url = Url::parse(&format!("http://{}/", addr)).unwrap();
+    let bn = BnClient::new(vec![base_url]);
+
+    let entry = make_validator_entry();
+    let fork = ForkContext {
+        current_version: [0x05, 0x00, 0x00, 0x00],
+        genesis_validators_root: [0u8; 32],
+    };
+
+    let tmpdir = tempfile::tempdir().unwrap();
+    let db_path = tmpdir.path().join("slashing_att_electra.sqlite");
+    let real_db = SqliteSlashingProtection::open(&db_path).unwrap();
+    let spy_db = Arc::new(SpySlashing {
+        inner: real_db,
+        call_log: Arc::clone(&call_log),
+    });
+
+    let duty = AttesterDuty {
+        pubkey: entry.pubkey_hex.clone(),
+        validator_index: "1".to_string(),
+        committee_index: "2".to_string(),
+        committee_length: "64".to_string(),
+        committees_at_slot: "4".to_string(),
+        validator_committee_index: "0".to_string(),
+        slot: "42".to_string(),
+    };
+
+    let slot = 42u64;
+    run_attester(
+        &bn,
+        &entry,
+        &duty,
+        slot,
+        &fork,
+        spy_db.as_ref(),
+        0,
+        12_000,
+        true, // is_electra: exercises the EIP-7549 SingleAttestation v2 path
+    )
+    .await;
+
+    let log = call_log.lock().unwrap().clone();
+    eprintln!("electra attester call log: {:?}", log);
+
+    assert!(
+        log.contains(&"attestation_data".to_string()),
+        "attestation_data should be fetched; log = {:?}",
+        log
+    );
+    // The electra path submits the SingleAttestation on the v2 endpoint, NOT the
+    // phase0 v1 `submit_attestation`.
+    assert!(
+        log.contains(&"submit_single_attestation".to_string()),
+        "electra attestation must be submitted as SingleAttestation (v2); log = {:?}",
+        log
+    );
+    assert!(
+        !log.contains(&"submit_attestation".to_string()),
+        "electra attester must NOT use the phase0 v1 endpoint; log = {:?}",
+        log
+    );
+
+    // Slashing record exactly once, before submit (unchanged from phase0).
+    let att_records = log.iter().filter(|s| *s == "slashing_record_att").count();
+    assert_eq!(
+        att_records, 1,
+        "attestation must be slashing-recorded exactly once; log = {:?}",
+        log
+    );
+    let slashing_pos = log
+        .iter()
+        .position(|s| s == "slashing_record_att")
+        .expect("slashing_record_att in log");
+    let submit_pos = log
+        .iter()
+        .position(|s| s == "submit_single_attestation")
+        .expect("submit_single_attestation in log");
     assert!(
         slashing_pos < submit_pos,
         "slashing record (pos {slashing_pos}) must come before submit (pos {submit_pos})"

@@ -127,6 +127,14 @@ pub struct VcConfig {
     pub slot_duration_ms: u64,
     /// Whether doppelganger protection is enabled (`--doppelganger-protection`).
     pub doppelganger_protection: bool,
+    /// The network's `ELECTRA_FORK_VERSION`, fetched from the BN spec at startup.
+    ///
+    /// `None` when the BN does not advertise an electra fork (pre-electra
+    /// networks); in that case the VC always uses the phase0 v1 attestation
+    /// submission path. When `Some(v)` and the live `current_version` equals `v`
+    /// (or any post-electra version once newer forks exist), the VC switches to
+    /// the EIP-7549 `SingleAttestation` v2 submission path.
+    pub electra_fork_version: Option<[u8; 4]>,
 }
 
 // ── Fork-version parsing ────────────────────────────────────────────────────────
@@ -279,6 +287,7 @@ pub async fn run_attester(
     slashing_db: &dyn SlashingProtection,
     genesis_time_secs: u64,
     slot_duration_ms: u64,
+    is_electra: bool,
 ) {
     let committee_index: u64 = duty.committee_index.parse().unwrap_or(0);
     let committee_length: u64 = duty.committee_length.parse().unwrap_or(1);
@@ -310,8 +319,17 @@ pub async fn run_attester(
     // attestation is packed into a block, so a placeholder root would be rejected.
     // `att_hash` (= the data root) is reused as the `attestation_data_root` for
     // the aggregate query below.
+    //
+    // EIP-7549: at Electra the on-wire `AttestationData.index` is always 0 (the
+    // committee index moved to `SingleAttestation.committee_index` /
+    // `Attestation.committee_bits`). The validator MUST sign over the data with
+    // `index = 0`, so we zero it before computing the signing root. The committee
+    // index is preserved separately in `committee_index` for the SingleAttestation.
     use pharos_ssz::TreeHash;
-    let typed_att = att_data_from_dto(&att_data);
+    let mut typed_att = att_data_from_dto(&att_data);
+    if is_electra {
+        typed_att.index = CommitteeIndex(0);
+    }
     let att_hash = typed_att.tree_hash_root();
 
     // Step 2: Sign attestation (slashing check+record committed before signing).
@@ -349,28 +367,68 @@ pub async fn run_attester(
     // Length sentinel bit at index `bits_len`.
     agg_bits[bits_len / 8] |= 1 << (bits_len % 8);
 
-    let attestation = json!([{
-        "aggregation_bits": format!("0x{}", hex::encode(&agg_bits)),
-        "data": {
-            "slot": att_data.slot,
-            "index": att_data.index,
-            "beacon_block_root": att_data.beacon_block_root,
-            "source": {
-                "epoch": att_data.source.epoch,
-                "root": att_data.source.root,
+    // Submit on the appropriate endpoint for the active fork.
+    //
+    // PEER-BAN HAZARD (EIP-7549): the `beacon_attestation_{subnet}` gossip topic
+    // carries a `SingleAttestation` at/after Electra, NOT the multi-committee
+    // `Attestation`. We post the `SingleAttestation` to the v2 pool endpoint and
+    // the BN republishes it on the subnet topic. Conflating the two shapes earns
+    // an instant ban from peers. Pre-Electra we keep the phase0 v1 `Attestation`
+    // path unchanged. Per `specs/electra/validator.md:282-296`.
+    if is_electra {
+        // EIP-7549 SingleAttestation: committee_index carries the committee, the
+        // data.index is 0 (already zeroed in `typed_att` above for signing).
+        let single = json!([{
+            "committee_index": committee_index.to_string(),
+            "attester_index": entry.index.to_string(),
+            "data": {
+                "slot": att_data.slot,
+                "index": "0",
+                "beacon_block_root": att_data.beacon_block_root,
+                "source": {
+                    "epoch": att_data.source.epoch,
+                    "root": att_data.source.root,
+                },
+                "target": {
+                    "epoch": att_data.target.epoch,
+                    "root": att_data.target.root,
+                },
             },
-            "target": {
-                "epoch": att_data.target.epoch,
-                "root": att_data.target.root,
+            "signature": att_sig_hex,
+        }]);
+        match bn.submit_attestations_v2(&single, "electra").await {
+            Ok(()) => {
+                info!(slot, validator = %entry.pubkey_hex, "single attestation submitted (electra)")
+            }
+            Err(BnError::Unavailable) => {
+                warn!(slot, "BN unavailable (503) on single-attestation submit")
+            }
+            Err(e) => warn!(slot, %e, "single-attestation submit failed"),
+        }
+    } else {
+        let attestation = json!([{
+            "aggregation_bits": format!("0x{}", hex::encode(&agg_bits)),
+            "data": {
+                "slot": att_data.slot,
+                "index": att_data.index,
+                "beacon_block_root": att_data.beacon_block_root,
+                "source": {
+                    "epoch": att_data.source.epoch,
+                    "root": att_data.source.root,
+                },
+                "target": {
+                    "epoch": att_data.target.epoch,
+                    "root": att_data.target.root,
+                },
             },
-        },
-        "signature": att_sig_hex,
-    }]);
+            "signature": att_sig_hex,
+        }]);
 
-    match bn.submit_attestations(&attestation).await {
-        Ok(()) => info!(slot, validator = %entry.pubkey_hex, "attestation submitted"),
-        Err(BnError::Unavailable) => warn!(slot, "BN unavailable (503) on attestation submit"),
-        Err(e) => warn!(slot, %e, "attestation submit failed"),
+        match bn.submit_attestations(&attestation).await {
+            Ok(()) => info!(slot, validator = %entry.pubkey_hex, "attestation submitted"),
+            Err(BnError::Unavailable) => warn!(slot, "BN unavailable (503) on attestation submit"),
+            Err(e) => warn!(slot, %e, "attestation submit failed"),
+        }
     }
 
     // ── Aggregator path (slot + 2/3) ──────────────────────────────────────────
@@ -724,6 +782,14 @@ pub async fn run_vc_loop(
             genesis_validators_root,
         };
 
+        // EIP-7549: the active fork is Electra when the live fork version matches
+        // the network's `ELECTRA_FORK_VERSION` (fetched from the BN spec at
+        // startup). Drives the `SingleAttestation` v2 submission path in
+        // `run_attester`. `None` (pre-electra network) → always phase0 path.
+        let is_electra = config
+            .electra_fork_version
+            .is_some_and(|v| v == current_version);
+
         let epoch_duties = {
             let map = duties.read().await;
             map.get(&current_epoch).cloned()
@@ -790,6 +856,7 @@ pub async fn run_vc_loop(
                             slashing_db.as_ref(),
                             config.genesis_time,
                             config.slot_duration_ms,
+                            is_electra,
                         )
                         .await;
                     } else {

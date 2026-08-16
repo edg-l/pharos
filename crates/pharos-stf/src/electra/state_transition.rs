@@ -858,6 +858,303 @@ where
     }
 }
 
+// ── ElectraProcessBlockForProduction trait ────────────────────────────────────
+
+/// Dispatch trait for production block processing on electra inner states.
+///
+/// Mirrors `DenebProcessBlockForProduction`: applies `block` (unsigned) to
+/// `self` with `verify_signatures=false` so block production builds the
+/// post-state without BLS verification (the node re-verifies on import, per
+/// `D-process-block-verify-flag`).
+pub trait ElectraProcessBlockForProduction<E: EthSpec, EE: ExecutionEngine>: Sized {
+    /// Apply `block` (unsigned) to `self` with `verify_signatures=false`.
+    fn process_block_for_production_electra(
+        &mut self,
+        block: &E::ElectraBeaconBlock,
+        execution_engine: &EE,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<(), StateTransitionError>;
+}
+
+impl<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS_ELECTRA: u64,
+    const MAX_ATTESTATIONS_ELECTRA: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
+    const MAX_AGGREGATION_BITS: u64,
+    const MAX_COMMITTEES_PER_SLOT: u64,
+    const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    E,
+    EE,
+> ElectraProcessBlockForProduction<E, EE>
+    for BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+    >
+where
+    E: EthSpec<
+            AltairBeaconState = AltairBeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+            >,
+            CapellaBeaconState = CapellaBeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            DenebBeaconState = DenebBeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+            >,
+            ElectraBeaconState = BeaconState<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                PENDING_DEPOSITS_LIMIT,
+                PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+                PENDING_CONSOLIDATIONS_LIMIT,
+            >,
+            ElectraBeaconBlock = pharos_types::electra::BeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS_ELECTRA,
+                MAX_ATTESTATIONS_ELECTRA,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+                MAX_AGGREGATION_BITS,
+                MAX_COMMITTEES_PER_SLOT,
+                MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+                MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+                MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+            >,
+        >,
+    E::AltairBeaconState: TreeHash,
+    E::ElectraBeaconState: TreeHash,
+    pharos_types::electra::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS_ELECTRA,
+        MAX_ATTESTATIONS_ELECTRA,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+        MAX_AGGREGATION_BITS,
+        MAX_COMMITTEES_PER_SLOT,
+        MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+        MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+    >: pharos_types::views::BeaconBlockBodyView<Deposit = pharos_types::phase0::Deposit<33>>,
+    BLSPubkey: Default + Clone,
+    EE: ExecutionEngine,
+{
+    fn process_block_for_production_electra(
+        &mut self,
+        block: &E::ElectraBeaconBlock,
+        execution_engine: &EE,
+        runtime_cfg: &RuntimeConfig,
+    ) -> Result<(), StateTransitionError> {
+        process_block::<
+            MAX_PROPOSER_SLASHINGS,
+            MAX_ATTESTER_SLASHINGS_ELECTRA,
+            MAX_ATTESTATIONS_ELECTRA,
+            MAX_DEPOSITS,
+            MAX_VOLUNTARY_EXITS,
+            MAX_VALIDATORS_PER_COMMITTEE,
+            DEPOSIT_PROOF_LENGTH,
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+            MAX_BLS_TO_EXECUTION_CHANGES,
+            MAX_BLOB_COMMITMENTS_PER_BLOCK,
+            MAX_AGGREGATION_BITS,
+            MAX_COMMITTEES_PER_SLOT,
+            MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+            MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+            MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+            PENDING_DEPOSITS_LIMIT,
+            PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+            PENDING_CONSOLIDATIONS_LIMIT,
+            E,
+            EE,
+        >(self, block, execution_engine, false, runtime_cfg)?;
+        Ok(())
+    }
+}
+
+// ── ElectraGetExpectedWithdrawalsDispatch trait ───────────────────────────────
+
+/// Dispatch trait for `get_expected_withdrawals` on electra inner states.
+///
+/// Mirrors capella's `GetExpectedWithdrawalsDispatch` but routes to the
+/// EIP-7251 electra sweep (`get_expected_withdrawals_electra`), which runs the
+/// pending-partial-withdrawal queue before the regular validator sweep.
+/// Lets `pharos-node` build the V4 payload attributes through the opaque
+/// `E::ElectraBeaconState` associated type.
+pub trait ElectraGetExpectedWithdrawalsDispatch<E: EthSpec> {
+    /// Compute the list of expected withdrawals for the next block on this state.
+    fn get_expected_withdrawals_electra_dispatch(&self) -> Vec<pharos_types::capella::Withdrawal>;
+}
+
+impl<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    E,
+> ElectraGetExpectedWithdrawalsDispatch<E>
+    for BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+    >
+where
+    E: EthSpec<
+        ElectraBeaconState = BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            PENDING_DEPOSITS_LIMIT,
+            PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+            PENDING_CONSOLIDATIONS_LIMIT,
+        >,
+    >,
+{
+    fn get_expected_withdrawals_electra_dispatch(&self) -> Vec<pharos_types::capella::Withdrawal> {
+        crate::electra::operations::withdrawals::get_expected_withdrawals_electra::<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            PENDING_DEPOSITS_LIMIT,
+            PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+            PENDING_CONSOLIDATIONS_LIMIT,
+            E,
+        >(self)
+        .withdrawals
+    }
+}
+
 // ── ElectraJaFDispatch trait ──────────────────────────────────────────────────
 
 /// Dispatch trait for `process_justification_and_finalization` on electra states.

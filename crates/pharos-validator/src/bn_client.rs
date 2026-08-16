@@ -373,6 +373,17 @@ impl BnClient {
         Ok(parsed.data)
     }
 
+    /// `GET /eth/v1/config/spec` — chain spec config (fork versions, presets).
+    ///
+    /// Returns the raw `data` object as JSON. The VC reads `ELECTRA_FORK_VERSION`
+    /// from it at startup to detect when the active fork is Electra (switching
+    /// attestation submission to the `SingleAttestation` v2 path).
+    pub async fn get_spec(&self) -> Result<serde_json::Value, BnError> {
+        let resp = self.get("eth/v1/config/spec").await?;
+        let parsed: serde_json::Value = resp.json().await?;
+        Ok(parsed.get("data").cloned().unwrap_or(parsed))
+    }
+
     /// `GET /eth/v1/beacon/states/head/fork` — current fork data (for signing domains).
     pub async fn get_fork(&self) -> Result<ForkDataDto, BnError> {
         let resp = self.get("eth/v1/beacon/states/head/fork").await?;
@@ -645,6 +656,28 @@ impl BnClient {
         self.post("eth/v1/beacon/pool/attestations", attestations)
             .await?;
         Ok(())
+    }
+
+    /// `POST /eth/v2/beacon/pool/attestations` — fork-tagged attestation submit.
+    ///
+    /// At and after Electra this endpoint MUST be sent `SingleAttestation` objects
+    /// (EIP-7549), with the `Eth-Consensus-Version` header naming the fork. The BN
+    /// publishes each on the appropriate `beacon_attestation_{subnet}` subnet topic
+    /// as a `SingleAttestation` (NOT the multi-committee `Attestation`, which would
+    /// earn an instant peer ban). Per `beacon-APIs/apis/beacon/pool/attestations.v2.yaml`.
+    pub async fn submit_attestations_v2(
+        &self,
+        attestations: &JsonValue,
+        consensus_version: &str,
+    ) -> Result<(), BnError> {
+        self.send_with_failover("eth/v2/beacon/pool/attestations", |url| {
+            self.client
+                .post(url)
+                .header("Eth-Consensus-Version", consensus_version)
+                .json(attestations)
+        })
+        .await
+        .map(|_| ())
     }
 
     /// `POST /eth/v1/beacon/pool/sync_committees`

@@ -136,6 +136,11 @@ async fn main() -> anyhow::Result<()> {
     let (genesis_validators_root, genesis_time) = fetch_genesis(&bn).await;
     info!(genesis_time, "beacon genesis fetched");
 
+    // Electra fork version (EIP-7549 SingleAttestation submission gate). `None`
+    // on pre-electra networks; the VC then always uses the phase0 attestation path.
+    let electra_fork_version = fetch_electra_fork_version(&bn).await;
+    info!(?electra_fork_version, "electra fork version resolved");
+
     // ── Import slashing protection (if requested) ─────────────────────────────
 
     if let Some(ref import_path) = args.import_slashing_protection {
@@ -303,6 +308,7 @@ async fn main() -> anyhow::Result<()> {
         slots_per_epoch: SLOTS_PER_EPOCH,
         slot_duration_ms: SLOT_DURATION_MS,
         doppelganger_protection: args.doppelganger_protection,
+        electra_fork_version,
     });
 
     info!("validator client run loop starting");
@@ -358,4 +364,23 @@ async fn fetch_genesis(bn: &BnClient) -> ([u8; 32], u64) {
             ([0u8; 32], 0)
         }
     }
+}
+
+/// Fetch the network's `ELECTRA_FORK_VERSION` from `GET /eth/v1/config/spec`.
+///
+/// Returns `None` when the BN does not advertise it (a pre-Electra network or an
+/// older BN), in which case the VC always uses the phase0 attestation path. The
+/// VC compares the live `current_version` against this value each slot to decide
+/// whether to submit `SingleAttestation` objects (EIP-7549).
+async fn fetch_electra_fork_version(bn: &BnClient) -> Option<[u8; 4]> {
+    let spec = bn.get_spec().await.ok()?;
+    let hex_str = spec.get("ELECTRA_FORK_VERSION")?.as_str()?;
+    let stripped = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    let bytes = hex::decode(stripped).ok()?;
+    if bytes.len() != 4 {
+        return None;
+    }
+    let mut arr = [0u8; 4];
+    arr.copy_from_slice(&bytes);
+    Some(arr)
 }

@@ -466,6 +466,11 @@ where
         host.fork_digest_for(NetworkFork::Phase0)
     } else if E::unwrap_altair_signed_block(signed).is_some() {
         host.fork_digest_for(NetworkFork::Altair)
+    } else if E::unwrap_electra_signed_block(signed).is_some() {
+        // Must precede Deneb/Capella/Bellatrix: an Electra block tagged with the
+        // wrong digest would be decoded with the wrong schema by peers and earn an
+        // instant InvalidByteLength ban (cf. M5 `D-blocksbyroot-bare-list`).
+        host.fork_digest_for(NetworkFork::Electra)
     } else if E::unwrap_deneb_signed_block(signed).is_some() {
         // Must precede Capella and Bellatrix: a Deneb block tagged with the wrong
         // digest would be decoded with the wrong schema by peers.

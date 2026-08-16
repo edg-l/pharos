@@ -1864,6 +1864,71 @@ pub fn get_execution_requests_list<
     result
 }
 
+/// Inverse of [`get_execution_requests_list`]: decode the Engine API V4
+/// `executionRequests` parameter (one entry per non-empty request type, each
+/// `request_type_byte || ssz_serialize(request_list)`, in canonical order
+/// 0x00/0x01/0x02 with empty lists OMITTED) back into an `ExecutionRequests`.
+///
+/// Used by block production: `engine_getPayloadV4` returns the requests as a
+/// list of byte strings and the proposer must reconstruct the typed
+/// `ExecutionRequests` to put in the electra `BeaconBlockBody`. Per EIP-7685.
+///
+/// Returns `None` if any entry has an unknown type byte, an empty body, or an
+/// SSZ list that fails to decode (the engine is trusted to produce well-formed
+/// requests; a malformed entry must not silently produce a wrong block body).
+pub fn parse_execution_requests_list<
+    const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64,
+>(
+    entries: &[Vec<u8>],
+) -> Option<
+    pharos_types::electra::requests::ExecutionRequests<
+        MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+        MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+    >,
+> {
+    use pharos_ssz::{Decode, SszList};
+    use pharos_types::electra::requests::{
+        ConsolidationRequest, DepositRequest, ExecutionRequests, WithdrawalRequest,
+    };
+
+    let mut requests = ExecutionRequests::<
+        MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+        MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+    >::default();
+
+    for entry in entries {
+        // Each entry is `type_byte || ssz_serialize(list)`. A bare type byte
+        // (empty body) is not emitted by the encoder (skip-empty rule), so an
+        // entry shorter than 1 byte or carrying no payload is malformed.
+        let (&type_byte, body) = entry.split_first()?;
+        match type_byte {
+            0x00 => {
+                let list =
+                    SszList::<DepositRequest, MAX_DEPOSIT_REQUESTS_PER_PAYLOAD>::from_ssz_bytes(
+                        body,
+                    )
+                    .ok()?;
+                requests.deposits = list;
+            }
+            0x01 => {
+                let list = SszList::<WithdrawalRequest, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD>::from_ssz_bytes(body).ok()?;
+                requests.withdrawals = list;
+            }
+            0x02 => {
+                let list = SszList::<ConsolidationRequest, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD>::from_ssz_bytes(body).ok()?;
+                requests.consolidations = list;
+            }
+            _ => return None,
+        }
+    }
+
+    Some(requests)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2331,10 +2396,11 @@ mod tests {
             ConsolidationRequest, DepositRequest, WithdrawalRequest,
         };
 
-        let mut reqs = TestExecRequests::default();
-        reqs.deposits = SszList::from_vec(vec![DepositRequest::default()]).unwrap();
-        reqs.withdrawals = SszList::from_vec(vec![WithdrawalRequest::default()]).unwrap();
-        reqs.consolidations = SszList::from_vec(vec![ConsolidationRequest::default()]).unwrap();
+        let reqs = TestExecRequests {
+            deposits: SszList::from_vec(vec![DepositRequest::default()]).unwrap(),
+            withdrawals: SszList::from_vec(vec![WithdrawalRequest::default()]).unwrap(),
+            consolidations: SszList::from_vec(vec![ConsolidationRequest::default()]).unwrap(),
+        };
 
         let list = get_execution_requests_list(&reqs);
         assert_eq!(list.len(), 3, "all three request types present");
@@ -2348,9 +2414,11 @@ mod tests {
         use pharos_ssz::SszList;
         use pharos_types::electra::requests::ConsolidationRequest;
 
-        let mut reqs = TestExecRequests::default();
         // Only consolidations non-empty (deposits + withdrawals empty → skipped).
-        reqs.consolidations = SszList::from_vec(vec![ConsolidationRequest::default()]).unwrap();
+        let reqs = TestExecRequests {
+            consolidations: SszList::from_vec(vec![ConsolidationRequest::default()]).unwrap(),
+            ..TestExecRequests::default()
+        };
 
         let list = get_execution_requests_list(&reqs);
         assert_eq!(list.len(), 1, "only consolidation entry");

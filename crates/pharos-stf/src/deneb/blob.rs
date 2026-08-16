@@ -154,6 +154,65 @@ pub fn build_blob_sidecar_inclusion_proof(
     branch
 }
 
+/// Electra variant of [`build_blob_sidecar_inclusion_proof`].
+///
+/// The Electra `BeaconBlockBody` has 13 fields (it adds `execution_requests` at
+/// field index 12); `blob_kzg_commitments` remains at field index 11. The body
+/// field tree still pads to 16 leaves, so the `blob_kzg_commitments` gindex
+/// (`16 + 11 = 27`), the positional base (`11 * 8192`), and the proof depth (17)
+/// are all unchanged — only the level-13 body-field-tree sibling differs, since
+/// field 12 (`execution_requests`) is now a non-zero leaf instead of padding.
+///
+/// `all_body_field_hashes` is the array of the 13 body-field `tree_hash_root`
+/// values in field order (`randao_reveal=0`, ..., `blob_kzg_commitments=11`,
+/// `execution_requests=12`). The produced proof verifies under the same
+/// [`verify_blob_sidecar_inclusion_proof`] used for Deneb.
+pub fn build_blob_sidecar_inclusion_proof_electra(
+    all_commitments: &[KZGCommitment],
+    all_body_field_hashes: &[Hash256; 13],
+    blob_index: usize,
+) -> [Hash256; KZG_COMMITMENT_INCLUSION_PROOF_DEPTH] {
+    assert!(
+        blob_index < all_commitments.len(),
+        "blob_index {blob_index} out of range (len={})",
+        all_commitments.len()
+    );
+
+    // Part 1: 12 siblings within the list data subtree (identical to Deneb).
+    let element_roots: Vec<Hash256> = {
+        let mut roots: Vec<Hash256> = all_commitments.iter().map(|c| c.tree_hash_root()).collect();
+        roots.resize(BLOB_COMMITMENTS_CAPACITY, Hash256::default());
+        roots
+    };
+    let list_gindex = BLOB_COMMITMENTS_CAPACITY as u64 + blob_index as u64;
+    let list_proof = build_single_proof_from_leaves(&element_roots, list_gindex);
+    debug_assert_eq!(list_proof.branch.len(), LIST_DATA_DEPTH);
+
+    // Part 2: 1 sibling at the data/length-mixin level (identical to Deneb).
+    let len = all_commitments.len() as u64;
+    let mut length_as_hash = Hash256::default();
+    length_as_hash.as_mut()[..8].copy_from_slice(&len.to_le_bytes());
+    let mixin_sibling = length_as_hash;
+
+    // Part 3: 4 siblings within the body field tree — 13 fields padded to 16.
+    // Field 11 = blob_kzg_commitments; field 12 = execution_requests (non-zero).
+    let body_leaves: Vec<Hash256> = {
+        let mut leaves = all_body_field_hashes.to_vec();
+        leaves.resize(BODY_FIELD_TREE_SIZE, Hash256::default());
+        leaves
+    };
+    let body_proof = build_single_proof_from_leaves(&body_leaves, 16 + 11);
+    debug_assert_eq!(body_proof.branch.len(), 4);
+
+    // Assemble the 17-element branch (bottom → top).
+    let mut branch = [Hash256::default(); KZG_COMMITMENT_INCLUSION_PROOF_DEPTH];
+    branch[..LIST_DATA_DEPTH].copy_from_slice(&list_proof.branch);
+    branch[LIST_DATA_DEPTH] = mixin_sibling;
+    branch[LIST_DATA_DEPTH + 1..].copy_from_slice(&body_proof.branch);
+
+    branch
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +296,113 @@ mod tests {
             assert!(
                 verify_blob_sidecar_inclusion_proof(&sidecar),
                 "inclusion proof round-trip failed for blob_index={blob_idx}"
+            );
+        }
+    }
+
+    /// Electra round-trip: build a proof with
+    /// `build_blob_sidecar_inclusion_proof_electra` over the 13-field electra body
+    /// (with a non-zero `execution_requests` field at index 12) and verify it
+    /// passes the shared `verify_blob_sidecar_inclusion_proof`. The extra field
+    /// changes the level-13 body-field sibling but not the gindex/depth, so a
+    /// proof built with the *deneb* (12-field) builder would FAIL here — this test
+    /// guards that the electra builder threads `execution_requests` correctly.
+    #[test]
+    fn blob_sidecar_inclusion_proof_round_trip_electra() {
+        use pharos_ssz::{SszList, TreeHash};
+        use pharos_types::electra::body::BeaconBlockBody;
+        use pharos_types::electra::requests::{DepositRequest, ExecutionRequests};
+        use pharos_types::phase0::operations::{BeaconBlockHeader, SignedBeaconBlockHeader};
+
+        // Minimal Electra BeaconBlockBody type matching minimal preset constants.
+        type Body = BeaconBlockBody<
+            16,         // MAX_PROPOSER_SLASHINGS
+            1,          // MAX_ATTESTER_SLASHINGS_ELECTRA
+            8,          // MAX_ATTESTATIONS_ELECTRA
+            16,         // MAX_DEPOSITS
+            16,         // MAX_VOLUNTARY_EXITS
+            2048,       // MAX_VALIDATORS_PER_COMMITTEE
+            33,         // DEPOSIT_PROOF_LENGTH
+            512,        // SYNC_COMMITTEE_SIZE
+            1073741824, // MAX_BYTES_PER_TRANSACTION
+            1048576,    // MAX_TRANSACTIONS_PER_PAYLOAD
+            256,        // BYTES_PER_LOGS_BLOOM
+            32,         // MAX_EXTRA_DATA_BYTES
+            16,         // MAX_WITHDRAWALS_PER_PAYLOAD
+            16,         // MAX_BLS_TO_EXECUTION_CHANGES
+            4096,       // MAX_BLOB_COMMITMENTS_PER_BLOCK
+            8192,       // MAX_AGGREGATION_BITS (2048 * 4 minimal)
+            4,          // MAX_COMMITTEES_PER_SLOT
+            8192,       // MAX_DEPOSIT_REQUESTS_PER_PAYLOAD
+            16,         // MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD
+            2,          // MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD
+        >;
+
+        let commitment_0 = KZGCommitment::from_array([0x11u8; 48]);
+        let commitment_1 = KZGCommitment::from_array([0x22u8; 48]);
+
+        // Non-zero execution_requests (one deposit request) so field 12 is not the
+        // zero leaf — this is the field that differs from deneb.
+        let execution_requests = ExecutionRequests {
+            deposits: SszList::from_vec(vec![DepositRequest {
+                index: 7,
+                ..DepositRequest::default()
+            }])
+            .unwrap(),
+            ..ExecutionRequests::default()
+        };
+
+        let body = Body {
+            blob_kzg_commitments: SszList::from_vec(vec![commitment_0, commitment_1]).unwrap(),
+            execution_requests,
+            ..Body::default()
+        };
+        let body_root = body.tree_hash_root();
+
+        // Extract the 13 body field hashes in field order (electra body layout).
+        let field_hashes: [Hash256; 13] = [
+            body.randao_reveal.tree_hash_root(),
+            body.eth1_data.tree_hash_root(),
+            body.graffiti.tree_hash_root(),
+            body.proposer_slashings.tree_hash_root(),
+            body.attester_slashings.tree_hash_root(),
+            body.attestations.tree_hash_root(),
+            body.deposits.tree_hash_root(),
+            body.voluntary_exits.tree_hash_root(),
+            body.sync_aggregate.tree_hash_root(),
+            body.execution_payload.tree_hash_root(),
+            body.bls_to_execution_changes.tree_hash_root(),
+            body.blob_kzg_commitments.tree_hash_root(),
+            body.execution_requests.tree_hash_root(),
+        ];
+
+        let all_commitments = &[commitment_0, commitment_1];
+
+        for blob_idx in 0..2usize {
+            let proof = build_blob_sidecar_inclusion_proof_electra(
+                all_commitments,
+                &field_hashes,
+                blob_idx,
+            );
+            let inclusion_proof = pharos_ssz::SszVector::from_items(proof.iter().copied()).unwrap();
+
+            let sidecar = BlobSidecar {
+                index: blob_idx as u64,
+                kzg_commitment: all_commitments[blob_idx],
+                signed_block_header: SignedBeaconBlockHeader {
+                    message: BeaconBlockHeader {
+                        body_root,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                kzg_commitment_inclusion_proof: inclusion_proof,
+                ..BlobSidecar::default()
+            };
+
+            assert!(
+                verify_blob_sidecar_inclusion_proof(&sidecar),
+                "electra inclusion proof round-trip failed for blob_index={blob_idx}"
             );
         }
     }

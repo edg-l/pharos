@@ -36,6 +36,10 @@ use pharos_types::capella::{
     MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
 };
 use pharos_types::config::RuntimeConfig;
+use pharos_types::electra::{
+    MinimalBeaconBlockBody as ElectraMinimalBeaconBlockBody,
+    MinimalBeaconState as ElectraMinimalBeaconState,
+};
 use pharos_types::fork::ForkSchedule;
 use pharos_types::phase0::misc::{Fork, Validator};
 use pharos_types::phase0::operations::BeaconBlockHeader;
@@ -1087,6 +1091,345 @@ async fn produce_block_signed_reimports_validated_capella() {
         head_slot,
         Slot(PRODUCE_SLOT),
         "head slot after validated import must be produce_slot"
+    );
+
+    drop(event_tx);
+    let _ = tokio::time::timeout(Duration::from_secs(2), join).await;
+}
+
+// ── Anchor Electra state builder ──────────────────────────────────────────────
+
+/// Build an Electra anchor state, mirroring `build_capella_anchor` but with the
+/// electra inner state/body shape and the electra fork version.
+fn build_electra_anchor(slot: Slot) -> ElectraMinimalBeaconState {
+    let anchor_body = ElectraMinimalBeaconBlockBody::default();
+    let anchor_body_root: Root = anchor_body.tree_hash_root();
+
+    let validator = Validator {
+        pubkey: test_pubkey(),
+        effective_balance: Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE),
+        activation_epoch: Epoch(0),
+        exit_epoch: Epoch(u64::MAX),
+        withdrawable_epoch: Epoch(u64::MAX),
+        slashed: false,
+        ..Validator::default()
+    };
+
+    let sync_committee = MinimalSyncCommittee {
+        pubkeys: SszVector::from_vec(vec![
+            test_pubkey();
+            MinimalEthSpec::SYNC_COMMITTEE_SIZE as usize
+        ])
+        .unwrap(),
+        aggregate_pubkey: test_pubkey(),
+    };
+
+    ElectraMinimalBeaconState {
+        slot,
+        fork: Fork {
+            previous_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            current_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
+            epoch: UtilsEpoch(0),
+        },
+        latest_block_header: BeaconBlockHeader {
+            slot,
+            proposer_index: ValidatorIndex(0),
+            parent_root: Root::default(),
+            state_root: Root::default(),
+            body_root: anchor_body_root,
+        },
+        validators: SszList::empty_tree().with_push(validator).unwrap(),
+        balances: SszList::default()
+            .with_push(Gwei(MinimalEthSpec::MAX_EFFECTIVE_BALANCE))
+            .unwrap(),
+        previous_epoch_participation: SszList::default().with_push(0u8).unwrap(),
+        current_epoch_participation: SszList::default().with_push(0u8).unwrap(),
+        inactivity_scores: SszList::default().with_push(0u64).unwrap(),
+        current_sync_committee: sync_committee.clone(),
+        next_sync_committee: sync_committee,
+        ..ElectraMinimalBeaconState::default()
+    }
+}
+
+/// Electra sibling of `produce_block_signed_reimports_validated_capella`.
+///
+/// A sigs-off Electra block produced by `produce_block` (Engine API V4:
+/// `engine_getPayloadV4` → executionRequests, `engine_forkchoiceUpdatedV3`,
+/// `engine_newPayloadV4`) is signed with a real proposer + RANDAO signature and
+/// re-imported through the ingestion loop with `validate_result = true`. The
+/// import re-runs the proposer block-signature check, the RANDAO check,
+/// `process_block` with `verify_signatures = true`, and the `state_root`
+/// recomputation, all against the same Electra block this node produced. The
+/// head must advance to the produced slot, proving the produced Electra block is
+/// self-consistent under full verification — and that the 16-bit electra
+/// proposer index (EIP-7251) matches what the STF re-derives on import.
+#[tokio::test]
+async fn produce_block_signed_reimports_validated_electra() {
+    const ANCHOR_SLOT: u64 = 0;
+    const PRODUCE_SLOT: u64 = 1;
+
+    // ── Mock EL (Engine API V4) ───────────────────────────────────────────────
+    let mock = spawn_mock().await;
+    mock.set(
+        "engine_forkchoiceUpdatedV3",
+        json!({
+            "payloadStatus": {
+                "status": "VALID",
+                "latestValidHash": format!("0x{}", "0".repeat(64)),
+                "validationError": null
+            },
+            "payloadId": "0x0000000000000004"
+        }),
+    );
+    mock.set(
+        "engine_getPayloadV4",
+        json!({
+            "executionPayload": {
+                "parentHash": format!("0x{}", "0".repeat(64)),
+                "feeRecipient": format!("0x{}", "0".repeat(40)),
+                "stateRoot": format!("0x{}", "0".repeat(64)),
+                "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                "logsBloom": format!("0x{}", "0".repeat(512)),
+                "prevRandao": format!("0x{}", "0".repeat(64)),
+                "blockNumber": "0x1",
+                "gasLimit": "0x1c9c380",
+                "gasUsed": "0x0",
+                "timestamp": "0x6",
+                "extraData": "0x",
+                "baseFeePerGas": "0x1",
+                "blockHash": format!("0x{}", "0".repeat(64)),
+                "transactions": [],
+                "withdrawals": [],
+                "blobGasUsed": "0x0",
+                "excessBlobGas": "0x0"
+            },
+            "blockValue": "0x0",
+            "blobsBundle": { "commitments": [], "proofs": [], "blobs": [] },
+            "shouldOverrideBuilder": false,
+            "executionRequests": []
+        }),
+    );
+    mock.set(
+        "engine_newPayloadV4",
+        json!({
+            "status": "VALID",
+            "latestValidHash": format!("0x{}", "0".repeat(64)),
+            "validationError": null
+        }),
+    );
+
+    // ── Anchor state (Electra-at-genesis) ─────────────────────────────────────
+    let runtime_cfg = RuntimeConfig {
+        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+        capella_fork_version: MinimalEthSpec::CAPELLA_FORK_VERSION,
+        capella_fork_epoch: 0,
+        deneb_fork_version: [0x04, 0x00, 0x00, 0x00],
+        deneb_fork_epoch: 0,
+        electra_fork_version: [0x05, 0x00, 0x00, 0x00],
+        electra_fork_epoch: 0,
+        ..Default::default()
+    };
+
+    let anchor_state_inner = build_electra_anchor(Slot(ANCHOR_SLOT));
+    let fork_anchor_state = ForkMinimalBeaconState::Electra(anchor_state_inner.clone());
+    let computed_state_root: Root = fork_anchor_state.tree_hash_root();
+    let fork_anchor_block = ForkBeaconBlock::<
+        16,
+        2,
+        128,
+        16,
+        16,
+        2048,
+        33,
+        32,
+        1_073_741_824,
+        1_048_576,
+        256,
+        32,
+        4,
+        16,
+        4096,
+        8192,
+        4,
+        8192,
+        16,
+        2,
+    >::Electra(pharos_types::electra::BeaconBlock {
+        slot: Slot(ANCHOR_SLOT),
+        proposer_index: ValidatorIndex(0),
+        parent_root: Root::default(),
+        state_root: computed_state_root,
+        body: ElectraMinimalBeaconBlockBody::default(),
+    });
+    let anchor_root: Root = fork_anchor_block.tree_hash_root();
+
+    let mut fc =
+        get_forkchoice_store::<MinimalEthSpec>(fork_anchor_state.clone(), fork_anchor_block);
+    fc.time = MinimalEthSpec::SLOT_DURATION_MS * (PRODUCE_SLOT + 2);
+    fc.runtime_cfg = runtime_cfg.clone();
+    fc.block_states
+        .insert(anchor_root, fork_anchor_state.clone());
+    let fc_store = Arc::new(RwLock::new(fc));
+
+    let engine_client = EngineClient::new(mock.url.clone(), mock.secret.clone()).unwrap();
+    let engine_handle = spawn_engine_actor(engine_client, None);
+    let pools: Arc<OperationPools<MinimalEthSpec>> = Arc::new(OperationPools::default());
+
+    // ── Sign the RANDAO reveal with the proposer's real key ───────────────────
+    let sk = test_secret_key();
+    let epoch = UtilsEpoch(PRODUCE_SLOT / MinimalEthSpec::SLOTS_PER_EPOCH);
+    let randao_domain =
+        get_domain::<MinimalEthSpec>(&fork_anchor_state, DOMAIN_RANDAO, Some(epoch));
+    let randao_signing_root = compute_signing_root(&epoch, randao_domain);
+    let randao_reveal = sk.sign(randao_signing_root.as_slice());
+
+    // ── Produce the Electra block with the real RANDAO reveal ─────────────────
+    let produce_result = tokio::task::spawn_blocking({
+        let fc = Arc::clone(&fc_store);
+        let p = Arc::clone(&pools);
+        let e = engine_handle.clone();
+        let r = runtime_cfg.clone();
+        move || {
+            produce_block::<MinimalEthSpec>(
+                &fc,
+                &p,
+                &e,
+                Slot(PRODUCE_SLOT),
+                randao_reveal,
+                [0u8; 32],
+                "0x0000000000000000000000000000000000000000".to_string(),
+                &r,
+            )
+        }
+    })
+    .await
+    .expect("spawn_blocking join")
+    .expect("produce_block succeeded");
+    let (signed_block, _post_state, _exec_value, _blob_sidecars) = produce_result;
+
+    let inner = match &signed_block {
+        MinForkSignedBlock::Electra(i) => i.clone(),
+        _ => panic!("produced block must be Electra variant"),
+    };
+
+    // ── Sign the produced block as proposer ───────────────────────────────────
+    let proposer_domain =
+        get_domain::<MinimalEthSpec>(&fork_anchor_state, DOMAIN_BEACON_PROPOSER, Some(epoch));
+    let block_signing_root = compute_signing_root(&inner.message, proposer_domain);
+    let block_sig = sk.sign(block_signing_root.as_slice());
+
+    assert!(
+        pharos_utils::bls::verify(&test_pubkey(), block_signing_root.as_slice(), &block_sig)
+            .unwrap_or(false),
+        "locally-produced electra proposer signature must verify"
+    );
+
+    let signed = pharos_types::electra::MinimalSignedBeaconBlock {
+        message: inner.message.clone(),
+        signature: block_sig,
+    };
+    let block_ssz = signed.as_ssz_bytes();
+
+    // ── Ingestion loop with validate_result = TRUE ────────────────────────────
+    let (head_tx, head_rx) = watch::channel(None::<HeadChange>);
+    let (payload_tx, payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(8);
+    let (host, _tmpdir) = build_host(Arc::clone(&fc_store));
+
+    let fc_store_drv = Arc::clone(&fc_store);
+    let head_tx_clone = head_tx.clone();
+    tokio::spawn(async move {
+        run_engine_driver_loop::<MinimalEthSpec, pharos_fork_choice::NoopPowBlockProvider>(
+            engine_handle,
+            fc_store_drv,
+            head_rx,
+            payload_rx,
+            head_tx_clone,
+            Arc::new(pharos_fork_choice::NoopPowBlockProvider),
+        )
+        .await;
+    });
+
+    let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(8);
+    let (reinject_tx, reinject_rx) = mpsc::channel(8);
+    let (dummy_net_tx, _dummy_net_rx) = tokio::sync::mpsc::channel(1);
+    let dummy_net = pharos_network::NetworkCommandSender::new(dummy_net_tx);
+    let egress = IngestionEgress {
+        head_tx: head_tx.clone(),
+        payload_tx,
+        network: dummy_net,
+        notify_backfill: Arc::new(Notify::new()),
+        lookup_tx: tokio::sync::mpsc::channel(1).0,
+        reinject_tx,
+    };
+    let fc_store_ing = Arc::clone(&fc_store);
+    let exec_engine = Arc::new(NullExecutionEngine);
+    let pow_engine_client = EngineClient::new(
+        "http://127.0.0.1:1/".parse().unwrap(),
+        JwtSecret::from_bytes([0u8; 32]),
+    )
+    .unwrap();
+    let pow_engine_handle = spawn_engine_actor(pow_engine_client, None);
+    let pow_provider = Arc::new(EnginePowBlockProvider::new(pow_engine_handle));
+    let host_for_digest = Arc::clone(&host);
+
+    let join = tokio::spawn(async move {
+        use pharos_node::data_availability::{BlobAwaitingBlocks, NoopDataAvailabilityChecker};
+        let _ = run_block_ingestion_loop::<
+            MinimalEthSpec,
+            NullExecutionEngine,
+            NoopDataAvailabilityChecker,
+        >(
+            event_rx,
+            reinject_rx,
+            host,
+            fc_store_ing,
+            exec_engine,
+            pow_provider,
+            egress,
+            true, // validate_result: TRUE — full BLS + state-root re-verification
+            Arc::new(NoopDataAvailabilityChecker),
+            Arc::new(BlobAwaitingBlocks::new()),
+            None,
+        )
+        .await;
+    });
+
+    let fork_digest = host_for_digest.fork_digest_for(NetworkFork::Electra);
+    let topic = GossipTopic {
+        fork_digest,
+        kind: GossipTopicKind::BeaconBlock,
+    };
+    event_tx
+        .send(NetworkEvent::GossipMessage {
+            topic,
+            peer: libp2p::PeerId::random(),
+            data: block_ssz,
+        })
+        .await
+        .expect("send electra block gossip event");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if get_head::<MinimalEthSpec>(&fc_store.read()) != anchor_root {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("electra head did not advance past anchor within 5 s (validated import failed)");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let head = get_head::<MinimalEthSpec>(&fc_store.read());
+    let head_slot = fc_store
+        .read()
+        .blocks
+        .get(&head)
+        .map(|b| b.slot())
+        .expect("electra head block in store");
+    assert_eq!(
+        head_slot,
+        Slot(PRODUCE_SLOT),
+        "electra head slot after validated import must be produce_slot"
     );
 
     drop(event_tx);

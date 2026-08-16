@@ -705,6 +705,7 @@ where
     E::BellatrixSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::CapellaSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::DenebSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
+    E::ElectraSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     <E::Phase0SignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_types::views::BeaconBlockView,
     <E::AltairSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
@@ -714,6 +715,8 @@ where
     <E::CapellaSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_types::views::BeaconBlockView,
     <E::DenebSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
+        pharos_types::views::BeaconBlockView,
+    <E::ElectraSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_types::views::BeaconBlockView,
 {
     if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
@@ -725,6 +728,8 @@ where
     } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
         inner.message().parent_root()
     } else if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
+        inner.message().parent_root()
+    } else if let Some(inner) = E::unwrap_electra_signed_block(signed_block) {
         inner.message().parent_root()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")
@@ -827,6 +832,7 @@ where
     E::BellatrixSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::CapellaSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     E::DenebSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
+    E::ElectraSignedBeaconBlock: pharos_types::views::SignedBeaconBlockView,
     <E::Phase0SignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
     <E::AltairSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
@@ -836,6 +842,8 @@ where
     <E::CapellaSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
     <E::DenebSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
+        pharos_ssz::TreeHash,
+    <E::ElectraSignedBeaconBlock as pharos_types::views::SignedBeaconBlockView>::Message:
         pharos_ssz::TreeHash,
 {
     use pharos_ssz::TreeHash as _;
@@ -848,6 +856,8 @@ where
     } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
         inner.message().tree_hash_root()
     } else if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
+        inner.message().tree_hash_root()
+    } else if let Some(inner) = E::unwrap_electra_signed_block(signed_block) {
         inner.message().tree_hash_root()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")
@@ -870,6 +880,7 @@ where
     E::BellatrixSignedBeaconBlock: pharos_ssz::Encode,
     E::CapellaSignedBeaconBlock: pharos_ssz::Encode,
     E::DenebSignedBeaconBlock: pharos_ssz::Encode,
+    E::ElectraSignedBeaconBlock: pharos_ssz::Encode,
 {
     use pharos_ssz::Encode as _;
     if let Some(inner) = E::unwrap_phase0_signed_block(signed_block) {
@@ -881,6 +892,8 @@ where
     } else if let Some(inner) = E::unwrap_capella_signed_block(signed_block) {
         inner.as_ssz_bytes()
     } else if let Some(inner) = E::unwrap_deneb_signed_block(signed_block) {
+        inner.as_ssz_bytes()
+    } else if let Some(inner) = E::unwrap_electra_signed_block(signed_block) {
         inner.as_ssz_bytes()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")
