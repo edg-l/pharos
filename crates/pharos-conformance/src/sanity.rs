@@ -21,7 +21,7 @@
 //! integer, optionally followed by YAML `...` end-document marker). The fixture
 //! contains no `meta.yaml`, so `WalkOpts::meta_required` is `false`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pharos_ssz::{Encode, TreeHash};
 use pharos_stf::altair::state_transition::process_slots_altair;
@@ -47,6 +47,7 @@ use crate::fixture_walker::{
     load_pre_post_phase0_state, walk_category,
 };
 use crate::fs_util::dir_name;
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Result tally for a single sanity preset run.
 pub struct SanityResult {
@@ -72,6 +73,311 @@ impl SanityResult {
         self.skip += other.skip;
         self.failures.extend(other.failures);
     }
+}
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per sanity test case for a single `(fork, preset)` row,
+/// in the same walk-order as the corresponding `run_sanity_*` function.
+/// Called by the Phase 7 flat work-pool.
+///
+/// Sub-sweep order: blocks cases fully, then slots cases (matches dispatcher order).
+///
+/// Supported forks: `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`.
+pub fn enumerate_sanity(
+    root: &Path,
+    fork: &'static str,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    let mut tasks: Vec<CaseTask> = Vec::new();
+    let mut ordinal: u32 = 0;
+
+    // ── blocks sub-sweep ──────────────────────────────────────────────────────
+    {
+        let cases: Vec<(PathBuf, _)> = walk_category(
+            root,
+            preset,
+            fork,
+            "sanity",
+            Some("blocks"),
+            WalkOpts::default(),
+        )
+        .collect();
+
+        for (case_dir, meta) in cases {
+            let case_ordinal = ordinal;
+            ordinal += 1;
+            let case_name = format!("{fork}/sanity/blocks/{preset}/{}", dir_name(&case_dir));
+            let blocks_count = meta.as_ref().and_then(|m| m.blocks_count);
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+
+            let run: CaseFn = match (fork, preset) {
+                ("phase0", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("phase0", _) => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("altair", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_altair_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("altair", _) => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_altair_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("bellatrix", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_bellatrix_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("bellatrix", _) => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_bellatrix_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_capella_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", _) => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_capella_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("deneb", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_deneb_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                _ => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_deneb_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+            };
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+
+    // ── slots sub-sweep ───────────────────────────────────────────────────────
+    {
+        let cases: Vec<(PathBuf, _)> = walk_category(
+            root,
+            preset,
+            fork,
+            "sanity",
+            Some("slots"),
+            WalkOpts {
+                meta_required: false,
+                inner_dir: Some("pyspec_tests"),
+            },
+        )
+        .collect();
+
+        for (case_dir, _meta) in cases {
+            let case_ordinal = ordinal;
+            ordinal += 1;
+            let case_name = format!("{fork}/sanity/slots/{preset}/{}", dir_name(&case_dir));
+
+            let run: CaseFn =
+                match (fork, preset) {
+                    ("phase0", "mainnet") => Box::new(move || {
+                        match run_slots_case::<MainnetEthSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("phase0", _) => Box::new(move || {
+                        match run_slots_case::<MinimalEthSpec>(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("altair", "mainnet") => {
+                        Box::new(move || {
+                            match run_altair_slots_case_mainnet(&case_dir, &case_name) {
+                                CaseResult::Pass => CaseOutcome::Pass,
+                                CaseResult::Skip => CaseOutcome::Skip,
+                                CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                            }
+                        })
+                    }
+                    ("altair", _) => Box::new(move || {
+                        match run_altair_slots_case_minimal(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("bellatrix", "mainnet") => Box::new(move || {
+                        match run_bellatrix_slots_case_mainnet(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("bellatrix", _) => Box::new(move || {
+                        match run_bellatrix_slots_case_minimal(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("capella", "mainnet") => {
+                        Box::new(move || {
+                            match run_capella_slots_case_mainnet(&case_dir, &case_name) {
+                                CaseResult::Pass => CaseOutcome::Pass,
+                                CaseResult::Skip => CaseOutcome::Skip,
+                                CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                            }
+                        })
+                    }
+                    ("capella", _) => Box::new(move || {
+                        match run_capella_slots_case_minimal(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    ("deneb", "mainnet") => Box::new(move || {
+                        match run_deneb_slots_case_mainnet(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                    _ => Box::new(move || {
+                        match run_deneb_slots_case_minimal(&case_dir, &case_name) {
+                            CaseResult::Pass => CaseOutcome::Pass,
+                            CaseResult::Skip => CaseOutcome::Skip,
+                            CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                        }
+                    }),
+                };
+            tasks.push(CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            });
+        }
+    }
+
+    tasks
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -1692,5 +1998,54 @@ fn run_deneb_slots_case_minimal(case_dir: &Path, case_name: &str) -> CaseResult 
         CaseResult::Pass
     } else {
         CaseResult::Fail(format!("{case_name}: state mismatch after slots advance"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+    use crate::task::CaseOutcome;
+
+    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
+        let mut pass = 0u64;
+        let mut fail = 0u64;
+        let mut skip = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => pass += 1,
+                CaseOutcome::Fail(_) => fail += 1,
+                CaseOutcome::Skip => skip += 1,
+            }
+        }
+        (pass, fail, skip)
+    }
+
+    #[test]
+    fn enumerate_sanity_parity_phase0_mainnet() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let run_result = run_sanity_mainnet(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_sanity(&root, "phase0", "mainnet", 10));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_sanity phase0/mainnet counts differ from run_sanity_mainnet"
+        );
+    }
+
+    #[test]
+    fn enumerate_sanity_parity_phase0_minimal() {
+        let Some(root) = fixtures_root() else {
+            return; // skip cleanly when fixtures absent
+        };
+        let run_result = run_sanity_minimal(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_sanity(&root, "phase0", "minimal", 11));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_sanity phase0/minimal counts differ from run_sanity_minimal"
+        );
     }
 }

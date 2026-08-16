@@ -31,7 +31,7 @@
 //! compile-time `MainnetEthSpec` / `MinimalEthSpec` preset constants for
 //! fork versions and override fork_epoch from `meta.yaml`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pharos_ssz::Encode;
 use pharos_stf::altair::upgrade::upgrade_to_altair;
@@ -57,6 +57,7 @@ use crate::fixture_walker::{
 };
 use crate::fs_util::dir_name;
 use crate::snappy::decompress_raw;
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Result tally for a single transition preset run.
 pub struct TransitionResult {
@@ -75,6 +76,152 @@ impl TransitionResult {
             failures: Vec::new(),
         }
     }
+}
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per transition test case for a single `(fork, preset)` row,
+/// in the same walk-order as the corresponding `run_transition_*` function.
+/// Called by the Phase 7 flat work-pool.
+///
+/// Supported forks: `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`.
+pub fn enumerate_transition(
+    root: &Path,
+    fork: &'static str,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    let opts = WalkOpts {
+        meta_required: true,
+        inner_dir: Some("pyspec_tests"),
+    };
+
+    let cases: Vec<(PathBuf, _)> =
+        walk_category(root, preset, fork, "transition", Some("core"), opts).collect();
+
+    cases
+        .into_iter()
+        .enumerate()
+        .map(|(i, (case_dir, meta))| {
+            let case_ordinal = i as u32;
+            let case_name = format!("{fork}/transition/core/{preset}/{}", dir_name(&case_dir));
+            let fork_epoch = meta.as_ref().and_then(|m| m.fork_epoch);
+            let blocks_count = meta.as_ref().and_then(|m| m.blocks_count);
+
+            let run: CaseFn = match (fork, preset) {
+                ("altair", "mainnet") => Box::new(move || {
+                    let Some(fe) = fork_epoch else {
+                        return CaseOutcome::Skip;
+                    };
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_case_mainnet(&case_dir, &case_name, Epoch(fe), n) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("altair", _) => Box::new(move || {
+                    let Some(fe) = fork_epoch else {
+                        return CaseOutcome::Skip;
+                    };
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_case_minimal(&case_dir, &case_name, Epoch(fe), n) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("bellatrix", "mainnet") => Box::new(move || {
+                    let Some(fe) = fork_epoch else {
+                        return CaseOutcome::Skip;
+                    };
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_bellatrix_case_mainnet(&case_dir, &case_name, Epoch(fe), n) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("bellatrix", _) => Box::new(move || {
+                    let Some(fe) = fork_epoch else {
+                        return CaseOutcome::Skip;
+                    };
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_bellatrix_case_minimal(&case_dir, &case_name, Epoch(fe), n) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", "mainnet") => Box::new(move || {
+                    let Some(fe) = fork_epoch else {
+                        return CaseOutcome::Skip;
+                    };
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_capella_case_mainnet(&case_dir, &case_name, Epoch(fe), n) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", _) => Box::new(move || {
+                    let Some(fe) = fork_epoch else {
+                        return CaseOutcome::Skip;
+                    };
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_capella_case_minimal(&case_dir, &case_name, Epoch(fe), n) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("deneb", "mainnet") => Box::new(move || {
+                    let Some(fe) = fork_epoch else {
+                        return CaseOutcome::Skip;
+                    };
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_deneb_case_mainnet(&case_dir, &case_name, Epoch(fe), n) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                _ => Box::new(move || {
+                    let Some(fe) = fork_epoch else {
+                        return CaseOutcome::Skip;
+                    };
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_deneb_case_minimal(&case_dir, &case_name, Epoch(fe), n) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+            };
+
+            CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            }
+        })
+        .collect()
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -1432,5 +1579,54 @@ where
         CaseResult::Fail(format!(
             "{case_name}: state mismatch after deneb transition"
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+    use crate::task::CaseOutcome;
+
+    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
+        let mut pass = 0u64;
+        let mut fail = 0u64;
+        let mut skip = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => pass += 1,
+                CaseOutcome::Fail(_) => fail += 1,
+                CaseOutcome::Skip => skip += 1,
+            }
+        }
+        (pass, fail, skip)
+    }
+
+    #[test]
+    fn enumerate_transition_parity_altair_mainnet() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let run_result = run_transition_mainnet(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_transition(&root, "altair", "mainnet", 0));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_transition altair/mainnet counts differ from run_transition_mainnet"
+        );
+    }
+
+    #[test]
+    fn enumerate_transition_parity_altair_minimal() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let run_result = run_transition_minimal(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_transition(&root, "altair", "minimal", 1));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_transition altair/minimal counts differ from run_transition_minimal"
+        );
     }
 }

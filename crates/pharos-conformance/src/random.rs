@@ -9,7 +9,7 @@
 //! `post.ssz_snappy` present  → all blocks apply successfully; final state equals post.
 //! `post.ssz_snappy` absent   → at least one block fails (negative test).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pharos_ssz::{Decode, Encode, TreeHash};
 use pharos_stf::phase0::BeaconStateWrite;
@@ -33,6 +33,7 @@ use crate::fixture_walker::{
     load_pre_post_phase0_state, walk_category,
 };
 use crate::fs_util::dir_name;
+use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Result tally for a single random preset run.
 pub struct RandomResult {
@@ -51,6 +52,200 @@ impl RandomResult {
             failures: Vec::new(),
         }
     }
+}
+
+// ── Flat-pool enumerate ───────────────────────────────────────────────────────
+
+/// Produce one `CaseTask` per random test case for a single `(fork, preset)` row,
+/// in the same walk-order as the corresponding `run_random_*` function.
+/// Called by the Phase 7 flat work-pool.
+///
+/// Supported forks: `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`.
+pub fn enumerate_random(
+    root: &Path,
+    fork: &'static str,
+    preset: &'static str,
+    row_ordinal: u32,
+) -> Vec<CaseTask> {
+    let cases: Vec<(PathBuf, _)> = walk_category(
+        root,
+        preset,
+        fork,
+        "random",
+        Some("random"),
+        WalkOpts::default(),
+    )
+    .collect();
+
+    cases
+        .into_iter()
+        .enumerate()
+        .map(|(i, (case_dir, meta))| {
+            let case_ordinal = i as u32;
+            let case_name = format!("{fork}/random/random/{preset}/{}", dir_name(&case_dir));
+            let blocks_count = meta.as_ref().and_then(|m| m.blocks_count);
+            let validate_result = meta.as_ref().and_then(|m| m.bls_setting) != Some(2);
+
+            let run: CaseFn = match (fork, preset) {
+                ("phase0", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("phase0", _) => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("altair", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_altair_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("altair", _) => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_altair_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("bellatrix", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_bellatrix_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("bellatrix", _) => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_bellatrix_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_capella_random_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("capella", _) => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_capella_random_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("deneb", "mainnet") => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_deneb_random_blocks_case::<MainnetEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                _ => Box::new(move || {
+                    let Some(n) = blocks_count else {
+                        return CaseOutcome::Skip;
+                    };
+                    match run_deneb_random_blocks_case::<MinimalEthSpec>(
+                        &case_dir,
+                        &case_name,
+                        n,
+                        validate_result,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+            };
+
+            CaseTask {
+                row_ordinal,
+                case_ordinal,
+                run,
+            }
+        })
+        .collect()
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -884,5 +1079,54 @@ where
         (Some(e), Some(_)) => {
             CaseResult::Fail(format!("{case_name}: expected Ok but block failed: {e}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixtures_root;
+    use crate::task::CaseOutcome;
+
+    fn drain_tasks(tasks: Vec<CaseTask>) -> (u64, u64, u64) {
+        let mut pass = 0u64;
+        let mut fail = 0u64;
+        let mut skip = 0u64;
+        for task in tasks {
+            match (task.run)() {
+                CaseOutcome::Pass => pass += 1,
+                CaseOutcome::Fail(_) => fail += 1,
+                CaseOutcome::Skip => skip += 1,
+            }
+        }
+        (pass, fail, skip)
+    }
+
+    #[test]
+    fn enumerate_random_parity_phase0_mainnet() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let run_result = run_random_mainnet(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_random(&root, "phase0", "mainnet", 0));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_random phase0/mainnet counts differ from run_random_mainnet"
+        );
+    }
+
+    #[test]
+    fn enumerate_random_parity_phase0_minimal() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let run_result = run_random_minimal(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_random(&root, "phase0", "minimal", 1));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_random phase0/minimal counts differ from run_random_minimal"
+        );
     }
 }
