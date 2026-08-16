@@ -17,3 +17,9 @@ hex.workspace = true
 blst.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, optional = true }
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+reqwest = { workspace = true }

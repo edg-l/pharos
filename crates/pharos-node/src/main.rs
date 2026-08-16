@@ -201,6 +201,27 @@ struct Args {
     /// When absent, no auth is required on the validator endpoints.
     #[arg(long, value_name = "PATH")]
     validator_api_token: Option<PathBuf>,
+
+    // ── Prometheus metrics ────────────────────────────────────────────────────
+    /// Enable the Prometheus metrics HTTP server.
+    ///
+    /// When set, a Prometheus exporter is started on
+    /// `--metrics-address:--metrics-port` serving the `/metrics` endpoint.
+    /// Default: off (opt-in).
+    #[arg(long, default_value_t = false)]
+    metrics: bool,
+
+    /// IP address for the Prometheus metrics HTTP server.
+    ///
+    /// Only consulted when `--metrics` is set.
+    #[arg(long, default_value = "127.0.0.1", value_name = "ADDR")]
+    metrics_address: std::net::IpAddr,
+
+    /// Port for the Prometheus metrics HTTP server.
+    ///
+    /// Only consulted when `--metrics` is set.
+    #[arg(long, default_value_t = 5054, value_name = "PORT")]
+    metrics_port: u16,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -262,6 +283,14 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // ── Metrics (opt-in via --metrics) ────────────────────────────────────────
+    if args.metrics {
+        let metrics_addr = SocketAddr::new(args.metrics_address, args.metrics_port);
+        pharos_utils::metrics::init_metrics(metrics_addr)
+            .with_context(|| format!("starting Prometheus metrics server on {metrics_addr}"))?;
+        info!(%metrics_addr, "Prometheus metrics server started");
+    }
 
     // Shutdown broadcast: set to `true` on Ctrl-C to signal long-lived tasks.
     let (pharos_node_shutdown_tx, pharos_node_shutdown_rx) = watch::channel(false);
