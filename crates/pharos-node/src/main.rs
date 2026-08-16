@@ -20,6 +20,7 @@ use pharos_types::phase0::MainnetBeaconState as Phase0MainnetBeaconState;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use pharos_types::state::{BeaconBlock as ForkBeaconBlock, MainnetBeaconState};
 use pharos_types::{EthSpec, MainnetEthSpec, load_config_dir};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use tokio::sync::{mpsc, watch};
 use tracing::info;
 
@@ -760,7 +761,7 @@ async fn main() -> anyhow::Result<()> {
             })
         };
 
-        let chain_state = pharos_api::NodeChainState::new_with_regen(
+        let mut chain_state = pharos_api::NodeChainState::new_with_regen(
             Arc::clone(&store_arc),
             Arc::clone(&fork_choice),
             identity,
@@ -768,6 +769,286 @@ async fn main() -> anyhow::Result<()> {
             regen_fn,
         )
         .with_syncnets_fn(syncnets_fn);
+
+        // Wire block-production callbacks when an engine is configured.
+        // When engine_handle_opt is None (no EL) the callbacks stay unset and
+        // the validator-production endpoints return 503 as before.
+        if let Some(ref engine_h) = engine_handle_opt {
+            use std::collections::HashMap;
+            use std::sync::Mutex;
+
+            use pharos_api::ApiError;
+            use pharos_network::host::ForkContext as _;
+            use pharos_network::topics::{GossipTopic, GossipTopicKind};
+            use pharos_ssz::Encode as SszEncode;
+
+            use pharos_node::block_production::{produce_attestation_data, produce_block};
+            use pharos_node::engine_driver::ExecutionEngineHandle as NodeEEHandle;
+            use pharos_node::import::import_block;
+            use pharos_node::pow_block::EnginePowBlockProvider as PowProvider;
+
+            let pools_arc = Arc::clone(&host.op_pools);
+
+            // Per-slot cache: slot → (SSZ bytes of unsigned block, fork discriminant byte).
+            //
+            // The SSZ bytes are from the CONCRETE per-fork type (no discriminant prefix).
+            // The discriminant maps ForkVariant to the pharos storage byte used in the
+            // state.rs fork-enum Decode impl: Phase0=0, Altair=1, Bellatrix=2, Capella=3.
+            //
+            // Shared between produce_fn (writer) and publish_fn (reader).
+            type BlockCache = Arc<Mutex<HashMap<u64, (Vec<u8>, u8)>>>;
+            let produce_cache: BlockCache = Arc::new(Mutex::new(HashMap::new()));
+            let produce_cache_pub = Arc::clone(&produce_cache);
+
+            // ── produce_fn ───────────────────────────────────────────────────
+            let produce_engine = engine_h.clone();
+            let produce_fc = Arc::clone(&fork_choice);
+            let produce_pools = Arc::clone(&pools_arc);
+            let produce_cfg = runtime_cfg.clone();
+            let produce_fn: Arc<pharos_api::ProduceFn> = Arc::new(
+                move |slot: pharos_types::phase0::Slot,
+                      randao_reveal: pharos_utils::BLSSignature,
+                      graffiti: pharos_utils::Bytes32| {
+                    // Use the zero address as the default fee recipient.
+                    // The VC can override this via POST /eth/v1/validator/prepare_beacon_proposer.
+                    let fee_recipient = "0x0000000000000000000000000000000000000000".to_string();
+
+                    let (signed_block, _post_state, exec_value) = produce_block::<MainnetEthSpec>(
+                        &produce_fc,
+                        &produce_pools,
+                        &produce_engine,
+                        slot,
+                        randao_reveal,
+                        graffiti.into(),
+                        fee_recipient,
+                        &produce_cfg,
+                    )
+                    .map_err(|e| ApiError::Internal(format!("produce_block: {e}")))?;
+
+                    // SSZ-encode the unsigned block and cache with fork discriminant.
+                    // The fork-enum Decode impl expects: [disc_byte] ++ concrete_ssz.
+                    let (ssz_bytes, disc, block_json_value) = match &signed_block {
+                        pharos_types::state::SignedBeaconBlock::Phase0(inner) => {
+                            let ssz = inner.as_ssz_bytes();
+                            let json = pharos_api::dto::block::phase0_signed_block_to_api(inner)
+                                .map_err(|e| ApiError::Internal(format!("DTO: {e}")))?;
+                            (ssz, 0u8, json)
+                        }
+                        pharos_types::state::SignedBeaconBlock::Altair(inner) => {
+                            let ssz = inner.as_ssz_bytes();
+                            let json = pharos_api::dto::block::altair_signed_block_to_api(inner)
+                                .map_err(|e| ApiError::Internal(format!("DTO: {e}")))?;
+                            (ssz, 1u8, json)
+                        }
+                        pharos_types::state::SignedBeaconBlock::Bellatrix(inner) => {
+                            let ssz = inner.as_ssz_bytes();
+                            let json = pharos_api::dto::block::bellatrix_signed_block_to_api(inner)
+                                .map_err(|e| ApiError::Internal(format!("DTO: {e}")))?;
+                            (ssz, 2u8, json)
+                        }
+                        pharos_types::state::SignedBeaconBlock::Capella(inner) => {
+                            let ssz = inner.as_ssz_bytes();
+                            let json = pharos_api::dto::block::capella_signed_block_to_api(inner)
+                                .map_err(|e| ApiError::Internal(format!("DTO: {e}")))?;
+                            (ssz, 3u8, json)
+                        }
+                    };
+
+                    if let Ok(mut cache) = produce_cache.lock() {
+                        cache.insert(slot.0, (ssz_bytes, disc));
+                    }
+
+                    // The handler reads `block_json.get("data").unwrap_or(&block_json)`.
+                    // Return {"data": <unsigned BeaconBlock message>} so the VC signs it.
+                    let message_json = block_json_value
+                        .json
+                        .get("message")
+                        .cloned()
+                        .unwrap_or(block_json_value.json);
+                    let mut block_json = JsonValue::Object(JsonMap::new());
+                    block_json["data"] = message_json;
+
+                    Ok((block_json, exec_value, pharos_utils::Uint256::ZERO))
+                },
+            );
+
+            // ── produce_att_data_fn ──────────────────────────────────────────
+            let att_fc = Arc::clone(&fork_choice);
+            let att_cfg = runtime_cfg.clone();
+            let produce_att_data_fn: Arc<pharos_api::ProduceAttDataFn> = Arc::new(
+                move |slot: pharos_types::phase0::Slot,
+                      committee_index: pharos_types::phase0::primitives::CommitteeIndex| {
+                    produce_attestation_data::<MainnetEthSpec>(
+                        &att_fc,
+                        slot,
+                        committee_index,
+                        &att_cfg,
+                    )
+                    .map_err(|e| {
+                        ApiError::Internal(format!("produce_attestation_data: {e}"))
+                    })
+                },
+            );
+
+            // ── publish_fn ───────────────────────────────────────────────────
+            // Receives a SignedBeaconBlock JSON from the VC (with VC BLS signature).
+            // Reconstructs the signed SSZ by overlaying the VC signature onto
+            // the cached unsigned block bytes, then imports + gossips.
+            //
+            // SSZ layout of SignedBeaconBlock<...> (all fork variants):
+            //   bytes  0..4   = LE u32 offset to message (= 100)
+            //   bytes  4..100 = BLS signature (96 bytes, zeroed for unsigned block)
+            //   bytes 100..   = BeaconBlock message SSZ bytes
+            //
+            // The fork-enum Decode impl (pharos_types::state::SignedBeaconBlock)
+            // prepends a fork discriminant byte; we add it from the cache.
+            //
+            // This closure is called inside tokio::task::spawn_blocking by the
+            // handler; tokio::spawn for the async import+gossip is safe from a
+            // blocking thread as long as a tokio runtime is active.
+            let pub_host = Arc::clone(&host);
+            let pub_fc = Arc::clone(&fork_choice);
+            let pub_engine = engine_h.clone();
+            let pub_payload_tx = payload_tx.clone();
+            let pub_cfg = runtime_cfg.clone();
+            let pub_store = Arc::clone(&store_arc);
+            let pub_cmd = handle.command_sender();
+            let publish_fn: Arc<pharos_api::PublishFn> = Arc::new(move |block_json: JsonValue| {
+                use pharos_ssz::Decode as SszDecode;
+
+                // Extract BLS signature (96 bytes) from the JSON.
+                let sig_hex = block_json["signature"]
+                    .as_str()
+                    .unwrap_or("0x")
+                    .strip_prefix("0x")
+                    .unwrap_or("");
+                let sig_bytes_vec = hex::decode(sig_hex).unwrap_or_default();
+                if sig_bytes_vec.len() != 96 {
+                    return Err(ApiError::BadRequest(
+                        "SignedBeaconBlock: signature must be 96 bytes".into(),
+                    ));
+                }
+                let mut sig_bytes = [0u8; 96];
+                sig_bytes.copy_from_slice(&sig_bytes_vec);
+
+                // Extract slot to look up the cached unsigned block SSZ.
+                let slot_val = block_json["message"]["slot"]
+                    .as_str()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .or_else(|| block_json["message"]["slot"].as_u64())
+                    .ok_or_else(|| ApiError::BadRequest("missing message.slot".into()))?;
+
+                let (mut ssz_bytes, disc) = produce_cache_pub
+                    .lock()
+                    .ok()
+                    .and_then(|cache| cache.get(&slot_val).cloned())
+                    .ok_or_else(|| {
+                        ApiError::BadRequest(format!(
+                            "no cached block for slot {slot_val}; call produce_block first"
+                        ))
+                    })?;
+
+                // Overlay the VC signature at bytes [4..100].
+                if ssz_bytes.len() < 100 {
+                    return Err(ApiError::Internal("cached block SSZ too short".into()));
+                }
+                ssz_bytes[4..100].copy_from_slice(&sig_bytes);
+
+                // Prepend the fork discriminant and decode into the fork enum.
+                let mut with_disc = Vec::with_capacity(1 + ssz_bytes.len());
+                with_disc.push(disc);
+                with_disc.extend_from_slice(&ssz_bytes);
+
+                let signed_block =
+                    pharos_types::state::MainnetSignedBeaconBlock::from_ssz_bytes(&with_disc)
+                        .map_err(|e| {
+                            ApiError::Internal(format!("SSZ decode signed block: {e:?}"))
+                        })?;
+
+                // Get the current fork digest for the gossip topic.
+                let fork_digest = pub_host.current_fork_digest();
+
+                // Spawn async import + gossip (fire-and-forget; returns Ok(true) optimistically).
+                let fc_c = Arc::clone(&pub_fc);
+                let ee_c = Arc::new(NodeEEHandle::new(pub_engine.clone()));
+                let pow_c = Arc::new(PowProvider::new(pub_engine.clone()));
+                let ptx_c = pub_payload_tx.clone();
+                let cfg_c = pub_cfg.clone();
+                let store_c = Arc::clone(&pub_store);
+                let cmd_c = pub_cmd.clone();
+                let gossip_bytes = ssz_bytes;
+                tokio::spawn(async move {
+                    match import_block::<MainnetEthSpec, NodeEEHandle, PowProvider>(
+                        &signed_block,
+                        &fc_c,
+                        &ee_c,
+                        &pow_c,
+                        &ptx_c,
+                        true,
+                        &cfg_c,
+                        &store_c,
+                    )
+                    .await
+                    {
+                        Ok(outcome) => {
+                            tracing::info!(
+                                slot = slot_val,
+                                block_root = ?outcome.block_root,
+                                "VC-submitted block imported"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                slot = slot_val,
+                                error = %e,
+                                "VC-submitted block import failed"
+                            );
+                        }
+                    }
+
+                    // Gossip the signed block SSZ bytes (concrete fork, no discriminant).
+                    let topic = GossipTopic {
+                        fork_digest,
+                        kind: GossipTopicKind::BeaconBlock,
+                    };
+                    // Wrap raw SSZ bytes in a minimal Encode impl for the publish API.
+                    struct RawSsz(Vec<u8>);
+                    impl pharos_ssz::Encode for RawSsz {
+                        const IS_FIXED_SIZE: bool = false;
+                        fn ssz_fixed_len() -> usize {
+                            pharos_ssz::BYTES_PER_LENGTH_OFFSET
+                        }
+                        fn ssz_append(&self, buf: &mut Vec<u8>) {
+                            buf.extend_from_slice(&self.0);
+                        }
+                        fn ssz_bytes_len(&self) -> usize {
+                            self.0.len()
+                        }
+                    }
+                    if let Err(e) = cmd_c.publish(topic, &RawSsz(gossip_bytes)).await {
+                        tracing::warn!(
+                            slot = slot_val,
+                            error = %e,
+                            "VC-submitted block gossip failed"
+                        );
+                    }
+                });
+
+                Ok(true)
+            });
+
+            // ── peers_fn ─────────────────────────────────────────────────────
+            let peers_fn: Arc<pharos_api::PeersFn> = Arc::new(Vec::new);
+
+            chain_state = chain_state.with_pools(pools_arc).with_produce_fns(
+                produce_fn,
+                produce_att_data_fn,
+                publish_fn,
+                peers_fn,
+            );
+
+            info!("block-production callbacks wired into Beacon API");
+        }
 
         // Build the SSE event bus and spawn the adapter task.
         let event_bus = pharos_api::EventBus::new();

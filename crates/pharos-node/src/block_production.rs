@@ -55,7 +55,7 @@ use thiserror::Error;
 use crate::engine_driver::{
     ExecutionEngineHandle, PreparePayloadError, build_payload_attributes_v1,
     build_payload_attributes_v2, compute_finalized_block_hash, compute_safe_block_hash,
-    hash_to_hex, prepare_execution_payload, prepare_execution_payload_bellatrix,
+    hash_to_hex, prepare_execution_payload_bellatrix, prepare_execution_payload_with_value,
 };
 use crate::op_pools::OperationPools;
 
@@ -677,7 +677,7 @@ pub fn produce_block<E: EthSpec>(
     graffiti: [u8; 32],
     fee_recipient: String,
     runtime_cfg: &RuntimeConfig,
-) -> Result<(E::SignedBeaconBlock, E::BeaconState), ProduceError>
+) -> Result<(E::SignedBeaconBlock, E::BeaconState, pharos_utils::Uint256), ProduceError>
 where
     E::BeaconState: BeaconStateWrite + TreeHash + Clone,
     E::AltairBeaconState: AltairProcessBlockForProduction<E>
@@ -779,8 +779,9 @@ where
                 runtime_cfg,
             );
             let fcu_state = build_fcu_state::<E>(fc_store, head_root);
-            let wire_payload =
-                prepare_execution_payload(engine, fcu_state, attrs).map_err(ProduceError::from)?;
+            let (wire_payload, exec_value) =
+                prepare_execution_payload_with_value(engine, fcu_state, attrs)
+                    .map_err(ProduceError::from)?;
             let execution_payload: E::CapellaExecutionPayload = wire_payload
                 .try_into()
                 .map_err(|e: pharos_engine::EngineError| ProduceError::Engine(e.to_string()))?;
@@ -818,7 +819,7 @@ where
 
             // ── Step (i): Seal with state_root ────────────────────────────────
             block_inner.set_state_root(post_state.tree_hash_root());
-            Ok((block_inner.into_signed_block(), post_state))
+            Ok((block_inner.into_signed_block(), post_state, exec_value))
         }
 
         // ── Bellatrix: V1 execution payload ───────────────────────────────────
@@ -866,7 +867,12 @@ where
             )?;
 
             block_inner.set_state_root(post_state.tree_hash_root());
-            Ok((block_inner.into_signed_block(), post_state))
+            // Bellatrix getPayloadV1 carries no blockValue; use zero.
+            Ok((
+                block_inner.into_signed_block(),
+                post_state,
+                pharos_utils::Uint256::ZERO,
+            ))
         }
 
         // ── Altair: no execution payload ──────────────────────────────────────
@@ -907,7 +913,12 @@ where
             )?;
 
             block_inner.set_state_root(post_state.tree_hash_root());
-            Ok((block_inner.into_signed_block(), post_state))
+            // Altair has no execution payload; exec value is zero.
+            Ok((
+                block_inner.into_signed_block(),
+                post_state,
+                pharos_utils::Uint256::ZERO,
+            ))
         }
 
         // Phase0 nodes are always past the Altair fork epoch (checkpoint sync);

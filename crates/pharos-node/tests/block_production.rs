@@ -483,7 +483,7 @@ async fn produce_block_state_root_consistent_capella() {
     .expect("spawn_blocking join")
     .expect("produce_block succeeded");
 
-    let (signed_block, post_state) = produce_result;
+    let (signed_block, post_state, _exec_value) = produce_result;
 
     // ── Assert (b): state_root consistency ────────────────────────────────────
     // The fork-enum SignedBeaconBlock does not implement the generic message()
@@ -925,7 +925,7 @@ async fn produce_block_signed_reimports_validated_capella() {
     .await
     .expect("spawn_blocking join")
     .expect("produce_block succeeded");
-    let (signed_block, _post_state) = produce_result;
+    let (signed_block, _post_state, _exec_value) = produce_result;
 
     let inner = match &signed_block {
         MinForkSignedBlock::Capella(i) => i.clone(),

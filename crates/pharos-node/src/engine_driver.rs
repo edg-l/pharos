@@ -544,7 +544,32 @@ pub fn build_payload_attributes_v1<E: EthSpec>(
 /// 1. Call `engine_forkchoiceUpdatedV2(fcu_state, Some(attrs))`.
 /// 2. Extract `payloadId` — if absent (EL syncing / not ready) returns
 ///    `PreparePayloadError::PayloadNotReady` (never panics).
-/// 3. Call `engine_getPayloadV2(payload_id)` and return the `ExecutionPayloadV2`.
+/// 3. Call `engine_getPayloadV2(payload_id)` and return the `ExecutionPayloadV2` plus
+///    the EL `blockValue` (priority fees in wei) as a `Uint256`.
+///
+/// Per `execution-apis/src/engine/shanghai.md`.
+pub fn prepare_execution_payload_with_value(
+    engine: &EngineHandle,
+    fcu_state: ForkchoiceStateV1,
+    attrs: PayloadAttributesV2,
+) -> Result<(ExecutionPayloadV2, pharos_utils::Uint256), PreparePayloadError> {
+    let fcu_resp = engine.forkchoice_updated_v2_blocking(fcu_state, Some(attrs))?;
+    let payload_id: PayloadIdV1 = fcu_resp
+        .payload_id
+        .ok_or(PreparePayloadError::PayloadNotReady)?;
+    let get_resp = engine.get_payload_v2_blocking(payload_id)?;
+    let block_value: pharos_utils::Uint256 = get_resp
+        .block_value
+        .parse()
+        .unwrap_or(pharos_utils::Uint256::ZERO);
+    Ok((get_resp.execution_payload, block_value))
+}
+
+/// Capella V2 payload preparation: FCU V2 with attributes → payloadId → getPayloadV2.
+///
+/// Returns only the `ExecutionPayloadV2` (drops `blockValue`).
+/// Kept for backward compatibility with existing call sites that do not need the
+/// execution payload value.
 ///
 /// Per `execution-apis/src/engine/shanghai.md`.
 pub fn prepare_execution_payload(
@@ -552,12 +577,7 @@ pub fn prepare_execution_payload(
     fcu_state: ForkchoiceStateV1,
     attrs: PayloadAttributesV2,
 ) -> Result<ExecutionPayloadV2, PreparePayloadError> {
-    let fcu_resp = engine.forkchoice_updated_v2_blocking(fcu_state, Some(attrs))?;
-    let payload_id: PayloadIdV1 = fcu_resp
-        .payload_id
-        .ok_or(PreparePayloadError::PayloadNotReady)?;
-    let get_resp = engine.get_payload_v2_blocking(payload_id)?;
-    Ok(get_resp.execution_payload)
+    prepare_execution_payload_with_value(engine, fcu_state, attrs).map(|(payload, _value)| payload)
 }
 
 /// Bellatrix V1 payload preparation: FCU V1 with attributes → payloadId → getPayloadV1.

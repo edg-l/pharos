@@ -85,7 +85,7 @@ pub enum ImportError {
 
 /// Result of a successful `import_block` call.
 #[allow(dead_code)]
-pub(crate) struct ImportOutcome<E: EthSpec> {
+pub struct ImportOutcome<E: EthSpec> {
     /// The new head after this block was applied to the fork-choice store.
     pub head_change: HeadChange,
     /// The block root (hash_tree_root of the message).
@@ -135,7 +135,7 @@ fn signed_block_is_execution_enabled<E: EthSpec>(b: &E::SignedBeaconBlock) -> bo
 /// Covers phase0 / altair / bellatrix / capella in one place so callers do not
 /// duplicate the four-arm match.  The wildcard arm is unreachable because `E`
 /// has exactly these four variants in the current schema.
-pub(crate) fn signed_block_slot<E: EthSpec>(
+pub fn signed_block_slot<E: EthSpec>(
     b: &E::SignedBeaconBlock,
 ) -> pharos_types::phase0::primitives::Slot {
     use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
@@ -171,7 +171,7 @@ pub(crate) fn signed_block_slot<E: EthSpec>(
 /// new where-bound explodes across call sites; `RocksStore` is the only `Store`
 /// impl wired in the binary (per `D-persist-in-import-core`).
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn import_block<E, EE, PP>(
+pub async fn import_block<E, EE, PP>(
     signed_block: &E::SignedBeaconBlock,
     fc_store: &Arc<RwLock<FcStore<E>>>,
     execution_engine: &Arc<EE>,
