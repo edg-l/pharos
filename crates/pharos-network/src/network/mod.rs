@@ -502,22 +502,19 @@ impl<
         }
     }
 
-    /// Drive the network event loop.
+    /// Dial every configured bootnode via libp2p, returning the number of
+    /// dials actually issued.
     ///
-    /// Returns when a `NetworkCommand::Shutdown` is received or when
-    /// the shutdown signal fires.
-    pub async fn run(mut self) -> Result<(), NetworkError> {
-        // Emit the local ENR once before the select loop so that consumers
-        // waiting on `NetworkEvent::LocalEnr` (e.g. integration tests that
-        // need the discv5 ENR with the real bound UDP port) can proceed.
-        let local_enr = self.discovery.local_enr();
-        self.emit_event(NetworkEvent::LocalEnr(local_enr)).await;
-
-        // Dial bootnodes directly at startup.  discv5 FINDNODE against a fresh
-        // bootnode with an empty routing table may return nothing, so we dial
-        // bootnodes unconditionally via libp2p to seed the connection table.
-        // Routed through dial_peer so that a simultaneous discovery-tick dial
-        // to the same bootnode (which may fire within milliseconds) is deduped.
+    /// Used both at startup (discv5 FINDNODE against a fresh routing table may
+    /// return nothing, so bootnodes are seeded unconditionally) and as a
+    /// recovery path from the discovery tick when the peer count falls below
+    /// target. On small/static devnets discv5 routinely discovers 0 peers, so
+    /// without this re-dial a single dropped connection would leave the node
+    /// permanently peerless ("backfill: no peers available"). Every dial is
+    /// routed through `dial_peer`, which dedups against already-connected /
+    /// pending peers and honours dial backoff, so this is safe to call on every
+    /// deficit tick.
+    fn dial_bootnodes(&mut self) -> u32 {
         let mut booted = 0u32;
         for enr in &self.bootnodes.clone() {
             let addr = match enr_to_dial_multiaddr(enr) {
@@ -546,6 +543,26 @@ impl<
                 tracing::debug!(addr = %addr, "dialing bootnode");
             }
         }
+        booted
+    }
+
+    /// Drive the network event loop.
+    ///
+    /// Returns when a `NetworkCommand::Shutdown` is received or when
+    /// the shutdown signal fires.
+    pub async fn run(mut self) -> Result<(), NetworkError> {
+        // Emit the local ENR once before the select loop so that consumers
+        // waiting on `NetworkEvent::LocalEnr` (e.g. integration tests that
+        // need the discv5 ENR with the real bound UDP port) can proceed.
+        let local_enr = self.discovery.local_enr();
+        self.emit_event(NetworkEvent::LocalEnr(local_enr)).await;
+
+        // Dial bootnodes directly at startup.  discv5 FINDNODE against a fresh
+        // bootnode with an empty routing table may return nothing, so we dial
+        // bootnodes unconditionally via libp2p to seed the connection table.
+        // Routed through dial_peer so that a simultaneous discovery-tick dial
+        // to the same bootnode (which may fire within milliseconds) is deduped.
+        let booted = self.dial_bootnodes();
         if booted > 0 {
             tracing::info!(count = booted, "dialed bootnodes at startup");
         }
@@ -613,12 +630,24 @@ impl<
                         }
                     }
 
+                    // Recovery path: when below target peers, re-dial configured
+                    // bootnodes. On small/static devnets discv5 routinely returns
+                    // 0 peers, so a single dropped connection would otherwise leave
+                    // the node permanently peerless. `dial_bootnodes` is deduped by
+                    // `dial_peer`, so this is a no-op for peers already connected.
+                    let peer_count = self.peer_manager.peer_count();
+                    let target = self.peer_manager.target_peers();
+                    if peer_count < target {
+                        let redialed = self.dial_bootnodes();
+                        if redialed > 0 {
+                            tracing::debug!(redialed, peer_count, target, "below target; re-dialed bootnodes");
+                            dialed += redialed;
+                        }
+                    }
+
                     // Reschedule discovery based on current deficit (M11 Phase 12
                     // task 3): large deficit → short interval, at/above target → slow.
-                    let next = query_interval(
-                        self.peer_manager.peer_count(),
-                        self.peer_manager.target_peers(),
-                    );
+                    let next = query_interval(peer_count, target);
                     self.discovery_tick.reset_after(next);
                     tracing::debug!(discovered, dialed, interval_secs = next.as_secs(), "discovery tick complete");
                 }
