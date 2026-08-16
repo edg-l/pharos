@@ -178,7 +178,15 @@ pub async fn get_spec<E: BeaconSpec>(
         );
 
         // ── Genesis / config constants ────────────────────────────────────────
-        data.insert("GENESIS_FORK_VERSION".into(), hex4(E::GENESIS_FORK_VERSION));
+        // Fork VERSIONS are config-level (overridable per network via
+        // --config-dir), so they MUST come from the loaded runtime config, not
+        // the compile-time `E::` preset constants — otherwise /config/spec
+        // misreports the active network's fork versions (which silently masked
+        // the real digest behaviour during M13 devnet bring-up).
+        data.insert(
+            "GENESIS_FORK_VERSION".into(),
+            hex4(cfg.genesis_fork_version),
+        );
         data.insert("GENESIS_DELAY".into(), E::GENESIS_DELAY.to_string());
         data.insert(
             "MIN_GENESIS_ACTIVE_VALIDATOR_COUNT".into(),
@@ -244,7 +252,7 @@ pub async fn get_spec<E: BeaconSpec>(
             "INACTIVITY_SCORE_RECOVERY_RATE".into(),
             E::INACTIVITY_SCORE_RECOVERY_RATE.to_string(),
         );
-        data.insert("ALTAIR_FORK_VERSION".into(), hex4(E::ALTAIR_FORK_VERSION));
+        data.insert("ALTAIR_FORK_VERSION".into(), hex4(cfg.altair_fork_version));
         data.insert(
             "ALTAIR_FORK_EPOCH".into(),
             cfg.altair_fork_epoch.to_string(),
@@ -281,7 +289,7 @@ pub async fn get_spec<E: BeaconSpec>(
         );
         data.insert(
             "BELLATRIX_FORK_VERSION".into(),
-            hex4(E::BELLATRIX_FORK_VERSION),
+            hex4(cfg.bellatrix_fork_version),
         );
         data.insert(
             "BELLATRIX_FORK_EPOCH".into(),
@@ -301,7 +309,10 @@ pub async fn get_spec<E: BeaconSpec>(
             "MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP".into(),
             E::MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP.to_string(),
         );
-        data.insert("CAPELLA_FORK_VERSION".into(), hex4(E::CAPELLA_FORK_VERSION));
+        data.insert(
+            "CAPELLA_FORK_VERSION".into(),
+            hex4(cfg.capella_fork_version),
+        );
         data.insert(
             "CAPELLA_FORK_EPOCH".into(),
             cfg.capella_fork_epoch.to_string(),
@@ -320,8 +331,22 @@ pub async fn get_spec<E: BeaconSpec>(
             "KZG_COMMITMENT_INCLUSION_PROOF_DEPTH".into(),
             E::KZG_COMMITMENT_INCLUSION_PROOF_DEPTH.to_string(),
         );
-        data.insert("DENEB_FORK_VERSION".into(), hex4(E::DENEB_FORK_VERSION));
+        data.insert("DENEB_FORK_VERSION".into(), hex4(cfg.deneb_fork_version));
         data.insert("DENEB_FORK_EPOCH".into(), cfg.deneb_fork_epoch.to_string());
+
+        // ── Electra fork ──────────────────────────────────────────────────────
+        data.insert(
+            "ELECTRA_FORK_VERSION".into(),
+            hex4(cfg.electra_fork_version),
+        );
+        data.insert(
+            "ELECTRA_FORK_EPOCH".into(),
+            cfg.electra_fork_epoch.to_string(),
+        );
+
+        // ── Fulu fork (EIP-7594 PeerDAS / EIP-7892 / EIP-7917) ────────────────
+        data.insert("FULU_FORK_VERSION".into(), hex4(cfg.fulu_fork_version));
+        data.insert("FULU_FORK_EPOCH".into(), cfg.fulu_fork_epoch.to_string());
 
         // ── Runtime config (dynamic, overridden by --config-dir) ─────────────
         data.insert("SECONDS_PER_SLOT".into(), cfg.seconds_per_slot.to_string());

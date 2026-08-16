@@ -56,7 +56,7 @@ pub async fn get_fork_schedule<E: BeaconSpec>(
     let dto = tokio::task::spawn_blocking(move || {
         let cfg = chain.runtime_cfg();
         // The beacon API spec returns forks in ascending epoch order.
-        // Phase0 → Altair → Bellatrix → Capella.
+        // Phase0 → Altair → Bellatrix → Capella → Deneb → Electra → Fulu.
         vec![
             ForkDto {
                 previous_version: cfg.genesis_fork_version,
@@ -82,6 +82,16 @@ pub async fn get_fork_schedule<E: BeaconSpec>(
                 previous_version: cfg.capella_fork_version,
                 current_version: cfg.deneb_fork_version,
                 epoch: cfg.deneb_fork_epoch,
+            },
+            ForkDto {
+                previous_version: cfg.deneb_fork_version,
+                current_version: cfg.electra_fork_version,
+                epoch: cfg.electra_fork_epoch,
+            },
+            ForkDto {
+                previous_version: cfg.electra_fork_version,
+                current_version: cfg.fulu_fork_version,
+                epoch: cfg.fulu_fork_epoch,
             },
         ]
     })
