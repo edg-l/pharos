@@ -139,6 +139,7 @@ async fn context_bytes_codec() {
                 MainnetSignedBeaconBlock::Capella(inner) => inner.message.slot.0,
                 MainnetSignedBeaconBlock::Deneb(inner) => inner.message.slot.0,
                 MainnetSignedBeaconBlock::Electra(inner) => inner.message.slot.0,
+                MainnetSignedBeaconBlock::Fulu(inner) => inner.message.slot.0,
             });
 
             // Slot 10 must be Phase0.

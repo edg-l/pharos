@@ -139,6 +139,9 @@ fn make_bls_host(dir: &tempfile::TempDir) -> HostImpl<MinimalBeaconSpec> {
         deneb_fork_epoch: Epoch(u64::MAX),
         electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
         electra_fork_epoch: Epoch(u64::MAX),
+        fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x00]),
+        fulu_fork_epoch: Epoch(u64::MAX),
+        blob_schedule: Vec::new(),
         genesis_validators_root: gvr,
     };
     let runtime_cfg = Arc::new(RuntimeConfig {

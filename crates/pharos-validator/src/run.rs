@@ -102,6 +102,7 @@ fn block_v2_payload(
         BeaconBlock::Capella(b) => b.body.tree_hash_root(),
         BeaconBlock::Deneb(b) => b.body.tree_hash_root(),
         BeaconBlock::Electra(b) => b.body.tree_hash_root(),
+        BeaconBlock::Fulu(b) => b.body.tree_hash_root(),
     };
     let version_str = version
         .and_then(|v| v.as_str())

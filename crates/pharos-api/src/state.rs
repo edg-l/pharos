@@ -262,7 +262,8 @@ pub fn beacon_state_to_json_full<E: BeaconSpec>(
         | ForkVariant::Bellatrix
         | ForkVariant::Capella
         | ForkVariant::Deneb
-        | ForkVariant::Electra => {
+        | ForkVariant::Electra
+        | ForkVariant::Fulu => {
             // Altair+: participation flags and inactivity scores.
             let prev_participation: Vec<JsonValue> = state
                 .previous_epoch_participation_u8s()

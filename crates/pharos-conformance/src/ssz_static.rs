@@ -202,6 +202,7 @@ fn dispatch_for_fork(
         "capella" => dispatch_capella(preset, type_name, &ssz_bytes, &expected_root, case_label),
         "deneb" => dispatch_deneb(preset, type_name, &ssz_bytes, &expected_root, case_label),
         "electra" => dispatch_electra(preset, type_name, &ssz_bytes, &expected_root, case_label),
+        "fulu" => dispatch_fulu(preset, type_name, &ssz_bytes, &expected_root, case_label),
         _ => {
             eprintln!("enumerate_ssz_static: unknown fork {fork}");
             Ok(false)
@@ -1697,6 +1698,414 @@ fn dispatch_electra_minimal(
         }
         _ => {
             eprintln!("skipping minimal/electra/ssz_static/{type_name}: not in dispatch table");
+            Ok(false)
+        }
+    }
+}
+
+fn dispatch_fulu(
+    preset: &str,
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    match preset {
+        "mainnet" => dispatch_fulu_mainnet(type_name, ssz_bytes, expected_root, case_label),
+        "minimal" => dispatch_fulu_minimal(type_name, ssz_bytes, expected_root, case_label),
+        _ => Ok(false),
+    }
+}
+
+fn dispatch_fulu_mainnet(
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    use pharos_types::deneb::{
+        MainnetExecutionPayload as DenebMainnetExecutionPayload,
+        MainnetExecutionPayloadHeader as DenebMainnetExecutionPayloadHeader,
+    };
+    use pharos_types::electra::{
+        ConsolidationRequest, DepositRequest, ExecutionRequests, MainnetAggregateAndProof,
+        MainnetAttestation, MainnetAttesterSlashing, MainnetIndexedAttestation,
+        MainnetSignedAggregateAndProof, PendingConsolidation, PendingDeposit,
+        PendingPartialWithdrawal, SingleAttestation, WithdrawalRequest,
+    };
+    use pharos_types::fulu::{
+        MainnetBeaconBlock as FuluMainnetBeaconBlock,
+        MainnetBeaconBlockBody as FuluMainnetBeaconBlockBody,
+        MainnetBeaconState as FuluMainnetBeaconState, MainnetDataColumnSidecar,
+        MainnetDataColumnsByRootIdentifier, MainnetPartialDataColumnHeader,
+        MainnetPartialDataColumnPartsMetadata, MainnetPartialDataColumnSidecar,
+        MainnetSignedBeaconBlock as FuluMainnetSignedBeaconBlock, MatrixEntry,
+    };
+
+    match type_name {
+        // Phase0-inherited preset-independent types
+        "Fork" => check::<Fork>(ssz_bytes, expected_root, case_label),
+        "ForkData" => check::<ForkData>(ssz_bytes, expected_root, case_label),
+        "Checkpoint" => check::<Checkpoint>(ssz_bytes, expected_root, case_label),
+        "Validator" => check::<Validator>(ssz_bytes, expected_root, case_label),
+        "AttestationData" => check::<AttestationData>(ssz_bytes, expected_root, case_label),
+        "Eth1Data" => check::<Eth1Data>(ssz_bytes, expected_root, case_label),
+        "DepositMessage" => check::<DepositMessage>(ssz_bytes, expected_root, case_label),
+        "DepositData" => check::<DepositData>(ssz_bytes, expected_root, case_label),
+        "BeaconBlockHeader" => check::<BeaconBlockHeader>(ssz_bytes, expected_root, case_label),
+        "SigningData" => check::<SigningData>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlockHeader" => {
+            check::<SignedBeaconBlockHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "ProposerSlashing" => check::<ProposerSlashing>(ssz_bytes, expected_root, case_label),
+        "VoluntaryExit" => check::<VoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "SignedVoluntaryExit" => check::<SignedVoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "Eth1Block" => check::<Eth1Block>(ssz_bytes, expected_root, case_label),
+        // Phase0-inherited preset-specific types (mainnet)
+        "Deposit" => check::<MainnetDeposit>(ssz_bytes, expected_root, case_label),
+        // Altair-inherited types (mainnet, SYNC_COMMITTEE_SIZE=512)
+        "SyncAggregate" => {
+            check::<pharos_types::altair::SyncAggregate<512>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommittee" => {
+            check::<pharos_types::altair::SyncCommittee<512>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommitteeMessage" => check::<pharos_types::altair::SyncCommitteeMessage>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SyncAggregatorSelectionData" => {
+            check::<pharos_types::altair::SyncAggregatorSelectionData>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        "SyncCommitteeContribution" => {
+            check::<pharos_types::altair::SyncCommitteeContribution<128>>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        "ContributionAndProof" => check::<pharos_types::altair::ContributionAndProof<128>>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SignedContributionAndProof" => check::<
+            pharos_types::altair::SignedContributionAndProof<128>,
+        >(ssz_bytes, expected_root, case_label),
+        // Capella-inherited types (mainnet)
+        "Withdrawal" => {
+            check::<pharos_types::capella::Withdrawal>(ssz_bytes, expected_root, case_label)
+        }
+        "BLSToExecutionChange" => check::<pharos_types::capella::BLSToExecutionChange>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SignedBLSToExecutionChange" => check::<pharos_types::capella::SignedBLSToExecutionChange>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "HistoricalSummary" => {
+            check::<pharos_types::capella::HistoricalSummary>(ssz_bytes, expected_root, case_label)
+        }
+        // Deneb-inherited types (mainnet) — execution payload identical to deneb
+        "ExecutionPayload" => {
+            check::<DenebMainnetExecutionPayload>(ssz_bytes, expected_root, case_label)
+        }
+        "ExecutionPayloadHeader" => {
+            check::<DenebMainnetExecutionPayloadHeader>(ssz_bytes, expected_root, case_label)
+        }
+        // Deneb-inherited blob types
+        "BlobIdentifier" => {
+            check::<pharos_types::deneb::BlobIdentifier>(ssz_bytes, expected_root, case_label)
+        }
+        "BlobSidecar" => {
+            check::<pharos_types::deneb::BlobSidecar>(ssz_bytes, expected_root, case_label)
+        }
+        // Electra-modified attestation types (EIP-7549 widened, inherited unchanged by fulu)
+        "Attestation" => check::<MainnetAttestation>(ssz_bytes, expected_root, case_label),
+        "IndexedAttestation" => {
+            check::<MainnetIndexedAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "AttesterSlashing" => {
+            check::<MainnetAttesterSlashing>(ssz_bytes, expected_root, case_label)
+        }
+        "AggregateAndProof" => {
+            check::<MainnetAggregateAndProof>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedAggregateAndProof" => {
+            check::<MainnetSignedAggregateAndProof>(ssz_bytes, expected_root, case_label)
+        }
+        "SingleAttestation" => check::<SingleAttestation>(ssz_bytes, expected_root, case_label),
+        // Electra-inherited EL request containers and CL pending queues
+        "DepositRequest" => check::<DepositRequest>(ssz_bytes, expected_root, case_label),
+        "WithdrawalRequest" => check::<WithdrawalRequest>(ssz_bytes, expected_root, case_label),
+        "ConsolidationRequest" => {
+            check::<ConsolidationRequest>(ssz_bytes, expected_root, case_label)
+        }
+        "ExecutionRequests" => {
+            check::<ExecutionRequests<8192, 16, 2>>(ssz_bytes, expected_root, case_label)
+        }
+        "PendingDeposit" => check::<PendingDeposit>(ssz_bytes, expected_root, case_label),
+        "PendingPartialWithdrawal" => {
+            check::<PendingPartialWithdrawal>(ssz_bytes, expected_root, case_label)
+        }
+        "PendingConsolidation" => {
+            check::<PendingConsolidation>(ssz_bytes, expected_root, case_label)
+        }
+        // Fulu block/state types (mainnet) — BeaconState gains proposer_lookahead
+        "BeaconBlockBody" => {
+            check::<FuluMainnetBeaconBlockBody>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlock" => check::<FuluMainnetBeaconBlock>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlock" => {
+            check::<FuluMainnetSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconState" => check::<FuluMainnetBeaconState>(ssz_bytes, expected_root, case_label),
+        // Fulu-new DAS containers (EIP-7594 PeerDAS)
+        "DataColumnSidecar" => {
+            check::<MainnetDataColumnSidecar>(ssz_bytes, expected_root, case_label)
+        }
+        "MatrixEntry" => check::<MatrixEntry>(ssz_bytes, expected_root, case_label),
+        "DataColumnsByRootIdentifier" => {
+            check::<MainnetDataColumnsByRootIdentifier>(ssz_bytes, expected_root, case_label)
+        }
+        "PartialDataColumnSidecar" => {
+            check::<MainnetPartialDataColumnSidecar>(ssz_bytes, expected_root, case_label)
+        }
+        "PartialDataColumnHeader" => {
+            check::<MainnetPartialDataColumnHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "PartialDataColumnPartsMetadata" => {
+            check::<MainnetPartialDataColumnPartsMetadata>(ssz_bytes, expected_root, case_label)
+        }
+        // Fulu LC types (mainnet) — identical to electra LC types
+        "LightClientHeader" => {
+            use pharos_types::fulu::light_client::MainnetLightClientHeader;
+            check::<MainnetLightClientHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientBootstrap" => {
+            use pharos_types::fulu::light_client::MainnetLightClientBootstrap;
+            check::<MainnetLightClientBootstrap>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientUpdate" => {
+            use pharos_types::fulu::light_client::MainnetLightClientUpdate;
+            check::<MainnetLightClientUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientFinalityUpdate" => {
+            use pharos_types::fulu::light_client::MainnetLightClientFinalityUpdate;
+            check::<MainnetLightClientFinalityUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientOptimisticUpdate" => {
+            use pharos_types::fulu::light_client::MainnetLightClientOptimisticUpdate;
+            check::<MainnetLightClientOptimisticUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        _ => {
+            eprintln!("skipping mainnet/fulu/ssz_static/{type_name}: not in dispatch table");
+            Ok(false)
+        }
+    }
+}
+
+fn dispatch_fulu_minimal(
+    type_name: &str,
+    ssz_bytes: &[u8],
+    expected_root: &Hash256,
+    case_label: &str,
+) -> Result<bool, ConformanceError> {
+    use pharos_types::deneb::{
+        MinimalExecutionPayload as DenebMinimalExecutionPayload,
+        MinimalExecutionPayloadHeader as DenebMinimalExecutionPayloadHeader,
+    };
+    use pharos_types::electra::{
+        ConsolidationRequest, DepositRequest, ExecutionRequests, MinimalAggregateAndProof,
+        MinimalAttestation, MinimalAttesterSlashing, MinimalIndexedAttestation,
+        MinimalSignedAggregateAndProof, PendingConsolidation, PendingDeposit,
+        PendingPartialWithdrawal, SingleAttestation, WithdrawalRequest,
+    };
+    use pharos_types::fulu::{
+        MatrixEntry, MinimalBeaconBlock as FuluMinimalBeaconBlock,
+        MinimalBeaconBlockBody as FuluMinimalBeaconBlockBody,
+        MinimalBeaconState as FuluMinimalBeaconState, MinimalDataColumnSidecar,
+        MinimalDataColumnsByRootIdentifier, MinimalPartialDataColumnHeader,
+        MinimalPartialDataColumnPartsMetadata, MinimalPartialDataColumnSidecar,
+        MinimalSignedBeaconBlock as FuluMinimalSignedBeaconBlock,
+    };
+
+    match type_name {
+        // Phase0-inherited preset-independent types
+        "Fork" => check::<Fork>(ssz_bytes, expected_root, case_label),
+        "ForkData" => check::<ForkData>(ssz_bytes, expected_root, case_label),
+        "Checkpoint" => check::<Checkpoint>(ssz_bytes, expected_root, case_label),
+        "Validator" => check::<Validator>(ssz_bytes, expected_root, case_label),
+        "AttestationData" => check::<AttestationData>(ssz_bytes, expected_root, case_label),
+        "Eth1Data" => check::<Eth1Data>(ssz_bytes, expected_root, case_label),
+        "DepositMessage" => check::<DepositMessage>(ssz_bytes, expected_root, case_label),
+        "DepositData" => check::<DepositData>(ssz_bytes, expected_root, case_label),
+        "BeaconBlockHeader" => check::<BeaconBlockHeader>(ssz_bytes, expected_root, case_label),
+        "SigningData" => check::<SigningData>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlockHeader" => {
+            check::<SignedBeaconBlockHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "ProposerSlashing" => check::<ProposerSlashing>(ssz_bytes, expected_root, case_label),
+        "VoluntaryExit" => check::<VoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "SignedVoluntaryExit" => check::<SignedVoluntaryExit>(ssz_bytes, expected_root, case_label),
+        "Eth1Block" => check::<Eth1Block>(ssz_bytes, expected_root, case_label),
+        // Phase0-inherited preset-specific types (minimal)
+        "Deposit" => check::<MinimalDeposit>(ssz_bytes, expected_root, case_label),
+        // Altair-inherited types (minimal, SYNC_COMMITTEE_SIZE=32)
+        "SyncAggregate" => {
+            check::<pharos_types::altair::SyncAggregate<32>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommittee" => {
+            check::<pharos_types::altair::SyncCommittee<32>>(ssz_bytes, expected_root, case_label)
+        }
+        "SyncCommitteeMessage" => check::<pharos_types::altair::SyncCommitteeMessage>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SyncAggregatorSelectionData" => {
+            check::<pharos_types::altair::SyncAggregatorSelectionData>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        "SyncCommitteeContribution" => check::<pharos_types::altair::SyncCommitteeContribution<8>>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "ContributionAndProof" => check::<pharos_types::altair::ContributionAndProof<8>>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SignedContributionAndProof" => {
+            check::<pharos_types::altair::SignedContributionAndProof<8>>(
+                ssz_bytes,
+                expected_root,
+                case_label,
+            )
+        }
+        // Capella-inherited types (minimal)
+        "Withdrawal" => {
+            check::<pharos_types::capella::Withdrawal>(ssz_bytes, expected_root, case_label)
+        }
+        "BLSToExecutionChange" => check::<pharos_types::capella::BLSToExecutionChange>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "SignedBLSToExecutionChange" => check::<pharos_types::capella::SignedBLSToExecutionChange>(
+            ssz_bytes,
+            expected_root,
+            case_label,
+        ),
+        "HistoricalSummary" => {
+            check::<pharos_types::capella::HistoricalSummary>(ssz_bytes, expected_root, case_label)
+        }
+        // Deneb-inherited types (minimal) — execution payload identical to deneb
+        "ExecutionPayload" => {
+            check::<DenebMinimalExecutionPayload>(ssz_bytes, expected_root, case_label)
+        }
+        "ExecutionPayloadHeader" => {
+            check::<DenebMinimalExecutionPayloadHeader>(ssz_bytes, expected_root, case_label)
+        }
+        // Deneb-inherited blob types
+        "BlobIdentifier" => {
+            check::<pharos_types::deneb::BlobIdentifier>(ssz_bytes, expected_root, case_label)
+        }
+        "BlobSidecar" => {
+            check::<pharos_types::deneb::BlobSidecar>(ssz_bytes, expected_root, case_label)
+        }
+        // Electra-modified attestation types (EIP-7549 widened, inherited unchanged by fulu)
+        "Attestation" => check::<MinimalAttestation>(ssz_bytes, expected_root, case_label),
+        "IndexedAttestation" => {
+            check::<MinimalIndexedAttestation>(ssz_bytes, expected_root, case_label)
+        }
+        "AttesterSlashing" => {
+            check::<MinimalAttesterSlashing>(ssz_bytes, expected_root, case_label)
+        }
+        "AggregateAndProof" => {
+            check::<MinimalAggregateAndProof>(ssz_bytes, expected_root, case_label)
+        }
+        "SignedAggregateAndProof" => {
+            check::<MinimalSignedAggregateAndProof>(ssz_bytes, expected_root, case_label)
+        }
+        "SingleAttestation" => check::<SingleAttestation>(ssz_bytes, expected_root, case_label),
+        // Electra-inherited EL request containers and CL pending queues
+        "DepositRequest" => check::<DepositRequest>(ssz_bytes, expected_root, case_label),
+        "WithdrawalRequest" => check::<WithdrawalRequest>(ssz_bytes, expected_root, case_label),
+        "ConsolidationRequest" => {
+            check::<ConsolidationRequest>(ssz_bytes, expected_root, case_label)
+        }
+        "ExecutionRequests" => {
+            check::<ExecutionRequests<8192, 16, 2>>(ssz_bytes, expected_root, case_label)
+        }
+        "PendingDeposit" => check::<PendingDeposit>(ssz_bytes, expected_root, case_label),
+        "PendingPartialWithdrawal" => {
+            check::<PendingPartialWithdrawal>(ssz_bytes, expected_root, case_label)
+        }
+        "PendingConsolidation" => {
+            check::<PendingConsolidation>(ssz_bytes, expected_root, case_label)
+        }
+        // Fulu block/state types (minimal) — BeaconState gains proposer_lookahead
+        "BeaconBlockBody" => {
+            check::<FuluMinimalBeaconBlockBody>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconBlock" => check::<FuluMinimalBeaconBlock>(ssz_bytes, expected_root, case_label),
+        "SignedBeaconBlock" => {
+            check::<FuluMinimalSignedBeaconBlock>(ssz_bytes, expected_root, case_label)
+        }
+        "BeaconState" => check::<FuluMinimalBeaconState>(ssz_bytes, expected_root, case_label),
+        // Fulu-new DAS containers (EIP-7594 PeerDAS)
+        "DataColumnSidecar" => {
+            check::<MinimalDataColumnSidecar>(ssz_bytes, expected_root, case_label)
+        }
+        "MatrixEntry" => check::<MatrixEntry>(ssz_bytes, expected_root, case_label),
+        "DataColumnsByRootIdentifier" => {
+            check::<MinimalDataColumnsByRootIdentifier>(ssz_bytes, expected_root, case_label)
+        }
+        "PartialDataColumnSidecar" => {
+            check::<MinimalPartialDataColumnSidecar>(ssz_bytes, expected_root, case_label)
+        }
+        "PartialDataColumnHeader" => {
+            check::<MinimalPartialDataColumnHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "PartialDataColumnPartsMetadata" => {
+            check::<MinimalPartialDataColumnPartsMetadata>(ssz_bytes, expected_root, case_label)
+        }
+        // Fulu LC types (minimal) — identical to electra LC types
+        "LightClientHeader" => {
+            use pharos_types::fulu::light_client::MinimalLightClientHeader;
+            check::<MinimalLightClientHeader>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientBootstrap" => {
+            use pharos_types::fulu::light_client::MinimalLightClientBootstrap;
+            check::<MinimalLightClientBootstrap>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientUpdate" => {
+            use pharos_types::fulu::light_client::MinimalLightClientUpdate;
+            check::<MinimalLightClientUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientFinalityUpdate" => {
+            use pharos_types::fulu::light_client::MinimalLightClientFinalityUpdate;
+            check::<MinimalLightClientFinalityUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        "LightClientOptimisticUpdate" => {
+            use pharos_types::fulu::light_client::MinimalLightClientOptimisticUpdate;
+            check::<MinimalLightClientOptimisticUpdate>(ssz_bytes, expected_root, case_label)
+        }
+        _ => {
+            eprintln!("skipping minimal/fulu/ssz_static/{type_name}: not in dispatch table");
             Ok(false)
         }
     }

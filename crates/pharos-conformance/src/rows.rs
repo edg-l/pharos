@@ -203,8 +203,9 @@ pub fn row_table() -> &'static [RowSpec] {
         r("electra", "networking", "mainnet"),        // 128
         r("electra", "networking", "minimal"),        // 129
         r("electra", "fast_confirmation", "minimal"), // 130
-        // ── future forks (placeholders) ──────────────────────────────────────
-        r("fulu", "ssz_static", "-"), // 131
+        // ── M13-Fulu ──────────────────────────────────────────────────────────
+        r("fulu", "ssz_static", "mainnet"), // 131
+        r("fulu", "ssz_static", "minimal"), // 132
     ];
     TABLE
 }
@@ -364,8 +365,9 @@ mod tests {
             ("electra", "networking", "mainnet"),
             ("electra", "networking", "minimal"),
             ("electra", "fast_confirmation", "minimal"),
-            // future placeholders
-            ("fulu", "ssz_static", "-"),
+            // M13-Fulu
+            ("fulu", "ssz_static", "mainnet"),
+            ("fulu", "ssz_static", "minimal"),
         ];
 
         let table = row_table();
@@ -445,9 +447,10 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 133 (after M12-Electra Phase 7 added 3 placeholder rows).
+    /// Total row count is exactly 134 (M13-Fulu Phase 1 replaced the single
+    /// `fulu/ssz_static/-` placeholder with per-preset mainnet+minimal rows).
     #[test]
-    fn row_count_is_133() {
-        assert_eq!(row_table().len(), 133);
+    fn row_count_is_134() {
+        assert_eq!(row_table().len(), 134);
     }
 }

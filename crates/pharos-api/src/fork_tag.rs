@@ -33,6 +33,7 @@ pub fn fork_variant_str(variant: ForkVariant) -> &'static str {
         ForkVariant::Capella => "capella",
         ForkVariant::Deneb => "deneb",
         ForkVariant::Electra => "electra",
+        ForkVariant::Fulu => "fulu",
     }
 }
 

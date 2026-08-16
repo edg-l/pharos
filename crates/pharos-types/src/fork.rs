@@ -34,6 +34,69 @@ pub fn compute_fork_digest(current_version: Version, genesis_validators_root: &R
     ForkDigest::from_array([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
+/// `compute_fork_digest` blob-parameter-aware variant per
+/// `specs/fulu/beacon-chain.md:216-246` (EIP-7892).
+///
+/// XORs the base fork digest with the first 4 bytes of
+/// `hash(uint_to_bytes(uint64(blob_params.epoch)) ++
+/// uint_to_bytes(uint64(blob_params.max_blobs_per_block)))`, where `hash` is
+/// SHA256 of the 16 little-endian bytes (NOT the SSZ `hash_tree_root` of the
+/// `BlobParameters` container; the two produce different bytes). Because XOR is
+/// bytewise, `xor(a, b)[:4] == xor(a[:4], b[:4])`, so we XOR the 4-byte base
+/// digest with the first 4 bytes of the hash.
+///
+/// The fork digest rotates at every BPO boundary WITHIN the Fulu fork.
+pub fn compute_fork_digest_fulu(
+    base_version: Version,
+    genesis_validators_root: &Root,
+    blob_params: &crate::fulu::BlobParameters,
+) -> ForkDigest {
+    let base = compute_fork_digest(base_version, genesis_validators_root);
+    let base_bytes = base.as_slice();
+
+    let mut preimage = [0u8; 16];
+    preimage[..8].copy_from_slice(&blob_params.epoch.0.to_le_bytes());
+    preimage[8..].copy_from_slice(&blob_params.max_blobs_per_block.to_le_bytes());
+    let blob_hash = pharos_utils::hash::hash(&preimage);
+    let blob_bytes = blob_hash.as_slice();
+
+    ForkDigest::from_array([
+        base_bytes[0] ^ blob_bytes[0],
+        base_bytes[1] ^ blob_bytes[1],
+        base_bytes[2] ^ blob_bytes[2],
+        base_bytes[3] ^ blob_bytes[3],
+    ])
+}
+
+/// Fork-digest dispatcher that selects the plain or BPO-aware variant by epoch.
+///
+/// Returns the plain [`compute_fork_digest`] for `epoch < fulu_fork_epoch`, else
+/// looks up the active blob parameters via
+/// [`get_blob_parameters`](crate::fulu::get_blob_parameters) and returns the
+/// XORed [`compute_fork_digest_fulu`] (EIP-7892). The fork digest rotates at
+/// every BPO boundary within the Fulu fork.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_fork_digest_for_epoch(
+    version: Version,
+    genesis_validators_root: &Root,
+    epoch: Epoch,
+    fulu_fork_epoch: Epoch,
+    blob_schedule: &[crate::fulu::BlobScheduleEntry],
+    electra_fork_epoch: Epoch,
+    max_blobs_per_block_electra: u64,
+) -> ForkDigest {
+    if epoch < fulu_fork_epoch {
+        return compute_fork_digest(version, genesis_validators_root);
+    }
+    let params = crate::fulu::get_blob_parameters(
+        epoch,
+        blob_schedule,
+        electra_fork_epoch,
+        max_blobs_per_block_electra,
+    );
+    compute_fork_digest_fulu(version, genesis_validators_root, &params)
+}
+
 // ── ForkSchedule ──────────────────────────────────────────────────────────────
 
 /// `DOMAIN_BLS_TO_EXECUTION_CHANGE` per `specs/capella/beacon-chain.md`.
@@ -47,7 +110,7 @@ pub const DOMAIN_BLS_TO_EXECUTION_CHANGE: [u8; 4] = [0x0A, 0x00, 0x00, 0x00];
 /// Lives in `pharos-types::fork` so both crates can depend on it without a
 /// back-edge through the node crate.
 ///
-/// Six-fork shape (Phase 0 → Altair → Bellatrix → Capella → Deneb → Electra). Accessors
+/// Seven-fork shape (Phase 0 → Altair → Bellatrix → Capella → Deneb → Electra → Fulu). Accessors
 /// use a `[(epoch, version)]` lookup table sorted ascending by activation epoch.
 /// `FAR_FUTURE_EPOCH` (`Epoch(u64::MAX)`) deactivates a fork.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,6 +147,16 @@ pub struct ForkSchedule {
     ///
     /// `Epoch(u64::MAX)` (`FAR_FUTURE_EPOCH`) keeps Deneb active (no Electra).
     pub electra_fork_epoch: Epoch,
+    /// Fulu fork version.
+    pub fulu_fork_version: Version,
+    /// Epoch at which the Fulu fork activates.
+    ///
+    /// `Epoch(u64::MAX)` (`FAR_FUTURE_EPOCH`) keeps Electra active (no Fulu).
+    pub fulu_fork_epoch: Epoch,
+    /// EIP-7892 `BLOB_SCHEDULE`: blob-parameter-only (BPO) hardfork entries that
+    /// rotate the max-blobs-per-block limit (and the fork digest) within the
+    /// Fulu fork. Empty for pre-Fulu / test configs.
+    pub blob_schedule: Vec<crate::fulu::BlobScheduleEntry>,
     /// Genesis validators root used in fork-digest computation.
     pub genesis_validators_root: Root,
 }
@@ -94,7 +167,7 @@ impl ForkSchedule {
     ///
     /// Used by `fork_at_epoch`, `current_fork_version`, `next_fork_version`,
     /// and `next_fork_epoch` to avoid per-fork `if` chains.
-    fn fork_table(&self) -> [(Epoch, Version, Version, Epoch); 5] {
+    fn fork_table(&self) -> [(Epoch, Version, Version, Epoch); 6] {
         [
             (
                 self.altair_fork_epoch,
@@ -125,6 +198,12 @@ impl ForkSchedule {
                 self.deneb_fork_version,
                 self.electra_fork_version,
                 self.electra_fork_epoch,
+            ),
+            (
+                self.fulu_fork_epoch,
+                self.electra_fork_version,
+                self.fulu_fork_version,
+                self.fulu_fork_epoch,
             ),
         ]
     }
@@ -169,7 +248,7 @@ impl ForkSchedule {
             }
         }
         // Already at or past the last known fork.
-        self.electra_fork_version
+        self.fulu_fork_version
     }
 
     /// The epoch at which the next fork after `epoch` activates.
@@ -203,6 +282,9 @@ mod tests {
             deneb_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
             electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
             electra_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x00]),
+            fulu_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            blob_schedule: Vec::new(),
             genesis_validators_root: Root::default(),
         }
     }
@@ -220,6 +302,9 @@ mod tests {
             deneb_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
             electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
             electra_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x00]),
+            fulu_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            blob_schedule: Vec::new(),
             genesis_validators_root: Root::default(),
         }
     }
@@ -237,6 +322,9 @@ mod tests {
             deneb_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
             electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
             electra_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x00]),
+            fulu_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH
+            blob_schedule: Vec::new(),
             genesis_validators_root: Root::default(),
         }
     }
@@ -435,6 +523,9 @@ mod tests {
             deneb_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH for test
             electra_fork_version: Version::from_array(MainnetBeaconSpec::ELECTRA_FORK_VERSION),
             electra_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH for test
+            fulu_fork_version: Version::from_array(MainnetBeaconSpec::FULU_FORK_VERSION),
+            fulu_fork_epoch: Epoch(u64::MAX), // FAR_FUTURE_EPOCH for test
+            blob_schedule: Vec::new(),
             genesis_validators_root: Root::default(),
         };
         // At epoch 144_896, Bellatrix is active.
@@ -490,6 +581,84 @@ mod tests {
         // After capella, no further fork: next_fork_epoch == FAR_FUTURE_EPOCH.
         assert_eq!(sched.next_fork_epoch(Epoch(30)), Epoch(u64::MAX));
         assert_eq!(sched.next_fork_epoch(Epoch(100)), Epoch(u64::MAX));
+    }
+
+    #[test]
+    fn fulu_fork_digest_rotates_per_bpo_entry() {
+        use crate::fulu::BlobScheduleEntry;
+        let gvr = Root::default();
+        let fulu_version = Version::from_array([0x06, 0x00, 0x00, 0x00]);
+        let fulu_fork_epoch = Epoch(411_392);
+        let electra_fork_epoch = Epoch(364_032);
+        // Mainnet BLOB_SCHEDULE: two BPO entries.
+        let schedule = [
+            BlobScheduleEntry {
+                epoch: 412_672,
+                max_blobs_per_block: 15,
+            },
+            BlobScheduleEntry {
+                epoch: 419_072,
+                max_blobs_per_block: 21,
+            },
+        ];
+
+        // Two epochs in the same fulu fork but matching different BPO entries
+        // must produce DIFFERENT digests.
+        let digest_first_bpo = compute_fork_digest_for_epoch(
+            fulu_version,
+            &gvr,
+            Epoch(412_672),
+            fulu_fork_epoch,
+            &schedule,
+            electra_fork_epoch,
+            9,
+        );
+        let digest_second_bpo = compute_fork_digest_for_epoch(
+            fulu_version,
+            &gvr,
+            Epoch(419_072),
+            fulu_fork_epoch,
+            &schedule,
+            electra_fork_epoch,
+            9,
+        );
+        assert_ne!(
+            digest_first_bpo, digest_second_bpo,
+            "fork digest must rotate between BPO entries within the fulu fork"
+        );
+
+        // An epoch < FULU_FORK_EPOCH must produce the plain digest.
+        let pre_fulu_epoch = Epoch(400_000);
+        let dispatched = compute_fork_digest_for_epoch(
+            fulu_version,
+            &gvr,
+            pre_fulu_epoch,
+            fulu_fork_epoch,
+            &schedule,
+            electra_fork_epoch,
+            9,
+        );
+        let plain = compute_fork_digest(fulu_version, &gvr);
+        assert_eq!(
+            dispatched, plain,
+            "pre-fulu epoch must return the plain (non-XORed) fork digest"
+        );
+
+        // The fulu digest at/after the fork must differ from the plain digest
+        // (the XOR with blob params changes the bytes).
+        let fulu_digest = compute_fork_digest_for_epoch(
+            fulu_version,
+            &gvr,
+            Epoch(412_672),
+            fulu_fork_epoch,
+            &schedule,
+            electra_fork_epoch,
+            9,
+        );
+        assert_ne!(
+            fulu_digest, plain,
+            "fulu BPO digest must differ from the plain fork digest"
+        );
     }
 
     #[test]

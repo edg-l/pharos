@@ -420,6 +420,9 @@ async fn seed_persisted_chain(n_blocks: u64) -> Harness {
         deneb_fork_epoch: Epoch(u64::MAX),
         electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
         electra_fork_epoch: Epoch(u64::MAX),
+        fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x00]),
+        fulu_fork_epoch: Epoch(u64::MAX),
+        blob_schedule: Vec::new(),
         genesis_validators_root: gvr,
     };
     let runtime_cfg = Arc::new(pharos_types::config::RuntimeConfig {

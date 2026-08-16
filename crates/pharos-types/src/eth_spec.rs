@@ -447,6 +447,54 @@ pub trait BeaconSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + D
     /// Mainnet: `364032`. Minimal: `u64::MAX` (FAR_FUTURE_EPOCH).
     const ELECTRA_FORK_EPOCH: u64;
 
+    /// `FULU_FORK_VERSION` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
+    ///
+    /// Mainnet: `0x06000000`. Minimal: `0x06000001`.
+    const FULU_FORK_VERSION: [u8; 4];
+
+    /// `FULU_FORK_EPOCH` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
+    ///
+    /// Mainnet: `411392`. Minimal: `u64::MAX` (FAR_FUTURE_EPOCH).
+    const FULU_FORK_EPOCH: u64;
+
+    // ── Fulu / PeerDAS (EIP-7594, EIP-7917) constants ──────────────────────────
+    // All preset (`presets/*/fulu.yaml`) and config (`configs/*.yaml`) DAS
+    // constants are identical across mainnet and minimal; `LOOKAHEAD_WINDOW` is
+    // the only preset-dependent one (it scales with `SLOTS_PER_EPOCH`).
+
+    /// `NUMBER_OF_COLUMNS` from `presets/{mainnet,minimal}/fulu.yaml` (= 128).
+    const NUMBER_OF_COLUMNS: u64;
+    /// `CELLS_PER_EXT_BLOB` from `presets/{mainnet,minimal}/fulu.yaml` (= 128).
+    const CELLS_PER_EXT_BLOB: u64;
+    /// `FIELD_ELEMENTS_PER_EXT_BLOB` from `presets/{mainnet,minimal}/fulu.yaml` (= 8192).
+    const FIELD_ELEMENTS_PER_EXT_BLOB: u64;
+    /// `FIELD_ELEMENTS_PER_CELL` from `presets/{mainnet,minimal}/fulu.yaml` (= 64).
+    const FIELD_ELEMENTS_PER_CELL: u64;
+    /// `BYTES_PER_CELL` (= `FIELD_ELEMENTS_PER_CELL * BYTES_PER_FIELD_ELEMENT` = 2048).
+    const BYTES_PER_CELL: u64;
+    /// `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` from `presets/{mainnet,minimal}/fulu.yaml` (= 4).
+    const KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH: u64;
+    /// `SAMPLES_PER_SLOT` from `configs/{mainnet,minimal}.yaml` (= 8).
+    const SAMPLES_PER_SLOT: u64;
+    /// `NUMBER_OF_CUSTODY_GROUPS` from `configs/{mainnet,minimal}.yaml` (= 128).
+    const NUMBER_OF_CUSTODY_GROUPS: u64;
+    /// `DATA_COLUMN_SIDECAR_SUBNET_COUNT` from `configs/{mainnet,minimal}.yaml` (= 128).
+    const DATA_COLUMN_SIDECAR_SUBNET_COUNT: u64;
+    /// `CUSTODY_REQUIREMENT` from `configs/{mainnet,minimal}.yaml` (= 4).
+    const CUSTODY_REQUIREMENT: u64;
+    /// `VALIDATOR_CUSTODY_REQUIREMENT` from `configs/{mainnet,minimal}.yaml` (= 8).
+    const VALIDATOR_CUSTODY_REQUIREMENT: u64;
+    /// `BALANCE_PER_ADDITIONAL_CUSTODY_GROUP` from `configs/{mainnet,minimal}.yaml`
+    /// (= 32_000_000_000 Gwei = 32 ETH).
+    const BALANCE_PER_ADDITIONAL_CUSTODY_GROUP: u64;
+    /// `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` from `configs/{mainnet,minimal}.yaml` (= 4096).
+    const MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: u64;
+    /// `LOOKAHEAD_WINDOW = (MIN_SEED_LOOKAHEAD + 1) * SLOTS_PER_EPOCH` (EIP-7917).
+    ///
+    /// Length of `BeaconState.proposer_lookahead`. Mainnet: `64` (2 * 32);
+    /// minimal: `16` (2 * 8).
+    const LOOKAHEAD_WINDOW: u64;
+
     /// `MAX_ATTESTER_SLASHINGS_ELECTRA` from `presets/{mainnet,minimal}/electra.yaml`.
     ///
     /// Both presets: `1`.
@@ -1609,6 +1657,216 @@ pub trait BeaconSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + D
 
     /// Wrap a concrete electra `SignedBeaconBlock` into the fork-enum `SignedBeaconBlock`.
     fn electra_into_signed_block(s: Self::ElectraSignedBeaconBlock) -> Self::SignedBeaconBlock;
+
+    // ── Fulu assoc types ──────────────────────────────────────────────────────
+
+    /// Fulu inner `BeaconState` (unwrapped; used by fulu STF entry).
+    type FuluBeaconState: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconStateView;
+
+    /// Fulu inner `BeaconBlock` (unwrapped). Fulu does not reshape the block
+    /// envelope; this re-uses the electra block type as a distinct associated
+    /// type so callers can name `E::FuluBeaconBlock` without falling back to the
+    /// electra assoc type.
+    type FuluBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockView;
+
+    /// Fulu inner `BeaconBlockBody` (unwrapped).
+    type FuluBeaconBlockBody: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::BeaconBlockBodyView;
+
+    /// Fulu inner `SignedBeaconBlock` (unwrapped).
+    type FuluSignedBeaconBlock: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static
+        + crate::views::SignedBeaconBlockView<Message = Self::FuluBeaconBlock>;
+
+    /// Fulu `ExecutionPayload` for this preset (re-uses the deneb/electra type).
+    type FuluExecutionPayload: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Fulu `ExecutionPayloadHeader` for this preset (re-uses the deneb/electra type).
+    type FuluExecutionPayloadHeader: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Fulu `DataColumnSidecar` for this preset.
+    type DataColumnSidecar: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Fulu `MatrixEntry` for this preset.
+    type MatrixEntry: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Fulu `DataColumnsByRootIdentifier` for this preset.
+    type DataColumnsByRootIdentifier: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Fulu `PartialDataColumnSidecar` for this preset.
+    type PartialDataColumnSidecar: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Fulu `PartialDataColumnHeader` for this preset.
+    type PartialDataColumnHeader: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Fulu `PartialDataColumnPartsMetadata` for this preset.
+    type PartialDataColumnPartsMetadata: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Fulu `Cell` (`ByteVector[BYTES_PER_CELL]`) for this preset.
+    type Cell: pharos_ssz::Encode
+        + pharos_ssz::Decode
+        + pharos_ssz::TreeHash
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync
+        + 'static;
+
+    /// Unwrap a fork-enum `BeaconState` to the inner fulu variant.
+    fn unwrap_fulu_state(s: &Self::BeaconState) -> Option<&Self::FuluBeaconState>;
+
+    /// Unwrap a fork-enum `BeaconState` to the inner fulu variant (by value).
+    fn into_fulu_state(s: Self::BeaconState) -> Option<Self::FuluBeaconState>;
+
+    /// Wrap a concrete fulu `BeaconState` into the fork-enum `BeaconState`.
+    fn fulu_into_state(s: Self::FuluBeaconState) -> Self::BeaconState;
+
+    /// Unwrap a fork-enum `BeaconBlock` to the inner fulu variant.
+    fn unwrap_fulu_block(s: &Self::BeaconBlock) -> Option<&Self::FuluBeaconBlock>;
+
+    /// Wrap a concrete fulu `BeaconBlock` into the fork-enum `BeaconBlock`.
+    fn fulu_into_block(s: Self::FuluBeaconBlock) -> Self::BeaconBlock;
+
+    /// Unwrap a fork-enum `SignedBeaconBlock` to the inner fulu variant.
+    fn unwrap_fulu_signed_block(
+        s: &Self::SignedBeaconBlock,
+    ) -> Option<&Self::FuluSignedBeaconBlock>;
+
+    /// Wrap a concrete fulu `SignedBeaconBlock` into the fork-enum `SignedBeaconBlock`.
+    fn fulu_into_signed_block(s: Self::FuluSignedBeaconBlock) -> Self::SignedBeaconBlock;
+
+    /// Extract a clone of the Fulu `ExecutionPayload` from a fork-enum `SignedBeaconBlock`.
+    ///
+    /// Returns `Some(payload)` for Fulu blocks; `None` for all earlier forks.
+    /// Fulu re-uses the deneb/electra execution payload type; this method
+    /// parallels `get_electra_execution_payload` for the fulu fork variant.
+    fn get_fulu_execution_payload(
+        signed: &Self::SignedBeaconBlock,
+    ) -> Option<Self::FuluExecutionPayload>;
 }
 
 // ── MainnetBeaconSpec ─────────────────────────────────────────────────────────────
@@ -1647,6 +1905,7 @@ macro_rules! impl_fork_dispatch {
                 S::Capella(b) => B::Capella(b.message.clone()),
                 S::Deneb(b) => B::Deneb(b.message.clone()),
                 S::Electra(b) => B::Electra(b.message.clone()),
+                S::Fulu(b) => B::Fulu(b.message.clone()),
             }
         }
 
@@ -1660,6 +1919,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Deneb(_) => None,
                 crate::state::$signed::Electra(_) => None,
+                crate::state::$signed::Fulu(_) => None,
             }
         }
 
@@ -1673,6 +1933,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Deneb(_) => None,
                 crate::state::$signed::Electra(_) => None,
+                crate::state::$signed::Fulu(_) => None,
             }
         }
 
@@ -1684,6 +1945,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
                 crate::state::$state::Electra(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -1695,6 +1957,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
                 crate::state::$state::Electra(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -1706,6 +1969,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
                 crate::state::$state::Electra(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -1717,6 +1981,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
                 crate::state::$state::Electra(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -1742,6 +2007,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Deneb(_) => None,
                 crate::state::$signed::Electra(_) => None,
+                crate::state::$signed::Fulu(_) => None,
             }
         }
 
@@ -1753,6 +2019,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
                 crate::state::$state::Electra(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -1778,6 +2045,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Capella(_) => None,
                 crate::state::$block::Deneb(_) => None,
                 crate::state::$block::Electra(_) => None,
+                crate::state::$block::Fulu(_) => None,
             }
         }
 
@@ -1789,6 +2057,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Capella(_) => None,
                 crate::state::$block::Deneb(_) => None,
                 crate::state::$block::Electra(_) => None,
+                crate::state::$block::Fulu(_) => None,
             }
         }
 
@@ -1800,6 +2069,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Capella(_) => None,
                 crate::state::$block::Deneb(_) => None,
                 crate::state::$block::Electra(_) => None,
+                crate::state::$block::Fulu(_) => None,
             }
         }
 
@@ -1828,6 +2098,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Capella(b) => Some(b.body.execution_payload.block_hash),
                 crate::state::$block::Deneb(b) => Some(b.body.execution_payload.block_hash),
                 crate::state::$block::Electra(b) => Some(b.body.execution_payload.block_hash),
+                crate::state::$block::Fulu(b) => Some(b.body.execution_payload.block_hash),
                 crate::state::$block::Phase0(_) => None,
                 crate::state::$block::Altair(_) => None,
             }
@@ -1841,6 +2112,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Capella(b) => Some(b.body.execution_payload.parent_hash),
                 crate::state::$block::Deneb(b) => Some(b.body.execution_payload.parent_hash),
                 crate::state::$block::Electra(b) => Some(b.body.execution_payload.parent_hash),
+                crate::state::$block::Fulu(b) => Some(b.body.execution_payload.parent_hash),
                 crate::state::$block::Phase0(_) => None,
                 crate::state::$block::Altair(_) => None,
             }
@@ -1856,6 +2128,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Deneb(_) => None,
                 crate::state::$signed::Electra(_) => None,
+                crate::state::$signed::Fulu(_) => None,
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
             }
@@ -1869,6 +2142,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Deneb(_) => None,
                 crate::state::$signed::Electra(_) => None,
+                crate::state::$signed::Fulu(_) => None,
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
             }
@@ -1882,6 +2156,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Electra(_) => None,
+                crate::state::$signed::Fulu(_) => None,
                 crate::state::$signed::Phase0(_) => None,
                 crate::state::$signed::Altair(_) => None,
             }
@@ -1895,6 +2170,10 @@ macro_rules! impl_fork_dispatch {
                 // deneb::execution_payload). The payload is type-identical; the
                 // execution_requests field lives in the block BODY (EIP-7685).
                 crate::state::$signed::Electra(b) => Some(b.message.body.execution_payload.clone()),
+                // Fulu has a dedicated `get_fulu_execution_payload`; keep this
+                // electra-specific getter from also matching Fulu (mirrors how
+                // `get_deneb_execution_payload` returns None for Electra).
+                crate::state::$signed::Fulu(_) => None,
                 crate::state::$signed::Deneb(_) => None,
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Bellatrix(_) => None,
@@ -1931,7 +2210,31 @@ macro_rules! impl_fork_dispatch {
                     }
                     Some(result)
                 }
-                _ => None,
+                crate::state::$signed::Fulu(b) => {
+                    let reqs = &b.message.body.execution_requests;
+                    let mut result: Vec<Vec<u8>> = Vec::new();
+                    if !reqs.deposits.is_empty() {
+                        let mut entry = vec![0x00u8];
+                        entry.extend_from_slice(&reqs.deposits.as_ssz_bytes());
+                        result.push(entry);
+                    }
+                    if !reqs.withdrawals.is_empty() {
+                        let mut entry = vec![0x01u8];
+                        entry.extend_from_slice(&reqs.withdrawals.as_ssz_bytes());
+                        result.push(entry);
+                    }
+                    if !reqs.consolidations.is_empty() {
+                        let mut entry = vec![0x02u8];
+                        entry.extend_from_slice(&reqs.consolidations.as_ssz_bytes());
+                        result.push(entry);
+                    }
+                    Some(result)
+                }
+                crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
             }
         }
 
@@ -1943,6 +2246,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Capella(b) => b.message.slot,
                 crate::state::$signed::Deneb(b) => b.message.slot,
                 crate::state::$signed::Electra(b) => b.message.slot,
+                crate::state::$signed::Fulu(b) => b.message.slot,
             }
         }
 
@@ -1968,6 +2272,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Deneb(_) => None,
                 crate::state::$signed::Electra(_) => None,
+                crate::state::$signed::Fulu(_) => None,
             }
         }
 
@@ -1979,6 +2284,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Deneb(_) => None,
                 crate::state::$state::Electra(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -1990,6 +2296,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Deneb(_) => None,
                 crate::state::$state::Electra(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -2001,6 +2308,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Bellatrix(_) => None,
                 crate::state::$block::Deneb(_) => None,
                 crate::state::$block::Electra(_) => None,
+                crate::state::$block::Fulu(_) => None,
             }
         }
 
@@ -2012,6 +2320,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Electra(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -2023,6 +2332,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Electra(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -2038,6 +2348,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Bellatrix(_) => None,
                 crate::state::$block::Capella(_) => None,
                 crate::state::$block::Electra(_) => None,
+                crate::state::$block::Fulu(_) => None,
             }
         }
 
@@ -2055,6 +2366,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Electra(_) => None,
+                crate::state::$signed::Fulu(_) => None,
             }
         }
 
@@ -2070,6 +2382,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -2081,6 +2394,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$state::Bellatrix(_) => None,
                 crate::state::$state::Capella(_) => None,
                 crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Fulu(_) => None,
             }
         }
 
@@ -2096,6 +2410,7 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$block::Bellatrix(_) => None,
                 crate::state::$block::Capella(_) => None,
                 crate::state::$block::Deneb(_) => None,
+                crate::state::$block::Fulu(_) => None,
             }
         }
 
@@ -2113,11 +2428,88 @@ macro_rules! impl_fork_dispatch {
                 crate::state::$signed::Bellatrix(_) => None,
                 crate::state::$signed::Capella(_) => None,
                 crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Fulu(_) => None,
             }
         }
 
         fn electra_into_signed_block(s: Self::ElectraSignedBeaconBlock) -> Self::SignedBeaconBlock {
             crate::state::$signed::Electra(s)
+        }
+
+        fn unwrap_fulu_state(s: &Self::BeaconState) -> Option<&Self::FuluBeaconState> {
+            match s {
+                crate::state::$state::Fulu(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Capella(_) => None,
+                crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Electra(_) => None,
+            }
+        }
+
+        fn into_fulu_state(s: Self::BeaconState) -> Option<Self::FuluBeaconState> {
+            match s {
+                crate::state::$state::Fulu(inner) => Some(inner),
+                crate::state::$state::Phase0(_) => None,
+                crate::state::$state::Altair(_) => None,
+                crate::state::$state::Bellatrix(_) => None,
+                crate::state::$state::Capella(_) => None,
+                crate::state::$state::Deneb(_) => None,
+                crate::state::$state::Electra(_) => None,
+            }
+        }
+
+        fn fulu_into_state(s: Self::FuluBeaconState) -> Self::BeaconState {
+            crate::state::$state::Fulu(s)
+        }
+
+        fn unwrap_fulu_block(s: &Self::BeaconBlock) -> Option<&Self::FuluBeaconBlock> {
+            match s {
+                crate::state::$block::Fulu(inner) => Some(inner),
+                crate::state::$block::Phase0(_) => None,
+                crate::state::$block::Altair(_) => None,
+                crate::state::$block::Bellatrix(_) => None,
+                crate::state::$block::Capella(_) => None,
+                crate::state::$block::Deneb(_) => None,
+                crate::state::$block::Electra(_) => None,
+            }
+        }
+
+        fn fulu_into_block(s: Self::FuluBeaconBlock) -> Self::BeaconBlock {
+            crate::state::$block::Fulu(s)
+        }
+
+        fn unwrap_fulu_signed_block(
+            s: &Self::SignedBeaconBlock,
+        ) -> Option<&Self::FuluSignedBeaconBlock> {
+            match s {
+                crate::state::$signed::Fulu(inner) => Some(inner),
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
+                crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Electra(_) => None,
+            }
+        }
+
+        fn fulu_into_signed_block(s: Self::FuluSignedBeaconBlock) -> Self::SignedBeaconBlock {
+            crate::state::$signed::Fulu(s)
+        }
+
+        fn get_fulu_execution_payload(
+            signed: &Self::SignedBeaconBlock,
+        ) -> Option<Self::FuluExecutionPayload> {
+            match signed {
+                crate::state::$signed::Fulu(b) => Some(b.message.body.execution_payload.clone()),
+                crate::state::$signed::Electra(_) => None,
+                crate::state::$signed::Deneb(_) => None,
+                crate::state::$signed::Capella(_) => None,
+                crate::state::$signed::Bellatrix(_) => None,
+                crate::state::$signed::Phase0(_) => None,
+                crate::state::$signed::Altair(_) => None,
+            }
         }
     };
 }
@@ -2343,6 +2735,26 @@ impl BeaconSpec for MainnetBeaconSpec {
     const ELECTRA_FORK_VERSION: [u8; 4] = [0x05, 0x00, 0x00, 0x00];
     /// `ELECTRA_FORK_EPOCH` from `configs/mainnet.yaml` (364032).
     const ELECTRA_FORK_EPOCH: u64 = 364_032;
+    /// `FULU_FORK_VERSION` from `configs/mainnet.yaml`.
+    const FULU_FORK_VERSION: [u8; 4] = [0x06, 0x00, 0x00, 0x00];
+    /// `FULU_FORK_EPOCH` from `configs/mainnet.yaml` (411392).
+    const FULU_FORK_EPOCH: u64 = 411_392;
+    // ── Fulu / PeerDAS constants (mainnet) ──
+    const NUMBER_OF_COLUMNS: u64 = 128;
+    const CELLS_PER_EXT_BLOB: u64 = 128;
+    const FIELD_ELEMENTS_PER_EXT_BLOB: u64 = 8192;
+    const FIELD_ELEMENTS_PER_CELL: u64 = 64;
+    const BYTES_PER_CELL: u64 = 2048;
+    const KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH: u64 = 4;
+    const SAMPLES_PER_SLOT: u64 = 8;
+    const NUMBER_OF_CUSTODY_GROUPS: u64 = 128;
+    const DATA_COLUMN_SIDECAR_SUBNET_COUNT: u64 = 128;
+    const CUSTODY_REQUIREMENT: u64 = 4;
+    const VALIDATOR_CUSTODY_REQUIREMENT: u64 = 8;
+    const BALANCE_PER_ADDITIONAL_CUSTODY_GROUP: u64 = 32_000_000_000;
+    const MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: u64 = 4096;
+    /// `(MIN_SEED_LOOKAHEAD + 1) * SLOTS_PER_EPOCH` = `2 * 32`.
+    const LOOKAHEAD_WINDOW: u64 = 64;
     /// `MAX_ATTESTER_SLASHINGS_ELECTRA` from `presets/mainnet/electra.yaml`.
     const MAX_ATTESTER_SLASHINGS_ELECTRA: u64 = 1;
     /// `MAX_ATTESTATIONS_ELECTRA` from `presets/mainnet/electra.yaml`.
@@ -2410,6 +2822,9 @@ impl BeaconSpec for MainnetBeaconSpec {
             deneb_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (mainnet real epoch loaded from config at runtime)
             electra_fork_version: Self::ELECTRA_FORK_VERSION,
             electra_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (mainnet real epoch loaded from config at runtime)
+            fulu_fork_version: Self::FULU_FORK_VERSION,
+            fulu_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH (mainnet real epoch loaded from config at runtime)
+            blob_schedule: Vec::new(), // EIP-7892 BLOB_SCHEDULE loaded from config at runtime
             max_blobs_per_block: 6, // mainnet default (configs/mainnet.yaml: MAX_BLOBS_PER_BLOCK_EL)
             max_blobs_per_block_electra: Self::MAX_BLOBS_PER_BLOCK_ELECTRA,
             max_per_epoch_activation_churn_limit: 8, // configs/mainnet.yaml: MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT
@@ -2533,6 +2948,21 @@ impl BeaconSpec for MainnetBeaconSpec {
     /// Mainnet electra `LightClientOptimisticUpdate`.
     type ElectraLightClientOptimisticUpdate =
         crate::electra::light_client::MainnetLightClientOptimisticUpdate;
+
+    // ── Fulu assoc types (re-use electra/deneb shapes; only BeaconState reshapes) ──
+    type FuluBeaconState = crate::fulu::MainnetBeaconState;
+    type FuluBeaconBlock = crate::fulu::MainnetBeaconBlock;
+    type FuluBeaconBlockBody = crate::fulu::MainnetBeaconBlockBody;
+    type FuluSignedBeaconBlock = crate::fulu::MainnetSignedBeaconBlock;
+    type FuluExecutionPayload = crate::fulu::MainnetExecutionPayload;
+    type FuluExecutionPayloadHeader = crate::fulu::MainnetExecutionPayloadHeader;
+    type DataColumnSidecar = crate::fulu::MainnetDataColumnSidecar;
+    type MatrixEntry = crate::fulu::MatrixEntry;
+    type DataColumnsByRootIdentifier = crate::fulu::MainnetDataColumnsByRootIdentifier;
+    type PartialDataColumnSidecar = crate::fulu::MainnetPartialDataColumnSidecar;
+    type PartialDataColumnHeader = crate::fulu::MainnetPartialDataColumnHeader;
+    type PartialDataColumnPartsMetadata = crate::fulu::MainnetPartialDataColumnPartsMetadata;
+    type Cell = crate::fulu::Cell;
 }
 
 // ── MinimalBeaconSpec ─────────────────────────────────────────────────────────────
@@ -2770,6 +3200,26 @@ impl BeaconSpec for MinimalBeaconSpec {
     const ELECTRA_FORK_VERSION: [u8; 4] = [0x05, 0x00, 0x00, 0x01];
     /// `ELECTRA_FORK_EPOCH` from `configs/minimal.yaml` (FAR_FUTURE_EPOCH).
     const ELECTRA_FORK_EPOCH: u64 = u64::MAX;
+    /// `FULU_FORK_VERSION` from `configs/minimal.yaml`.
+    const FULU_FORK_VERSION: [u8; 4] = [0x06, 0x00, 0x00, 0x01];
+    /// `FULU_FORK_EPOCH` from `configs/minimal.yaml` (FAR_FUTURE_EPOCH).
+    const FULU_FORK_EPOCH: u64 = u64::MAX;
+    // ── Fulu / PeerDAS constants (minimal: identical to mainnet except LOOKAHEAD_WINDOW) ──
+    const NUMBER_OF_COLUMNS: u64 = 128;
+    const CELLS_PER_EXT_BLOB: u64 = 128;
+    const FIELD_ELEMENTS_PER_EXT_BLOB: u64 = 8192;
+    const FIELD_ELEMENTS_PER_CELL: u64 = 64;
+    const BYTES_PER_CELL: u64 = 2048;
+    const KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH: u64 = 4;
+    const SAMPLES_PER_SLOT: u64 = 8;
+    const NUMBER_OF_CUSTODY_GROUPS: u64 = 128;
+    const DATA_COLUMN_SIDECAR_SUBNET_COUNT: u64 = 128;
+    const CUSTODY_REQUIREMENT: u64 = 4;
+    const VALIDATOR_CUSTODY_REQUIREMENT: u64 = 8;
+    const BALANCE_PER_ADDITIONAL_CUSTODY_GROUP: u64 = 32_000_000_000;
+    const MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: u64 = 4096;
+    /// `(MIN_SEED_LOOKAHEAD + 1) * SLOTS_PER_EPOCH` = `2 * 8`.
+    const LOOKAHEAD_WINDOW: u64 = 16;
     /// `MAX_ATTESTER_SLASHINGS_ELECTRA` from `presets/minimal/electra.yaml`.
     const MAX_ATTESTER_SLASHINGS_ELECTRA: u64 = 1;
     /// `MAX_ATTESTATIONS_ELECTRA` from `presets/minimal/electra.yaml`.
@@ -2837,7 +3287,10 @@ impl BeaconSpec for MinimalBeaconSpec {
             deneb_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH
             electra_fork_version: Self::ELECTRA_FORK_VERSION,
             electra_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH
-            max_blobs_per_block: 6,       // minimal default
+            fulu_fork_version: Self::FULU_FORK_VERSION,
+            fulu_fork_epoch: u64::MAX, // FAR_FUTURE_EPOCH
+            blob_schedule: Vec::new(), // EIP-7892 BLOB_SCHEDULE (minimal: empty)
+            max_blobs_per_block: 6,    // minimal default
             max_blobs_per_block_electra: Self::MAX_BLOBS_PER_BLOCK_ELECTRA,
             max_per_epoch_activation_churn_limit: 4, // configs/minimal.yaml: MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT
             // configs/minimal.yaml: large TTD to prevent accidental merge on test networks
@@ -2962,4 +3415,19 @@ impl BeaconSpec for MinimalBeaconSpec {
     /// Minimal electra `LightClientOptimisticUpdate`.
     type ElectraLightClientOptimisticUpdate =
         crate::electra::light_client::MinimalLightClientOptimisticUpdate;
+
+    // ── Fulu assoc types (re-use electra/deneb shapes; only BeaconState reshapes) ──
+    type FuluBeaconState = crate::fulu::MinimalBeaconState;
+    type FuluBeaconBlock = crate::fulu::MinimalBeaconBlock;
+    type FuluBeaconBlockBody = crate::fulu::MinimalBeaconBlockBody;
+    type FuluSignedBeaconBlock = crate::fulu::MinimalSignedBeaconBlock;
+    type FuluExecutionPayload = crate::fulu::MinimalExecutionPayload;
+    type FuluExecutionPayloadHeader = crate::fulu::MinimalExecutionPayloadHeader;
+    type DataColumnSidecar = crate::fulu::MinimalDataColumnSidecar;
+    type MatrixEntry = crate::fulu::MatrixEntry;
+    type DataColumnsByRootIdentifier = crate::fulu::MinimalDataColumnsByRootIdentifier;
+    type PartialDataColumnSidecar = crate::fulu::MinimalPartialDataColumnSidecar;
+    type PartialDataColumnHeader = crate::fulu::MinimalPartialDataColumnHeader;
+    type PartialDataColumnPartsMetadata = crate::fulu::MinimalPartialDataColumnPartsMetadata;
+    type Cell = crate::fulu::Cell;
 }

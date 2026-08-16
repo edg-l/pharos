@@ -91,6 +91,16 @@ pub struct RuntimeConfig {
     pub electra_fork_version: [u8; 4],
     /// `ELECTRA_FORK_EPOCH` from `configs/{mainnet,minimal}.yaml`.
     pub electra_fork_epoch: u64,
+    // -- Fulu fork schedule --
+    /// `FULU_FORK_VERSION` from `configs/{mainnet,minimal}.yaml`.
+    pub fulu_fork_version: [u8; 4],
+    /// `FULU_FORK_EPOCH` from `configs/{mainnet,minimal}.yaml`.
+    pub fulu_fork_epoch: u64,
+    /// EIP-7892 `BLOB_SCHEDULE` — blob-parameter-only (BPO) hardfork entries.
+    ///
+    /// Each entry rotates the max-blobs-per-block limit (and the fork digest)
+    /// within the Fulu fork. Empty for pre-Fulu / test configs.
+    pub blob_schedule: Vec<crate::fulu::BlobScheduleEntry>,
     /// `MAX_BLOBS_PER_BLOCK` (runtime limit, may differ from `MAX_BLOB_COMMITMENTS_PER_BLOCK`).
     ///
     /// This is the EL-side maximum that the CL enforces when building/validating blocks.

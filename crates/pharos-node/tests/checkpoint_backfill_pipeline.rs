@@ -437,6 +437,9 @@ async fn checkpoint_sync_then_backfill_advances_head() {
         deneb_fork_epoch: Epoch(u64::MAX),
         electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
         electra_fork_epoch: Epoch(u64::MAX),
+        fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x00]),
+        fulu_fork_epoch: Epoch(u64::MAX),
+        blob_schedule: Vec::new(),
         genesis_validators_root,
     };
     let mut host = HostImpl::<MinimalBeaconSpec>::new(

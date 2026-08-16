@@ -60,6 +60,7 @@ pub mod deneb;
 pub mod electra;
 pub mod eth_spec;
 pub mod fork;
+pub mod fulu;
 pub mod payload_status;
 pub mod phase0;
 pub mod pools;

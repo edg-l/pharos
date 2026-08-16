@@ -782,6 +782,10 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
                 store,
             );
         }
+        ForkVariant::Fulu => {
+            // Fulu light-client snapshot writes land in the M13-Fulu LC phase;
+            // the live node imports no fulu blocks during Phase 1 plumbing.
+        }
     }
 }
 

@@ -408,6 +408,9 @@ async fn live_block_persistence_asserts() {
         deneb_fork_epoch: Epoch(u64::MAX),
         electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
         electra_fork_epoch: Epoch(u64::MAX),
+        fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x00]),
+        fulu_fork_epoch: Epoch(u64::MAX),
+        blob_schedule: Vec::new(),
         genesis_validators_root: gvr,
     };
     let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(
@@ -531,6 +534,7 @@ async fn live_block_persistence_asserts() {
             MinForkSignedBlock::Capella(inner) => inner.message.tree_hash_root(),
             MinForkSignedBlock::Deneb(inner) => inner.message.tree_hash_root(),
             MinForkSignedBlock::Electra(inner) => inner.message.tree_hash_root(),
+            MinForkSignedBlock::Fulu(inner) => inner.message.tree_hash_root(),
         };
         assert_eq!(
             stored_root, *expected_root,

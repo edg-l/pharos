@@ -223,6 +223,7 @@ impl<E: BeaconSpec> Store<E> {
             capella: self.capella_fork_epoch,
             deneb: self.runtime_cfg.deneb_fork_epoch,
             electra: self.runtime_cfg.electra_fork_epoch,
+            fulu: self.runtime_cfg.fulu_fork_epoch,
         }
     }
 }

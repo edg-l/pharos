@@ -313,6 +313,7 @@ impl<
     const PENDING_DEPOSITS_LIMIT: u64,
     const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
     const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    const LOOKAHEAD_WINDOW: u64,
 > BeaconStateMut
     for ForkBeaconState<
         SLOTS_PER_HISTORICAL_ROOT,
@@ -330,6 +331,7 @@ impl<
         PENDING_DEPOSITS_LIMIT,
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
+        LOOKAHEAD_WINDOW,
     >
 where
     pharos_utils::Hash256: Default + Clone,
@@ -354,6 +356,9 @@ where
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis query called on Electra BeaconState")
             }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis query called on Fulu BeaconState")
+            }
         }
     }
 
@@ -374,6 +379,9 @@ where
             }
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis mutation called on Electra BeaconState")
+            }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis mutation called on Fulu BeaconState")
             }
         }
     }
@@ -396,6 +404,9 @@ where
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis query called on Electra BeaconState")
             }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis query called on Fulu BeaconState")
+            }
         }
     }
 
@@ -416,6 +427,9 @@ where
             }
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis query called on Electra BeaconState")
+            }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis query called on Fulu BeaconState")
             }
         }
     }
@@ -438,6 +452,9 @@ where
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis query called on Electra BeaconState")
             }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis query called on Fulu BeaconState")
+            }
         }
     }
 
@@ -458,6 +475,9 @@ where
             }
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis mutation called on Electra BeaconState")
+            }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis mutation called on Fulu BeaconState")
             }
         }
     }
@@ -480,6 +500,9 @@ where
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis mutation called on Electra BeaconState")
             }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis mutation called on Fulu BeaconState")
+            }
         }
     }
 
@@ -500,6 +523,9 @@ where
             }
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis mutation called on Electra BeaconState")
+            }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis mutation called on Fulu BeaconState")
             }
         }
     }
@@ -522,6 +548,9 @@ where
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis mutation called on Electra BeaconState")
             }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis mutation called on Fulu BeaconState")
+            }
         }
     }
 
@@ -543,6 +572,9 @@ where
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis query called on Electra BeaconState")
             }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis query called on Fulu BeaconState")
+            }
         }
     }
 
@@ -563,6 +595,9 @@ where
             }
             ForkBeaconState::Electra(_) => {
                 unreachable!("genesis mutation called on Electra BeaconState")
+            }
+            ForkBeaconState::Fulu(_) => {
+                unreachable!("genesis mutation called on Fulu BeaconState")
             }
         }
     }

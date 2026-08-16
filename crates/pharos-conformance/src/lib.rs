@@ -201,9 +201,8 @@ fn enumerate_row(
         }
 
         // ── ssz_static (any fork × mainnet|minimal only) ──────────────────────
-        // The fulu/- row uses preset="-" and is not yet implemented; it falls
-        // through to the None arm below so it stays a placeholder. electra/ssz_static
-        // is wired per-preset (mainnet|minimal) and runs here.
+        // Every fork's ssz_static is wired per-preset (mainnet|minimal) and runs
+        // here, including fulu/ssz_static (M13-Fulu Phase 1).
         (_, "ssz_static", "mainnet" | "minimal") => Some(ssz_static::enumerate_ssz_static(
             root,
             fork,

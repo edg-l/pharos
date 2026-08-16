@@ -152,6 +152,7 @@ fn blocks_by_range_ordering() {
             MainnetSignedBeaconBlock::Capella(inner) => inner.message.slot.0,
             MainnetSignedBeaconBlock::Deneb(inner) => inner.message.slot.0,
             MainnetSignedBeaconBlock::Electra(inner) => inner.message.slot.0,
+            MainnetSignedBeaconBlock::Fulu(inner) => inner.message.slot.0,
         })
         .collect();
     assert_eq!(slots, vec![1, 3, 5, 7], "must be in ascending slot order");

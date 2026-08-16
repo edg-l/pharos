@@ -112,6 +112,8 @@ pub struct ForkEpochs {
     pub deneb: u64,
     /// Epoch at which Deneb upgrades to Electra (`ELECTRA_FORK_EPOCH`).
     pub electra: u64,
+    /// Epoch at which Electra upgrades to Fulu (`FULU_FORK_EPOCH`).
+    pub fulu: u64,
 }
 
 impl ForkEpochs {
@@ -126,6 +128,7 @@ impl ForkEpochs {
             capella: u64::MAX,
             deneb: u64::MAX,
             electra: u64::MAX,
+            fulu: u64::MAX,
         }
     }
 
@@ -141,6 +144,7 @@ impl ForkEpochs {
             capella: cfg.capella_fork_epoch,
             deneb: cfg.deneb_fork_epoch,
             electra: cfg.electra_fork_epoch,
+            fulu: cfg.fulu_fork_epoch,
         }
     }
 }
@@ -768,6 +772,11 @@ where
                 wrapped.invalidate_root_cache();
                 break 'dispatch (wrapped, payload_status);
             }
+            ForkVariant::Fulu => {
+                // Fulu STF lands in M13-Fulu Phase 2-4; until then the state
+                // transition is unsupported for fulu states.
+                return Err(StateTransitionError::UnsupportedFork);
+            }
         }
         // Phase0 falls through here; reset root cache before unifying exit.
         // Phase0 has no execution payload → payload_status = None.
@@ -968,6 +977,10 @@ where
             wrapped.invalidate_root_cache();
             Ok(wrapped)
         }
+        ForkVariant::Fulu => {
+            // Fulu block production lands in M13-Fulu Phase 4.
+            Err(StateTransitionError::UnsupportedFork)
+        }
     }
 }
 
@@ -1026,6 +1039,10 @@ where
             inner.process_jaf_electra()?;
             *state = E::electra_into_state(inner);
             Ok(())
+        }
+        ForkVariant::Fulu => {
+            // Fulu epoch processing lands in M13-Fulu Phase 4.
+            Err(EpochProcessingError::UnsupportedFork)
         }
     }
 }
@@ -1114,7 +1131,11 @@ where
             ForkVariant::Bellatrix => boundary_slot_if(fork_epochs.capella, current_slot),
             ForkVariant::Capella => boundary_slot_if(fork_epochs.deneb, current_slot),
             ForkVariant::Deneb => boundary_slot_if(fork_epochs.electra, current_slot),
+            // Electra→Fulu boundary handling (upgrade_to_fulu) lands in M13-Fulu
+            // Phase 4; until then Electra is the last fork that triggers a
+            // boundary upgrade.
             ForkVariant::Electra => None,
+            ForkVariant::Fulu => None,
         };
 
         let step_target = next_boundary.unwrap_or(target_slot);
@@ -1152,6 +1173,10 @@ where
                     E::into_electra_state(state.clone()).expect("fork_variant is Electra");
                 inner.process_slots_electra(step_target, runtime_cfg)?;
                 *state = E::electra_into_state(inner);
+            }
+            ForkVariant::Fulu => {
+                // Fulu slot processing lands in M13-Fulu Phase 2-4.
+                return Err(StateTransitionError::UnsupportedFork);
             }
         }
 
@@ -1191,7 +1216,12 @@ where
                         *state = E::electra_into_state(upgraded);
                     }
                     ForkVariant::Electra => {
-                        // Electra is the last plumbed fork; no successor boundary.
+                        // Electra is the last plumbed fork (Fulu upgrade lands in
+                        // M13-Fulu Phase 4); no successor boundary.
+                        break;
+                    }
+                    ForkVariant::Fulu => {
+                        // Fulu is the last fork variant; no successor boundary.
                         break;
                     }
                 }
@@ -2021,6 +2051,7 @@ mod fork_upgrade_tests {
             capella: capella_epoch,
             deneb: u64::MAX,
             electra: u64::MAX,
+            fulu: u64::MAX,
         };
 
         // Advance to one slot past the boundary — triggers the upgrade.
@@ -2111,6 +2142,7 @@ mod fork_upgrade_tests {
             capella: capella_epoch,
             deneb: u64::MAX,
             electra: u64::MAX,
+            fulu: u64::MAX,
         };
 
         // One slot into the capella epoch: crosses bellatrix (slot spe) and
@@ -2170,6 +2202,7 @@ mod fork_upgrade_tests {
             capella: capella_epoch,
             deneb: u64::MAX,
             electra: u64::MAX,
+            fulu: u64::MAX,
         };
 
         // Pre-state: bellatrix at slot 7 (last slot of epoch 0), with one active

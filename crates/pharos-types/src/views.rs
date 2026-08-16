@@ -56,6 +56,7 @@ pub enum ForkVariant {
     Capella,
     Deneb,
     Electra,
+    Fulu,
 }
 
 // ── SignedContributionAndProofView ────────────────────────────────────────────

@@ -42,6 +42,7 @@ use pharos_utils::{Hash256, Uint256};
 use thiserror::Error;
 
 use super::RuntimeConfig;
+use crate::fulu::BlobScheduleEntry;
 
 /// Errors produced by the YAML config loader.
 #[derive(Debug, Error)]
@@ -162,6 +163,20 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         .get("ELECTRA_FORK_EPOCH")
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(u64::MAX);
+    // Fulu fork fields: optional (may not be present in pre-Fulu configs).
+    let fulu_fork_version = if config_map.contains_key("FULU_FORK_VERSION") {
+        extract_version(&config_map, "FULU_FORK_VERSION")?
+    } else {
+        [0x06, 0x00, 0x00, 0x00]
+    };
+    let fulu_fork_epoch = config_map
+        .get("FULU_FORK_EPOCH")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(u64::MAX);
+    // EIP-7892 BLOB_SCHEDULE: a nested list of records, skipped by the flat
+    // parser. Parse it directly from the raw config source. Absent or empty
+    // for pre-Fulu / minimal configs.
+    let blob_schedule = parse_blob_schedule(&config_src)?;
     // MAX_BLOBS_PER_BLOCK_ELECTRA (EIP-7691): default 9.
     let max_blobs_per_block_electra = config_map
         .get("MAX_BLOBS_PER_BLOCK_ELECTRA")
@@ -244,6 +259,9 @@ pub fn load_config_dir(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         deneb_fork_epoch,
         electra_fork_version,
         electra_fork_epoch,
+        fulu_fork_version,
+        fulu_fork_epoch,
+        blob_schedule,
         max_blobs_per_block,
         max_blobs_per_block_electra,
         max_per_epoch_activation_churn_limit,
@@ -305,6 +323,98 @@ fn parse_flat_yaml(src: &str) -> HashMap<String, String> {
         }
     }
     map
+}
+
+/// Parse the EIP-7892 `BLOB_SCHEDULE` nested list from a config source.
+///
+/// The schedule is a YAML list of records, each with `EPOCH` and
+/// `MAX_BLOBS_PER_BLOCK` keys, e.g.:
+///
+/// ```yaml
+/// BLOB_SCHEDULE:
+///   - EPOCH: 412672
+///     MAX_BLOBS_PER_BLOCK: 15
+///   - EPOCH: 419072
+///     MAX_BLOBS_PER_BLOCK: 21
+/// ```
+///
+/// `BLOB_SCHEDULE: []` and an absent key both yield an empty schedule. Entries
+/// are returned in source order. The [`parse_flat_yaml`] parser cannot handle
+/// this because it intentionally skips indented and list-item lines, so this
+/// function scans the raw source directly.
+fn parse_blob_schedule(src: &str) -> Result<Vec<BlobScheduleEntry>, ConfigError> {
+    let mut schedule = Vec::new();
+    let mut lines = src.lines();
+
+    // Find the `BLOB_SCHEDULE:` header line.
+    for raw_line in lines.by_ref() {
+        let line = match raw_line.find('#') {
+            Some(idx) => &raw_line[..idx],
+            None => raw_line,
+        };
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("BLOB_SCHEDULE:") {
+            // Inline empty list (`BLOB_SCHEDULE: []`) → no entries.
+            if rest.trim() == "[]" {
+                return Ok(schedule);
+            }
+            break;
+        }
+    }
+
+    // Consume indented list items until a non-indented, non-blank line ends the
+    // block. Each record has `- EPOCH: N` then `MAX_BLOBS_PER_BLOCK: M`.
+    let mut pending_epoch: Option<u64> = None;
+    for raw_line in lines {
+        let line = match raw_line.find('#') {
+            Some(idx) => &raw_line[..idx],
+            None => raw_line,
+        };
+        // A non-indented, non-blank line terminates the block.
+        if !line.is_empty()
+            && !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && !line.trim().is_empty()
+        {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Strip a leading list-item marker.
+        let entry = trimmed.strip_prefix('-').map(str::trim).unwrap_or(trimmed);
+        if let Some(value) = entry.strip_prefix("EPOCH:") {
+            pending_epoch =
+                Some(
+                    value
+                        .trim()
+                        .parse::<u64>()
+                        .map_err(|_| ConfigError::InvalidValue {
+                            field: "BLOB_SCHEDULE.EPOCH",
+                            value: value.trim().to_string(),
+                        })?,
+                );
+        } else if let Some(value) = entry.strip_prefix("MAX_BLOBS_PER_BLOCK:") {
+            let max_blobs = value
+                .trim()
+                .parse::<u64>()
+                .map_err(|_| ConfigError::InvalidValue {
+                    field: "BLOB_SCHEDULE.MAX_BLOBS_PER_BLOCK",
+                    value: value.trim().to_string(),
+                })?;
+            let epoch = pending_epoch.take().ok_or(ConfigError::InvalidValue {
+                field: "BLOB_SCHEDULE",
+                value: "MAX_BLOBS_PER_BLOCK without preceding EPOCH".to_string(),
+            })?;
+            schedule.push(BlobScheduleEntry {
+                epoch,
+                max_blobs_per_block: max_blobs,
+            });
+        }
+    }
+
+    Ok(schedule)
 }
 
 // ── Field extraction helpers ──────────────────────────────────────────────────
@@ -534,6 +644,61 @@ mod tests {
             Some("58750000000000000000000")
         );
         assert_eq!(map.get("FOO").map(String::as_str), Some("123"));
+    }
+
+    #[test]
+    fn parse_blob_schedule_two_entries() {
+        let src = "\
+FULU_FORK_EPOCH: 411392
+
+BLOB_SCHEDULE:
+  - EPOCH: 412672  # December 9, 2025
+    MAX_BLOBS_PER_BLOCK: 15
+  - EPOCH: 419072  # January 7, 2026
+    MAX_BLOBS_PER_BLOCK: 21
+
+# Fast Confirmation Rule
+NEXT_KEY: 1
+";
+        let schedule = parse_blob_schedule(src).expect("parse blob schedule");
+        assert_eq!(schedule.len(), 2);
+        assert_eq!(schedule[0].epoch, 412_672);
+        assert_eq!(schedule[0].max_blobs_per_block, 15);
+        assert_eq!(schedule[1].epoch, 419_072);
+        assert_eq!(schedule[1].max_blobs_per_block, 21);
+    }
+
+    #[test]
+    fn parse_blob_schedule_empty_inline() {
+        let src = "BLOB_SCHEDULE: []\nFOO: 1\n";
+        let schedule = parse_blob_schedule(src).expect("parse blob schedule");
+        assert!(schedule.is_empty());
+    }
+
+    #[test]
+    fn parse_blob_schedule_absent() {
+        let src = "GENESIS_FORK_VERSION: 0x00000000\n";
+        let schedule = parse_blob_schedule(src).expect("parse blob schedule");
+        assert!(schedule.is_empty());
+    }
+
+    #[test]
+    fn mainnet_fulu_fork_fields() {
+        if !mainnet_config_available() {
+            eprintln!("consensus-specs not found — skipping mainnet YAML loader test");
+            return;
+        }
+        let cfg =
+            load_config_dir(&mainnet_config_prefix()).expect("load_config_dir should succeed");
+        // Per mainnet.yaml: FULU_FORK_VERSION: 0x06000000, FULU_FORK_EPOCH: 411392.
+        assert_eq!(cfg.fulu_fork_version, [0x06, 0x00, 0x00, 0x00]);
+        assert_eq!(cfg.fulu_fork_epoch, 411_392);
+        // Mainnet BLOB_SCHEDULE has two BPO entries.
+        assert_eq!(cfg.blob_schedule.len(), 2);
+        assert_eq!(cfg.blob_schedule[0].epoch, 412_672);
+        assert_eq!(cfg.blob_schedule[0].max_blobs_per_block, 15);
+        assert_eq!(cfg.blob_schedule[1].epoch, 419_072);
+        assert_eq!(cfg.blob_schedule[1].max_blobs_per_block, 21);
     }
 
     #[test]

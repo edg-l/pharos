@@ -611,6 +611,9 @@ async fn deneb_pipeline_crossing_da_and_v3_engine() {
         deneb_fork_epoch: UtilsEpoch(DENEB_FORK_EPOCH),
         electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x01]),
         electra_fork_epoch: UtilsEpoch(u64::MAX),
+        fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x01]),
+        fulu_fork_epoch: UtilsEpoch(u64::MAX),
+        blob_schedule: Vec::new(),
         genesis_validators_root,
     };
 
@@ -831,6 +834,9 @@ async fn lookup_runs_real_da_gate_for_deneb_block() {
         deneb_fork_epoch: UtilsEpoch(DENEB_FORK_EPOCH),
         electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x01]),
         electra_fork_epoch: UtilsEpoch(u64::MAX),
+        fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x01]),
+        fulu_fork_epoch: UtilsEpoch(u64::MAX),
+        blob_schedule: Vec::new(),
         genesis_validators_root,
     };
     let host = Arc::new(HostImpl::<MinimalBeaconSpec>::new(

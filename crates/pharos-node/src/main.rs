@@ -835,6 +835,11 @@ async fn main() -> anyhow::Result<()> {
             runtime_cfg.electra_fork_version,
         ),
         electra_fork_epoch: pharos_utils::Epoch(runtime_cfg.electra_fork_epoch),
+        fulu_fork_version: pharos_types::phase0::primitives::Version::from_array(
+            runtime_cfg.fulu_fork_version,
+        ),
+        fulu_fork_epoch: pharos_utils::Epoch(runtime_cfg.fulu_fork_epoch),
+        blob_schedule: runtime_cfg.blob_schedule.clone(),
         genesis_validators_root,
     });
 
@@ -1174,6 +1179,27 @@ async fn main() -> anyhow::Result<()> {
                                 }),
                             };
                             (ssz, 5u8, stub_json)
+                        }
+                        pharos_types::state::SignedBeaconBlock::Fulu(inner) => {
+                            use pharos_ssz::Encode as _;
+                            use pharos_types::views::ForkVariant;
+                            let ssz = inner.as_ssz_bytes();
+                            // Same serialize/proposer-root contract as Electra; the
+                            // `block_ssz` field carries the fork-enum bytes for the VC.
+                            let stub_json = pharos_api::dto::block::SignedBlockForApi {
+                                variant: ForkVariant::Fulu,
+                                ssz_bytes: ssz.clone(),
+                                attestations_json: vec![],
+                                json: serde_json::json!({
+                                    "message": {
+                                        "slot": inner.message.slot.0.to_string(),
+                                        "proposer_index": inner.message.proposer_index.0.to_string(),
+                                        "parent_root": format!("0x{}", hex::encode(inner.message.parent_root.as_slice())),
+                                        "state_root": format!("0x{}", hex::encode(inner.message.state_root.as_slice())),
+                                    }
+                                }),
+                            };
+                            (ssz, 6u8, stub_json)
                         }
                     };
 

@@ -2034,6 +2034,11 @@ where
                 blob_sidecars,
             ))
         }
+        ForkVariant::Fulu => {
+            // Fulu block production (Engine V5 / getPayloadV5) lands in M13-Fulu
+            // Phase 4; the VC does not produce fulu blocks during Phase 1 plumbing.
+            Err(ProduceError::WrongFork)
+        }
     }
 }
 

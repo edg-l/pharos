@@ -971,9 +971,9 @@ pub async fn run_engine_driver_loop<E: BeaconSpec, P: PowBlockProvider + Send + 
                         .get(&change.head_root)
                         .map(|s| s.fork_variant())
                     {
-                        Some(ForkVariant::Electra) | Some(ForkVariant::Deneb) => {
-                            ForkchoiceUpdatedVersion::V3
-                        }
+                        Some(ForkVariant::Fulu)
+                        | Some(ForkVariant::Electra)
+                        | Some(ForkVariant::Deneb) => ForkchoiceUpdatedVersion::V3,
                         Some(ForkVariant::Capella) => ForkchoiceUpdatedVersion::V2,
                         Some(
                             ForkVariant::Phase0
