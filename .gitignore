@@ -1,2 +1,30 @@
+# ── Rust / Cargo ──────────────────────────────────────────────────────────────
 /target
+**/*.rs.bk
+*.pdb
+
+# ── Runtime data ──────────────────────────────────────────────────────────────
+# Node data dirs, RocksDB chain DB, VC slashing-protection sqlite, etc.
 data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# ── Python (scripts/devnet-dashboard.py and friends) ──────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── Logs / scratch ────────────────────────────────────────────────────────────
+*.log
+*.tmp
+
+# ── Editor / OS ───────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
