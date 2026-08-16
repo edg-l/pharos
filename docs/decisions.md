@@ -3741,3 +3741,269 @@ Under the single flat pool, rayon cannot cleanly short-circuit mid-`par_iter` wh
 deterministic output. `--bail` now runs all cases and exits non-zero if any failed (the
 exit-code contract `main.rs` relies on is preserved); the "stop after first failing category"
 behavior is dropped. For fast-fail feedback, use `--filter`.
+
+## M12-Electra decisions
+
+Full Electra (Pectra) consensus-layer fork. New `Fork::Electra` arm across all crates,
+EIP-7549 (attestation reshape), EIP-7251 (MaxEB + consolidations), EIP-6110 (deposit
+requests), EIP-7002 (withdrawal requests), EIP-7685 (execution requests list), Engine API
+V4. Plan: `docs/m12-electra-plan.md`.
+
+### D-electra-stf-delegates-to-deneb — Electra STF delegates unchanged logic to Deneb
+
+**Status**: Accepted.
+
+Electra is a Deneb sibling in the same way Deneb is a Capella sibling. Only the two
+reshaped sub-surfaces (EIP-7549 attestation, EIP-7251 epoch processing) require
+electra-native implementations; every other step delegates to Deneb via state projection
+(`electra_state_to_deneb` / `update_electra_from_deneb`) in `crates/pharos-stf/src/electra/helpers.rs`.
+The `ElectraDispatch`, `ElectraJaFDispatch`, `ElectraProcessSlotsDispatch`, and
+`ElectraUpgradeDispatch` blanket-impl traits in `crates/pharos-stf/src/lib.rs` wire the
+fork-dispatch entry points. Decode-time projection to the Deneb shape was considered and
+rejected because the EIP-7549 `Attestation` has no phase0/Deneb representation (multi-committee
+aggregation cannot be projected); native electra types are required at the import boundary.
+
+### D-eip7549-attestation-reshape — committee_bits replaces committee_index in Attestation
+
+**Status**: Accepted.
+
+EIP-7549 removes `committee_index` from the `Attestation` container and replaces it with
+`committee_bits: Bitvector[MAX_COMMITTEES_PER_SLOT]`, while `aggregation_bits` is widened
+to `Bitlist[MAX_AGGREGATION_BITS]` (`MAX_COMMITTEES_PER_SLOT * MAX_VALIDATORS_PER_COMMITTEE`).
+This breaks any projection to phase0 `Attestation`. The electra `Attestation<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT>` is a distinct Rust type parameterised by two preset-specific const generics
+(mainnet 131072/64, minimal 8192/4; compound const generics are not yet stable so the
+values are pre-computed literals). `get_attesting_indices_electra` iterates committees
+in `committee_bits` order with a running `committee_offset`; `get_indexed_attestation_electra`
+sorts the accumulated `attesting_indices`. Both live in `crates/pharos-stf/src/electra/helpers.rs`.
+
+### D-eip7549-single-attestation-on-subnet — subnet gossip carries SingleAttestation
+
+**Status**: Accepted.
+
+Per EIP-7549 + `specs/electra/p2p-interface.md`: the `beacon_attestation_{subnet_id}` gossip
+topic in the Electra epoch carries `SingleAttestation` (a new 4-field container: committee
+index, attester index, data, signature), NOT the old `Attestation`. The `beacon_aggregate_and_proof`
+topic continues to carry `SignedAggregateAndProof` but with the electra `Attestation` shape
+(committee_bits + wide aggregation_bits). The `GossipValidator` trait
+(`crates/pharos-network/src/host.rs`) gains `validate_single_attestation`, with a
+`spawn_blocking` dispatch path in the network gossip handler
+(`crates/pharos-network/src/gossip/mod.rs`). Conflating `SingleAttestation` and the
+aggregate-topic `Attestation` would cause instant peer bans (wrong encoding on either topic).
+The VC publishes `SingleAttestation` to its committee's subnet; the BN includes a per-committee
+attester snapshot in the op-pool for block production.
+
+### D-eip7549-onchain-aggregate — block body uses committee_bits Attestation, built per-committee
+
+**Status**: Accepted.
+
+Block production (`crates/pharos-node/src/block_production.rs`, `build_electra_on_chain_aggregates`)
+converts per-committee op-pool entries into on-chain electra `Attestation`s via
+`compute_on_chain_aggregate` (per `specs/electra/validator.md:124-147`): each resulting
+attestation has exactly one `committee_bits` bit set, `aggregation_bits` wide over the
+full `MAX_COMMITTEES_PER_SLOT * MAX_VALIDATORS_PER_COMMITTEE` domain, and carries all
+attesters for that single committee. Cross-committee merging (same `data` across committees)
+is deferred: the complexity is a performance concern (M-perf/M11), and correctness is
+maintained by the single-committee path.
+
+### D-eip7251-churn-as-balance — activation/exit churn measured in Gwei, not validator count
+
+**Status**: Accepted.
+
+EIP-7251 replaces the phase0 validator-count churn limit with a Gwei-denominated balance
+churn (`get_balance_churn_limit_electra`, `get_activation_exit_churn_limit_electra`,
+`get_consolidation_churn_limit_electra` in `crates/pharos-stf/src/electra/helpers.rs`).
+Exit/consolidation churn balances accumulate across epochs via `exit_balance_to_consume`
+and `consolidation_balance_to_consume` in the state. `compute_exit_epoch_and_update_churn_electra`
+and `compute_consolidation_epoch_and_update_churn_electra` update these fields and return
+the epoch at which the queued event will be processed. `initiate_validator_exit_electra` and
+`process_consolidation_request` consume these helpers, replacing the phase0 epoch-scan queue.
+
+### D-eip7251-pending-deposit-queue — deposits become a pending-queue with churn accounting
+
+**Status**: Accepted.
+
+EIP-7251 changes deposit processing from immediate balance credit to a pending-queue. The
+electra `process_deposit` appends a `PendingDeposit` to `state.pending_deposits` instead of
+crediting balance directly. `process_pending_deposits` (epoch processing,
+`crates/pharos-stf/src/electra/epoch/pending_deposits.rs`) drains the queue per epoch under
+four gates: eth1-bridge ordering, finalization, `MAX_PENDING_DEPOSITS_PER_EPOCH` cap, and
+activation-exit churn. Exiting-validator deposits are postponed (reattached at END of queue);
+`next_deposit_index` advances for applied, postponed, AND withdrawn-credit deposits
+(ordering is load-bearing). `deposit_balance_to_consume` carries leftover churn forward
+only when the churn break fires.
+
+### D-eip7251-pending-consolidation-queue — consolidations queue with withdrawable-epoch drain
+
+**Status**: Accepted.
+
+EIP-7251 introduces `state.pending_consolidations: List[PendingConsolidation, 2^18]`.
+`process_consolidation_request` appends to this list.
+`process_pending_consolidations` (`crates/pharos-stf/src/electra/epoch/pending_consolidations.rs`)
+drains consolidations whose source validator is withdrawable: it moves `min(source_balance,
+source_effective_balance)` to the target and zeroes the source, stopping when a non-withdrawable
+source is encountered (queue is ordered).
+
+### D-eip7251-compounding-effective-balance — compounding validators use MaxEB as effective balance ceiling
+
+**Status**: Accepted.
+
+EIP-7251 introduces a `0x02` compounding withdrawal credential prefix.
+`get_max_effective_balance` (`crates/pharos-stf/src/electra/helpers.rs`) returns
+`MAX_EFFECTIVE_BALANCE_ELECTRA` (2048 ETH mainnet) for compounding validators, or
+`MIN_ACTIVATION_BALANCE` (32 ETH) for the rest. `process_effective_balance_updates_electra`
+(`crates/pharos-stf/src/electra/epoch/effective_balance_updates.rs`) uses this ceiling
+for the hysteresis update, replacing the phase0/deneb `MAX_EFFECTIVE_BALANCE` constant.
+`is_fully_withdrawable_validator_electra` / `is_partially_withdrawable_validator_electra`
+similarly use `get_max_effective_balance` per validator.
+
+### D-electra-compute-proposer-index — 16-bit random sample with MaxEB-weighted shuffle
+
+**Status**: Accepted.
+
+EIP-7251 changes `compute_proposer_index` to draw a 16-bit random sample per iteration
+(`bytes_to_uint64(seed[i:i+2]) % (MAX_EFFECTIVE_BALANCE_ELECTRA / ETH_TO_GWEI)`)
+instead of the phase0 8-bit sample. Without this fix every op that pays or validates the
+block proposer (block_header, proposer_slashing, sync_aggregate, attestation proposer
+reward) fails. This was the root cause of the P2 revert. Implemented as
+`compute_proposer_index_electra` in `crates/pharos-stf/src/electra/helpers.rs`; unit-tested
+against a fixture proposer index (expected value = 14, verified against the pyspec output).
+`get_next_sync_committee_indices_electra` applies the same 16-bit pattern for sync committee
+selection.
+
+### D-eip6110-deposit-requests — deposit requests arrive via execution payload, append PendingDeposit
+
+**Status**: Accepted.
+
+EIP-6110 (`specs/electra/beacon-chain.md:1809-1824`): the execution payload now carries
+`deposit_requests` (accessed via `ExecutionRequests.deposit_requests`). `process_deposit_request`
+(`crates/pharos-stf/src/electra/operations/deposit_request.rs`) sets
+`state.deposit_requests_start_index` on first receipt (initialises from
+`UNSET_DEPOSIT_REQUESTS_START_INDEX = u64::MAX`), then appends a `PendingDeposit` with
+`slot = state.slot`. The `process_operations` deposit-count assert is also modified to use
+`min(eth1_deposit_count, deposit_requests_start_index)` so the old eth1-bridge path and the
+new request path are mutually exclusive once the start index is set.
+
+### D-eip7002-withdrawal-requests — EL-triggerable withdrawals via execution payload
+
+**Status**: Accepted.
+
+EIP-7002 (`specs/electra/beacon-chain.md:1735-1802`): `execution_requests.withdrawal_requests`
+carries EL-originated withdrawal requests. `process_withdrawal_request`
+(`crates/pharos-stf/src/electra/operations/withdrawal_request.rs`) distinguishes full-exit
+requests (`FULL_EXIT_REQUEST_AMOUNT = 0`) from partial-withdrawal requests: full exits call
+`initiate_validator_exit_electra`; partial requests append to `pending_partial_withdrawals`
+under the `PENDING_PARTIAL_WITHDRAWALS_LIMIT` queue-full guard. Credential validation
+(must have execution withdrawal credential) and source-address checks precede any mutation.
+
+### D-eip7685-execution-requests-list — execution_requests lives in the block body, transmitted as Array of DATA
+
+**Status**: Accepted.
+
+EIP-7685 places `execution_requests: ExecutionRequests` in the `BeaconBlockBody` (NOT in
+the `ExecutionPayload`; payload/header are byte-identical to Deneb). The Engine API transmits
+requests as a separate `executionRequests: Array<DATA>` parameter on `newPayloadV4` and
+as a field in `GetPayloadV4Response` — each element is a hex-encoded byte string (request
+type byte + SSZ-serialised request data). `get_execution_requests_list`
+(`crates/pharos-stf/src/electra/helpers.rs`) encodes: for each non-empty list in order
+(deposit `0x00`, withdrawal `0x01`, consolidation `0x02`) prepend the type byte and SSZ-encode
+the list. Empty lists are omitted (skip-empty rule). `ExecutionPayloadV3` is reused as the
+payload wire type for V4.
+
+### D-engine-v4-version-selection — V4 methods selected for Electra fork heads
+
+**Status**: Accepted.
+
+The engine driver in `crates/pharos-node/src/engine_driver.rs` and `block_ingestion.rs`
+selects `engine_newPayloadV4`, `engine_forkchoiceUpdatedV3` (FCU version unchanged at V3
+for Electra per `prague.md`), and `engine_getPayloadV4` for Electra heads via an exhaustive
+`match` on the head state's `fork_variant()`. `NewPayloadVersion::V4` carries an additional
+`execution_requests: Vec<String>` parameter. `GetPayloadV4Response` extends V3 with
+`execution_requests: Vec<String>` + `shouldOverrideBuilder`. `getBlobsV1` is reused
+unchanged (blob RPC is per-blob, not per-fork).
+
+### D-electra-fork-digest-migration — Electra fork digest wired via ForkSchedule + fork-context
+
+**Status**: Accepted.
+
+`ForkSchedule::compute_fork_version` gained an `electra_fork_epoch` arm in `pharos-types`.
+The Electra fork digest is computed from `ELECTRA_FORK_VERSION` (mainnet `0x05000000`,
+minimal `0x05000001`) and included in `ForkContext`
+(`crates/pharos-network/src/topics.rs`). The context-bytes codec arms for
+`BeaconBlocksByRange/2`, `BeaconBlocksByRoot/2`, and blob-sidecar methods each received
+an `Electra` arm (no `_ =>` fallback). The `subscribe_*_topics` function in
+`crates/pharos-node/src/main.rs` gained an `Electra` arm (a historically-broken
+hand-written dispatch site). `fork_migration::topics_for_version` and the ENR cross-fork
+migration driver also gained electra arms.
+
+### D-electra-api-endpoints — electra-specific Beacon API endpoints derived from state fields
+
+**Status**: Accepted.
+
+Four new REST endpoints expose the new electra state fields:
+`GET /eth/v1/beacon/states/{state_id}/pending_deposits`,
+`…/pending_consolidations`,
+`…/pending_partial_withdrawals`, and
+`GET /eth/v1/validator/duties/proposer/{epoch}` extended with `proposer_lookahead`
+(derived on-the-fly via `get_beacon_proposer_index` over the lookahead window;
+`proposer_lookahead` is NOT an SSZ field in `BeaconState`). `GET/POST
+…/validator_identities` was also added. All electra arms in
+`crates/pharos-api/src/{state,fork_tag,dto/block,handlers/light_client}.rs` are
+wired without `_ =>` fallback (a historically-broken fork-dispatch site).
+
+### D-electra-placeholder-categories — networking and fast_confirmation deferred
+
+**Status**: Accepted.
+
+`electra/networking` (gossip rule enforcement spec-tests) requires a running EL+CL stack
+with a real peer, which is integration-test territory beyond the conformance harness. It is
+deferred to M13 devnet testing. `electra/fast_confirmation` (minimal preset only) is a new
+upstream spec category introduced in v1.7.0-alpha.8 that validates the fast-confirmation
+algorithm; it requires no new STF work but is gated behind the `pharos-fork-choice` fast
+confirmation extension (M13). Both categories appear as placeholder rows in
+`docs/conformance.md` and `crates/pharos-conformance/src/rows.rs`.
+
+### D-electra-lc-uses-block-state-root — electra LC writer uses STF-verified block.state_root
+
+**Status**: Accepted.
+
+The electra light-client header uses `block.state_root` (the STF-committed state root),
+not a recomputed `state.tree_hash_root()`. This matches the Deneb LC convention
+(`D-lc-header-uses-block-state-root`): a recomputed root on the electra-projected state
+would omit `execution_payload_header` and diverge from what validators verify. The LC writer
+in `crates/pharos-stf/src/electra/light_client.rs` reads `block.state_root` directly.
+
+### D-schema-v6-migration — electra LC column families bump schema to v6
+
+**Status**: Accepted.
+
+Four new RocksDB column families store electra light-client snapshots:
+`electra-light-client-bootstrap`, `electra-light-client-update`,
+`electra-latest-finality-update`, `electra-latest-optimistic-update`
+(in `crates/pharos-storage/src/cf.rs`). Opening a v5 DB returns `SchemaMismatch` →
+resync. The pattern mirrors the Deneb schema-v5 / Capella schema-v2 precedents.
+`SCHEMA_VERSION` in `crates/pharos-storage/src/db.rs` is bumped from 5 to 6.
+
+### D-electra-vc-single-attestation — VC publishes SingleAttestation per attester to committee subnet
+
+**Status**: Accepted.
+
+Per `specs/electra/validator.md:282-296`: in the Electra epoch, the VC builds a
+`SingleAttestation` (committee_index, attester_index, AttestationData, signature) and
+publishes it to the `beacon_attestation_{committee_index % ATTESTATION_SUBNET_COUNT}`
+subnet. The VC does NOT build an `Attestation` with `committee_bits`; that is the
+aggregator's job. The electra VC duty scheduler branches on `ELECTRA_FORK_EPOCH` to
+choose between pre-electra `Attestation` publication and electra `SingleAttestation`
+publication. Syncnets and other duties are unchanged.
+
+### D-electra-sync-optimistic-runner — sync/optimistic conformance runner extended to electra
+
+**Status**: Accepted.
+
+The `sync/optimistic` conformance row (`("sync", "optimistic", preset)`) is a single row
+that covers all forks in one `enumerate_optimistic` pass. For Electra the runner was
+extended with electra anchor state loading, deneb/electra block decode paths, and an
+`OptimisticElectraFeed` trait (matching `ElectraFcSpec` from `fork_choice.rs`) to feed
+block body attestations via `on_attestation_electra` with preset-specific const generics.
+The electra fork loop adds `"electra"` to the existing `["bellatrix", "capella", "deneb"]`
+walk. Fixtures at `{preset}/electra/sync/optimistic/pyspec_tests/from_syncing_to_invalid/`
+both pass, and the row is no longer a placeholder.

@@ -508,6 +508,116 @@ live devnet acceptance (I12, M10-Deneb); `engine_getBlobsV1` local-EL retrieval
 (M10-Deneb w/ Engine V3); historical blob backfill beyond `blob_serve_range`
 (serve-what-we-have + `ResourceUnavailable` for gaps).
 
+## M10-Deneb status
+
+Closed. All 6 phases done (code + conformance + ADRs + version bump + live
+devnet acceptance). 6-phase plan in `docs/m10-deneb-plan.md`. Builds on
+the M10-DA substrate. Shipped:
+- **Phase 1** Full Deneb STF as a capella sibling: `process_execution_payload`
+  (EIP-4844, versioned hashes via `kzg_commitment_to_versioned_hash`,
+  `parent_beacon_block_root`, blob-commitment count check), `process_voluntary_exit`
+  (EIP-7044 fixed capella domain), `process_attestation` (EIP-7045 upper-bound drop),
+  `process_registry_updates` (EIP-7514 activation churn cap), `upgrade_to_deneb`,
+  deneb LC (header uses STF-verified `block.state_root`); 5 dispatch arms +
+  `DenebUpgradeDispatch` wired in `lib.rs`.
+- **Phase 2** Deneb conformance runners for all 9 categories × both presets, all
+  `fail=0`. Caught + fixed the EIP-7045 THIRD surface (`get_attestation_participation_flag_indices`
+  target flag becomes unconditional — `eip7045_target_flag` param on the shared altair
+  helper) and added the deneb fork_choice DA gate (`is_data_available` over step blobs/proofs).
+- **Phase 3** Engine API V3: `ExecutionPayloadV3`/`PayloadAttributesV3`/`BlobsBundleV1`/
+  `GetPayloadV3Response`; `newPayloadV3`/`forkchoiceUpdatedV3`/`getPayloadV3`/`getBlobsV1`
+  client + actor; `notify_new_payload_deneb`; deneb FCU version-selection via exhaustive
+  head-state `fork_variant` match; DA-gate EL fallback (getBlobsV1 → persist → re-check);
+  deneb LC snapshot writes. `engine yaml` pass green.
+- **Phase 4** EIP-7045 gossip window (wall-epoch gated); deneb block production
+  (`DenebBlockAssembler`, `prepare_execution_payload_v3`, sigs-off STF); blob-sidecar
+  production (inclusion proof at fixture-verified positional gindex `11*8192+index`,
+  round-trip tested; VC signature patched into sidecar headers before publish;
+  subnet = `index % BLOB_SIDECAR_SUBNET_COUNT`).
+- **Phase 5** checkpoint-sync deneb anchor + warm-restart GVR deneb arm + rehydrate
+  runtime_cfg threading (live loops already carry the real `DENEB_FORK_EPOCH`);
+  `deneb_pipeline.rs` integration test (capella→deneb crossing + blob-carrying block
+  through DA gate + Engine V3 mock); conformance regen (deneb `fail=0`, pre-deneb rows
+  byte-identical); 14 ADRs ACCEPTED in `docs/decisions.md` (M10-Deneb section);
+  version `0.14.0` → `0.15.0`.
+- **Phase 6** Live Deneb devnet acceptance PASSED (Lighthouse v8.1.3 + ethrex
+  v13, deneb-genesis devnet, all forks epoch 0, `cancunTime 0`, 6s slots):
+  pharos receives + persists blob sidecars over gossip and satisfies the tip DA
+  gate via gossip (0 panics). Two live-only bugs found + fixed (the M10 analogue
+  of M5-follow/M6-Capella): (1) commit `6b3fd81` — pharos-api had NO Deneb arms,
+  so the beacon API panicked on deneb blocks (live-verified panics=0 after fix);
+  (2) commit `e005a75` `subscribe_deneb_blob_topics::<E>` — pharos never
+  SUBSCRIBED to `blob_sidecar_{0..BLOB_SIDECAR_SUBNET_COUNT}` gossip topics
+  despite having validate/dispatch/ingest, so the tip DA gate was unsatisfiable
+  via gossip (masked by the Noop-DA lookup fallback); live-verified 6 sidecars
+  persisted via gossip (was 0). Version `0.15.0` → `0.16.0`.
+
+## M12-Electra status
+
+Closed. Full Electra (Pectra) consensus-layer fork, 7-phase plan in
+`docs/m12-electra-plan.md`. Shipped:
+- **Phase 1** Fork plumbing + electra types + `ssz_static` green both presets.
+  `Fork::Electra` arm in all exhaustive matches; new `pharos-types/electra/` modules
+  (`requests.rs`, `attestation.rs`, `body.rs`, `block.rs`, `state.rs`, `light_client.rs`);
+  EIP-7549 `Attestation<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT>` + `SingleAttestation`;
+  EIP-7251 `BeaconState` fields (9 new: pending queues, churn balances, deposit start index);
+  `EthSpec` assoc types + 20 new const generics; `RuntimeConfig`/`ForkSchedule` 5-entry table.
+  `electra/ssz_static` mainnet 265/0 + minimal 6519/0.
+- **Phase 2a/2b/2c** Electra STF helpers + EIP-7549 attestation ops + inherited ops.
+  `compute_proposer_index_electra` (16-bit random sample, EIP-7251 — the P2 revert root
+  cause); `get_attesting_indices_electra` + `get_indexed_attestation_electra` (committee_bits
+  iteration); churn-as-balance accessors; `process_attestation_electra` + `process_attester_slashing_electra`;
+  all 7 electra operations sub-ops green.
+- **Phase 3a–3f** EIP-6110 deposit requests, EIP-7002 withdrawal requests, EIP-7251
+  consolidation requests, electra withdrawals (partial-withdrawal sweep), electra
+  `process_execution_payload` (EIP-7691 MaxBlobs), `process_block` + `upgrade_to_electra`
+  + `process_operations`; `electra/operations` fully green (343/379).
+- **Phase 4a–4c** EIP-7251 epoch processing: `process_registry_updates_electra`,
+  `process_slashings_electra`, `process_pending_deposits`, `process_pending_consolidations`,
+  `process_effective_balance_updates_electra`, `process_epoch` native; all electra
+  conformance categories green both presets.
+- **Phase 5** Engine API V4: `engine_newPayloadV4` + `engine_getPayloadV4`;
+  `GetPayloadV4Response` (V3 + `executionRequests`); `get_execution_requests_list`
+  (EIP-7685 skip-empty encoding); V4 version-selection in `engine_driver.rs` via
+  exhaustive `fork_variant` match. `engine yaml` pass includes electra examples.
+- **Phase 6a** Network fork-digest (`ELECTRA_FORK_VERSION = 0x05000000/0x05000001`);
+  context-bytes codec electra arm; `SingleAttestation` on subnet gossip topic;
+  `validate_single_attestation` on `GossipValidator` trait; EIP-7691 block blob-count
+  reject; `subscribe_*_topics` electra arm (historically-broken site).
+- **Phase 6b** Fork-choice EIP-7549: `on_attestation_electra` (committee-bits extractor);
+  `run_fork_choice_electra_{mainnet,minimal}`; `electra/fork_choice` fail=0 both presets.
+- **Phase 6c** Node dispatch sites: electra block decode + `block_state_root` in
+  `import.rs`; `fork_migration::topics_for_version` + ENR cross-fork migration electra
+  arms; checkpoint-sync + warm-restart GVR electra arm.
+- **Phase 6d** Block production: `ElectraBlockAssembler` + `build_electra_on_chain_aggregates`
+  (`compute_on_chain_aggregate`, single-committee form); VC `SingleAttestation` publication
+  on subnet; electra duty scheduling.
+- **Phase 6e** Beacon API: electra arms in `state.rs`, `fork_tag.rs`, `dto/block.rs`,
+  `handlers/light_client.rs` (no `_ =>` fallback); `pending_deposits`,
+  `pending_consolidations`, `pending_partial_withdrawals`, `validator_identities` endpoints;
+  `proposer_lookahead` derived via `get_beacon_proposer_index`; electra LC + merkle_proof
+  conformance fail=0 both presets.
+- **Phase 7** Full conformance regen: all 14 electra categories fail=0 both presets;
+  `sync/optimistic` extended to deneb+electra (4 cases/preset, all pass);
+  `networking` + `fast_confirmation` placeholder rows; 20 ADRs in `docs/decisions.md`
+  (M12-Electra section); version `0.17.0` → `0.18.0`.
+
+20 ADRs: `D-electra-stf-delegates-to-deneb`, `D-eip7549-attestation-reshape`,
+`D-eip7549-single-attestation-on-subnet`, `D-eip7549-onchain-aggregate`,
+`D-eip7251-churn-as-balance`, `D-eip7251-pending-deposit-queue`,
+`D-eip7251-pending-consolidation-queue`, `D-eip7251-compounding-effective-balance`,
+`D-electra-compute-proposer-index`, `D-eip6110-deposit-requests`,
+`D-eip7002-withdrawal-requests`, `D-eip7685-execution-requests-list`,
+`D-engine-v4-version-selection`, `D-electra-fork-digest-migration`,
+`D-electra-api-endpoints`, `D-electra-placeholder-categories`,
+`D-electra-lc-uses-block-state-root`, `D-schema-v6-migration`,
+`D-electra-vc-single-attestation`, `D-electra-sync-optimistic-runner`.
+
+Deferred: live Electra devnet acceptance (Phase 7-devnet, separate run);
+`electra/networking` conformance (M13, requires running p2p stack);
+`electra/fast_confirmation` conformance (M13, pharos-fork-choice extension);
+cross-committee `compute_on_chain_aggregate` merging (perf concern, M-perf/M11).
+
 ## Reference repos (cloned in `~/dev/`)
 
 - `consensus-specs/` — Python specs + reference tests (test fixtures live
