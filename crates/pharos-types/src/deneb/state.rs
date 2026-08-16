@@ -593,6 +593,12 @@ where
                 .collect(),
         )
     }
+    fn execution_payload_blob_gas_used(&self) -> Option<u64> {
+        Some(self.latest_execution_payload_header.blob_gas_used)
+    }
+    fn execution_payload_excess_blob_gas(&self) -> Option<u64> {
+        Some(self.latest_execution_payload_header.excess_blob_gas)
+    }
 }
 
 // ── Preset-specific aliases ───────────────────────────────────────────────────

@@ -242,6 +242,27 @@ pub fn build_router_with_auth<E: EthSpec>(
             "/eth/v1/beacon/states/{state_id}/sync_committees",
             get(states::get_sync_committees::<E>),
         )
+        // Electra-only state endpoints (Phase 6e)
+        .route(
+            "/eth/v1/beacon/states/{state_id}/pending_deposits",
+            get(states::get_pending_deposits::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/states/{state_id}/pending_partial_withdrawals",
+            get(states::get_pending_partial_withdrawals::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/states/{state_id}/pending_consolidations",
+            get(states::get_pending_consolidations::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/states/{state_id}/validator_identities",
+            post(states::post_validator_identities::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/states/{state_id}/proposer_lookahead",
+            get(states::get_proposer_lookahead::<E>),
+        )
         // Blocks namespace (Phase 3)
         .route(
             "/eth/v1/beacon/blocks/{block_id}/root",

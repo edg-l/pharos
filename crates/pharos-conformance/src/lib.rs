@@ -311,6 +311,15 @@ fn enumerate_row(
         // ── deneb/merkle_proof ────────────────────────────────────────────────
         ("deneb", "merkle_proof", preset) => Some(merkle_proof::enumerate_merkle_proof(
             root,
+            "deneb",
+            preset,
+            row_ordinal,
+        )),
+
+        // ── electra/merkle_proof ──────────────────────────────────────────────
+        ("electra", "merkle_proof", preset) => Some(merkle_proof::enumerate_merkle_proof(
+            root,
+            "electra",
             preset,
             row_ordinal,
         )),

@@ -19,10 +19,12 @@ use tracing::warn;
 use crate::cf::{
     CF_BLOB_SIDECARS, CF_BLOCK_ROOT_TO_SLOT, CF_BLOCKS, CF_COLD_BLOCKS, CF_COLD_STATES,
     CF_FORKCHOICE, CF_LC_BOOTSTRAP, CF_LC_BOOTSTRAP_CAPELLA, CF_LC_BOOTSTRAP_DENEB,
-    CF_LC_FINALITY_UPDATE, CF_LC_FINALITY_UPDATE_CAPELLA, CF_LC_FINALITY_UPDATE_DENEB,
-    CF_LC_OPTIMISTIC_UPDATE, CF_LC_OPTIMISTIC_UPDATE_CAPELLA, CF_LC_OPTIMISTIC_UPDATE_DENEB,
-    CF_LC_UPDATE, CF_LC_UPDATE_CAPELLA, CF_LC_UPDATE_DENEB, CF_METADATA, CF_PAYLOAD_STATUS,
-    CF_RESTORE_POINTS, CF_SLOT_TO_BLOCK_ROOT, CF_STATE_SUMMARY, CF_STATES, LC_LATEST_KEY, all_cfs,
+    CF_LC_BOOTSTRAP_ELECTRA, CF_LC_FINALITY_UPDATE, CF_LC_FINALITY_UPDATE_CAPELLA,
+    CF_LC_FINALITY_UPDATE_DENEB, CF_LC_FINALITY_UPDATE_ELECTRA, CF_LC_OPTIMISTIC_UPDATE,
+    CF_LC_OPTIMISTIC_UPDATE_CAPELLA, CF_LC_OPTIMISTIC_UPDATE_DENEB,
+    CF_LC_OPTIMISTIC_UPDATE_ELECTRA, CF_LC_UPDATE, CF_LC_UPDATE_CAPELLA, CF_LC_UPDATE_DENEB,
+    CF_LC_UPDATE_ELECTRA, CF_METADATA, CF_PAYLOAD_STATUS, CF_RESTORE_POINTS, CF_SLOT_TO_BLOCK_ROOT,
+    CF_STATE_SUMMARY, CF_STATES, LC_LATEST_KEY, all_cfs,
 };
 use crate::error::StorageError;
 use crate::forkchoice::ForkChoiceSnapshot;
@@ -57,7 +59,13 @@ use crate::transition::BlockTransition;
 ///   (adds `blob_gas_used`/`excess_blob_gas`) so they cannot share CFs with Capella.
 ///   Opening a v4 database returns `StorageError::SchemaMismatch`; the operator
 ///   must resync from checkpoint (no in-place migration).
-const SCHEMA_VERSION: u32 = 5;
+/// - v6 (M12-Electra Phase 6e): added four Electra LC CFs —
+///   `electra-light-client-bootstrap`, `electra-light-client-update`,
+///   `electra-latest-finality-update`, `electra-latest-optimistic-update`.
+///   Electra LC branches are deeper than Deneb (EIP-7251 enlarged BeaconState),
+///   so electra types cannot share CFs with Deneb. Opening a v5 database returns
+///   `StorageError::SchemaMismatch`; the operator must resync from checkpoint.
+const SCHEMA_VERSION: u32 = 6;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -82,7 +90,7 @@ pub struct RocksStore {
 
 impl RocksStore {
     /// Open (or create) the RocksDB database at `cfg.path` with the full
-    /// schema-v4 column-family set registered (`cf::all_cfs`).
+    /// schema-v6 column-family set registered (`cf::all_cfs`).
     ///
     /// Steps per `D-rocksdb`:
     /// 1. Build global `Options` with `create_if_missing` / `create_missing_column_families`.
@@ -948,6 +956,102 @@ impl<E: EthSpec> Store<E> for RocksStore {
         }
     }
 
+    // ── Electra light-client snapshot put/get (schema v6) ────────────────────
+
+    fn put_light_client_bootstrap_electra(
+        &self,
+        block_root: Root,
+        bootstrap: &E::ElectraLightClientBootstrap,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_BOOTSTRAP_ELECTRA)?;
+        self.db
+            .put_cf(cf, root_key(&block_root), bootstrap.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_bootstrap_electra(
+        &self,
+        block_root: &Root,
+    ) -> Result<Option<E::ElectraLightClientBootstrap>, StorageError> {
+        let cf = self.cf_handle(CF_LC_BOOTSTRAP_ELECTRA)?;
+        match self.db.get_cf(cf, root_key(block_root))? {
+            None => Ok(None),
+            Some(bytes) => {
+                let bootstrap = E::ElectraLightClientBootstrap::from_ssz_bytes(&bytes)?;
+                Ok(Some(bootstrap))
+            }
+        }
+    }
+
+    fn put_light_client_update_electra(
+        &self,
+        period: u64,
+        update: &E::ElectraLightClientUpdate,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_UPDATE_ELECTRA)?;
+        self.db
+            .put_cf(cf, period.to_be_bytes(), update.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_update_electra(
+        &self,
+        period: u64,
+    ) -> Result<Option<E::ElectraLightClientUpdate>, StorageError> {
+        let cf = self.cf_handle(CF_LC_UPDATE_ELECTRA)?;
+        match self.db.get_cf(cf, period.to_be_bytes())? {
+            None => Ok(None),
+            Some(bytes) => {
+                let update = E::ElectraLightClientUpdate::from_ssz_bytes(&bytes)?;
+                Ok(Some(update))
+            }
+        }
+    }
+
+    fn put_light_client_finality_update_electra(
+        &self,
+        update: &E::ElectraLightClientFinalityUpdate,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_FINALITY_UPDATE_ELECTRA)?;
+        self.db.put_cf(cf, LC_LATEST_KEY, update.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_finality_update_electra(
+        &self,
+    ) -> Result<Option<E::ElectraLightClientFinalityUpdate>, StorageError> {
+        let cf = self.cf_handle(CF_LC_FINALITY_UPDATE_ELECTRA)?;
+        match self.db.get_cf(cf, LC_LATEST_KEY)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let update = E::ElectraLightClientFinalityUpdate::from_ssz_bytes(&bytes)?;
+                Ok(Some(update))
+            }
+        }
+    }
+
+    fn put_light_client_optimistic_update_electra(
+        &self,
+        update: &E::ElectraLightClientOptimisticUpdate,
+    ) -> Result<(), StorageError> {
+        let cf = self.cf_handle(CF_LC_OPTIMISTIC_UPDATE_ELECTRA)?;
+        self.db.put_cf(cf, LC_LATEST_KEY, update.as_ssz_bytes())?;
+        Ok(())
+    }
+
+    fn get_light_client_optimistic_update_electra(
+        &self,
+    ) -> Result<Option<E::ElectraLightClientOptimisticUpdate>, StorageError> {
+        let cf = self.cf_handle(CF_LC_OPTIMISTIC_UPDATE_ELECTRA)?;
+        match self.db.get_cf(cf, LC_LATEST_KEY)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let update = E::ElectraLightClientOptimisticUpdate::from_ssz_bytes(&bytes)?;
+                Ok(Some(update))
+            }
+        }
+    }
+
     // ── Blob sidecar store (schema v4) ────────────────────────────────────────
 
     fn put_blob_sidecar(
@@ -1078,7 +1182,7 @@ mod tests {
     }
 
     /// Opening a database written with schema v1 (before the `payload-status` CF was added)
-    /// must return `SchemaMismatch { found: 1, expected: 5 }`.
+    /// must return `SchemaMismatch { found: 1, expected: 6 }`.
     #[test]
     fn schema_v1_returns_mismatch() {
         use rocksdb::{ColumnFamilyDescriptor, DB, Options};
@@ -1114,7 +1218,7 @@ mod tests {
                 .expect("write v1 sentinel");
         }
 
-        // Now open with the current `RocksStore::open` which expects v5.
+        // Now open with the current `RocksStore::open` which expects v6.
         let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
@@ -1125,15 +1229,15 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 1,
-                    expected: 5
+                    expected: 6
                 })
             ),
-            "expected SchemaMismatch{{found:1,expected:5}}, got {result:?}"
+            "expected SchemaMismatch{{found:1,expected:6}}, got {result:?}"
         );
     }
 
     /// Opening a database written with schema v2 (before the v3 CFs were added)
-    /// must return `SchemaMismatch { found: 2, expected: 5 }`.
+    /// must return `SchemaMismatch { found: 2, expected: 6 }`.
     #[test]
     fn schema_v2_returns_mismatch() {
         use rocksdb::{ColumnFamilyDescriptor, DB, Options};
@@ -1174,7 +1278,7 @@ mod tests {
                 .expect("write v2 sentinel");
         }
 
-        // Now open with the current `RocksStore::open` which expects v5.
+        // Now open with the current `RocksStore::open` which expects v6.
         let result = RocksStore::open::<pharos_types::MainnetEthSpec>(RocksStoreConfig {
             path: db_path,
             create_if_missing: false,
@@ -1185,14 +1289,14 @@ mod tests {
                 result,
                 Err(StorageError::SchemaMismatch {
                     found: 2,
-                    expected: 5
+                    expected: 6
                 })
             ),
-            "expected SchemaMismatch{{found:2,expected:5}}, got {result:?}"
+            "expected SchemaMismatch{{found:2,expected:6}}, got {result:?}"
         );
     }
 
-    /// Opening a fresh v5 database must allow reading/writing the `payload-status` and
+    /// Opening a fresh v6 database must allow reading/writing the `payload-status` and
     /// `state-summary` CFs.
     #[test]
     fn fresh_db_payload_status_cf_queryable() {

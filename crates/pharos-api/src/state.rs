@@ -361,6 +361,13 @@ pub fn beacon_state_to_json_full<E: EthSpec>(state: E::BeaconState) -> Result<Js
                 if let Some(wr) = withdrawals_root {
                     eph_map.insert("withdrawals_root".into(), JsonValue::String(hex(&wr)));
                 }
+                // Deneb+: blob gas fields on the execution payload header.
+                if let Some(bgu) = state.execution_payload_blob_gas_used() {
+                    eph_map.insert("blob_gas_used".into(), JsonValue::String(q(bgu)));
+                }
+                if let Some(ebg) = state.execution_payload_excess_blob_gas() {
+                    eph_map.insert("excess_blob_gas".into(), JsonValue::String(q(ebg)));
+                }
                 m.insert(
                     "latest_execution_payload_header".into(),
                     JsonValue::Object(eph_map),
@@ -391,6 +398,75 @@ pub fn beacon_state_to_json_full<E: EthSpec>(state: E::BeaconState) -> Result<Js
                     "historical_summaries".into(),
                     JsonValue::Array(summaries_json),
                 );
+            }
+
+            // Electra+: pending queues and balance-to-consume fields (EIP-6110/7002/7251).
+            if let Some(v) = state.deposit_requests_start_index() {
+                m.insert(
+                    "deposit_requests_start_index".into(),
+                    JsonValue::String(q(v)),
+                );
+            }
+            if let Some(v) = state.deposit_balance_to_consume() {
+                m.insert("deposit_balance_to_consume".into(), JsonValue::String(q(v)));
+            }
+            if let Some(v) = state.exit_balance_to_consume() {
+                m.insert("exit_balance_to_consume".into(), JsonValue::String(q(v)));
+            }
+            if let Some(v) = state.earliest_exit_epoch() {
+                m.insert("earliest_exit_epoch".into(), JsonValue::String(q(v)));
+            }
+            if let Some(v) = state.consolidation_balance_to_consume() {
+                m.insert(
+                    "consolidation_balance_to_consume".into(),
+                    JsonValue::String(q(v)),
+                );
+            }
+            if let Some(v) = state.earliest_consolidation_epoch() {
+                m.insert(
+                    "earliest_consolidation_epoch".into(),
+                    JsonValue::String(q(v)),
+                );
+            }
+            if let Some(deposits) = state.pending_deposits_raw() {
+                let arr: Vec<JsonValue> = deposits
+                    .into_iter()
+                    .map(|d| {
+                        serde_json::json!({
+                            "pubkey": hex(&d.pubkey),
+                            "withdrawal_credentials": hex(&d.withdrawal_credentials),
+                            "amount": q(d.amount),
+                            "signature": hex(&d.signature),
+                            "slot": q(d.slot),
+                        })
+                    })
+                    .collect();
+                m.insert("pending_deposits".into(), JsonValue::Array(arr));
+            }
+            if let Some(withdrawals) = state.pending_partial_withdrawals_raw() {
+                let arr: Vec<JsonValue> = withdrawals
+                    .into_iter()
+                    .map(|w| {
+                        serde_json::json!({
+                            "validator_index": q(w.validator_index),
+                            "amount": q(w.amount),
+                            "withdrawable_epoch": q(w.withdrawable_epoch),
+                        })
+                    })
+                    .collect();
+                m.insert("pending_partial_withdrawals".into(), JsonValue::Array(arr));
+            }
+            if let Some(consolidations) = state.pending_consolidations_raw() {
+                let arr: Vec<JsonValue> = consolidations
+                    .into_iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "source_index": q(c.source_index),
+                            "target_index": q(c.target_index),
+                        })
+                    })
+                    .collect();
+                m.insert("pending_consolidations".into(), JsonValue::Array(arr));
             }
         }
     }
@@ -1238,6 +1314,7 @@ where
     E::BellatrixSignedBeaconBlock: BlockApiSerializer,
     E::CapellaSignedBeaconBlock: BlockApiSerializer,
     E::DenebSignedBeaconBlock: BlockApiSerializer,
+    E::ElectraSignedBeaconBlock: BlockApiSerializer,
     E::AltairLightClientBootstrap: LcApiSerializer,
     E::AltairLightClientUpdate: LcApiSerializer,
     E::AltairLightClientFinalityUpdate: LcApiSerializer,
@@ -1250,6 +1327,10 @@ where
     E::DenebLightClientUpdate: LcApiSerializer,
     E::DenebLightClientFinalityUpdate: LcApiSerializer,
     E::DenebLightClientOptimisticUpdate: LcApiSerializer,
+    E::ElectraLightClientBootstrap: LcApiSerializer,
+    E::ElectraLightClientUpdate: LcApiSerializer,
+    E::ElectraLightClientFinalityUpdate: LcApiSerializer,
+    E::ElectraLightClientOptimisticUpdate: LcApiSerializer,
 {
     fn head_root(&self) -> Root {
         let fc = self.fork_choice.read();
@@ -1532,6 +1613,8 @@ where
             header_from!(inner)
         } else if let Some(inner) = E::unwrap_deneb_signed_block(&signed) {
             header_from!(inner)
+        } else if let Some(inner) = E::unwrap_electra_signed_block(&signed) {
+            header_from!(inner)
         } else {
             None
         }
@@ -1582,7 +1665,10 @@ where
         if let Some(b) = E::unwrap_deneb_signed_block(&block) {
             return Ok(Some(b.to_block_for_api()?));
         }
-        // All five forks (phase0/altair/bellatrix/capella/deneb) are exhaustive.
+        if let Some(b) = E::unwrap_electra_signed_block(&block) {
+            return Ok(Some(b.to_block_for_api()?));
+        }
+        // All six forks (phase0/altair/bellatrix/capella/deneb/electra) are exhaustive.
         // Reaching here indicates a new unknown fork variant not yet handled.
         unreachable!("unknown fork variant in SignedBeaconBlock — update block_by_root_for_api")
     }

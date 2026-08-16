@@ -721,6 +721,188 @@ pub struct DenebSignedBlockDto {
     pub signature: [u8; 96],
 }
 
+// ── Electra attestation / slashing DTOs ──────────────────────────────────────
+
+/// Electra attestation DTO.
+///
+/// Extends the phase0 DTO with `committee_bits` (Bitvector serialized as SSZ
+/// bytes, `0x`-hex-encoded per the beacon-APIs spec).
+#[derive(Serialize)]
+pub struct ElectraAttestationDto {
+    #[serde(with = "hex_bytes")]
+    pub aggregation_bits: Vec<u8>,
+    pub data: AttestationDataDto,
+    #[serde(serialize_with = "serialize_hex96")]
+    pub signature: [u8; 96],
+    #[serde(with = "hex_bytes")]
+    pub committee_bits: Vec<u8>,
+}
+
+pub fn electra_attestation_dto<const AB: u64, const CS: u64>(
+    att: &pharos_types::electra::Attestation<AB, CS>,
+) -> ElectraAttestationDto {
+    let mut agg_bits = Vec::new();
+    att.aggregation_bits.ssz_append(&mut agg_bits);
+    let mut committee_bits = Vec::new();
+    att.committee_bits.ssz_append(&mut committee_bits);
+    ElectraAttestationDto {
+        aggregation_bits: agg_bits,
+        data: (&att.data).into(),
+        signature: att.signature.into(),
+        committee_bits,
+    }
+}
+
+pub fn electra_attester_slashing_dto<const AB: u64>(
+    a: &pharos_types::electra::AttesterSlashing<AB>,
+) -> AttesterSlashingDto {
+    let ia_dto = |ia: &pharos_types::electra::IndexedAttestation<AB>| IndexedAttestationDto {
+        attesting_indices: ia
+            .attesting_indices
+            .iter()
+            .map(|idx| idx.to_string())
+            .collect(),
+        data: (&ia.data).into(),
+        signature: ia.signature.into(),
+    };
+    AttesterSlashingDto {
+        attestation_1: ia_dto(&a.attestation_1),
+        attestation_2: ia_dto(&a.attestation_2),
+    }
+}
+
+// ── Electra execution request DTOs ───────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct DepositRequestDto {
+    #[serde(serialize_with = "serialize_hex48")]
+    pub pubkey: [u8; 48],
+    #[serde(serialize_with = "serialize_hex32")]
+    pub withdrawal_credentials: [u8; 32],
+    #[serde(with = "quoted_u64")]
+    pub amount: u64,
+    #[serde(serialize_with = "serialize_hex96")]
+    pub signature: [u8; 96],
+    #[serde(with = "quoted_u64")]
+    pub index: u64,
+}
+
+#[derive(Serialize)]
+pub struct WithdrawalRequestDto {
+    #[serde(with = "hex_bytes")]
+    pub source_address: Vec<u8>,
+    #[serde(serialize_with = "serialize_hex48")]
+    pub validator_pubkey: [u8; 48],
+    #[serde(with = "quoted_u64")]
+    pub amount: u64,
+}
+
+#[derive(Serialize)]
+pub struct ConsolidationRequestDto {
+    #[serde(with = "hex_bytes")]
+    pub source_address: Vec<u8>,
+    #[serde(serialize_with = "serialize_hex48")]
+    pub source_pubkey: [u8; 48],
+    #[serde(serialize_with = "serialize_hex48")]
+    pub target_pubkey: [u8; 48],
+}
+
+#[derive(Serialize)]
+pub struct ExecutionRequestsDto {
+    pub deposits: Vec<DepositRequestDto>,
+    pub withdrawals: Vec<WithdrawalRequestDto>,
+    pub consolidations: Vec<ConsolidationRequestDto>,
+}
+
+pub fn execution_requests_dto<
+    const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64,
+>(
+    er: &pharos_types::electra::ExecutionRequests<
+        MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+        MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+    >,
+) -> ExecutionRequestsDto {
+    ExecutionRequestsDto {
+        deposits: er
+            .deposits
+            .iter()
+            .map(|d| DepositRequestDto {
+                pubkey: d.pubkey.as_slice().try_into().unwrap_or([0u8; 48]),
+                withdrawal_credentials: d.withdrawal_credentials,
+                amount: d.amount.into(),
+                signature: d.signature.as_slice().try_into().unwrap_or([0u8; 96]),
+                index: d.index,
+            })
+            .collect(),
+        withdrawals: er
+            .withdrawals
+            .iter()
+            .map(|w| WithdrawalRequestDto {
+                source_address: w.source_address.to_vec(),
+                validator_pubkey: w
+                    .validator_pubkey
+                    .as_slice()
+                    .try_into()
+                    .unwrap_or([0u8; 48]),
+                amount: w.amount.into(),
+            })
+            .collect(),
+        consolidations: er
+            .consolidations
+            .iter()
+            .map(|c| ConsolidationRequestDto {
+                source_address: c.source_address.to_vec(),
+                source_pubkey: c.source_pubkey.as_slice().try_into().unwrap_or([0u8; 48]),
+                target_pubkey: c.target_pubkey.as_slice().try_into().unwrap_or([0u8; 48]),
+            })
+            .collect(),
+    }
+}
+
+// ── Electra body ──────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ElectraBlockBodyDto {
+    #[serde(serialize_with = "serialize_hex96")]
+    pub randao_reveal: [u8; 96],
+    pub eth1_data: Eth1DataDto,
+    #[serde(serialize_with = "serialize_hex32")]
+    pub graffiti: [u8; 32],
+    pub proposer_slashings: Vec<ProposerSlashingDto>,
+    pub attester_slashings: Vec<AttesterSlashingDto>,
+    pub attestations: Vec<ElectraAttestationDto>,
+    pub deposits: Vec<DepositDto>,
+    pub voluntary_exits: Vec<SignedVoluntaryExitDto>,
+    pub sync_aggregate: SyncAggregateDto,
+    pub execution_payload: DenebExecutionPayloadDto,
+    pub bls_to_execution_changes: Vec<SignedBLSToExecutionChangeDto>,
+    pub blob_kzg_commitments: Vec<String>,
+    pub execution_requests: ExecutionRequestsDto,
+}
+
+#[derive(Serialize)]
+pub struct ElectraBlockDto {
+    #[serde(with = "quoted_u64")]
+    pub slot: u64,
+    #[serde(with = "quoted_u64")]
+    pub proposer_index: u64,
+    #[serde(serialize_with = "serialize_hex32")]
+    pub parent_root: [u8; 32],
+    #[serde(serialize_with = "serialize_hex32")]
+    pub state_root: [u8; 32],
+    pub body: ElectraBlockBodyDto,
+}
+
+#[derive(Serialize)]
+pub struct ElectraSignedBlockDto {
+    pub message: ElectraBlockDto,
+    #[serde(serialize_with = "serialize_hex96")]
+    pub signature: [u8; 96],
+}
+
 // ── BlockApiSerializer trait ──────────────────────────────────────────────────
 
 /// A trait implemented by concrete per-fork `SignedBeaconBlock` types in `pharos-api`.
@@ -1109,6 +1291,131 @@ pub fn deneb_signed_block_to_api<
     })
 }
 
+/// Convert an Electra `SignedBeaconBlock` to API data.
+#[allow(clippy::too_many_arguments)]
+pub fn electra_signed_block_to_api<
+    const P: u64,
+    const A: u64,
+    const M: u64,
+    const D: u64,
+    const V: u64,
+    const C: u64,
+    const DP: u64,
+    const S: u64,
+    const T: u64,
+    const TX: u64,
+    const B: u64,
+    const X: u64,
+    const W: u64,
+    const BL: u64,
+    const KC: u64,
+    const AB: u64,
+    const CS: u64,
+    const DR: u64,
+    const WR: u64,
+    const CR: u64,
+>(
+    blk: &pharos_types::electra::SignedBeaconBlock<
+        P,
+        A,
+        M,
+        D,
+        V,
+        C,
+        DP,
+        S,
+        T,
+        TX,
+        B,
+        X,
+        W,
+        BL,
+        KC,
+        AB,
+        CS,
+        DR,
+        WR,
+        CR,
+    >,
+) -> Result<SignedBlockForApi, ApiError> {
+    let msg = &blk.message;
+    let dto = ElectraSignedBlockDto {
+        signature: blk.signature.into(),
+        message: ElectraBlockDto {
+            slot: u64::from(msg.slot),
+            proposer_index: u64::from(msg.proposer_index),
+            parent_root: msg.parent_root.into(),
+            state_root: msg.state_root.into(),
+            body: ElectraBlockBodyDto {
+                randao_reveal: msg.body.randao_reveal.into(),
+                eth1_data: (&msg.body.eth1_data).into(),
+                graffiti: msg.body.graffiti.into(),
+                proposer_slashings: msg
+                    .body
+                    .proposer_slashings
+                    .iter()
+                    .map(proposer_slashing_dto)
+                    .collect(),
+                attester_slashings: msg
+                    .body
+                    .attester_slashings
+                    .iter()
+                    .map(electra_attester_slashing_dto)
+                    .collect(),
+                attestations: msg
+                    .body
+                    .attestations
+                    .iter()
+                    .map(electra_attestation_dto)
+                    .collect(),
+                deposits: msg.body.deposits.iter().map(deposit_dto).collect(),
+                voluntary_exits: msg.body.voluntary_exits.iter().map(|e| e.into()).collect(),
+                sync_aggregate: sync_aggregate_dto(&msg.body.sync_aggregate),
+                execution_payload: deneb_execution_payload_dto(&msg.body.execution_payload),
+                bls_to_execution_changes: msg
+                    .body
+                    .bls_to_execution_changes
+                    .iter()
+                    .map(|sc| SignedBLSToExecutionChangeDto {
+                        message: BLSToExecutionChangeDto {
+                            validator_index: u64::from(sc.message.validator_index),
+                            from_bls_pubkey: sc.message.from_bls_pubkey.into(),
+                            to_execution_address: sc
+                                .message
+                                .to_execution_address
+                                .as_slice()
+                                .to_vec(),
+                        },
+                        signature: sc.signature.into(),
+                    })
+                    .collect(),
+                blob_kzg_commitments: msg
+                    .body
+                    .blob_kzg_commitments
+                    .iter()
+                    .map(|c| format!("0x{}", hex::encode(c.as_slice())))
+                    .collect(),
+                execution_requests: execution_requests_dto(&msg.body.execution_requests),
+            },
+        },
+    };
+    let attestations_json = msg
+        .body
+        .attestations
+        .iter()
+        .map(|a| serde_json::to_value(electra_attestation_dto(a)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ser_err)?;
+    let mut ssz = Vec::new();
+    blk.ssz_append(&mut ssz);
+    Ok(SignedBlockForApi {
+        variant: ForkVariant::Electra,
+        json: serde_json::to_value(dto).map_err(ser_err)?,
+        ssz_bytes: ssz,
+        attestations_json,
+    })
+}
+
 // ── BlockApiSerializer implementations ───────────────────────────────────────
 
 // Phase0 — mainnet and minimal share the same const params.
@@ -1276,5 +1583,66 @@ impl BlockApiSerializer
 {
     fn to_block_for_api(&self) -> Result<SignedBlockForApi, ApiError> {
         deneb_signed_block_to_api(self)
+    }
+}
+
+// Electra — distinct SYNC_COMMITTEE_SIZE, MAX_WITHDRAWALS_PER_PAYLOAD,
+// MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT, and the three request limits.
+
+impl BlockApiSerializer
+    for pharos_types::electra::SignedBeaconBlock<
+        16,
+        1,
+        8,
+        16,
+        16,
+        2048,
+        33,
+        512,
+        1_073_741_824,
+        1_048_576,
+        256,
+        32,
+        16,
+        16,
+        4096,
+        131072,
+        64,
+        8192,
+        16,
+        2,
+    >
+{
+    fn to_block_for_api(&self) -> Result<SignedBlockForApi, ApiError> {
+        electra_signed_block_to_api(self)
+    }
+}
+
+impl BlockApiSerializer
+    for pharos_types::electra::SignedBeaconBlock<
+        16,
+        1,
+        8,
+        16,
+        16,
+        2048,
+        33,
+        32,
+        1_073_741_824,
+        1_048_576,
+        256,
+        32,
+        4,
+        16,
+        4096,
+        8192,
+        4,
+        8192,
+        16,
+        2,
+    >
+{
+    fn to_block_for_api(&self) -> Result<SignedBlockForApi, ApiError> {
+        electra_signed_block_to_api(self)
     }
 }

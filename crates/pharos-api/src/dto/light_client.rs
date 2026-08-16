@@ -25,6 +25,10 @@ use pharos_types::{
         LightClientBootstrap as DenebBootstrap, LightClientFinalityUpdate as DenebFinalityUpdate,
         LightClientOptimisticUpdate as DenebOptimisticUpdate, LightClientUpdate as DenebUpdate,
     },
+    electra::light_client::{
+        LightClientBootstrap as ElectraBootstrap,
+        LightClientFinalityUpdate as ElectraFinalityUpdate, LightClientUpdate as ElectraUpdate,
+    },
     views::ForkVariant,
 };
 
@@ -412,3 +416,67 @@ impl<const N: u64, const B: u64, const X: u64> LcApiSerializer for DenebOptimist
         self.attested_header.beacon.slot.0
     }
 }
+
+// ── Electra impls ─────────────────────────────────────────────────────────────
+//
+// Electra `LightClientHeader` is structurally identical to the deneb header
+// (re-exported from `deneb::light_client`), so `deneb_lc_header_json` applies.
+// The branch vectors are deeper (6 vs 5 for sync committee, 7 vs 6 for
+// finality), but `branch_json` is generic over `N` so it handles both.
+
+impl<const N: u64, const B: u64, const X: u64> LcApiSerializer for ElectraBootstrap<N, B, X> {
+    fn to_lc_json(&self) -> Result<serde_json::Value, ApiError> {
+        Ok(serde_json::json!({
+            "header": deneb_lc_header_json(&self.header),
+            "current_sync_committee": sync_committee_json(&self.current_sync_committee),
+            "current_sync_committee_branch": branch_json(&self.current_sync_committee_branch),
+        }))
+    }
+    fn to_ssz_bytes(&self) -> Vec<u8> {
+        self.as_ssz_bytes()
+    }
+    fn attested_slot(&self) -> u64 {
+        self.header.beacon.slot.0
+    }
+}
+
+impl<const N: u64, const B: u64, const X: u64> LcApiSerializer for ElectraUpdate<N, B, X> {
+    fn to_lc_json(&self) -> Result<serde_json::Value, ApiError> {
+        Ok(serde_json::json!({
+            "attested_header": deneb_lc_header_json(&self.attested_header),
+            "next_sync_committee": sync_committee_json(&self.next_sync_committee),
+            "next_sync_committee_branch": branch_json(&self.next_sync_committee_branch),
+            "finalized_header": deneb_lc_header_json(&self.finalized_header),
+            "finality_branch": branch_json(&self.finality_branch),
+            "sync_aggregate": sync_aggregate_json(&self.sync_aggregate),
+            "signature_slot": q(self.signature_slot.0),
+        }))
+    }
+    fn to_ssz_bytes(&self) -> Vec<u8> {
+        self.as_ssz_bytes()
+    }
+    fn attested_slot(&self) -> u64 {
+        self.attested_header.beacon.slot.0
+    }
+}
+
+impl<const N: u64, const B: u64, const X: u64> LcApiSerializer for ElectraFinalityUpdate<N, B, X> {
+    fn to_lc_json(&self) -> Result<serde_json::Value, ApiError> {
+        Ok(serde_json::json!({
+            "attested_header": deneb_lc_header_json(&self.attested_header),
+            "finalized_header": deneb_lc_header_json(&self.finalized_header),
+            "finality_branch": branch_json(&self.finality_branch),
+            "sync_aggregate": sync_aggregate_json(&self.sync_aggregate),
+            "signature_slot": q(self.signature_slot.0),
+        }))
+    }
+    fn to_ssz_bytes(&self) -> Vec<u8> {
+        self.as_ssz_bytes()
+    }
+    fn attested_slot(&self) -> u64 {
+        self.attested_header.beacon.slot.0
+    }
+}
+
+// `ElectraOptimisticUpdate` is re-exported from `deneb::light_client::LightClientOptimisticUpdate`
+// so the `DenebOptimisticUpdate` impl above already covers it — no separate impl needed.

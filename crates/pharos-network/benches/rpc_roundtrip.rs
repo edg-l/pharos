@@ -117,6 +117,18 @@ impl LightClientProvider<E> for BenchHost {
     ) -> Option<<E as pharos_types::EthSpec>::DenebLightClientOptimisticUpdate> {
         None
     }
+
+    fn light_client_finality_update_electra(
+        &self,
+    ) -> Option<<E as pharos_types::EthSpec>::ElectraLightClientFinalityUpdate> {
+        None
+    }
+
+    fn light_client_optimistic_update_electra(
+        &self,
+    ) -> Option<<E as pharos_types::EthSpec>::ElectraLightClientOptimisticUpdate> {
+        None
+    }
 }
 
 impl BlockProvider<E> for BenchHost {

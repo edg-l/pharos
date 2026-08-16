@@ -332,6 +332,40 @@ pub struct ExecutionPayloadHeaderRaw {
     pub transactions_root: [u8; 32],
 }
 
+// ── Electra pending-queue raw structs ─────────────────────────────────────────
+
+/// Raw field data from a `PendingDeposit` (Electra), avoiding const-generic type params.
+pub struct PendingDepositRaw {
+    /// `pubkey` as 48-byte array.
+    pub pubkey: [u8; 48],
+    /// `withdrawal_credentials` as 32-byte array.
+    pub withdrawal_credentials: [u8; 32],
+    /// `amount` in Gwei.
+    pub amount: u64,
+    /// `signature` as 96-byte array.
+    pub signature: [u8; 96],
+    /// `slot` as u64.
+    pub slot: u64,
+}
+
+/// Raw field data from a `PendingPartialWithdrawal` (Electra).
+pub struct PendingPartialWithdrawalRaw {
+    /// `validator_index` as u64.
+    pub validator_index: u64,
+    /// `amount` in Gwei.
+    pub amount: u64,
+    /// `withdrawable_epoch` as u64.
+    pub withdrawable_epoch: u64,
+}
+
+/// Raw field data from a `PendingConsolidation` (Electra).
+pub struct PendingConsolidationRaw {
+    /// `source_index` as u64.
+    pub source_index: u64,
+    /// `target_index` as u64.
+    pub target_index: u64,
+}
+
 // ── BeaconStateView ───────────────────────────────────────────────────────────
 
 /// Read-only accessors for `BeaconState` fields.
@@ -459,6 +493,69 @@ pub trait BeaconStateView {
 
     /// Capella+ `historical_summaries` as pairs of (block_summary_root, state_summary_root).
     fn historical_summaries_raw(&self) -> Option<Vec<([u8; 32], [u8; 32])>> {
+        None
+    }
+
+    /// Deneb+ `blob_gas_used` on the execution payload header, or `None`.
+    fn execution_payload_blob_gas_used(&self) -> Option<u64> {
+        None
+    }
+
+    /// Deneb+ `excess_blob_gas` on the execution payload header, or `None`.
+    fn execution_payload_excess_blob_gas(&self) -> Option<u64> {
+        None
+    }
+
+    // ── Electra-specific accessors ────────────────────────────────────────────
+
+    /// Electra `deposit_requests_start_index`, or `None` for pre-Electra states.
+    fn deposit_requests_start_index(&self) -> Option<u64> {
+        None
+    }
+
+    /// Electra `deposit_balance_to_consume` as Gwei (u64), or `None`.
+    fn deposit_balance_to_consume(&self) -> Option<u64> {
+        None
+    }
+
+    /// Electra `exit_balance_to_consume` as Gwei (u64), or `None`.
+    fn exit_balance_to_consume(&self) -> Option<u64> {
+        None
+    }
+
+    /// Electra `earliest_exit_epoch` as u64, or `None`.
+    fn earliest_exit_epoch(&self) -> Option<u64> {
+        None
+    }
+
+    /// Electra `consolidation_balance_to_consume` as Gwei (u64), or `None`.
+    fn consolidation_balance_to_consume(&self) -> Option<u64> {
+        None
+    }
+
+    /// Electra `earliest_consolidation_epoch` as u64, or `None`.
+    fn earliest_consolidation_epoch(&self) -> Option<u64> {
+        None
+    }
+
+    /// Electra `pending_deposits` as raw serialized structs, or `None`.
+    ///
+    /// Each entry is `(pubkey_48_bytes, withdrawal_credentials_32_bytes, amount_u64, signature_96_bytes, slot_u64)`.
+    fn pending_deposits_raw(&self) -> Option<Vec<PendingDepositRaw>> {
+        None
+    }
+
+    /// Electra `pending_partial_withdrawals` as raw serialized structs, or `None`.
+    ///
+    /// Each entry is `(validator_index_u64, amount_u64, withdrawable_epoch_u64)`.
+    fn pending_partial_withdrawals_raw(&self) -> Option<Vec<PendingPartialWithdrawalRaw>> {
+        None
+    }
+
+    /// Electra `pending_consolidations` as raw serialized structs, or `None`.
+    ///
+    /// Each entry is `(source_index_u64, target_index_u64)`.
+    fn pending_consolidations_raw(&self) -> Option<Vec<PendingConsolidationRaw>> {
         None
     }
 

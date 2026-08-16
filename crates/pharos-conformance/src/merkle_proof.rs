@@ -1,7 +1,8 @@
-//! Conformance runner for `deneb/merkle_proof/single_merkle_proof` fixtures.
+//! Conformance runner for `deneb/merkle_proof/single_merkle_proof` and
+//! `electra/merkle_proof/single_merkle_proof` fixtures.
 //!
 //! Fixture path:
-//!   `<root>/<preset>/deneb/merkle_proof/single_merkle_proof/<ObjectType>/<case>/`
+//!   `<root>/<preset>/{deneb,electra}/merkle_proof/single_merkle_proof/<ObjectType>/<case>/`
 //!
 //! Each case contains:
 //!   - `object.ssz_snappy` — SSZ-encoded container (e.g. `BeaconBlockBody`)
@@ -17,12 +18,17 @@
 //!
 //! Only the `BeaconBlockBody` object type is tested (the only type the spec
 //! currently provides fixtures for under this handler).
+//! Both deneb and electra use `KZG_COMMITMENT_INCLUSION_PROOF_DEPTH = 17`.
 
 use std::path::Path;
 
 use pharos_ssz::{Decode, Encode, TreeHash};
 use pharos_types::deneb::{
-    KZG_COMMITMENT_INCLUSION_PROOF_DEPTH, MainnetBeaconBlockBody, MinimalBeaconBlockBody,
+    KZG_COMMITMENT_INCLUSION_PROOF_DEPTH, MainnetBeaconBlockBody as DenebMainnetBody,
+    MinimalBeaconBlockBody as DenebMinimalBody,
+};
+use pharos_types::electra::{
+    MainnetBeaconBlockBody as ElectraMainnetBody, MinimalBeaconBlockBody as ElectraMinimalBody,
 };
 use pharos_utils::Hash256;
 
@@ -41,25 +47,40 @@ pub struct MerkleProofResult {
 
 /// Run all `deneb/merkle_proof` tests for `mainnet` preset.
 pub fn run_merkle_proof_mainnet(root: &Path) -> MerkleProofResult {
-    run_merkle_proof_preset(&root.join("mainnet"), "mainnet")
+    run_merkle_proof_preset("deneb", &root.join("mainnet"), "mainnet")
 }
 
 /// Run all `deneb/merkle_proof` tests for `minimal` preset.
 pub fn run_merkle_proof_minimal(root: &Path) -> MerkleProofResult {
-    run_merkle_proof_preset(&root.join("minimal"), "minimal")
+    run_merkle_proof_preset("deneb", &root.join("minimal"), "minimal")
+}
+
+/// Run all `electra/merkle_proof` tests for `mainnet` preset.
+pub fn run_merkle_proof_electra_mainnet(root: &Path) -> MerkleProofResult {
+    run_merkle_proof_preset("electra", &root.join("mainnet"), "mainnet")
+}
+
+/// Run all `electra/merkle_proof` tests for `minimal` preset.
+pub fn run_merkle_proof_electra_minimal(root: &Path) -> MerkleProofResult {
+    run_merkle_proof_preset("electra", &root.join("minimal"), "minimal")
 }
 
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
 /// Produce one `CaseTask` per merkle_proof test case in the same walk-order as
 /// `run_merkle_proof_preset`. Called by the Phase 7 flat work-pool.
+///
+/// `fork` must be `"deneb"` or `"electra"`.
 pub fn enumerate_merkle_proof(
     root: &Path,
+    fork: &'static str,
     preset: &'static str,
     row_ordinal: u32,
 ) -> Vec<CaseTask> {
     let preset_dir = root.join(preset);
-    let base = preset_dir.join("deneb/merkle_proof/single_merkle_proof");
+    let base = preset_dir
+        .join(fork)
+        .join("merkle_proof/single_merkle_proof");
     if !base.is_dir() {
         return Vec::new();
     }
@@ -81,14 +102,21 @@ pub fn enumerate_merkle_proof(
             let case_ordinal = ordinal;
             ordinal += 1;
             let case_name = format!(
-                "{preset}/deneb/merkle_proof/single_merkle_proof/{}/{}",
+                "{preset}/{fork}/merkle_proof/single_merkle_proof/{}/{}",
                 object_type,
                 dir_name(&case_dir)
             );
             let preset_owned: String = preset.to_string();
+            let fork_owned: String = fork.to_string();
             let object_type_owned: String = object_type.clone();
             let run: CaseFn = Box::new(move || {
-                match run_one_case(&preset_owned, &object_type_owned, &case_dir, &case_name) {
+                match run_one_case(
+                    &fork_owned,
+                    &preset_owned,
+                    &object_type_owned,
+                    &case_dir,
+                    &case_name,
+                ) {
                     Ok(true) => CaseOutcome::Pass,
                     Ok(false) => CaseOutcome::Skip,
                     Err(e) => CaseOutcome::Fail(format!("`{case_name}`: {e}")),
@@ -105,8 +133,10 @@ pub fn enumerate_merkle_proof(
     tasks
 }
 
-fn run_merkle_proof_preset(preset_dir: &Path, preset_name: &str) -> MerkleProofResult {
-    let base = preset_dir.join("deneb/merkle_proof/single_merkle_proof");
+fn run_merkle_proof_preset(fork: &str, preset_dir: &Path, preset_name: &str) -> MerkleProofResult {
+    let base = preset_dir
+        .join(fork)
+        .join("merkle_proof/single_merkle_proof");
     if !base.is_dir() {
         return MerkleProofResult {
             pass: 0,
@@ -133,10 +163,10 @@ fn run_merkle_proof_preset(preset_dir: &Path, preset_name: &str) -> MerkleProofR
                 continue;
             }
             let case_name = format!(
-                "{preset_name}/deneb/merkle_proof/single_merkle_proof/{object_type}/{}",
+                "{preset_name}/{fork}/merkle_proof/single_merkle_proof/{object_type}/{}",
                 dir_name(&case_dir)
             );
-            match run_one_case(preset_name, &object_type, &case_dir, &case_name) {
+            match run_one_case(fork, preset_name, &object_type, &case_dir, &case_name) {
                 Ok(true) => pass += 1,
                 Ok(false) => skip += 1,
                 Err(e) => {
@@ -156,6 +186,7 @@ fn run_merkle_proof_preset(preset_dir: &Path, preset_name: &str) -> MerkleProofR
 }
 
 fn run_one_case(
+    fork: &str,
     preset: &str,
     object_type: &str,
     case_dir: &Path,
@@ -202,9 +233,9 @@ fn run_one_case(
     })?;
 
     // Compute the root by decoding the object and calling tree_hash_root.
-    let root = match (preset, object_type) {
-        ("mainnet", "BeaconBlockBody") => {
-            let body = MainnetBeaconBlockBody::from_ssz_bytes(&ssz_bytes)?;
+    let root = match (fork, preset, object_type) {
+        ("deneb", "mainnet", "BeaconBlockBody") => {
+            let body = DenebMainnetBody::from_ssz_bytes(&ssz_bytes)?;
             // Verify round-trip.
             let re_encoded = body.as_ssz_bytes();
             if re_encoded != ssz_bytes {
@@ -216,8 +247,32 @@ fn run_one_case(
             }
             body.tree_hash_root()
         }
-        ("minimal", "BeaconBlockBody") => {
-            let body = MinimalBeaconBlockBody::from_ssz_bytes(&ssz_bytes)?;
+        ("deneb", "minimal", "BeaconBlockBody") => {
+            let body = DenebMinimalBody::from_ssz_bytes(&ssz_bytes)?;
+            let re_encoded = body.as_ssz_bytes();
+            if re_encoded != ssz_bytes {
+                return Err(ConformanceError::EncodeRoundTrip {
+                    case: case_label.into(),
+                    got_hex: hex::encode(&re_encoded),
+                    want_hex: hex::encode(&ssz_bytes),
+                });
+            }
+            body.tree_hash_root()
+        }
+        ("electra", "mainnet", "BeaconBlockBody") => {
+            let body = ElectraMainnetBody::from_ssz_bytes(&ssz_bytes)?;
+            let re_encoded = body.as_ssz_bytes();
+            if re_encoded != ssz_bytes {
+                return Err(ConformanceError::EncodeRoundTrip {
+                    case: case_label.into(),
+                    got_hex: hex::encode(&re_encoded),
+                    want_hex: hex::encode(&ssz_bytes),
+                });
+            }
+            body.tree_hash_root()
+        }
+        ("electra", "minimal", "BeaconBlockBody") => {
+            let body = ElectraMinimalBody::from_ssz_bytes(&ssz_bytes)?;
             let re_encoded = body.as_ssz_bytes();
             if re_encoded != ssz_bytes {
                 return Err(ConformanceError::EncodeRoundTrip {
@@ -230,7 +285,7 @@ fn run_one_case(
         }
         _ => {
             eprintln!(
-                "skipping merkle_proof/{object_type} for preset {preset}: not in dispatch table"
+                "skipping {fork}/merkle_proof/{object_type} for preset {preset}: not in dispatch table"
             );
             return Ok(false);
         }
@@ -293,11 +348,11 @@ mod tests {
             return; // skip cleanly when fixtures absent
         };
         let run_result = run_merkle_proof_mainnet(&root);
-        let (ep, ef, es) = drain_tasks(enumerate_merkle_proof(&root, "mainnet", 85));
+        let (ep, ef, es) = drain_tasks(enumerate_merkle_proof(&root, "deneb", "mainnet", 85));
         assert_eq!(
             (ep, ef, es),
             (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_merkle_proof mainnet counts differ"
+            "enumerate_merkle_proof deneb mainnet counts differ"
         );
     }
 
@@ -307,11 +362,39 @@ mod tests {
             return; // skip cleanly when fixtures absent
         };
         let run_result = run_merkle_proof_minimal(&root);
-        let (ep, ef, es) = drain_tasks(enumerate_merkle_proof(&root, "minimal", 86));
+        let (ep, ef, es) = drain_tasks(enumerate_merkle_proof(&root, "deneb", "minimal", 86));
         assert_eq!(
             (ep, ef, es),
             (run_result.pass, run_result.fail, run_result.skip),
-            "enumerate_merkle_proof minimal counts differ"
+            "enumerate_merkle_proof deneb minimal counts differ"
+        );
+    }
+
+    #[test]
+    fn enumerate_merkle_proof_electra_parity_mainnet() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let run_result = run_merkle_proof_electra_mainnet(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_merkle_proof(&root, "electra", "mainnet", 85));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_merkle_proof electra mainnet counts differ"
+        );
+    }
+
+    #[test]
+    fn enumerate_merkle_proof_electra_parity_minimal() {
+        let Some(root) = fixtures_root() else {
+            return;
+        };
+        let run_result = run_merkle_proof_electra_minimal(&root);
+        let (ep, ef, es) = drain_tasks(enumerate_merkle_proof(&root, "electra", "minimal", 86));
+        assert_eq!(
+            (ep, ef, es),
+            (run_result.pass, run_result.fail, run_result.skip),
+            "enumerate_merkle_proof electra minimal counts differ"
         );
     }
 }

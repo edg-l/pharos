@@ -1,4 +1,4 @@
-//! Altair light-client conformance dispatcher.
+//! Light-client conformance dispatcher (altair through electra).
 //!
 //! Covers two sub-categories:
 //!   - `single_merkle_proof` — verify Merkle branch proofs against `BeaconState`.
@@ -43,6 +43,10 @@ use pharos_types::{
         LightClientBootstrap as DenebLCBootstrap, LightClientHeader as DenebLCHeader,
         LightClientUpdate as DenebLCUpdate,
     },
+    electra::light_client::{
+        LightClientBootstrap as ElectraLCBootstrap, LightClientHeader as ElectraLCHeader,
+        LightClientUpdate as ElectraLCUpdate,
+    },
     fork::compute_fork_digest,
     phase0::primitives::{Root, Slot},
 };
@@ -59,12 +63,12 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 /// Called by the Phase 7 flat work-pool.
 ///
 /// Walk order: `single_merkle_proof` cases first, then `sync` cases (mirrors
-/// `run_light_client_altair/capella/deneb_*`).
+/// `run_light_client_altair/capella/deneb/electra_*`).
 ///
-/// For capella and deneb, `single_merkle_proof` has two sub-dirs: `BeaconState/`
-/// then `BeaconBlockBody/` (in that order, same as the existing runner).
+/// For capella, deneb, and electra, `single_merkle_proof` has two sub-dirs:
+/// `BeaconState/` then `BeaconBlockBody/` (in that order, same as the existing runner).
 ///
-/// Supported forks: `"altair"`, `"capella"`, `"deneb"`.
+/// Supported forks: `"altair"`, `"capella"`, `"deneb"`, `"electra"`.
 pub fn enumerate_light_client(
     root: &Path,
     fork: &'static str,
@@ -205,6 +209,42 @@ pub fn enumerate_light_client(
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
                     }
                 }),
+                ("electra", "BeaconState", "mainnet") => Box::new(move || {
+                    match run_single_merkle_proof_electra_state_case::<pharos_types::MainnetEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("electra", "BeaconState", _) => Box::new(move || {
+                    match run_single_merkle_proof_electra_state_case::<pharos_types::MinimalEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("electra", "BeaconBlockBody", "mainnet") => Box::new(move || {
+                    match run_single_merkle_proof_electra_body_case::<pharos_types::MainnetEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
+                ("electra", "BeaconBlockBody", _) => Box::new(move || {
+                    match run_single_merkle_proof_electra_body_case::<pharos_types::MinimalEthSpec>(
+                        &case_dir, &case_name,
+                    ) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    }
+                }),
                 // Unknown combination: skip
                 _ => Box::new(move || CaseOutcome::Skip),
             };
@@ -277,6 +317,24 @@ pub fn enumerate_light_client(
             ("deneb", _) => {
                 Box::new(
                     move || match run_sync_case_deneb_minimal(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    },
+                )
+            }
+            ("electra", "mainnet") => {
+                Box::new(
+                    move || match run_sync_case_electra_mainnet(&case_dir, &case_name) {
+                        CaseResult::Pass => CaseOutcome::Pass,
+                        CaseResult::Skip => CaseOutcome::Skip,
+                        CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
+                    },
+                )
+            }
+            ("electra", _) => {
+                Box::new(
+                    move || match run_sync_case_electra_minimal(&case_dir, &case_name) {
                         CaseResult::Pass => CaseOutcome::Pass,
                         CaseResult::Skip => CaseOutcome::Skip,
                         CaseResult::Fail(msg) => CaseOutcome::Fail(msg),
@@ -1775,6 +1833,547 @@ where
         != vec![
             Bytes32::default();
             pharos_types::altair::light_client::FINALITY_BRANCH_DEPTH as usize
+        ]
+        .as_slice()
+}
+
+// ── Electra light-client runners ──────────────────────────────────────────────
+
+fn run_single_merkle_proof_electra_state_case<E: EthSpec>(
+    case_dir: &Path,
+    case_name: &str,
+) -> CaseResult
+where
+    E::ElectraBeaconState: Decode + TreeHash,
+{
+    let proof_path = case_dir.join("proof.yaml");
+    let proof_text = match std::fs::read_to_string(&proof_path) {
+        Ok(t) => t,
+        Err(e) => {
+            return CaseResult::Fail(format!("{case_name}: read proof.yaml: {e}"));
+        }
+    };
+    let proof_val: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&proof_text) {
+        Ok(v) => v,
+        Err(e) => {
+            return CaseResult::Fail(format!("{case_name}: parse proof.yaml: {e}"));
+        }
+    };
+
+    let leaf_hex = match proof_val.get("leaf").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing leaf in proof.yaml")),
+    };
+    let leaf_index = match proof_val.get("leaf_index").and_then(|v| v.as_u64()) {
+        Some(n) => n,
+        None => {
+            return CaseResult::Fail(format!("{case_name}: missing leaf_index in proof.yaml"));
+        }
+    };
+    let branch_val = match proof_val.get("branch").and_then(|v| v.as_sequence()) {
+        Some(b) => b.clone(),
+        None => return CaseResult::Fail(format!("{case_name}: missing branch in proof.yaml")),
+    };
+
+    let leaf = match parse_bytes32(leaf_hex) {
+        Ok(b) => b,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: leaf parse: {e}")),
+    };
+
+    let mut branch: Vec<Bytes32> = Vec::new();
+    for (i, v) in branch_val.iter().enumerate() {
+        let hex = match v.as_str() {
+            Some(s) => s,
+            None => {
+                return CaseResult::Fail(format!("{case_name}: branch[{i}] is not a string"));
+            }
+        };
+        match parse_bytes32(hex) {
+            Ok(b) => branch.push(b),
+            Err(e) => {
+                return CaseResult::Fail(format!("{case_name}: branch[{i}] parse: {e}"));
+            }
+        }
+    }
+
+    let state_inner = match load_ssz_snappy::<E::ElectraBeaconState>(case_dir, "object.ssz_snappy")
+    {
+        Ok(s) => s,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+    };
+    let state_root = state_inner.tree_hash_root();
+
+    if leaf_index == 0 {
+        return CaseResult::Fail(format!("{case_name}: leaf_index 0 is invalid"));
+    }
+    let depth = 63 - leaf_index.leading_zeros() as u64;
+    let index = leaf_index % (1u64 << depth);
+
+    use pharos_stf::phase0::operations::deposit::is_valid_merkle_branch;
+    if is_valid_merkle_branch(&leaf, &branch, depth, index, &state_root) {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!("{case_name}: merkle branch verification failed"))
+    }
+}
+
+fn run_single_merkle_proof_electra_body_case<E: EthSpec>(
+    case_dir: &Path,
+    case_name: &str,
+) -> CaseResult
+where
+    E::ElectraBeaconBlockBody: Decode + TreeHash,
+{
+    let proof_path = case_dir.join("proof.yaml");
+    let proof_text = match std::fs::read_to_string(&proof_path) {
+        Ok(t) => t,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: read proof.yaml: {e}")),
+    };
+    let proof_val: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&proof_text) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: parse proof.yaml: {e}")),
+    };
+
+    let leaf_hex = match proof_val.get("leaf").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return CaseResult::Fail(format!("{case_name}: missing leaf")),
+    };
+    let leaf_index = match proof_val.get("leaf_index").and_then(|v| v.as_u64()) {
+        Some(n) => n,
+        None => return CaseResult::Fail(format!("{case_name}: missing leaf_index")),
+    };
+    let branch_val = match proof_val.get("branch").and_then(|v| v.as_sequence()) {
+        Some(b) => b.clone(),
+        None => return CaseResult::Fail(format!("{case_name}: missing branch")),
+    };
+
+    let leaf = match parse_bytes32(leaf_hex) {
+        Ok(b) => b,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: leaf parse: {e}")),
+    };
+
+    let mut branch: Vec<Bytes32> = Vec::new();
+    for (i, v) in branch_val.iter().enumerate() {
+        let hex = match v.as_str() {
+            Some(s) => s,
+            None => return CaseResult::Fail(format!("{case_name}: branch[{i}] not string")),
+        };
+        match parse_bytes32(hex) {
+            Ok(b) => branch.push(b),
+            Err(e) => {
+                return CaseResult::Fail(format!("{case_name}: branch[{i}] parse: {e}"));
+            }
+        }
+    }
+
+    let body_inner =
+        match load_ssz_snappy::<E::ElectraBeaconBlockBody>(case_dir, "object.ssz_snappy") {
+            Ok(s) => s,
+            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+        };
+    let body_root = body_inner.tree_hash_root();
+
+    if leaf_index == 0 {
+        return CaseResult::Fail(format!("{case_name}: leaf_index 0 is invalid"));
+    }
+    let depth = 63 - leaf_index.leading_zeros() as u64;
+    let index = leaf_index % (1u64 << depth);
+
+    use pharos_stf::phase0::operations::deposit::is_valid_merkle_branch;
+    if is_valid_merkle_branch(&leaf, &branch, depth, index, &body_root) {
+        CaseResult::Pass
+    } else {
+        CaseResult::Fail(format!("{case_name}: merkle branch verification failed"))
+    }
+}
+
+fn run_sync_case_electra_mainnet(case_dir: &Path, case_name: &str) -> CaseResult {
+    run_sync_case_electra_impl::<MainnetEthSpec, 512, 256, 32>(case_dir, case_name)
+}
+
+fn run_sync_case_electra_minimal(case_dir: &Path, case_name: &str) -> CaseResult {
+    run_sync_case_electra_impl::<MinimalEthSpec, 32, 256, 32>(case_dir, case_name)
+}
+
+/// Simple in-memory electra light-client store for the conformance runner.
+struct ElectraLcStore<const S: u64, const B: u64, const X: u64>
+where
+    Bytes32: Default + Clone,
+{
+    finalized_header: ElectraLCHeader<B, X>,
+    #[allow(dead_code)]
+    current_sync_committee: pharos_types::altair::operations::SyncCommittee<S>,
+    next_sync_committee: pharos_types::altair::operations::SyncCommittee<S>,
+    best_valid_update: Option<ElectraLCUpdate<S, B, X>>,
+    optimistic_header: ElectraLCHeader<B, X>,
+    previous_max_active_participants: u64,
+    current_max_active_participants: u64,
+}
+
+fn run_sync_case_electra_impl<E, const S: u64, const B: u64, const X: u64>(
+    case_dir: &Path,
+    case_name: &str,
+) -> CaseResult
+where
+    E: EthSpec,
+    ElectraLCBootstrap<S, B, X>: Decode,
+    ElectraLCUpdate<S, B, X>: Decode + Clone,
+    Bytes32: Default + PartialEq + Clone,
+    pharos_utils::BLSPubkey: Default + PartialEq + Clone,
+{
+    let meta_path = case_dir.join("meta.yaml");
+    let meta_text = match std::fs::read_to_string(&meta_path) {
+        Ok(t) => t,
+        Err(_) => return CaseResult::Skip,
+    };
+    let meta_val: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&meta_text) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: parse meta.yaml: {e}")),
+    };
+
+    let genesis_validators_root: Root = match meta_val
+        .get("genesis_validators_root")
+        .and_then(|v| v.as_str())
+        .map(parse_root)
+    {
+        Some(Ok(r)) => r,
+        _ => {
+            return CaseResult::Fail(format!(
+                "{case_name}: missing/invalid genesis_validators_root"
+            ));
+        }
+    };
+
+    let trusted_block_root: Root = match meta_val
+        .get("trusted_block_root")
+        .and_then(|v| v.as_str())
+        .map(parse_root)
+    {
+        Some(Ok(r)) => r,
+        _ => {
+            return CaseResult::Fail(format!("{case_name}: missing/invalid trusted_block_root"));
+        }
+    };
+
+    let bootstrap_fork_digest_str = meta_val
+        .get("bootstrap_fork_digest")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let is_cross_fork = if let Some(store_digest_str) =
+        meta_val.get("store_fork_digest").and_then(|v| v.as_str())
+    {
+        store_digest_str != bootstrap_fork_digest_str
+    } else if let Some(store_version_str) =
+        meta_val.get("store_fork_version").and_then(|v| v.as_str())
+    {
+        let version_hex = store_version_str
+            .strip_prefix("0x")
+            .unwrap_or(store_version_str);
+        match hex::decode(version_hex) {
+            Ok(version_bytes) if version_bytes.len() == 4 => {
+                let version: [u8; 4] = version_bytes.try_into().unwrap();
+                let computed_digest = compute_fork_digest(version.into(), &genesis_validators_root);
+                let computed_hex = format!(
+                    "0x{:02x}{:02x}{:02x}{:02x}",
+                    computed_digest.into_inner()[0],
+                    computed_digest.into_inner()[1],
+                    computed_digest.into_inner()[2],
+                    computed_digest.into_inner()[3],
+                );
+                computed_hex != bootstrap_fork_digest_str
+            }
+            _ => true,
+        }
+    } else {
+        false
+    };
+
+    if is_cross_fork {
+        return CaseResult::Skip;
+    }
+
+    let bootstrap =
+        match load_ssz_snappy::<ElectraLCBootstrap<S, B, X>>(case_dir, "bootstrap.ssz_snappy") {
+            Ok(b) => b,
+            Err(e) => return CaseResult::Fail(format!("{case_name}: {e}")),
+        };
+
+    let header_root = bootstrap.header.beacon.tree_hash_root();
+    if header_root != trusted_block_root {
+        return CaseResult::Fail(format!(
+            "{case_name}: bootstrap header root {header_root:?} != trusted {trusted_block_root:?}"
+        ));
+    }
+
+    let mut store: ElectraLcStore<S, B, X> = ElectraLcStore {
+        finalized_header: bootstrap.header.clone(),
+        current_sync_committee: bootstrap.current_sync_committee.clone(),
+        next_sync_committee: Default::default(),
+        best_valid_update: None,
+        optimistic_header: bootstrap.header.clone(),
+        previous_max_active_participants: 0,
+        current_max_active_participants: 0,
+    };
+
+    let steps_path = case_dir.join("steps.yaml");
+    let steps_text = match std::fs::read_to_string(&steps_path) {
+        Ok(t) => t,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: read steps.yaml: {e}")),
+    };
+    let steps_val: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&steps_text) {
+        Ok(v) => v,
+        Err(e) => return CaseResult::Fail(format!("{case_name}: parse steps.yaml: {e}")),
+    };
+    let steps = match steps_val.as_sequence() {
+        Some(s) => s.clone(),
+        None => return CaseResult::Fail(format!("{case_name}: steps.yaml is not a sequence")),
+    };
+
+    let update_timeout = E::SLOTS_PER_EPOCH * E::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+
+    for (step_idx, step) in steps.iter().enumerate() {
+        if let Some(force_update) = step.get("force_update") {
+            let current_slot = match force_update
+                .get("current_slot")
+                .and_then(|v| v.as_u64())
+                .map(Slot)
+            {
+                Some(s) => s,
+                None => {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: step {step_idx}: missing current_slot"
+                    ));
+                }
+            };
+            if current_slot.0 > store.finalized_header.beacon.slot.0 + update_timeout
+                && store.best_valid_update.is_some()
+            {
+                let mut best = store.best_valid_update.take().unwrap();
+                if best.finalized_header.beacon.slot <= store.finalized_header.beacon.slot {
+                    best.finalized_header = best.attested_header.clone();
+                }
+                apply_electra_lc_update::<S, B, X>(&mut store, &best);
+            }
+            if let Some(checks) = force_update.get("checks") {
+                if let Err(e) = check_electra_store::<S, B, X>(&store, checks, case_name, step_idx)
+                {
+                    return CaseResult::Fail(e);
+                }
+            }
+        } else if let Some(process_update) = step.get("process_update") {
+            let update_file = match process_update.get("update").and_then(|v| v.as_str()) {
+                Some(s) => format!("{s}.ssz_snappy"),
+                None => {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: step {step_idx}: missing update filename"
+                    ));
+                }
+            };
+            let current_slot = match process_update
+                .get("current_slot")
+                .and_then(|v| v.as_u64())
+                .map(Slot)
+            {
+                Some(s) => s,
+                None => {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: step {step_idx}: missing current_slot"
+                    ));
+                }
+            };
+
+            let update_fork_digest = process_update
+                .get("update_fork_digest")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !update_fork_digest.is_empty() && update_fork_digest != bootstrap_fork_digest_str {
+                continue;
+            }
+
+            let update = match load_ssz_snappy::<ElectraLCUpdate<S, B, X>>(case_dir, &update_file) {
+                Ok(u) => u,
+                Err(e) => {
+                    return CaseResult::Fail(format!(
+                        "{case_name}: step {step_idx}: load update: {e}"
+                    ));
+                }
+            };
+
+            if let Err(e) = process_electra_lc_update::<S, B, X>(
+                &mut store,
+                &update,
+                current_slot,
+                &genesis_validators_root,
+            ) {
+                return CaseResult::Fail(format!(
+                    "{case_name}: step {step_idx}: process_update: {e}"
+                ));
+            }
+
+            if let Some(checks) = process_update.get("checks") {
+                if let Err(e) = check_electra_store::<S, B, X>(&store, checks, case_name, step_idx)
+                {
+                    return CaseResult::Fail(e);
+                }
+            }
+        } else if step.get("upgrade_store").is_some() {
+            continue;
+        }
+    }
+
+    CaseResult::Pass
+}
+
+fn check_electra_store<const S: u64, const B: u64, const X: u64>(
+    store: &ElectraLcStore<S, B, X>,
+    checks: &serde_yaml_ng::Value,
+    case_name: &str,
+    step_idx: usize,
+) -> Result<(), String>
+where
+    Bytes32: Default + Clone,
+{
+    if let Some(fin_check) = checks.get("finalized_header") {
+        let expected_slot = fin_check.get("slot").and_then(|v| v.as_u64()).map(Slot);
+        if let Some(expected_slot) = expected_slot {
+            if store.finalized_header.beacon.slot != expected_slot {
+                return Err(format!(
+                    "{case_name}: step {step_idx}: finalized_header.slot mismatch: got {}, expected {}",
+                    store.finalized_header.beacon.slot.0, expected_slot.0
+                ));
+            }
+        }
+        if let Some(expected_root_hex) = fin_check.get("beacon_root").and_then(|v| v.as_str()) {
+            let expected_root = parse_root(expected_root_hex)
+                .map_err(|e| format!("{case_name}: step {step_idx}: beacon_root parse: {e}"))?;
+            let actual_root = store.finalized_header.beacon.tree_hash_root();
+            if actual_root != expected_root {
+                return Err(format!(
+                    "{case_name}: step {step_idx}: finalized_header.beacon_root mismatch"
+                ));
+            }
+        }
+    }
+    if let Some(opt_check) = checks.get("optimistic_header") {
+        let expected_slot = opt_check.get("slot").and_then(|v| v.as_u64()).map(Slot);
+        if let Some(expected_slot) = expected_slot {
+            if store.optimistic_header.beacon.slot != expected_slot {
+                return Err(format!(
+                    "{case_name}: step {step_idx}: optimistic_header.slot mismatch: got {}, expected {}",
+                    store.optimistic_header.beacon.slot.0, expected_slot.0
+                ));
+            }
+        }
+        if let Some(expected_root_hex) = opt_check.get("beacon_root").and_then(|v| v.as_str()) {
+            let expected_root = parse_root(expected_root_hex)
+                .map_err(|e| format!("{case_name}: step {step_idx}: beacon_root parse: {e}"))?;
+            let actual_root = store.optimistic_header.beacon.tree_hash_root();
+            if actual_root != expected_root {
+                return Err(format!(
+                    "{case_name}: step {step_idx}: optimistic_header.beacon_root mismatch"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_electra_lc_update<const S: u64, const B: u64, const X: u64>(
+    store: &mut ElectraLcStore<S, B, X>,
+    update: &ElectraLCUpdate<S, B, X>,
+) where
+    Bytes32: Default + Clone + PartialEq,
+{
+    let default_branch: Vec<Bytes32> = vec![
+        Bytes32::default();
+        pharos_types::electra::light_client::NEXT_SYNC_COMMITTEE_BRANCH_DEPTH_ELECTRA
+            as usize
+    ];
+    if update.next_sync_committee_branch.as_slice() != default_branch.as_slice() {
+        store.next_sync_committee = update.next_sync_committee.clone();
+    }
+    store.finalized_header = update.finalized_header.clone();
+    if store.optimistic_header.beacon.slot <= store.finalized_header.beacon.slot {
+        store.optimistic_header = store.finalized_header.clone();
+    }
+    store.previous_max_active_participants = store.current_max_active_participants;
+    store.current_max_active_participants = 0;
+}
+
+fn process_electra_lc_update<const S: u64, const B: u64, const X: u64>(
+    store: &mut ElectraLcStore<S, B, X>,
+    update: &ElectraLCUpdate<S, B, X>,
+    _current_slot: Slot,
+    _genesis_validators_root: &Root,
+) -> Result<(), String>
+where
+    Bytes32: Default + Clone + PartialEq,
+    pharos_utils::BLSPubkey: Default + Clone + PartialEq,
+{
+    let n_participants = update
+        .sync_aggregate
+        .sync_committee_bits
+        .iter()
+        .filter(|b| *b)
+        .count() as u64;
+
+    let update_is_better = match &store.best_valid_update {
+        None => true,
+        Some(best) => {
+            let new_has_fin = is_electra_finality_update(update);
+            let best_has_fin = is_electra_finality_update(best);
+            if new_has_fin != best_has_fin {
+                new_has_fin
+            } else {
+                n_participants
+                    > best
+                        .sync_aggregate
+                        .sync_committee_bits
+                        .iter()
+                        .filter(|b| *b)
+                        .count() as u64
+            }
+        }
+    };
+    if update_is_better {
+        store.best_valid_update = Some(update.clone());
+    }
+
+    store.current_max_active_participants =
+        store.current_max_active_participants.max(n_participants);
+
+    let safety_threshold = store
+        .previous_max_active_participants
+        .max(store.current_max_active_participants)
+        / 2;
+
+    if n_participants > safety_threshold
+        && update.attested_header.beacon.slot > store.optimistic_header.beacon.slot
+    {
+        store.optimistic_header = update.attested_header.clone();
+    }
+
+    if n_participants * 3 >= S * 2
+        && (update.finalized_header.beacon.slot > store.finalized_header.beacon.slot)
+    {
+        apply_electra_lc_update::<S, B, X>(store, update);
+        store.best_valid_update = None;
+    }
+
+    Ok(())
+}
+
+fn is_electra_finality_update<const S: u64, const B: u64, const X: u64>(
+    update: &ElectraLCUpdate<S, B, X>,
+) -> bool
+where
+    Bytes32: Default + Clone + PartialEq,
+{
+    update.finality_branch.as_slice()
+        != vec![
+            Bytes32::default();
+            pharos_types::electra::light_client::FINALITY_BRANCH_DEPTH_ELECTRA as usize
         ]
         .as_slice()
 }

@@ -3322,6 +3322,31 @@ impl<E: EthSpec> LightClientProvider<E> for HostImpl<E> {
             }
         }
     }
+
+    /// Return the latest stored Electra `LightClientFinalityUpdate`, if any.
+    fn light_client_finality_update_electra(&self) -> Option<E::ElectraLightClientFinalityUpdate> {
+        match <RocksStore as StoreTrait<E>>::get_light_client_finality_update_electra(&self.store) {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(%e, "light_client_finality_update_electra: storage error");
+                None
+            }
+        }
+    }
+
+    /// Return the latest stored Electra `LightClientOptimisticUpdate`, if any.
+    fn light_client_optimistic_update_electra(
+        &self,
+    ) -> Option<E::ElectraLightClientOptimisticUpdate> {
+        match <RocksStore as StoreTrait<E>>::get_light_client_optimistic_update_electra(&self.store)
+        {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(%e, "light_client_optimistic_update_electra: storage error");
+                None
+            }
+        }
+    }
 }
 
 // ── BlobProvider ──────────────────────────────────────────────────────────────

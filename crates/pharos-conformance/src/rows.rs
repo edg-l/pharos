@@ -191,8 +191,13 @@ pub fn row_table() -> &'static [RowSpec] {
         // extraction) + the electra/fork_choice conformance runner.
         r("electra", "fork_choice", "mainnet"), // 122
         r("electra", "fork_choice", "minimal"), // 123
+        // M12-Electra Phase 6e: electra light-client merkle-proof + sync runners.
+        r("electra", "light_client", "mainnet"), // 124
+        r("electra", "light_client", "minimal"), // 125
+        r("electra", "merkle_proof", "mainnet"), // 126
+        r("electra", "merkle_proof", "minimal"), // 127
         // ── future forks (placeholders) ──────────────────────────────────────
-        r("fulu", "ssz_static", "-"), // 124
+        r("fulu", "ssz_static", "-"), // 128
     ];
     TABLE
 }
@@ -344,6 +349,10 @@ mod tests {
             ("electra", "rewards", "minimal"),
             ("electra", "fork_choice", "mainnet"),
             ("electra", "fork_choice", "minimal"),
+            ("electra", "light_client", "mainnet"),
+            ("electra", "light_client", "minimal"),
+            ("electra", "merkle_proof", "mainnet"),
+            ("electra", "merkle_proof", "minimal"),
             // future placeholders
             ("fulu", "ssz_static", "-"),
         ];
@@ -425,9 +434,9 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 126.
+    /// Total row count is exactly 130 (after M12-Electra Phase 6e added 4 rows).
     #[test]
-    fn row_count_is_124() {
-        assert_eq!(row_table().len(), 126);
+    fn row_count_is_130() {
+        assert_eq!(row_table().len(), 130);
     }
 }

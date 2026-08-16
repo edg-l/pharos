@@ -391,6 +391,60 @@ pub trait Store<E: EthSpec>: Send + Sync + 'static {
         &self,
     ) -> Result<Option<E::DenebLightClientOptimisticUpdate>, StorageError>;
 
+    // ── Electra light-client snapshot put/get (schema v6) ────────────────────
+    //
+    // Separate CFs for electra LC types. Electra BeaconState has additional
+    // fields from EIP-7251, which deepens the merkle branches used in
+    // LightClientBootstrap/Update/FinalityUpdate.
+
+    /// Store an SSZ-encoded Electra `LightClientBootstrap`, keyed by `block_root`.
+    fn put_light_client_bootstrap_electra(
+        &self,
+        block_root: Root,
+        bootstrap: &E::ElectraLightClientBootstrap,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the Electra `LightClientBootstrap` for `block_root`, if stored.
+    fn get_light_client_bootstrap_electra(
+        &self,
+        block_root: &Root,
+    ) -> Result<Option<E::ElectraLightClientBootstrap>, StorageError>;
+
+    /// Store an SSZ-encoded Electra `LightClientUpdate` for `period`.
+    fn put_light_client_update_electra(
+        &self,
+        period: u64,
+        update: &E::ElectraLightClientUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the Electra `LightClientUpdate` for `period`, if stored.
+    fn get_light_client_update_electra(
+        &self,
+        period: u64,
+    ) -> Result<Option<E::ElectraLightClientUpdate>, StorageError>;
+
+    /// Overwrite the single-row latest Electra `LightClientFinalityUpdate`.
+    fn put_light_client_finality_update_electra(
+        &self,
+        update: &E::ElectraLightClientFinalityUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the latest stored Electra `LightClientFinalityUpdate`, if any.
+    fn get_light_client_finality_update_electra(
+        &self,
+    ) -> Result<Option<E::ElectraLightClientFinalityUpdate>, StorageError>;
+
+    /// Overwrite the single-row latest Electra `LightClientOptimisticUpdate`.
+    fn put_light_client_optimistic_update_electra(
+        &self,
+        update: &E::ElectraLightClientOptimisticUpdate,
+    ) -> Result<(), StorageError>;
+
+    /// Retrieve the latest stored Electra `LightClientOptimisticUpdate`, if any.
+    fn get_light_client_optimistic_update_electra(
+        &self,
+    ) -> Result<Option<E::ElectraLightClientOptimisticUpdate>, StorageError>;
+
     // ── Blob sidecar store (schema v4, D-blob-store-cf-keyed-by-root-index) ───
 
     /// Store an SSZ-encoded `BlobSidecar` keyed by `(block_root, index)`.

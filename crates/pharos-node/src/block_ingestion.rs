@@ -24,7 +24,7 @@ use pharos_network::topics::{GossipTopic, GossipTopicKind};
 use pharos_ssz::Decode;
 use pharos_stf::{
     AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds, DenebDispatchBounds,
-    ExecutionEngine, StateTransitionError,
+    ElectraDispatchBounds, ExecutionEngine, StateTransitionError,
 };
 use pharos_storage::StorageError;
 use pharos_types::views::{
@@ -186,7 +186,8 @@ where
     E::ElectraBeaconState: pharos_stf::ElectraDispatch<E, EE>
         + pharos_stf::ElectraJaFDispatch<E>
         + pharos_stf::ElectraProcessSlotsDispatch<E>
-        + pharos_ssz::TreeHash,
+        + pharos_ssz::TreeHash
+        + ElectraDispatchBounds<E>,
     E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
     E::Phase0BeaconBlock:
         pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody> + Clone,
@@ -346,26 +347,57 @@ where
         // Gate: only when the head block is post-Altair.
         //
         // For each fork, read from the fork-specific LC CFs and publish under
-        // the current fork-digest. Deneb uses deneb LC CFs; Capella uses capella
-        // CFs; Altair/Bellatrix use altair CFs.
+        // the current fork-digest. Electra uses electra LC CFs; Deneb uses deneb
+        // LC CFs; Capella uses capella CFs; Altair/Bellatrix use altair CFs.
         //
         // The broadcast is *delayed* to the spec's gossip window so it is not
         // rejected as TooEarly by peers (D-lc-publish-due-time).
-        // ForkVariant::Electra intentionally absent — LC snapshot writer is a stub (Phase 6e).
-        // Until the real electra LC writer lands, an electra head would otherwise fall
-        // through to the Altair `else` branch below and publish a stale pre-electra LC
-        // update (from the altair-era CFs) under the ELECTRA fork digest, which peers
-        // reject as InvalidSSZ. Gate electra out so it skips LC publication entirely.
         let has_lc_snapshots = matches!(
             outcome.fork_variant,
             ForkVariant::Altair
                 | ForkVariant::Bellatrix
                 | ForkVariant::Capella
                 | ForkVariant::Deneb
+                | ForkVariant::Electra
         );
         if has_lc_snapshots {
             let digest = host.current_fork_digest();
-            if outcome.fork_variant == ForkVariant::Deneb {
+            if outcome.fork_variant == ForkVariant::Electra {
+                // Electra LC: read from electra CFs and publish with electra digest.
+                use pharos_network::host::LightClientProvider as _;
+                if let Some(fu) = host.light_client_finality_update_electra() {
+                    let wait = host.lc_publish_wait(fu.finality_signature_slot());
+                    let net = egress.network.clone();
+                    tokio::spawn(async move {
+                        if !wait.is_zero() {
+                            tokio::time::sleep(wait).await;
+                        }
+                        let topic = GossipTopic {
+                            fork_digest: digest,
+                            kind: GossipTopicKind::LightClientFinalityUpdate,
+                        };
+                        if let Err(e) = net.publish(topic, &fu).await {
+                            warn!(error = %e, "electra lc finality update publish failed");
+                        }
+                    });
+                }
+                if let Some(ou) = host.light_client_optimistic_update_electra() {
+                    let wait = host.lc_publish_wait(ou.optimistic_signature_slot());
+                    let net = egress.network.clone();
+                    tokio::spawn(async move {
+                        if !wait.is_zero() {
+                            tokio::time::sleep(wait).await;
+                        }
+                        let topic = GossipTopic {
+                            fork_digest: digest,
+                            kind: GossipTopicKind::LightClientOptimisticUpdate,
+                        };
+                        if let Err(e) = net.publish(topic, &ou).await {
+                            warn!(error = %e, "electra lc optimistic update publish failed");
+                        }
+                    });
+                }
+            } else if outcome.fork_variant == ForkVariant::Deneb {
                 // Deneb LC: read from deneb CFs and publish with deneb digest.
                 use pharos_network::host::LightClientProvider as _;
                 if let Some(fu) = host.light_client_finality_update_deneb() {
@@ -544,6 +576,7 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
     E::BellatrixBeaconState: BellatrixDispatchBounds<E>,
     E::CapellaBeaconState: CapellaDispatchBounds<E>,
     E::DenebBeaconState: DenebDispatchBounds<E>,
+    E::ElectraBeaconState: ElectraDispatchBounds<E>,
     S: pharos_storage::Store<E>,
     E::AltairSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::AltairBeaconBlock>,
@@ -557,6 +590,9 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
     E::DenebSignedBeaconBlock:
         pharos_types::views::SignedBeaconBlockView<Message = E::DenebBeaconBlock>,
     E::DenebBeaconBlock: pharos_types::views::BeaconBlockView,
+    E::ElectraSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::ElectraBeaconBlock>,
+    E::ElectraBeaconBlock: pharos_types::views::BeaconBlockView,
     E::BeaconState: pharos_types::views::BeaconStateView,
 {
     use pharos_types::views::{BeaconBlockView as _, BeaconStateView as _};
@@ -698,7 +734,37 @@ pub(crate) fn dispatch_update_light_client_snapshots<E, S>(
             );
         }
         ForkVariant::Electra => {
-            // Electra STF not yet implemented; no LC snapshot dispatch.
+            let Some(electra_signed) = E::unwrap_electra_signed_block(signed_block) else {
+                return;
+            };
+            let electra_block = electra_signed.message();
+            let Some(post_state_electra) = E::unwrap_electra_state(post_state) else {
+                return;
+            };
+
+            let attested_root = electra_block.parent_root();
+            let finalized_root = post_state.finalized_checkpoint().root;
+
+            let attested_block_opt = fc_store
+                .blocks
+                .get(&attested_root)
+                .and_then(|b| E::unwrap_electra_block(b));
+            let attested_state_opt = fc_store
+                .block_states
+                .get(&attested_root)
+                .and_then(|s| E::unwrap_electra_state(s));
+            let finalized_block_opt = fc_store
+                .blocks
+                .get(&finalized_root)
+                .and_then(|b| E::unwrap_electra_block(b));
+
+            post_state_electra.call_update_lc_snapshots_electra::<S>(
+                electra_block,
+                attested_state_opt,
+                attested_block_opt,
+                finalized_block_opt,
+                store,
+            );
         }
     }
 }

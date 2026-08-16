@@ -699,6 +699,69 @@ where
                 .collect(),
         )
     }
+    fn execution_payload_blob_gas_used(&self) -> Option<u64> {
+        Some(self.latest_execution_payload_header.blob_gas_used)
+    }
+    fn execution_payload_excess_blob_gas(&self) -> Option<u64> {
+        Some(self.latest_execution_payload_header.excess_blob_gas)
+    }
+    fn deposit_requests_start_index(&self) -> Option<u64> {
+        Some(self.deposit_requests_start_index)
+    }
+    fn deposit_balance_to_consume(&self) -> Option<u64> {
+        Some(self.deposit_balance_to_consume.into())
+    }
+    fn exit_balance_to_consume(&self) -> Option<u64> {
+        Some(self.exit_balance_to_consume.into())
+    }
+    fn earliest_exit_epoch(&self) -> Option<u64> {
+        Some(self.earliest_exit_epoch.0)
+    }
+    fn consolidation_balance_to_consume(&self) -> Option<u64> {
+        Some(self.consolidation_balance_to_consume.into())
+    }
+    fn earliest_consolidation_epoch(&self) -> Option<u64> {
+        Some(self.earliest_consolidation_epoch.0)
+    }
+    fn pending_deposits_raw(&self) -> Option<Vec<crate::views::PendingDepositRaw>> {
+        Some(
+            self.pending_deposits
+                .iter()
+                .map(|d| crate::views::PendingDepositRaw {
+                    pubkey: d.pubkey.as_slice().try_into().unwrap_or([0u8; 48]),
+                    withdrawal_credentials: d.withdrawal_credentials,
+                    amount: d.amount.into(),
+                    signature: d.signature.as_slice().try_into().unwrap_or([0u8; 96]),
+                    slot: d.slot.0,
+                })
+                .collect(),
+        )
+    }
+    fn pending_partial_withdrawals_raw(
+        &self,
+    ) -> Option<Vec<crate::views::PendingPartialWithdrawalRaw>> {
+        Some(
+            self.pending_partial_withdrawals
+                .iter()
+                .map(|w| crate::views::PendingPartialWithdrawalRaw {
+                    validator_index: w.validator_index.0,
+                    amount: w.amount.into(),
+                    withdrawable_epoch: w.withdrawable_epoch.0,
+                })
+                .collect(),
+        )
+    }
+    fn pending_consolidations_raw(&self) -> Option<Vec<crate::views::PendingConsolidationRaw>> {
+        Some(
+            self.pending_consolidations
+                .iter()
+                .map(|c| crate::views::PendingConsolidationRaw {
+                    source_index: c.source_index.0,
+                    target_index: c.target_index.0,
+                })
+                .collect(),
+        )
+    }
 }
 
 // ── Preset-specific aliases ───────────────────────────────────────────────────

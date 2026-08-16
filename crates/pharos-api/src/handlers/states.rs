@@ -51,6 +51,7 @@ use pharos_ssz::TreeHash;
 use pharos_types::views::ForkVariant;
 use pharos_types::{BeaconStateView, EthSpec, phase0::Validator};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 use crate::error::ApiError;
 use crate::resolve::resolve_state_id;
@@ -1010,6 +1011,436 @@ pub async fn get_sync_committees<E: EthSpec>(
 
     match result {
         Ok(Ok(dto)) => ApiResponse::json(dto).render(format),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+// ── Electra-only endpoints ────────────────────────────────────────────────────
+
+/// `GET /eth/v1/beacon/states/{state_id}/pending_deposits`
+///
+/// Returns 400 for pre-Electra states.
+/// Per `beacon-APIs/apis/beacon/states/pending_deposits.yaml`.
+pub async fn get_pending_deposits<E: EthSpec>(
+    State(state): State<Arc<ApiState<E>>>,
+    Path(state_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let format = match parse_accept(&headers) {
+        Ok(f) => f,
+        Err(e) => return e.into_response(),
+    };
+    let chain = Arc::clone(&state.chain);
+    let result = tokio::task::spawn_blocking(move || {
+        use pharos_types::BeaconStateView;
+
+        let resolved = resolve_state_id(chain.as_ref(), &state_id)?;
+        let beacon_state = chain
+            .state_by_block_root(resolved.block_root)
+            .ok_or_else(|| ApiError::NotFound(format!("state not found for id '{state_id}'")))?;
+
+        if beacon_state.fork_variant() != ForkVariant::Electra {
+            return Err(ApiError::BadRequest(
+                "pending_deposits is only available for Electra+ states".to_string(),
+            ));
+        }
+
+        let deposits = beacon_state.pending_deposits_raw().unwrap_or_default();
+        let data: Vec<serde_json::Value> = deposits
+            .into_iter()
+            .map(|d| {
+                serde_json::json!({
+                    "pubkey": format!("0x{}", hex::encode(&d.pubkey)),
+                    "withdrawal_credentials": format!("0x{}", hex::encode(&d.withdrawal_credentials)),
+                    "amount": d.amount.to_string(),
+                    "signature": format!("0x{}", hex::encode(&d.signature)),
+                    "slot": d.slot.to_string(),
+                })
+            })
+            .collect();
+
+        let version = crate::fork_tag::fork_variant_str(ForkVariant::Electra);
+        let dto = serde_json::json!({
+            "version": version,
+            "execution_optimistic": resolved.execution_optimistic,
+            "finalized": resolved.finalized,
+            "data": data,
+        });
+        Ok::<_, ApiError>((dto, resolved))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")));
+
+    match result {
+        Ok(Ok((dto, _resolved))) => {
+            use crate::fork_tag::{ETH_CONSENSUS_VERSION, fork_variant_str};
+            let body = match serde_json::to_vec(&dto) {
+                Ok(b) => b,
+                Err(e) => {
+                    return ApiError::Internal(format!("JSON serialization: {e}")).into_response();
+                }
+            };
+            let version = fork_variant_str(ForkVariant::Electra);
+            let mut r = (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response();
+            let _ = format;
+            if let Ok(hv) = axum::http::HeaderValue::from_str(version) {
+                r.headers_mut().insert(ETH_CONSENSUS_VERSION.clone(), hv);
+            }
+            r
+        }
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// `GET /eth/v1/beacon/states/{state_id}/pending_partial_withdrawals`
+///
+/// Returns 400 for pre-Electra states.
+/// Per `beacon-APIs/apis/beacon/states/pending_partial_withdrawals.yaml`.
+pub async fn get_pending_partial_withdrawals<E: EthSpec>(
+    State(state): State<Arc<ApiState<E>>>,
+    Path(state_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let format = match parse_accept(&headers) {
+        Ok(f) => f,
+        Err(e) => return e.into_response(),
+    };
+    let chain = Arc::clone(&state.chain);
+    let result = tokio::task::spawn_blocking(move || {
+        use pharos_types::BeaconStateView;
+
+        let resolved = resolve_state_id(chain.as_ref(), &state_id)?;
+        let beacon_state = chain
+            .state_by_block_root(resolved.block_root)
+            .ok_or_else(|| ApiError::NotFound(format!("state not found for id '{state_id}'")))?;
+
+        if beacon_state.fork_variant() != ForkVariant::Electra {
+            return Err(ApiError::BadRequest(
+                "pending_partial_withdrawals is only available for Electra+ states".to_string(),
+            ));
+        }
+
+        let withdrawals = beacon_state
+            .pending_partial_withdrawals_raw()
+            .unwrap_or_default();
+        let data: Vec<serde_json::Value> = withdrawals
+            .into_iter()
+            .map(|w| {
+                serde_json::json!({
+                    "validator_index": w.validator_index.to_string(),
+                    "amount": w.amount.to_string(),
+                    "withdrawable_epoch": w.withdrawable_epoch.to_string(),
+                })
+            })
+            .collect();
+
+        let version = crate::fork_tag::fork_variant_str(ForkVariant::Electra);
+        let dto = serde_json::json!({
+            "version": version,
+            "execution_optimistic": resolved.execution_optimistic,
+            "finalized": resolved.finalized,
+            "data": data,
+        });
+        Ok::<_, ApiError>((dto, resolved))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")));
+
+    match result {
+        Ok(Ok((dto, _resolved))) => {
+            use crate::fork_tag::{ETH_CONSENSUS_VERSION, fork_variant_str};
+            let body = match serde_json::to_vec(&dto) {
+                Ok(b) => b,
+                Err(e) => {
+                    return ApiError::Internal(format!("JSON serialization: {e}")).into_response();
+                }
+            };
+            let version = fork_variant_str(ForkVariant::Electra);
+            let mut r = (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response();
+            let _ = format;
+            if let Ok(hv) = axum::http::HeaderValue::from_str(version) {
+                r.headers_mut().insert(ETH_CONSENSUS_VERSION.clone(), hv);
+            }
+            r
+        }
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// `GET /eth/v1/beacon/states/{state_id}/pending_consolidations`
+///
+/// Returns 400 for pre-Electra states.
+/// Per `beacon-APIs/apis/beacon/states/pending_consolidations.yaml`.
+pub async fn get_pending_consolidations<E: EthSpec>(
+    State(state): State<Arc<ApiState<E>>>,
+    Path(state_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let format = match parse_accept(&headers) {
+        Ok(f) => f,
+        Err(e) => return e.into_response(),
+    };
+    let chain = Arc::clone(&state.chain);
+    let result = tokio::task::spawn_blocking(move || {
+        use pharos_types::BeaconStateView;
+
+        let resolved = resolve_state_id(chain.as_ref(), &state_id)?;
+        let beacon_state = chain
+            .state_by_block_root(resolved.block_root)
+            .ok_or_else(|| ApiError::NotFound(format!("state not found for id '{state_id}'")))?;
+
+        if beacon_state.fork_variant() != ForkVariant::Electra {
+            return Err(ApiError::BadRequest(
+                "pending_consolidations is only available for Electra+ states".to_string(),
+            ));
+        }
+
+        let consolidations = beacon_state
+            .pending_consolidations_raw()
+            .unwrap_or_default();
+        let data: Vec<serde_json::Value> = consolidations
+            .into_iter()
+            .map(|c| {
+                serde_json::json!({
+                    "source_index": c.source_index.to_string(),
+                    "target_index": c.target_index.to_string(),
+                })
+            })
+            .collect();
+
+        let version = crate::fork_tag::fork_variant_str(ForkVariant::Electra);
+        let dto = serde_json::json!({
+            "version": version,
+            "execution_optimistic": resolved.execution_optimistic,
+            "finalized": resolved.finalized,
+            "data": data,
+        });
+        Ok::<_, ApiError>((dto, resolved))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")));
+
+    match result {
+        Ok(Ok((dto, _resolved))) => {
+            use crate::fork_tag::{ETH_CONSENSUS_VERSION, fork_variant_str};
+            let body = match serde_json::to_vec(&dto) {
+                Ok(b) => b,
+                Err(e) => {
+                    return ApiError::Internal(format!("JSON serialization: {e}")).into_response();
+                }
+            };
+            let version = fork_variant_str(ForkVariant::Electra);
+            let mut r = (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response();
+            let _ = format;
+            if let Ok(hv) = axum::http::HeaderValue::from_str(version) {
+                r.headers_mut().insert(ETH_CONSENSUS_VERSION.clone(), hv);
+            }
+            r
+        }
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// `POST /eth/v1/beacon/states/{state_id}/validator_identities`
+/// (+ GET variant via the same handler)
+///
+/// Returns filtered list of validator identities (index, pubkey, withdrawal_credentials).
+/// Body: JSON array of validator indices or 0x-prefixed pubkeys (empty = all validators).
+/// Per `beacon-APIs/apis/beacon/states/validator_identities.yaml`.
+pub async fn post_validator_identities<E: EthSpec>(
+    State(state): State<Arc<ApiState<E>>>,
+    Path(state_id): Path<String>,
+    headers: HeaderMap,
+    body: Option<axum::Json<Vec<String>>>,
+) -> Response {
+    let format = match parse_accept(&headers) {
+        Ok(f) => f,
+        Err(e) => return e.into_response(),
+    };
+    let id_tokens: Vec<String> = body.map(|b| b.0).unwrap_or_default();
+    let chain = Arc::clone(&state.chain);
+    let result = tokio::task::spawn_blocking(move || {
+        let resolved = resolve_state_id(chain.as_ref(), &state_id)?;
+        let beacon_state = chain
+            .state_by_block_root(resolved.block_root)
+            .ok_or_else(|| ApiError::NotFound(format!("state not found for id '{state_id}'")))?;
+
+        let id_filter: Option<Vec<usize>> = if id_tokens.is_empty() {
+            None
+        } else {
+            Some(resolve_validator_ids(&id_tokens, &beacon_state)?)
+        };
+
+        let num_validators = beacon_state.num_validators();
+        let indices_to_check: Box<dyn Iterator<Item = usize>> = match id_filter {
+            Some(ref ids) => Box::new(ids.iter().copied()),
+            None => Box::new(0..num_validators),
+        };
+
+        let data: Vec<serde_json::Value> = indices_to_check
+            .filter_map(|idx| {
+                let v = beacon_state.validator(idx)?;
+                Some(serde_json::json!({
+                    "index": idx.to_string(),
+                    "pubkey": format!("0x{}", hex::encode(v.pubkey.as_slice())),
+                    "withdrawal_credentials": format!("0x{}", hex::encode(v.withdrawal_credentials.as_slice())),
+                }))
+            })
+            .collect();
+
+        let dto = serde_json::json!({
+            "execution_optimistic": resolved.execution_optimistic,
+            "finalized": resolved.finalized,
+            "data": data,
+        });
+        Ok::<_, ApiError>(dto)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")));
+
+    match result {
+        Ok(Ok(dto)) => {
+            let body = match serde_json::to_vec(&dto) {
+                Ok(b) => b,
+                Err(e) => {
+                    return ApiError::Internal(format!("JSON serialization: {e}")).into_response();
+                }
+            };
+            let _ = format;
+            (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// `GET /eth/v1/beacon/states/{state_id}/proposer_lookahead`
+///
+/// Returns proposer indices for the `(MIN_SEED_LOOKAHEAD + 1) * SLOTS_PER_EPOCH`
+/// slots starting from the state's current slot.
+/// Returns 400 for pre-Electra states (this endpoint is Electra+).
+/// Per `beacon-APIs/apis/beacon/states/proposer_lookahead.yaml`.
+pub async fn get_proposer_lookahead<E: EthSpec>(
+    State(state): State<Arc<ApiState<E>>>,
+    Path(state_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let format = match parse_accept(&headers) {
+        Ok(f) => f,
+        Err(e) => return e.into_response(),
+    };
+    let chain = Arc::clone(&state.chain);
+    let result = tokio::task::spawn_blocking(move || {
+        use pharos_stf::phase0::accessors::compute_epoch_at_slot;
+        use pharos_types::BeaconStateView;
+        use pharos_types::phase0::Slot;
+
+        let resolved = resolve_state_id(chain.as_ref(), &state_id)?;
+        let beacon_state = chain
+            .state_by_block_root(resolved.block_root)
+            .ok_or_else(|| ApiError::NotFound(format!("state not found for id '{state_id}'")))?;
+
+        if beacon_state.fork_variant() != ForkVariant::Electra {
+            return Err(ApiError::BadRequest(
+                "proposer_lookahead is only available for Electra+ states".to_string(),
+            ));
+        }
+
+        // Lookahead window: (MIN_SEED_LOOKAHEAD + 1) * SLOTS_PER_EPOCH slots from
+        // the state's current epoch start.
+        // MIN_SEED_LOOKAHEAD = 1 epoch, so lookahead_slots = 2 * SLOTS_PER_EPOCH.
+        let state_slot = beacon_state.slot();
+        let current_epoch = compute_epoch_at_slot(state_slot, E::SLOTS_PER_EPOCH);
+        let lookahead_slots = 2 * E::SLOTS_PER_EPOCH;
+        let start_slot = current_epoch.0 * E::SLOTS_PER_EPOCH;
+
+        // For each slot in the lookahead window, compute the proposer index.
+        let lookahead: Vec<serde_json::Value> = (0..lookahead_slots)
+            .map(|offset| {
+                let slot = Slot(start_slot + offset);
+                // Reuse the helper from validator_duties.
+                use pharos_stf::phase0::accessors::{
+                    compute_epoch_at_slot as epat, compute_proposer_index,
+                    get_active_validator_indices, get_seed,
+                };
+                use pharos_stf::phase0::helpers::{DOMAIN_BEACON_PROPOSER, uint_to_bytes};
+                use pharos_utils::{Bytes4, hash};
+
+                let epoch = epat(slot, E::SLOTS_PER_EPOCH);
+                let seed_base = get_seed::<E>(
+                    &beacon_state,
+                    epoch,
+                    Bytes4::from_array(DOMAIN_BEACON_PROPOSER),
+                );
+                let slot_bytes = uint_to_bytes(slot.0);
+                let mut input = [0u8; 40];
+                input[..32].copy_from_slice(seed_base.as_slice());
+                input[32..].copy_from_slice(&slot_bytes);
+                let seed = hash::hash(&input);
+                let indices = get_active_validator_indices::<E>(&beacon_state, epoch);
+                let proposer = compute_proposer_index::<E>(&beacon_state, &indices, &seed);
+                JsonValue::String(proposer.0.to_string())
+            })
+            .collect();
+
+        let version = crate::fork_tag::fork_variant_str(ForkVariant::Electra);
+        let dto = serde_json::json!({
+            "version": version,
+            "execution_optimistic": resolved.execution_optimistic,
+            "finalized": resolved.finalized,
+            "data": lookahead,
+        });
+        Ok::<_, ApiError>((dto, resolved))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("spawn_blocking: {e}")));
+
+    match result {
+        Ok(Ok((dto, _resolved))) => {
+            use crate::fork_tag::{ETH_CONSENSUS_VERSION, fork_variant_str};
+            let body = match serde_json::to_vec(&dto) {
+                Ok(b) => b,
+                Err(e) => {
+                    return ApiError::Internal(format!("JSON serialization: {e}")).into_response();
+                }
+            };
+            let version = fork_variant_str(ForkVariant::Electra);
+            let mut r = (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response();
+            let _ = format;
+            if let Ok(hv) = axum::http::HeaderValue::from_str(version) {
+                r.headers_mut().insert(ETH_CONSENSUS_VERSION.clone(), hv);
+            }
+            r
+        }
         Ok(Err(e)) => e.into_response(),
         Err(e) => e.into_response(),
     }

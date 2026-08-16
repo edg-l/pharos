@@ -170,15 +170,33 @@ pub const CF_LC_FINALITY_UPDATE_DENEB: &str = "deneb-latest-finality-update";
 /// Single-row CF storing the latest SSZ-encoded Deneb `LightClientOptimisticUpdate`.
 pub const CF_LC_OPTIMISTIC_UPDATE_DENEB: &str = "deneb-latest-optimistic-update";
 
-/// Returns all twenty-five column-family names in declaration order.
+// ── Schema v6 column families (Electra LC) ────────────────────────────────────
+//
+// Four new CFs added for Electra light-client types. Electra LC branches are
+// deeper than Deneb (EIP-7251 enlarged BeaconState → deeper merkle paths), so
+// electra and deneb LC objects are NOT interchangeable.
+
+/// Stores SSZ-encoded Electra `LightClientBootstrap` objects, keyed by block root.
+pub const CF_LC_BOOTSTRAP_ELECTRA: &str = "electra-light-client-bootstrap";
+
+/// Stores SSZ-encoded Electra `LightClientUpdate` objects, keyed by sync-committee period.
+pub const CF_LC_UPDATE_ELECTRA: &str = "electra-light-client-update";
+
+/// Single-row CF storing the latest SSZ-encoded Electra `LightClientFinalityUpdate`.
+pub const CF_LC_FINALITY_UPDATE_ELECTRA: &str = "electra-latest-finality-update";
+
+/// Single-row CF storing the latest SSZ-encoded Electra `LightClientOptimisticUpdate`.
+pub const CF_LC_OPTIMISTIC_UPDATE_ELECTRA: &str = "electra-latest-optimistic-update";
+
+/// Returns all twenty-nine column-family names in declaration order.
 ///
 /// Used when opening the database with `DB::open_cf_descriptors` so every CF
 /// is registered. The ordering does not affect correctness; RocksDB looks up
 /// CFs by name.
 ///
-/// Per `D-schema-v5-migration`: the full v5 CF set (21 v4 CFs + 4 new Deneb LC) is
-/// declared here so a fresh v5 DB opens with all CFs at first boot.
-pub fn all_cfs() -> [&'static str; 25] {
+/// Per `D-schema-v6-migration`: the full v6 CF set (25 v5 CFs + 4 new Electra LC) is
+/// declared here so a fresh v6 DB opens with all CFs at first boot.
+pub fn all_cfs() -> [&'static str; 29] {
     [
         CF_DEFAULT,
         CF_BLOCKS,
@@ -205,5 +223,9 @@ pub fn all_cfs() -> [&'static str; 25] {
         CF_LC_UPDATE_DENEB,
         CF_LC_FINALITY_UPDATE_DENEB,
         CF_LC_OPTIMISTIC_UPDATE_DENEB,
+        CF_LC_BOOTSTRAP_ELECTRA,
+        CF_LC_UPDATE_ELECTRA,
+        CF_LC_FINALITY_UPDATE_ELECTRA,
+        CF_LC_OPTIMISTIC_UPDATE_ELECTRA,
     ]
 }
