@@ -1563,6 +1563,13 @@ inside each category) is preserved. See also: `mem_98f64695` (rayon nested
 par_iter pitfall pattern, global memory). Recorded for posterity; not enforced
 in code (the rejected refactor never landed).
 
+**SUPERSEDED (2026-06-13) by `D-flat-conformance-workpool`** (M-Conf-Perf): the
+nested-rayon thrash was the failure of a *two-level* design. The correct
+realization is a *single-level* flat pool — every category produces a flat
+`Vec<CaseTask>`, all collected into one `Vec`, run through ONE top-level
+`into_par_iter` with zero inner `par_iter`. That landed and is byte-identical
+(full walk 3:53 → 2:31, CPU 617% → 905%).
+
 ## M4c decisions
 
 ### D-lc-gossip-validation-full-node-arm — Full-node IGNORE rule for LC gossip: exact local match
@@ -3674,3 +3681,63 @@ V3 conformance examples' upstream payload-id `0x0000000038fa5dd` is QUANTITY-tri
 semantically rather than byte-exact; (b) deneb withdrawals reuse the single capella
 `get_expected_withdrawals` via a `deneb_state_to_capella` projection rather than a
 duplicated sweep, to prevent drift.
+
+## M-Conf-Perf decisions
+
+### D-flat-conformance-workpool — single-level flat rayon pool for conformance
+
+**Status**: Accepted. **Date**: 2026-06-13. **Supersedes**: `D-conformance-parallelism-dropped`.
+
+`pharos_conformance::run` was a sequential ladder of ~107 `if filter.matches { run_* }`
+blocks, each category internally `into_par_iter`-ing its own cases — a hard barrier
+between categories left cores idle on the tail of small categories. The flip: every
+category exposes `enumerate_*(root, fork, preset, row_ordinal) -> Vec<CaseTask>`; `run`
+collects ALL of them into one `Vec`, runs ONE top-level `into_par_iter`, and aggregates
+via `task::fold` keyed by `(row_ordinal, case_ordinal)`. Exactly ONE `into_par_iter` in
+the crate; zero nesting (the trap that killed the earlier attempt). Byte-identical output
+(full walk 3:53 → 2:31, CPU 617% → 905%). Not full 12-thread saturation: a few heavy
+single cases dominate the tail and the directory-walk/enumerate step is still sequential.
+
+### D-conformance-descriptor-table — per-fork `(sub, ApplyFn)` tables replace duplicated boilerplate
+
+**Status**: Accepted. **Date**: 2026-06-13.
+
+`operations.rs` was 5,806 lines: ~50 near-identical `run_*_case` fns + ~70
+walk+`into_par_iter`+tally blocks, one per fork×preset×sub-op. Replaced with a generic
+`apply_op` (load pre/post → run `process_*` → compare htr / expect-Err) + `enumerate_op`
+(walk + box per-case closures) + per-fork `<fork>_op_table` of `(sub_name, ApplyFn)`
+entries. Bespoke state-projection subs (block_header/sync_aggregate/execution_payload/
+withdrawals, which project to altair/capella) stay as explicit table closures — the
+deletion is the wrapper, not the projection body. Net: the duplicated boilerplate is
+gone; adding a fork is a small table. Each fork converted in its own phase, byte-identical
+per `--filter <fork>/operations`.
+
+### D-apply-op-no-ethspec-bound — generics strategy that keeps the tables compilable
+
+**Status**: Accepted. **Date**: 2026-06-13.
+
+`apply_op<S: Encode, Op: Decode>` carries NO `EthSpec` bound and a CONCRETE error type
+(`pharos_stf::StateTransitionError`, not a generic). All the gnarly per-fork associated-type
+`where`-clauses live on the per-fork table-builder fn (one place), exactly as the old
+`run_<fork>_op_preset` helpers did. This is what makes the generic operations code tractable.
+
+### D-case-ordinal-byte-identity — deterministic output under the parallel pool
+
+**Status**: Accepted. **Date**: 2026-06-13.
+
+Parallel completion order must not leak into output. `enumerate_*` assigns `case_ordinal`
+from the sorted `walk_category`/`read_dir_sorted` position, threaded across sub-sweeps in
+the SAME order the old dispatcher merged them; `task::fold` sorts outcomes by
+`(row_ordinal, case_ordinal)` before emitting rows + failures + footnotes. `rows::row_table`
+is the single source of row order (107 rows, in `run()` emission order) and footnotes (the
+`phase0/fork_choice` `[^1]`). Guarded by per-fork filtered byte-diffs, 30 `enumerate_*`
+parity unit tests, and the full-walk byte-diff at the flip.
+
+### D-conformance-bail-run-all — `--bail` no longer stops early
+
+**Status**: Accepted. **Date**: 2026-06-13.
+
+Under the single flat pool, rayon cannot cleanly short-circuit mid-`par_iter` while keeping
+deterministic output. `--bail` now runs all cases and exits non-zero if any failed (the
+exit-code contract `main.rs` relies on is preserved); the "stop after first failing category"
+behavior is dropped. For fast-fail feedback, use `--filter`.
