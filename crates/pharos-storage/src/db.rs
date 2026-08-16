@@ -203,6 +203,23 @@ impl RocksStore {
         Ok(result)
     }
 
+    /// Count the number of entries in the `cold-states` CF.
+    ///
+    /// Each entry corresponds to one restore-point state written by the freezer.
+    /// Used by Phase 3 verification (M11) to assert that cold-region density
+    /// equals the restore-point count (never dense per-slot states).
+    /// Per `D-cold-granularity-restore-points-only`.
+    pub fn count_cold_state_entries(&self) -> Result<u64, StorageError> {
+        let cf = self.cf_handle(CF_COLD_STATES)?;
+        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
+        let mut count = 0u64;
+        for item in iter {
+            item?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
     /// Look up the canonical block root at `slot` from the `slot_to_block_root` CF.
     ///
     /// Returns `None` when no block was imported at this slot (e.g. missed slot

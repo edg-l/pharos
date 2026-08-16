@@ -674,3 +674,269 @@ async fn freezer_migration_cold_presence_and_regen() {
         target_slot.0
     );
 }
+
+/// Cold-state density test (Phase 3 M11, `D-cold-granularity-restore-points-only`).
+///
+/// Verifies that after migration:
+///   (a) The `cold-states` CF contains EXACTLY one entry per interval-multiple
+///       epoch boundary — never dense per-slot states.
+///   (b) The `slot_to_block_root` index is NOT pruned: every migrated slot
+///       remains reachable via `block_root_at_slot` after `migrate_to_cold`.
+///
+/// Chain: 3 epochs = 24 blocks (`3 * SLOTS_PER_EPOCH`).
+/// Interval: 1 epoch = 8 slots, so 3 interval-multiple boundaries (8, 16, 24)
+/// fall in the migration window `(0, 24]`.
+/// Expected cold-state CF entry count = 3.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_state_density_equals_restore_points() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    const SPE: u64 = MinimalEthSpec::SLOTS_PER_EPOCH;
+    const INTERVAL_EPOCHS: u64 = 1;
+    const INTERVAL_SLOTS: u64 = INTERVAL_EPOCHS * SPE; // 8
+    let n_blocks: u64 = 3 * SPE; // 24 blocks — 3 full epochs
+
+    // ── 1. Build genesis + chain ──────────────────────────────────────────────
+    let (genesis_state, anchor_block) = build_genesis_for_test();
+    let anchor_root: Root = anchor_block.tree_hash_root();
+
+    let tmpdir = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
+            path: tmpdir.path().join("chain_db_density"),
+            create_if_missing: true,
+        })
+        .expect("open RocksStore"),
+    );
+
+    let mut fc = get_forkchoice_store::<MinimalEthSpec>(genesis_state.clone(), anchor_block);
+    fc.runtime_cfg = MinimalEthSpec::default_runtime_config();
+    fc.time = 10_000_000;
+    fc.set_terminal_config(
+        pharos_utils::Uint256::default(),
+        Hash256::from_array(TERMINAL_BLOCK_HASH_BYTES),
+        0,
+    );
+    let fc_store = Arc::new(RwLock::new(fc));
+
+    let gvr = Root::default();
+    let fork_schedule = ForkSchedule {
+        genesis_fork_version: Version::from_array(MinimalEthSpec::GENESIS_FORK_VERSION),
+        altair_fork_version: Version::from_array(MinimalEthSpec::ALTAIR_FORK_VERSION),
+        altair_fork_epoch: Epoch(0),
+        bellatrix_fork_version: Version::from_array(MinimalEthSpec::BELLATRIX_FORK_VERSION),
+        bellatrix_fork_epoch: Epoch(0),
+        capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+        capella_fork_epoch: Epoch(u64::MAX),
+        deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+        deneb_fork_epoch: Epoch(u64::MAX),
+        electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
+        electra_fork_epoch: Epoch(u64::MAX),
+        genesis_validators_root: gvr,
+    };
+    let runtime_cfg = Arc::new(pharos_types::config::RuntimeConfig {
+        seconds_per_slot: MinimalEthSpec::SLOT_DURATION_MS / 1000,
+        bellatrix_fork_version: MinimalEthSpec::BELLATRIX_FORK_VERSION,
+        ..Default::default()
+    });
+    let host = Arc::new(HostImpl::<MinimalEthSpec>::new(
+        Arc::clone(&store),
+        Arc::clone(&fc_store),
+        gvr,
+        fork_schedule,
+        0,
+        Arc::clone(&runtime_cfg),
+    ));
+
+    let exec_engine = Arc::new(NullExecutionEngine);
+    let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
+
+    let (signed_blocks, block_roots, _inline_states) =
+        build_chain(genesis_state, anchor_root, n_blocks);
+
+    let provider = FixtureBlockProvider::new(signed_blocks);
+    let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
+    let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let notify = Arc::new(Notify::new());
+
+    let fc_for_assert = Arc::clone(&fc_store);
+    let handle = tokio::spawn(async move {
+        run_backfill_loop::<
+            MinimalEthSpec,
+            _,
+            NullExecutionEngine,
+            pharos_fork_choice::NoopPowBlockProvider,
+        >(
+            provider,
+            host,
+            fc_store,
+            exec_engine,
+            pow_provider,
+            head_tx,
+            payload_tx,
+            BACKFILL_GENESIS_TIME_SECS,
+            shutdown_rx,
+            notify,
+            None,
+            watch::channel(Slot(0)).0,
+        )
+        .await
+    });
+
+    // Wait until head reaches n_blocks.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let head_slot = {
+            let s = fc_for_assert.read();
+            let root = get_head::<MinimalEthSpec>(&s);
+            s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
+        };
+        if head_slot.0 >= n_blocks {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timeout: head_slot={} expected >= {n_blocks}",
+            head_slot.0
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let _ = shutdown_tx.send(true);
+    let result = tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("loop should exit")
+        .expect("task must not panic");
+    assert!(result.is_ok(), "backfill loop must return Ok: {result:?}");
+
+    // Give the persist workers a moment to flush.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // ── 2. Simulate finalization over the full 3-epoch window ─────────────────
+    //
+    // Migrate (0, n_blocks=24]: split_slot starts at 0, finalized_slot = 24.
+    let finalized_slot = Slot(n_blocks); // 24
+    let finalized_root = block_roots[(n_blocks - 1) as usize]; // root of block at slot 24
+
+    {
+        let mut fc = fc_for_assert.write();
+        fc.finalized_checkpoint = Checkpoint {
+            epoch: Epoch(3),
+            root: finalized_root,
+        };
+        fc.justified_checkpoint = Checkpoint {
+            epoch: Epoch(3),
+            root: finalized_root,
+        };
+    }
+
+    // ── 3. Build migration batch with restore-point states at every interval
+    //      multiple: slots 8, 16, 24 (interval = 1 epoch = 8 slots) ──────────
+    let mut cold_blocks_vec: Vec<(Root, MinForkSignedBlock)> = Vec::new();
+    let mut prune_block_roots: Vec<Root> = Vec::new();
+    let mut prune_state_roots: Vec<Root> = Vec::new();
+    let mut cold_states: Vec<(Slot, Root, <MinimalEthSpec as EthSpec>::BeaconState)> = Vec::new();
+
+    for s in 1..=finalized_slot.0 {
+        let slot = Slot(s);
+        if let Ok(Some(root)) = store.block_root_at_slot(slot) {
+            if let Ok(Some(block)) =
+                <RocksStore as DbStore<MinimalEthSpec>>::get_block(&store, &root)
+            {
+                cold_blocks_vec.push((root, block));
+                prune_block_roots.push(root);
+            }
+
+            // Collect restore-point states at interval-multiple epoch boundaries only.
+            // With INTERVAL_SLOTS=8=SPE, every epoch boundary is also an interval
+            // multiple, so the condition simplifies to: s % INTERVAL_SLOTS == 0.
+            if s % INTERVAL_SLOTS == 0 {
+                if let Ok(Some(summary)) =
+                    <RocksStore as DbStore<MinimalEthSpec>>::get_state_summary(&store, &root)
+                {
+                    if let Ok(Some(state)) = <RocksStore as DbStore<MinimalEthSpec>>::get_state(
+                        &store,
+                        &summary.state_root,
+                    ) {
+                        prune_state_roots.push(summary.state_root);
+                        cold_states.push((slot, summary.state_root, state));
+                    }
+                }
+            }
+        }
+    }
+
+    // The number of interval-multiple epoch boundaries in (0, 24] with interval 8:
+    // slots 8, 16, 24 → 3 expected restore points.
+    let expected_restore_point_count = (finalized_slot.0 / INTERVAL_SLOTS) as usize;
+    assert_eq!(
+        cold_states.len(),
+        expected_restore_point_count,
+        "test setup must produce exactly {expected_restore_point_count} interval-multiple states",
+    );
+
+    let batch = ColdMigrationBatch::<MinimalEthSpec> {
+        cold_blocks: cold_blocks_vec,
+        cold_states,
+        prune_block_roots: prune_block_roots.clone(),
+        prune_state_roots,
+        prune_orphan_block_roots: Vec::new(),
+        split_slot: finalized_slot,
+    };
+
+    <RocksStore as DbStore<MinimalEthSpec>>::migrate_to_cold(&store, batch)
+        .expect("migrate_to_cold must succeed");
+
+    // ── 4a. Assert: cold-state CF density == restore-point count ─────────────
+    //
+    // Per `D-cold-granularity-restore-points-only`: the cold-states CF stores
+    // ONLY restore-point-interval-multiple snapshots, never dense per-slot states.
+    // `count_cold_state_entries` counts every key in `CF_COLD_STATES`.
+    let actual_cold_state_count = store
+        .count_cold_state_entries()
+        .expect("count_cold_state_entries must succeed");
+    assert_eq!(
+        actual_cold_state_count, expected_restore_point_count as u64,
+        "cold-states CF must contain exactly {} entries (one per interval-multiple epoch boundary), \
+         got {}. DIVERGENCE would indicate dense per-slot states are being written.",
+        expected_restore_point_count, actual_cold_state_count,
+    );
+
+    // ── 4b. Assert: slot_to_block_root index is NOT pruned ───────────────────
+    //
+    // Per `D-prune-behind-finalized`: the `slot_to_block_root` navigational index
+    // is NEVER pruned; cold regen and `BeaconBlocksByRange` require it indefinitely.
+    for (slot_idx, &root) in block_roots[..(n_blocks as usize)].iter().enumerate() {
+        let slot = Slot(slot_idx as u64 + 1);
+        let indexed_root = store
+            .block_root_at_slot(slot)
+            .unwrap_or_else(|e| panic!("block_root_at_slot({}) failed: {e}", slot.0));
+        assert_eq!(
+            indexed_root,
+            Some(root),
+            "slot_to_block_root index for slot {} must survive migration (not pruned)",
+            slot.0,
+        );
+    }
+
+    // ── 4c. Assert: restore-points index matches the cold-states count ────────
+    //
+    // `nearest_restore_point` iterates the `restore-points` CF. Check all three.
+    for epoch in 1u64..=3 {
+        let rp_slot = Slot(epoch * INTERVAL_SLOTS);
+        let entry = <RocksStore as DbStore<MinimalEthSpec>>::nearest_restore_point(&store, rp_slot)
+            .expect("nearest_restore_point must succeed")
+            .unwrap_or_else(|| {
+                panic!(
+                    "restore-points CF must have an entry at or below slot {}",
+                    rp_slot.0
+                )
+            });
+        assert_eq!(
+            entry.0, rp_slot,
+            "nearest_restore_point for slot {} must return the exact boundary",
+            rp_slot.0,
+        );
+    }
+}

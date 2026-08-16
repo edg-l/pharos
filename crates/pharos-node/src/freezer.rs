@@ -303,6 +303,27 @@ pub async fn run_freezer_loop<E: EthSpec>(
 /// at least one restore point is always written per migration. Returning all
 /// multiples (not just the latest) keeps the cold replay-cost bound at
 /// `interval_epochs` even after a long non-finalization gap.
+///
+/// # Granularity invariant (Phase 3 M11 verification)
+///
+/// The cold-states CF stores ONLY restore-point-interval-multiple boundaries,
+/// never dense per-slot states. Properties confirmed by
+/// `freezer_migration.rs::cold_state_density_equals_restore_points`:
+///
+/// - `migrate_to_cold` writes its `cold_states` batch in a SINGLE atomic
+///   `WriteBatch` (see `pharos_storage::db::migrate_to_cold`, step 2), so
+///   intermediate states are never written.
+/// - Hot states below `split_slot` are evicted from both the `states` CF
+///   (via `prune_state_roots`) and the in-memory fork-choice maps (via
+///   `evict_finalized_from_fc`).
+/// - The `slot_to_block_root` index CF is deliberately NOT pruned; it is an
+///   append-only navigational index required by cold regen
+///   (`block_root_at_slot`) and `BeaconBlocksByRange` serving indefinitely.
+///   This is asserted by the same test: all block roots in the migrated range
+///   remain reachable via `block_root_at_slot` after migration completes.
+///
+/// Per `D-cold-granularity-restore-points-only`, `D-freezer-in-rocksdb`,
+/// `D-prune-behind-finalized`, `D-restore-point-interval`.
 fn select_restore_point_states<E: EthSpec>(
     store: &RocksStore,
     split_slot: Slot,
