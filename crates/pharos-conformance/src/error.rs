@@ -28,4 +28,10 @@ pub enum ConformanceError {
     UnsupportedHandler(String),
     #[error("malformed fixture: {0}")]
     MalformedFixture(String),
+    #[error("unknown ssz_static type `{type_name}` in {fork}/{preset}")]
+    UnknownSszStaticType {
+        fork: String,
+        preset: String,
+        type_name: String,
+    },
 }
