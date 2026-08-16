@@ -30,6 +30,38 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # ── Beacon API client ────────────────────────────────────────────────────────
 
 
+def _hex_bytes(s):
+    """0x-prefixed hex string -> bytes, or b'' on bad input."""
+    if not isinstance(s, str):
+        return b""
+    try:
+        return bytes.fromhex(s[2:] if s.startswith("0x") else s)
+    except ValueError:
+        return b""
+
+
+def _count_bits(hex_bitfield):
+    """Count set bits in a 0x hex SSZ bitfield."""
+    return sum(bin(b).count("1") for b in _hex_bytes(hex_bitfield))
+
+
+def _bitfield_len(hex_bitfield):
+    """Total bits in a fixed-size 0x hex bitvector (sync_committee_bits is a
+    Bitvector, so every byte is 8 real bits — no length delimiter)."""
+    return len(_hex_bytes(hex_bitfield)) * 8
+
+
+def _decode_graffiti(hex_graffiti):
+    """Decode a 32-byte graffiti field to printable text (trailing zeros
+    trimmed); returns '' if empty/unprintable."""
+    raw = _hex_bytes(hex_graffiti).rstrip(b"\x00")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.hex()
+    return "".join(c if c.isprintable() else "" for c in text)
+
+
 class Beacon:
     """Thin Beacon API client. Returns parsed JSON or None on any failure."""
 
@@ -66,6 +98,7 @@ class Poller:
         self._genesis_time = None
         self._seconds_per_slot = None
         self._slots_per_epoch = None
+        self._fork_schedule = None  # list of {name, epoch} sorted by epoch
 
     def _ensure_constants(self):
         if self._genesis_time is None:
@@ -80,6 +113,34 @@ class Poller:
                     self._seconds_per_slot = int(d["SECONDS_PER_SLOT"])
                 if "SLOTS_PER_EPOCH" in d:
                     self._slots_per_epoch = int(d["SLOTS_PER_EPOCH"])
+        if self._fork_schedule is None:
+            fs = self.beacon.get("/eth/v1/config/fork_schedule")
+            if fs and fs.get("data") is not None:
+                sched = []
+                for f in fs["data"]:
+                    try:
+                        sched.append({"name": f.get("previous_version"),
+                                      "epoch": int(f["epoch"]),
+                                      "version": f.get("current_version")})
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                self._fork_schedule = sorted(sched, key=lambda x: x["epoch"])
+
+    def _next_fork(self, current_epoch):
+        """Next scheduled fork strictly after `current_epoch` (skips far-future
+        u64::MAX placeholders), with the ETA in seconds."""
+        if not self._fork_schedule or current_epoch is None:
+            return None
+        far = (1 << 63)
+        for f in self._fork_schedule:
+            if f["epoch"] > current_epoch and f["epoch"] < far:
+                eta = None
+                if self._genesis_time and self._seconds_per_slot and self._slots_per_epoch:
+                    fork_slot = f["epoch"] * self._slots_per_epoch
+                    fork_ts = self._genesis_time + fork_slot * self._seconds_per_slot
+                    eta = max(0, fork_ts - int(time.time()))
+                return {"epoch": f["epoch"], "version": f["version"], "eta_s": eta}
+        return None
 
     def _wall_slot(self):
         if self._genesis_time is None or not self._seconds_per_slot:
@@ -174,7 +235,8 @@ class Poller:
         if peers and peers.get("data") is not None:
             snap["peers"] = peers["data"]
 
-        # Fork name + execution-layer view from the head block (v2, fork-tagged).
+        # Fork name + block contents + execution-layer view from the head block
+        # (v2, fork-tagged). All of this comes from the ONE head-block fetch.
         if head_block:
             snap["fork"] = head_block.get("version")
             snap["execution_optimistic"] = head_block.get("execution_optimistic")
@@ -182,6 +244,24 @@ class Poller:
             body = (head_block.get("data", {})
                     .get("message", {})
                     .get("body", {}))
+
+            # Block contents: operation counts in the head block.
+            snap["block"] = {
+                "graffiti": _decode_graffiti(body.get("graffiti")),
+                "attestations": len(body.get("attestations") or []),
+                "deposits": len(body.get("deposits") or []),
+                "proposer_slashings": len(body.get("proposer_slashings") or []),
+                "attester_slashings": len(body.get("attester_slashings") or []),
+                "voluntary_exits": len(body.get("voluntary_exits") or []),
+                "bls_changes": len(body.get("bls_to_execution_changes") or []),
+            }
+            # Sync-committee participation (altair+): set bits / total.
+            agg = body.get("sync_aggregate")
+            if agg and agg.get("sync_committee_bits"):
+                bits = _count_bits(agg["sync_committee_bits"])
+                total = _bitfield_len(agg["sync_committee_bits"])
+                snap["block"]["sync_participation"] = {"set": bits, "total": total}
+
             payload = body.get("execution_payload")
             if payload:
                 el = {
@@ -191,7 +271,12 @@ class Poller:
                     "gas_used": payload.get("gas_used"),
                     "gas_limit": payload.get("gas_limit"),
                     "fee_recipient": payload.get("fee_recipient"),
+                    "base_fee_per_gas": payload.get("base_fee_per_gas"),
+                    "transactions": len(payload.get("transactions") or []),
                 }
+                # Capella+ withdrawals.
+                if payload.get("withdrawals") is not None:
+                    el["withdrawals"] = len(payload["withdrawals"])
                 # Deneb+ blob/gas fields (present once the Deneb fork lands).
                 if "blob_gas_used" in payload:
                     el["blob_gas_used"] = payload["blob_gas_used"]
@@ -201,6 +286,12 @@ class Poller:
                 if kzg is not None:
                     el["blob_count"] = len(kzg)
                 snap["execution"] = el
+
+        # Network uptime (time since genesis) and next scheduled fork.
+        if self._genesis_time is not None:
+            snap["genesis_time"] = self._genesis_time
+            snap["uptime_s"] = max(0, int(time.time()) - self._genesis_time)
+        snap["next_fork"] = self._next_fork(snap.get("epoch"))
 
         snap["recent_blocks"] = self._recent_blocks(head_slot)
         return snap
@@ -367,6 +458,7 @@ PAGE = """<!DOCTYPE html>
   <section class="panel"><h2>Chain</h2><div id="chain"></div></section>
   <section class="panel"><h2>Sync &amp; peers</h2><div id="sync"></div></section>
   <section class="panel"><h2>Validator activity</h2><div id="validator"></div></section>
+  <section class="panel"><h2>Head block contents</h2><div id="block"></div></section>
   <section class="panel"><h2>Execution layer</h2><div id="execution"></div></section>
 </div>
 
@@ -379,6 +471,15 @@ const cp = c => c ? `<span class="muted">ep</span> ${esc(c.epoch)} · ${short(c.
 const num = n => (n===undefined||n===null) ? '—'
                  : Number(n).toLocaleString('en-US');
 const kv = rows => '<dl class="kv">'+rows.map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('')+'</dl>';
+function dur(s){
+  if(s==null) return '—';
+  const d=Math.floor(s/86400), h=Math.floor(s%86400/3600),
+        m=Math.floor(s%3600/60), sec=s%60;
+  if(d) return `${d}d ${h}h`;
+  if(h) return `${h}h ${m}m`;
+  if(m) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
 function stat(label,val,cls,sub){
   return `<div class="stat ${cls||''}"><div class="label">${label}</div>`+
          `<div class="val ${cls||''}">${val}</div>`+
@@ -389,7 +490,7 @@ function render(s){
   if(!s.online){
     $('status').innerHTML = '<span class="dot off"></span>node offline';
     $('hero').innerHTML = '';
-    for(const id of ['chain','sync','validator','execution'])
+    for(const id of ['chain','sync','validator','block','execution'])
       $(id).innerHTML = '<span class="muted">waiting for pharos Beacon API…</span>';
     return;
   }
@@ -403,13 +504,18 @@ function render(s){
   const lagTxt = lag===undefined ? '—' : ((lag<=0?'':'+')+lag);
 
   // ── hero metrics ──
+  const nf = s.next_fork;
+  const forkSub = nf
+    ? `next: ep ${nf.epoch}${nf.eta_s!=null?` · ${dur(nf.eta_s)}`:''}`
+    : 'latest fork';
   $('hero').innerHTML =
-    stat('Fork', s.fork? esc(s.fork.toUpperCase()):'—', 'accent') +
+    stat('Fork', s.fork? esc(s.fork.toUpperCase()):'—', 'accent', forkSub) +
     stat('Head slot', num(head.slot), '', `wall ${num(s.wall_slot)}`) +
     stat('Epoch', num(s.epoch), 'accent2') +
     stat('Wall lag', lagTxt, lagCls, lag===undefined?'':'slots behind tip') +
     stat('Peers', num((s.peer_count||{}).connected), '',
-         (s.peers&&s.peers.length)?`${s.peers.length} listed`:'as reported');
+         (s.peers&&s.peers.length)?`${s.peers.length} listed`:'as reported') +
+    stat('Uptime', dur(s.uptime_s), '', 'since genesis');
 
   // ── Chain ──
   $('chain').innerHTML = kv([
@@ -455,6 +561,14 @@ function render(s){
          `<span>t+${s.slot_into}s / ${s.seconds_per_slot}s</span></div>`+
          `<div class="bar"><span style="width:${pct}%"></span></div></div>`;
   }
+  const sp = (s.block||{}).sync_participation;
+  if(sp && sp.total){
+    const pct = Math.round(100*sp.set/sp.total);
+    const cls = pct>=66 ? 'ok' : (pct>=33 ? 'warn' : 'err');
+    v += `<div class="timing"><div class="row"><span>sync committee</span>`+
+         `<span>${sp.set}/${sp.total} · ${pct}%</span></div>`+
+         `<div class="bar"><span style="width:${pct}%;background:var(--${cls})"></span></div></div>`;
+  }
   const rb = s.recent_blocks || [];
   v += '<div class="scroll"><table><thead><tr><th>slot</th><th>proposer</th>'+
        '<th class="r">root</th></tr></thead><tbody>';
@@ -467,21 +581,42 @@ function render(s){
   v += '</tbody></table></div>';
   $('validator').innerHTML = v;
 
+  // ── Head block contents ──
+  const bl = s.block;
+  if(!bl){
+    $('block').innerHTML = '<span class="muted">no head block yet</span>';
+  } else {
+    $('block').innerHTML = kv([
+      ['graffiti', bl.graffiti ? esc(bl.graffiti) : '<span class="muted">—</span>'],
+      ['attestations', num(bl.attestations)],
+      ['deposits', num(bl.deposits)],
+      ['proposer slashings', num(bl.proposer_slashings)],
+      ['attester slashings', num(bl.attester_slashings)],
+      ['voluntary exits', num(bl.voluntary_exits)],
+      ['bls changes', num(bl.bls_changes)],
+    ]);
+  }
+
   // ── Execution layer (pharos's view) ──
   const el = s.execution;
   if(!el){
     $('execution').innerHTML =
       '<p class="muted">pre-merge head — no execution payload</p>';
   } else {
+    const gasPct = (el.gas_used!=null && el.gas_limit)
+      ? Math.round(100*Number(el.gas_used)/Number(el.gas_limit)) : null;
     const rows = [
       ['payload', s.execution_optimistic
         ? pill('OPTIMISTIC','warn') : pill('VALID','ok')],
       ['block #', num(el.block_number)],
       ['block hash', `<span class="muted">${short(el.block_hash)}</span>`],
-      ['gas used', num(el.gas_used)],
-      ['gas limit', num(el.gas_limit)],
+      ['transactions', num(el.transactions)],
+      ['gas', `${num(el.gas_used)} / ${num(el.gas_limit)}`+
+              (gasPct!=null?` <span class="muted">(${gasPct}%)</span>`:'')],
+      ['base fee', num(el.base_fee_per_gas)],
       ['fee recipient', `<span class="muted">${short(el.fee_recipient)}</span>`],
     ];
+    if(el.withdrawals!==undefined)   rows.push(['withdrawals', num(el.withdrawals)]);
     if(el.blob_count!==undefined)    rows.push(['blobs', el.blob_count]);
     if(el.blob_gas_used!==undefined) rows.push(['blob gas used', num(el.blob_gas_used)]);
     if(el.excess_blob_gas!==undefined) rows.push(['excess blob gas', num(el.excess_blob_gas)]);
