@@ -5,6 +5,7 @@
 
 pub mod api_event_adapter;
 pub mod backfill;
+pub mod backward_backfill;
 pub mod blob_ingestion;
 pub mod blob_prune;
 pub mod block_ingestion;

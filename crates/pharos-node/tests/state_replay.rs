@@ -462,6 +462,7 @@ async fn state_regen_replay_matches_inline() {
             shutdown_rx,
             notify,
             None,
+            watch::channel(Slot(0)).0,
         )
         .await
     });

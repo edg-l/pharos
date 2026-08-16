@@ -452,6 +452,7 @@ async fn live_block_persistence_asserts() {
             shutdown_rx,
             notify,
             None,
+            watch::channel(Slot(0)).0,
         )
         .await
     });

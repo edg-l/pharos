@@ -386,6 +386,7 @@ async fn orphan_defers_and_backfill_heals() {
             shutdown_rx,
             notify2,
             None,
+            watch::channel(Slot(0)).0,
         )
         .await
     });

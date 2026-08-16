@@ -490,6 +490,7 @@ async fn restart_across_split_rehydrates_correctly() {
             shutdown_rx,
             notify,
             None,
+            watch::channel(Slot(0)).0,
         )
         .await
     });

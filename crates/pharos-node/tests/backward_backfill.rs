@@ -1,16 +1,20 @@
-//! Freezer migration integration test (Task 3.7 of M-Storage Phase 3).
+//! Backward state-backfill integration test (M11 Phase 2, Task 2.7).
 //!
-//! Builds a chain of `2 * SLOTS_PER_EPOCH` blocks, persists all blocks via
-//! `run_backfill_loop` (Phase-1 import path), then simulates finalization by
-//! directly advancing the in-memory `finalized_checkpoint` to the first epoch
-//! boundary. Calls `migrate_to_cold` with the migration batch and asserts:
+//! Builds a known minimal-preset Bellatrix chain past two restore-point
+//! intervals (`SLOTS_PER_HISTORICAL_ROOT = 64` for `MinimalEthSpec`, so a chain
+//! to slot 130 covers restore points at slots 64 and 128), persists every block
+//! via `run_backfill_loop` (the Phase-1 import path: block + slot-index +
+//! state-summary on disk), then:
 //!
-//!   (a) Finalized blocks appear in `cold-blocks` CF (via `get_cold_block`).
-//!   (b) `restore-points` has the boundary entry (via `nearest_restore_point`).
-//!   (c) Hot `states` CF rows below the split slot are deleted.
-//!   (d) A cold-region historical state read via Phase-2
-//!       `StateRegenService::state_at_slot` succeeds, producing the same state
-//!       root as the inline-computed state.
+//!   (a) drives the forward-backfill progress signal to genesis and runs
+//!       `run_backward_backfill_loop`; asserts that BOTH restore-point states
+//!       (slots 64 and 128) are persisted to the cold `restore-points` /
+//!       `cold-states` CFs and that each reconstructed state's `tree_hash_root`
+//!       equals the `state_root` field of the block at that slot (Task 2.4 —
+//!       root-equality against a known state, ≥ 2 distinct historical slots);
+//!   (b) asserts the loop PARKS (does not error, does not write) when the
+//!       progress signal has not yet reached the target restore-point slot
+//!       (Task 2.2 gate-on-progress behaviour).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +25,7 @@ use pharos_ssz::{SszList, SszSequence as _, SszVector, TreeHash};
 use pharos_stf::phase0::accessors::{compute_signing_root, get_current_epoch, get_domain};
 use pharos_stf::phase0::helpers::{DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO};
 use pharos_stf::{ForkEpochs, NullExecutionEngine, process_slots_fork, state_transition};
-use pharos_storage::{ColdMigrationBatch, RocksStore, RocksStoreConfig, Store as DbStore};
+use pharos_storage::{RocksStore, RocksStoreConfig, Store as DbStore};
 use pharos_types::{
     EthSpec, MinimalEthSpec,
     altair::{MinimalSyncAggregate, MinimalSyncCommittee},
@@ -29,17 +33,18 @@ use pharos_types::{
         MinimalBeaconBlock, MinimalBeaconBlockBody, MinimalBeaconState, MinimalSignedBeaconBlock,
     },
     fork::ForkSchedule,
-    phase0::{Checkpoint, Epoch, Gwei, Root, Slot, Validator, ValidatorIndex, Version},
+    phase0::{Epoch, Gwei, Root, Slot, Validator, ValidatorIndex, Version},
     state::{
         BeaconBlock as ForkBeaconBlock, MinimalBeaconState as ForkMinState,
         SignedBeaconBlock as ForkSignedBeaconBlock,
     },
-    views::{BeaconBlockView as _, BeaconStateView as _},
+    views::BeaconBlockView as _,
 };
 use pharos_utils::{BLSPubkey, BLSSignature, Hash256};
 use tokio::sync::{Notify, mpsc, watch};
 
 use pharos_node::backfill::{BackfillBlockProvider, BackfillError, run_backfill_loop};
+use pharos_node::backward_backfill::run_backward_backfill_loop;
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest};
 use pharos_node::host_impl::HostImpl;
 use pharos_node::state_regen::StateRegenService;
@@ -90,8 +95,9 @@ fn test_sign(msg: &[u8]) -> BLSSignature {
     BLSSignature::from_array(test_sk().sign(msg, BLS_DST, &[]).compress())
 }
 
-// ── Genesis + chain builder ───────────────────────────────────────────────────
+// ── Genesis + chain builder (same shape as state_replay.rs) ───────────────────
 
+#[allow(clippy::type_complexity)]
 fn build_genesis_for_test() -> (
     MinForkState,
     ForkBeaconBlock<
@@ -184,6 +190,8 @@ fn build_genesis_for_test() -> (
     (genesis_state, anchor_block)
 }
 
+/// Build a chain of `n` Bellatrix blocks. Returns `(signed_blocks, block_roots,
+/// inline_states)` where `inline_states[i]` is the post-state after slot `i+1`.
 fn build_chain(
     genesis_state: MinForkState,
     anchor_root: Root,
@@ -233,10 +241,12 @@ fn build_chain(
         } else {
             let mut h = [0u8; 32];
             h[0] = (i - 1) as u8;
+            h[1] = ((i - 1) >> 8) as u8;
             Hash256::from_array(h)
         };
         let mut bh = [0u8; 32];
         bh[0] = i as u8;
+        bh[1] = (i >> 8) as u8;
         let block_hash = Hash256::from_array(bh);
 
         let payload = MinimalExecutionPayload {
@@ -330,17 +340,23 @@ fn build_chain(
     (signed_blocks, block_roots, inline_states)
 }
 
-// ── Backfill fixture provider ─────────────────────────────────────────────────
+// ── FixtureBlockProvider ──────────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct FixtureBlockProvider {
-    blocks: Arc<parking_lot::Mutex<Option<Vec<MinForkSignedBlock>>>>,
+    chunks: Arc<parking_lot::Mutex<std::collections::VecDeque<Vec<MinForkSignedBlock>>>>,
 }
 
 impl FixtureBlockProvider {
-    fn new(blocks: Vec<MinForkSignedBlock>) -> Self {
+    /// Serve `blocks` in fixed-size chunks so the forward loop makes multiple
+    /// `blocks_by_range` calls (it requests `head_slot+1 ..` each iteration).
+    fn chunked(blocks: Vec<MinForkSignedBlock>, chunk: usize) -> Self {
+        let mut q = std::collections::VecDeque::new();
+        for c in blocks.chunks(chunk) {
+            q.push_back(c.to_vec());
+        }
         Self {
-            blocks: Arc::new(parking_lot::Mutex::new(Some(blocks))),
+            chunks: Arc::new(parking_lot::Mutex::new(q)),
         }
     }
 }
@@ -351,37 +367,28 @@ impl BackfillBlockProvider<MinimalEthSpec> for FixtureBlockProvider {
         _start_slot: Slot,
         _count: u64,
     ) -> Result<Vec<MinForkSignedBlock>, BackfillError> {
-        let mut guard = self.blocks.lock();
-        Ok(guard.take().unwrap_or_default())
+        let mut guard = self.chunks.lock();
+        Ok(guard.pop_front().unwrap_or_default())
     }
 }
 
-// ── Test ──────────────────────────────────────────────────────────────────────
+// ── Test harness ──────────────────────────────────────────────────────────────
 
-/// Freezer migration test.
-///
-/// 1. Builds `2 * SLOTS_PER_EPOCH = 16` Bellatrix blocks and persists via backfill.
-/// 2. Simulates finalization: directly sets `finalized_checkpoint` to epoch 1
-///    (slot 8 = first epoch boundary) in the fork-choice store.
-/// 3. Collects the migration batch and calls `migrate_to_cold`.
-/// 4. Asserts:
-///    (a) Blocks in slots [1, split_slot] appear in `cold-blocks` CF.
-///    (b) `nearest_restore_point(split_slot)` returns the epoch-boundary entry.
-///    (c) Hot `states` CF row at the epoch boundary (slot 8) is deleted.
-///    (d) A cold regen via `StateRegenService::state_at_slot` for slot 5
-///        (below the split) produces the correct state root.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn freezer_migration_cold_presence_and_regen() {
+struct Harness {
+    store: Arc<RocksStore>,
+    fc_store: Arc<RwLock<pharos_fork_choice::Store<MinimalEthSpec>>>,
+    runtime_cfg: Arc<pharos_types::config::RuntimeConfig>,
+    n_blocks: u64,
+}
+
+/// Build a persisted chain of `n_blocks` and return the wired-up store + fc.
+async fn seed_persisted_chain(n_blocks: u64) -> Harness {
     let _ = tracing_subscriber::fmt::try_init();
 
-    const SPE: u64 = MinimalEthSpec::SLOTS_PER_EPOCH;
-    let n_blocks: u64 = 2 * SPE; // 16 blocks
-
-    // ── 1. Build genesis + chain ──────────────────────────────────────────────
     let (genesis_state, anchor_block) = build_genesis_for_test();
     let anchor_root: Root = anchor_block.tree_hash_root();
 
-    let tmpdir = tempfile::tempdir().unwrap();
+    let tmpdir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     let store = Arc::new(
         RocksStore::open::<MinimalEthSpec>(RocksStoreConfig {
             path: tmpdir.path().join("chain_db"),
@@ -432,16 +439,20 @@ async fn freezer_migration_cold_presence_and_regen() {
     let exec_engine = Arc::new(NullExecutionEngine);
     let pow_provider = Arc::new(pharos_fork_choice::NoopPowBlockProvider);
 
-    let (signed_blocks, block_roots, inline_states) =
+    let (signed_blocks, _block_roots, _inline_states) =
         build_chain(genesis_state, anchor_root, n_blocks);
 
-    let provider = FixtureBlockProvider::new(signed_blocks);
+    // Serve 64 blocks per chunk so the forward loop drains in several calls.
+    let provider = FixtureBlockProvider::chunked(signed_blocks, 64);
     let (head_tx, _head_rx) = watch::channel::<Option<HeadChange>>(None);
     let (payload_tx, _payload_rx) = mpsc::channel::<NewPayloadRequest<MinimalEthSpec>>(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let notify = Arc::new(Notify::new());
+    // Discard the forward progress signal here; the test drives the backward loop
+    // with its own controlled signal.
+    let (lowest_tx, _lowest_rx) = watch::channel(Slot(0));
 
-    let fc_for_assert = Arc::clone(&fc_store);
+    let fc_for_loop = Arc::clone(&fc_store);
     let handle = tokio::spawn(async move {
         run_backfill_loop::<
             MinimalEthSpec,
@@ -451,7 +462,7 @@ async fn freezer_migration_cold_presence_and_regen() {
         >(
             provider,
             host,
-            fc_store,
+            fc_for_loop,
             exec_engine,
             pow_provider,
             head_tx,
@@ -460,27 +471,25 @@ async fn freezer_migration_cold_presence_and_regen() {
             shutdown_rx,
             notify,
             None,
-            watch::channel(Slot(0)).0,
+            lowest_tx,
         )
         .await
     });
 
-    // Wait until head reaches n_blocks.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    // Wait until head advances to n_blocks.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         let head_slot = {
-            let s = fc_for_assert.read();
+            let s = fc_store.read();
             let root = get_head::<MinimalEthSpec>(&s);
             s.blocks.get(&root).map(|b| b.slot()).unwrap_or(Slot(0))
         };
         if head_slot.0 >= n_blocks {
             break;
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timeout: head_slot={} expected >= {n_blocks}",
-            head_slot.0
-        );
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timeout: head_slot={} expected >= {n_blocks}", head_slot.0);
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
@@ -491,186 +500,150 @@ async fn freezer_migration_cold_presence_and_regen() {
         .expect("task must not panic");
     assert!(result.is_ok(), "backfill loop must return Ok: {result:?}");
 
-    // Give the persist workers a moment to flush.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // ── 2. Simulate finalization at epoch 1 (split_slot = SPE = 8) ───────────
-    let split_slot = Slot(SPE); // epoch boundary = slot 8
-    let finalized_root = block_roots[(SPE - 1) as usize]; // root of block at slot 8
-
-    {
-        let mut fc = fc_for_assert.write();
-        fc.finalized_checkpoint = Checkpoint {
-            epoch: Epoch(1),
-            root: finalized_root,
-        };
-        fc.justified_checkpoint = Checkpoint {
-            epoch: Epoch(1),
-            root: finalized_root,
-        };
+    Harness {
+        store,
+        fc_store,
+        runtime_cfg,
+        n_blocks,
     }
+}
 
-    // ── 3. Build and execute migration batch ──────────────────────────────────
-    //
-    // Collect blocks and states for slots [1, split_slot].
-    let mut cold_blocks_vec: Vec<(Root, MinForkSignedBlock)> = Vec::new();
-    let mut prune_block_roots: Vec<Root> = Vec::new();
-    let mut prune_state_roots: Vec<Root> = Vec::new();
+/// Read the STF-verified `state_root` recorded by the block at `slot`.
+fn block_state_root_at(store: &RocksStore, slot: Slot) -> Root {
+    let block_root = store
+        .block_root_at_slot(slot)
+        .expect("slot index read")
+        .unwrap_or_else(|| panic!("no block at slot {slot}"));
+    <RocksStore as DbStore<MinimalEthSpec>>::get_state_summary(store, &block_root)
+        .expect("state-summary read")
+        .unwrap_or_else(|| panic!("no state-summary for block at slot {slot}"))
+        .state_root
+}
 
-    for s in 1..=split_slot.0 {
-        let slot = Slot(s);
+// ── Test (a): reconstruction + root-equality, ≥ 2 restore points ──────────────
 
-        if let Ok(Some(root)) = store.block_root_at_slot(slot) {
-            if let Ok(Some(block)) =
-                <RocksStore as DbStore<MinimalEthSpec>>::get_block(&store, &root)
-            {
-                cold_blocks_vec.push((root, block));
-                prune_block_roots.push(root);
-            }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backward_backfill_reconstructs_restore_points() {
+    // SLOTS_PER_HISTORICAL_ROOT = 64 (minimal). Build to slot 130 so restore
+    // points at slots 64 and 128 both have source blocks and a block to validate
+    // against.
+    let interval = MinimalEthSpec::SLOTS_PER_HISTORICAL_ROOT;
+    assert_eq!(interval, 64);
+    let h = seed_persisted_chain(130).await;
 
-            // Collect state roots to prune at epoch boundaries.
-            if s % SPE == 0 {
-                if let Ok(Some(summary)) =
-                    <RocksStore as DbStore<MinimalEthSpec>>::get_state_summary(&store, &root)
-                {
-                    if <RocksStore as DbStore<MinimalEthSpec>>::get_state(
-                        &store,
-                        &summary.state_root,
-                    )
-                    .ok()
-                    .flatten()
-                    .is_some()
-                    {
-                        prune_state_roots.push(summary.state_root);
-                    }
-                }
-            }
-        }
-    }
+    let regen = Arc::new(StateRegenService::<MinimalEthSpec>::new(
+        Arc::clone(&h.store),
+        Arc::clone(&h.fc_store),
+        Arc::clone(&h.runtime_cfg),
+    ));
 
-    // The restore-point state: epoch-boundary at split_slot.
-    let rp_root = block_roots[(SPE - 1) as usize]; // slot SPE block root
-    let rp_summary = <RocksStore as DbStore<MinimalEthSpec>>::get_state_summary(&store, &rp_root)
-        .expect("state_summary lookup")
-        .expect("state_summary must exist at split boundary");
-    let rp_state =
-        <RocksStore as DbStore<MinimalEthSpec>>::get_state(&store, &rp_summary.state_root)
-            .expect("get_state")
-            .expect("epoch-boundary state must exist at split_slot");
+    // Progress signal already at genesis (source blocks present down to slot 0).
+    let (lowest_tx, lowest_rx) = watch::channel(Slot(0));
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    // Keep the sender alive for the duration of the loop.
+    let _lowest_tx = lowest_tx;
 
-    let cold_states = vec![(split_slot, rp_summary.state_root, rp_state)];
+    let result = run_backward_backfill_loop::<MinimalEthSpec>(
+        Arc::clone(&regen),
+        Arc::clone(&h.store),
+        Arc::clone(&h.fc_store),
+        lowest_rx,
+        shutdown_rx,
+    )
+    .await;
+    assert!(result.is_ok(), "backward backfill must succeed: {result:?}");
 
-    let batch = ColdMigrationBatch::<MinimalEthSpec> {
-        cold_blocks: cold_blocks_vec,
-        cold_states,
-        prune_block_roots: prune_block_roots.clone(),
-        prune_state_roots: prune_state_roots.clone(),
-        prune_orphan_block_roots: Vec::new(), // no competing forks in this linear-chain test
-        split_slot,
-    };
-
-    <RocksStore as DbStore<MinimalEthSpec>>::migrate_to_cold(&store, batch)
-        .expect("migrate_to_cold must succeed");
-
-    // ── 4a. Assert: finalized blocks in cold-blocks CF ────────────────────────
-    for (slot_idx, &root) in block_roots[..(SPE as usize)].iter().enumerate() {
-        let slot = slot_idx as u64 + 1;
-        let cold_block = <RocksStore as DbStore<MinimalEthSpec>>::get_cold_block(&store, &root)
-            .unwrap_or_else(|e| panic!("get_cold_block at slot {slot}: {e}"));
-        assert!(
-            cold_block.is_some(),
-            "block at slot {slot} must be in cold-blocks CF after migration"
+    // Both restore points (64 and 128) must be persisted and root-correct.
+    for &slot_u64 in &[64u64, 128] {
+        let slot = Slot(slot_u64);
+        let cold = <RocksStore as DbStore<MinimalEthSpec>>::get_cold_state(&h.store, slot)
+            .expect("cold state read")
+            .unwrap_or_else(|| panic!("restore point at slot {slot_u64} not persisted"));
+        let got = cold.tree_hash_root();
+        let expected = block_state_root_at(&h.store, slot);
+        assert_eq!(
+            got, expected,
+            "reconstructed state root at slot {slot_u64} {got:?} != block state_root {expected:?}"
         );
+
+        // The restore-points index must also record the slot → state_root entry.
+        let (rp_slot, rp_root) =
+            <RocksStore as DbStore<MinimalEthSpec>>::nearest_restore_point(&h.store, slot)
+                .expect("nearest_restore_point read")
+                .unwrap_or_else(|| panic!("no restore-point index at slot {slot_u64}"));
+        assert_eq!(rp_slot, slot, "nearest restore point slot mismatch");
+        assert_eq!(rp_root, expected, "restore-point index root mismatch");
     }
 
-    // ── 4b. Assert: restore-points index has the boundary entry ──────────────
-    let rp_entry =
-        <RocksStore as DbStore<MinimalEthSpec>>::nearest_restore_point(&store, split_slot)
-            .expect("nearest_restore_point")
-            .expect("restore-points must have an entry at or below split_slot");
-    assert_eq!(
-        rp_entry.0, split_slot,
-        "restore-point slot must match the split boundary"
-    );
-    assert_eq!(
-        rp_entry.1, rp_summary.state_root,
-        "restore-point state_root must match the epoch-boundary state"
-    );
+    let _ = h.n_blocks;
+}
 
-    // ── 4c. Assert: hot states CF rows below split are deleted ────────────────
-    for state_root in &prune_state_roots {
-        let hot = <RocksStore as DbStore<MinimalEthSpec>>::get_state(&store, state_root)
-            .expect("get_state lookup");
-        assert!(
-            hot.is_none(),
-            "hot state {state_root:?} must be deleted after migration"
-        );
-    }
+// ── Test (b): gate-on-progress — the loop parks, does not error ───────────────
 
-    // ── 4d. Assert: cold regen via StateRegenService succeeds ─────────────────
-    //
-    // Slot 4 is below split_slot (8), not an epoch boundary, so the regen
-    // service must:
-    //   1. Find the nearest stored restore point (slot 8) via cold-states.
-    //   2. Replay backward? No — regen goes from a state BELOW the target.
-    //      Wait: slot 4 < slot 8. The nearest state AT-OR-BEFORE slot 4 from
-    //      cold is... none, since the only cold restore point is at slot 8.
-    //
-    // After migration, the genesis state (slot 0) is in the in-memory
-    // fork-choice store's block_states map. The regen service picks the
-    // nearest boundary ≤ target_slot from (a) in-memory, (b) hot-disk, (c) cold.
-    //
-    // For slot 4: in-memory has the genesis post-state at slot 0 (always
-    // present after `get_forkchoice_store`). The regen walks forward to slot 4.
-    //
-    // For slot 10 (> split_slot=8): the cold restore point at slot 8 is the
-    // nearest stored state. The regen loads it from cold-states and replays to
-    // slot 10.
-    //
-    // Test slot 10 (above split, uses cold restore point + replay):
-    let target_slot = Slot(SPE + 2); // slot 10
-    let expected_state_root = inline_states[(SPE + 1) as usize].tree_hash_root();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backward_backfill_parks_until_progress_signal() {
+    let h = seed_persisted_chain(130).await;
 
-    // Evict all in-memory block_states except genesis and the finalized boundary
-    // so that cold-states is the only anchor for post-split regen.
-    {
-        let mut fc = fc_for_assert.write();
-        let evict: Vec<_> = fc
-            .block_states
-            .iter()
-            .filter_map(|(r, s)| {
-                let slot = s.slot();
-                if slot > split_slot {
-                    // Keep the post-split in-memory states for the walk base.
-                    None
-                } else if slot == Slot(0) {
-                    // Keep genesis anchor.
-                    None
-                } else {
-                    Some(*r)
-                }
-            })
-            .collect();
-        for r in evict {
-            fc.block_states.remove(&r);
-        }
-    }
+    let regen = Arc::new(StateRegenService::<MinimalEthSpec>::new(
+        Arc::clone(&h.store),
+        Arc::clone(&h.fc_store),
+        Arc::clone(&h.runtime_cfg),
+    ));
 
-    let regen = StateRegenService::<MinimalEthSpec>::new(
-        Arc::clone(&store),
-        Arc::clone(&fc_for_assert),
-        Arc::clone(&runtime_cfg),
-    );
+    // Progress signal pinned ABOVE the highest restore point (slot 128) so the
+    // gate `lowest_block_slot <= target_slot` is FALSE for slot 128 → the loop
+    // must park (not error, not write).
+    let (lowest_tx, lowest_rx) = watch::channel(Slot(200));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let regen_state = tokio::task::spawn_blocking(move || regen.state_at_slot(target_slot))
+    let store_for_loop = Arc::clone(&h.store);
+    let mut handle = tokio::spawn(async move {
+        run_backward_backfill_loop::<MinimalEthSpec>(
+            regen,
+            store_for_loop,
+            Arc::clone(&h.fc_store),
+            lowest_rx,
+            shutdown_rx,
+        )
         .await
-        .expect("spawn_blocking must not panic")
-        .expect("state_at_slot must succeed for slot 10");
+    });
 
-    assert_eq!(
-        regen_state.tree_hash_root(),
-        expected_state_root,
-        "regenerated state root for slot {} must match inline-computed root",
-        target_slot.0
+    // The loop must NOT complete within 800 ms — it is parked on the signal.
+    let timed_out = tokio::time::timeout(Duration::from_millis(800), &mut handle)
+        .await
+        .is_err();
+    assert!(
+        timed_out,
+        "backward backfill must park while gated, not exit"
     );
+
+    // While parked it must not have written any restore point at slot 128.
+    let cold = <RocksStore as DbStore<MinimalEthSpec>>::get_cold_state(&h.store, Slot(128))
+        .expect("cold state read");
+    assert!(
+        cold.is_none(),
+        "no restore point may be written while parked"
+    );
+
+    // Release the gate: signal reaches genesis. The loop must wake, reconstruct,
+    // and exit Ok.
+    let _ = lowest_tx.send(Slot(0));
+    let result = tokio::time::timeout(Duration::from_secs(30), handle)
+        .await
+        .expect("loop must finish after gate released")
+        .expect("task must not panic");
+    assert!(
+        result.is_ok(),
+        "backward backfill must succeed once gated open: {result:?}"
+    );
+
+    // Now the restore point at slot 128 must be present.
+    let cold = <RocksStore as DbStore<MinimalEthSpec>>::get_cold_state(&h.store, Slot(128))
+        .expect("cold state read");
+    assert!(
+        cold.is_some(),
+        "restore point at slot 128 must be persisted after the gate opened"
+    );
+
+    let _ = shutdown_tx;
 }

@@ -120,6 +120,17 @@ pub trait BackfillBlockProvider<E: EthSpec>: Send + Sync + 'static {
 /// `LookupRequest::ParentImported` is sent after each successful import so the
 /// lookup loop can drain any queued descendants of the imported block.  Pass
 /// `None` in test contexts that do not instantiate a lookup loop.
+///
+/// `lowest_block_tx`: progress signal (Phase 2, Task 2.1).  Publishes the
+/// **lowest imported block slot** the node holds after each chunk.  Forward
+/// backfill walks UP from the anchor toward the wall clock and exits at
+/// `BACKFILL_TAIL_LAG_SLOTS` from wall on the tip side; it does NOT walk below
+/// the anchor, so the lowest-block slot it observes is the anchor (or genesis
+/// once reached).  The backward state-backfill loop
+/// (`run_backward_backfill_loop`) subscribes to the matching
+/// `watch::Receiver<Slot>` and gates each restore-point regeneration on this
+/// value (it only regenerates a restore point whose source blocks are present,
+/// i.e. `lowest_block_slot <= target_slot`).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_backfill_loop<E, P, EE, PP>(
     provider: P,
@@ -133,6 +144,7 @@ pub async fn run_backfill_loop<E, P, EE, PP>(
     mut shutdown_rx: watch::Receiver<bool>,
     notify: std::sync::Arc<Notify>,
     lookup_tx: Option<mpsc::Sender<LookupRequest>>,
+    lowest_block_tx: watch::Sender<Slot>,
 ) -> Result<(), BackfillError>
 where
     E: EthSpec,
@@ -193,6 +205,25 @@ where
 
     // Throttle for the gossip-follow-lag warning (see NEAR_TIP_BACKFILL_SLOTS).
     let mut last_followlag_warn: Option<tokio::time::Instant> = None;
+
+    // Phase 2 (Task 2.1): publish the lowest imported block slot. Computed from
+    // the fork-choice `blocks` map (the slot of the lowest-slot block we hold).
+    // Forward backfill only adds blocks at-or-above the anchor, so this stays at
+    // the anchor; the backward state-backfill loop reads it to gate its
+    // restore-point regeneration on block availability. Helper closure so the
+    // publish site is a single source of truth.
+    let publish_lowest_block_slot = |store: &FcStore<E>| {
+        let lowest = store.blocks.values().map(|b| b.slot()).min();
+        if let Some(slot) = lowest {
+            // Only forward the watch value; never error on a dropped receiver
+            // (the backward loop may not be spawned, e.g. without --backward-backfill).
+            let _ = lowest_block_tx.send(slot);
+        }
+    };
+
+    // Publish the initial lowest-block slot before the loop body so a backward
+    // loop that subscribes immediately sees the anchor without waiting a chunk.
+    publish_lowest_block_slot(&fc_store.read());
 
     loop {
         // Check for shutdown before doing any work.
@@ -424,6 +455,10 @@ where
                 });
             }
         }
+
+        // Phase 2 (Task 2.1): republish the lowest-block slot after each chunk so
+        // the backward state-backfill loop is woken when block coverage extends.
+        publish_lowest_block_slot(&fc_store.read());
     }
 }
 
@@ -984,6 +1019,7 @@ mod tests {
                 shutdown_rx,
                 notify,
                 None,
+                watch::channel(Slot(0)).0,
             )
             .await
         });
@@ -1068,6 +1104,7 @@ mod tests {
                 shutdown_rx,
                 Arc::new(Notify::new()),
                 None,
+                watch::channel(Slot(0)).0,
             )
             .await
         });
@@ -1195,6 +1232,7 @@ mod tests {
                 shutdown_rx,
                 Arc::new(Notify::new()),
                 None,
+                watch::channel(Slot(0)).0,
             )
             .await
         });

@@ -163,6 +163,17 @@ struct Args {
     #[arg(long, default_value_t = false)]
     no_freezer: bool,
 
+    /// Enable backward state backfill (genesis-ward historical state
+    /// reconstruction).
+    ///
+    /// When set, a long-running BACKGROUND loop reconstructs restore-point states
+    /// below the anchor by replaying stored blocks backward by
+    /// `SLOTS_PER_HISTORICAL_ROOT`-slot intervals, gated on forward block backfill
+    /// supplying the source blocks. May take days on mainnet; it never blocks node
+    /// startup and emits coarse per-interval progress logging. Default: off.
+    #[arg(long, default_value_t = false)]
+    backward_backfill: bool,
+
     /// Enable the Beacon API HTTP server.
     ///
     /// When set, an HTTP server is started on `--http-address:--http-port`
@@ -1553,6 +1564,24 @@ async fn main() -> anyhow::Result<()> {
         }
         info!("blob ingestion loop started");
 
+        // Phase 2 (Task 2.1): forward-backfill progress signal. The forward loop
+        // publishes the lowest imported block slot here; the backward state-backfill
+        // loop subscribes and gates restore-point regeneration on it. Seed with the
+        // lowest block slot the fork-choice store currently holds (the anchor) so the
+        // backward loop has a sane initial bound; the forward loop republishes it on
+        // start and after every chunk.
+        let lowest_block_seed = {
+            use pharos_types::views::BeaconBlockView as _;
+            let fc = fork_choice.read();
+            fc.blocks
+                .values()
+                .map(|b| b.slot())
+                .min()
+                .unwrap_or(anchored_slot)
+        };
+        let (lowest_block_tx, lowest_block_rx) =
+            watch::channel::<pharos_types::phase0::primitives::Slot>(lowest_block_seed);
+
         // Spawn forward backfill loop.
         {
             use pharos_node::backfill::run_backfill_loop;
@@ -1587,6 +1616,7 @@ async fn main() -> anyhow::Result<()> {
                     shutdown_rx,
                     notify_backfill_bf,
                     Some(lookup_tx_bf),
+                    lowest_block_tx,
                 )
                 .await
                 {
@@ -1595,6 +1625,38 @@ async fn main() -> anyhow::Result<()> {
             });
         }
         info!("backfill loop started");
+
+        // Spawn backward state-backfill loop (Phase 2) — opt-in via --backward-backfill.
+        // Long-running BACKGROUND process; never blocks startup. Reconstructs
+        // genesis-ward restore-point states by replaying stored blocks backward,
+        // gated on the forward-backfill progress signal above.
+        if args.backward_backfill {
+            use pharos_node::backward_backfill::run_backward_backfill_loop;
+            use pharos_node::state_regen::StateRegenService;
+
+            let regen = Arc::new(StateRegenService::<MainnetEthSpec>::new(
+                Arc::clone(&store_arc),
+                Arc::clone(&fork_choice),
+                Arc::new(runtime_cfg.clone()),
+            ));
+            let store_bbf = Arc::clone(&store_arc);
+            let fc_bbf = Arc::clone(&fork_choice);
+            let shutdown_rx = pharos_node_shutdown_rx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = run_backward_backfill_loop::<MainnetEthSpec>(
+                    regen,
+                    store_bbf,
+                    fc_bbf,
+                    lowest_block_rx,
+                    shutdown_rx,
+                )
+                .await
+                {
+                    tracing::error!(error = %e, "backward backfill loop exited with error");
+                }
+            });
+            info!("backward state-backfill loop started (background)");
+        }
 
         // Spawn lookup-sync loop.
         {
