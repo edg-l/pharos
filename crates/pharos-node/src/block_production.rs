@@ -63,7 +63,8 @@ use crate::engine_driver::{
     build_payload_attributes_v2, build_payload_attributes_v3, bytes_to_data_hex,
     compute_finalized_block_hash, compute_safe_block_hash, hash_to_hex, hex_data_to_bytes,
     prepare_execution_payload_bellatrix, prepare_execution_payload_v3,
-    prepare_execution_payload_v4, prepare_execution_payload_with_value,
+    prepare_execution_payload_v4, prepare_execution_payload_v5,
+    prepare_execution_payload_with_value,
 };
 use crate::op_pools::OperationPools;
 
@@ -266,6 +267,72 @@ pub trait ElectraBlockAssembler<E: BeaconSpec>: Sized + Default + Clone {
 
     /// Return the `blob_kzg_commitments` slice from the block body.
     fn kzg_commitments_slice(&self) -> Vec<pharos_types::deneb::KZGCommitment>;
+}
+
+/// Assembly dispatch for Fulu inner signed blocks.
+///
+/// Fulu does NOT reshape the block envelope; `E::FuluSignedBeaconBlock` is the
+/// same concrete `electra::SignedBeaconBlock` type. This trait mirrors
+/// [`ElectraBlockAssembler`] exactly (same EIP-7549 on-chain-aggregate handling,
+/// same EIP-7685 `execution_requests` decoding) but is bound to the fulu
+/// associated types so `produce_block`'s fulu arm can name `E::FuluSignedBeaconBlock`.
+pub trait FuluBlockAssembler<E: BeaconSpec>: Sized + Default + Clone {
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        slot: Slot,
+        proposer_index: ValidatorIndex,
+        parent_root: Root,
+        randao_reveal: BLSSignature,
+        eth1_data: Eth1Data,
+        graffiti: Bytes32,
+        proposer_slashings: Vec<ProposerSlashing>,
+        attester_slashings: Vec<AttesterSlashing<2048>>,
+        attestations: Vec<Attestation<2048>>,
+        voluntary_exits: Vec<SignedVoluntaryExit>,
+        sync_committee_bits: Vec<usize>,
+        sync_committee_signature: BLSSignature,
+        execution_payload: E::DenebExecutionPayload,
+        bls_to_execution_changes: Vec<
+            pharos_types::capella::operations::SignedBLSToExecutionChange,
+        >,
+        blob_kzg_commitments: Vec<pharos_types::deneb::KZGCommitment>,
+        execution_requests: Vec<Vec<u8>>,
+    ) -> Result<Self, ProduceError>;
+
+    fn set_state_root(&mut self, root: Root);
+    fn into_signed_block(self) -> E::SignedBeaconBlock;
+    fn message_clone(&self) -> E::FuluBeaconBlock;
+
+    /// Return the 13 body field `tree_hash_root()` values (field order 0..12,
+    /// including `execution_requests` at index 12) for use by
+    /// `build_data_column_sidecars`.
+    fn body_field_hashes(&self) -> [pharos_utils::Hash256; 13];
+
+    /// Construct a `SignedBeaconBlockHeader` for this block (pre-seal). After
+    /// `set_state_root`, `body_root` is the body's `tree_hash_root()`.
+    fn signed_block_header(&self) -> pharos_types::phase0::operations::SignedBeaconBlockHeader;
+
+    /// Return the `blob_kzg_commitments` slice from the block body.
+    fn kzg_commitments_slice(&self) -> Vec<pharos_types::deneb::KZGCommitment>;
+
+    /// Build the `NUMBER_OF_COLUMNS` (128) `DataColumnSidecar`s for this sealed
+    /// fulu block from the `engine_getPayloadV5` `BlobsBundleV2`
+    /// (`get_data_column_sidecars_from_block`, `validator.md`).
+    ///
+    /// For each blob the EL returned, the per-blob cells are computed via
+    /// `KzgVerifier::compute_cells` and paired with the bundle's cell proofs
+    /// (`CELLS_PER_EXT_BLOB` proofs per blob); the 128 sidecars then slice column
+    /// `c` out of every blob. The inclusion proof is the depth-4
+    /// `kzg_commitments_inclusion_proof` over this block's body. MUST be called
+    /// AFTER `set_state_root` so the sidecar headers carry the correct
+    /// `state_root`/`body_root`.
+    ///
+    /// Returns an empty vec when the block carries no blob commitments.
+    fn build_data_column_sidecars(
+        &self,
+        kzg: &pharos_kzg::KzgVerifier,
+        blobs_bundle: &pharos_engine::types::BlobsBundleV2,
+    ) -> Vec<E::DataColumnSidecar>;
 }
 
 /// Assembly dispatch for Bellatrix inner signed blocks.
@@ -1023,6 +1090,313 @@ where
     }
 }
 
+// ── FuluBlockAssembler blanket impl ───────────────────────────────────────────
+//
+// Fulu re-uses the electra `SignedBeaconBlock` concrete type (the block envelope
+// is unchanged). This impl is identical in body to the `ElectraBlockAssembler`
+// blanket impl above, but is bound to `E::FuluSignedBeaconBlock`/`E::FuluBeaconBlock`
+// so the fulu arm of `produce_block` can resolve it.
+impl<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS_ELECTRA: u64,
+    const MAX_ATTESTATIONS_ELECTRA: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
+    const MAX_AGGREGATION_BITS: u64,
+    const MAX_COMMITTEES_PER_SLOT: u64,
+    const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64,
+    E,
+> FuluBlockAssembler<E>
+    for pharos_types::electra::SignedBeaconBlock<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS_ELECTRA,
+        MAX_ATTESTATIONS_ELECTRA,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+        MAX_AGGREGATION_BITS,
+        MAX_COMMITTEES_PER_SLOT,
+        MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+        MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+    >
+where
+    E: BeaconSpec<
+            FuluSignedBeaconBlock = pharos_types::electra::SignedBeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS_ELECTRA,
+                MAX_ATTESTATIONS_ELECTRA,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+                MAX_AGGREGATION_BITS,
+                MAX_COMMITTEES_PER_SLOT,
+                MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+                MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+                MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+            >,
+            FuluBeaconBlock = pharos_types::electra::BeaconBlock<
+                MAX_PROPOSER_SLASHINGS,
+                MAX_ATTESTER_SLASHINGS_ELECTRA,
+                MAX_ATTESTATIONS_ELECTRA,
+                MAX_DEPOSITS,
+                MAX_VOLUNTARY_EXITS,
+                MAX_VALIDATORS_PER_COMMITTEE,
+                DEPOSIT_PROOF_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+                MAX_BLS_TO_EXECUTION_CHANGES,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+                MAX_AGGREGATION_BITS,
+                MAX_COMMITTEES_PER_SLOT,
+                MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+                MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+                MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+            >,
+            DenebExecutionPayload = pharos_types::deneb::ExecutionPayload<
+                MAX_BYTES_PER_TRANSACTION,
+                MAX_TRANSACTIONS_PER_PAYLOAD,
+                BYTES_PER_LOGS_BLOOM,
+                MAX_EXTRA_DATA_BYTES,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+            >,
+            // Fulu DAS column sidecar: `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH = 4`
+            // for both presets (`presets/*/fulu.yaml`).
+            DataColumnSidecar = pharos_types::fulu::data_column_sidecar::DataColumnSidecar<
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+                4,
+            >,
+        >,
+{
+    fn assemble(
+        slot: Slot,
+        proposer_index: ValidatorIndex,
+        parent_root: Root,
+        randao_reveal: BLSSignature,
+        eth1_data: Eth1Data,
+        graffiti: Bytes32,
+        proposer_slashings: Vec<ProposerSlashing>,
+        attester_slashings: Vec<AttesterSlashing<2048>>,
+        attestations: Vec<Attestation<2048>>,
+        voluntary_exits: Vec<SignedVoluntaryExit>,
+        sync_committee_bits: Vec<usize>,
+        sync_committee_signature: BLSSignature,
+        execution_payload: E::DenebExecutionPayload,
+        bls_to_execution_changes: Vec<
+            pharos_types::capella::operations::SignedBLSToExecutionChange,
+        >,
+        blob_kzg_commitments: Vec<pharos_types::deneb::KZGCommitment>,
+        execution_requests: Vec<Vec<u8>>,
+    ) -> Result<Self, ProduceError> {
+        // EIP-7549: electra/fulu attester_slashings use the widened `AttesterSlashing`.
+        let attester_slashings =
+            build_electra_attester_slashings::<MAX_AGGREGATION_BITS>(attester_slashings);
+        // EIP-7549: build single-committee on-chain aggregates (validator.md:124-147).
+        let attestations = build_electra_on_chain_aggregates::<
+            MAX_AGGREGATION_BITS,
+            MAX_COMMITTEES_PER_SLOT,
+        >(attestations);
+        // EIP-7685 execution requests (V5 `executionRequests`, same encoding as V4).
+        let execution_requests = pharos_stf::parse_execution_requests_list::<
+            MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+            MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+            MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+        >(&execution_requests)
+        .ok_or_else(|| ProduceError::Engine("malformed execution requests from EL".into()))?;
+
+        let mut b = Self::default();
+        b.message.slot = slot;
+        b.message.proposer_index = proposer_index;
+        b.message.parent_root = parent_root;
+        b.message.body.randao_reveal = randao_reveal;
+        b.message.body.eth1_data = eth1_data;
+        b.message.body.graffiti = graffiti;
+        b.message.body.proposer_slashings =
+            SszList::from_items(proposer_slashings).unwrap_or_default();
+        b.message.body.attester_slashings =
+            SszList::from_items(attester_slashings).unwrap_or_default();
+        b.message.body.attestations = SszList::from_items(attestations).unwrap_or_default();
+        b.message.body.deposits = SszList::default();
+        b.message.body.voluntary_exits = SszList::from_items(voluntary_exits).unwrap_or_default();
+        b.message.body.sync_aggregate = build_sync_aggregate::<SYNC_COMMITTEE_SIZE>(
+            sync_committee_bits,
+            sync_committee_signature,
+        );
+        b.message.body.execution_payload = execution_payload;
+        b.message.body.bls_to_execution_changes =
+            SszList::from_items(bls_to_execution_changes).unwrap_or_default();
+        b.message.body.blob_kzg_commitments =
+            SszList::from_items(blob_kzg_commitments).unwrap_or_default();
+        b.message.body.execution_requests = execution_requests;
+        Ok(b)
+    }
+
+    fn set_state_root(&mut self, root: Root) {
+        self.message.state_root = root;
+    }
+
+    fn into_signed_block(self) -> E::SignedBeaconBlock {
+        E::fulu_into_signed_block(self)
+    }
+
+    fn message_clone(&self) -> E::FuluBeaconBlock {
+        self.message.clone()
+    }
+
+    fn body_field_hashes(&self) -> [pharos_utils::Hash256; 13] {
+        let b = &self.message.body;
+        [
+            b.randao_reveal.tree_hash_root(),
+            b.eth1_data.tree_hash_root(),
+            b.graffiti.tree_hash_root(),
+            b.proposer_slashings.tree_hash_root(),
+            b.attester_slashings.tree_hash_root(),
+            b.attestations.tree_hash_root(),
+            b.deposits.tree_hash_root(),
+            b.voluntary_exits.tree_hash_root(),
+            b.sync_aggregate.tree_hash_root(),
+            b.execution_payload.tree_hash_root(),
+            b.bls_to_execution_changes.tree_hash_root(),
+            b.blob_kzg_commitments.tree_hash_root(),
+            b.execution_requests.tree_hash_root(),
+        ]
+    }
+
+    fn signed_block_header(&self) -> pharos_types::phase0::operations::SignedBeaconBlockHeader {
+        use pharos_types::phase0::operations::{BeaconBlockHeader, SignedBeaconBlockHeader};
+        SignedBeaconBlockHeader {
+            message: BeaconBlockHeader {
+                slot: self.message.slot,
+                proposer_index: self.message.proposer_index,
+                parent_root: self.message.parent_root,
+                state_root: self.message.state_root,
+                body_root: self.message.body.tree_hash_root(),
+            },
+            signature: self.signature,
+        }
+    }
+
+    fn kzg_commitments_slice(&self) -> Vec<pharos_types::deneb::KZGCommitment> {
+        self.message.body.blob_kzg_commitments.as_slice().to_vec()
+    }
+
+    fn build_data_column_sidecars(
+        &self,
+        kzg: &pharos_kzg::KzgVerifier,
+        blobs_bundle: &pharos_engine::types::BlobsBundleV2,
+    ) -> Vec<E::DataColumnSidecar> {
+        use pharos_ssz::SszVector;
+        use pharos_stf::fulu::data_columns::get_data_column_sidecars_from_block;
+        use pharos_types::deneb::blob::{BYTES_PER_BLOB, KZGProof};
+        use pharos_types::fulu::data_column_sidecar::Cell;
+
+        let commitments = <Self as FuluBlockAssembler<E>>::kzg_commitments_slice(self);
+        if commitments.is_empty() {
+            return vec![];
+        }
+
+        // `cells_per_ext_blob = CELLS_PER_EXT_BLOB` (128). The V5 BlobsBundleV2
+        // returns `CELLS_PER_EXT_BLOB` cell proofs per blob; pharos computes the
+        // matching cells from the blob via c-kzg (`compute_cells`). pharos does
+        // NOT compute the proofs — they come from the EL.
+        let cells_per_ext_blob = E::CELLS_PER_EXT_BLOB as usize;
+        let n_blobs = blobs_bundle.blobs.len();
+
+        // Build the per-blob (cells, proofs) tuples.
+        let mut cells_and_kzg_proofs: Vec<(Vec<Cell>, Vec<KZGProof>)> = Vec::with_capacity(n_blobs);
+        for (i, blob_hex) in blobs_bundle.blobs.iter().enumerate() {
+            // Decode the blob bytes (131072 bytes).
+            let blob_bytes = match hex_data_to_bytes(blob_hex) {
+                Some(b) if b.len() == BYTES_PER_BLOB as usize => b,
+                // A malformed blob from the EL aborts this blob's contribution;
+                // the resulting sidecars would fail the import-side KZG check, so
+                // dropping it here is the safe (no-sidecar) failure mode.
+                _ => return vec![],
+            };
+            let blob_arr: [u8; 131072] = match blob_bytes.try_into() {
+                Ok(a) => a,
+                Err(_) => return vec![],
+            };
+            // Compute the 128 cells for this blob.
+            let cells = match kzg.compute_cells(&blob_arr) {
+                Ok(c) => c,
+                Err(_) => return vec![],
+            };
+            let cell_vec: Vec<Cell> = cells
+                .iter()
+                .map(|c| SszVector::<u8, 2048>::from_items(c.iter().copied()).unwrap_or_default())
+                .collect();
+
+            // Slice this blob's `CELLS_PER_EXT_BLOB` proofs out of the flat bundle
+            // proofs array (`proofs[i*128 .. (i+1)*128]`).
+            let start = i * cells_per_ext_blob;
+            let end = start + cells_per_ext_blob;
+            if end > blobs_bundle.proofs.len() {
+                return vec![];
+            }
+            let proof_vec: Vec<KZGProof> = blobs_bundle.proofs[start..end]
+                .iter()
+                .filter_map(|hex| {
+                    hex_data_to_bytes(hex)
+                        .and_then(|b| <[u8; 48]>::try_from(b).ok())
+                        .map(KZGProof::from_array)
+                })
+                .collect();
+            if proof_vec.len() != cells_per_ext_blob {
+                return vec![];
+            }
+            cells_and_kzg_proofs.push((cell_vec, proof_vec));
+        }
+
+        // Build the sealed-block header + the 13 body-field hashes (depth-4
+        // inclusion proof is built inside `get_data_column_sidecars_from_block`).
+        let signed_block_header = <Self as FuluBlockAssembler<E>>::signed_block_header(self);
+        let body_field_hashes = <Self as FuluBlockAssembler<E>>::body_field_hashes(self);
+
+        get_data_column_sidecars_from_block::<E, MAX_BLOB_COMMITMENTS_PER_BLOCK, 4>(
+            &signed_block_header,
+            &commitments,
+            &body_field_hashes,
+            &cells_and_kzg_proofs,
+        )
+        .unwrap_or_default()
+    }
+}
+
 impl<
     const MAX_PROPOSER_SLASHINGS: u64,
     const MAX_ATTESTER_SLASHINGS: u64,
@@ -1498,6 +1872,7 @@ pub fn produce_block<E: BeaconSpec>(
     fc_store: &Arc<RwLock<FcStore<E>>>,
     pools: &OperationPools<E>,
     engine: &EngineHandle,
+    kzg: &pharos_kzg::KzgVerifier,
     slot: Slot,
     randao_reveal: BLSSignature,
     graffiti: [u8; 32],
@@ -1509,6 +1884,7 @@ pub fn produce_block<E: BeaconSpec>(
         E::BeaconState,
         pharos_utils::Uint256,
         Vec<pharos_types::deneb::BlobSidecar>,
+        Vec<E::DataColumnSidecar>,
     ),
     ProduceError,
 >
@@ -1553,6 +1929,7 @@ where
     E::AltairSignedBeaconBlock: AltairBlockAssembler<E>,
     E::DenebSignedBeaconBlock: DenebBlockAssembler<E>,
     E::ElectraSignedBeaconBlock: ElectraBlockAssembler<E>,
+    E::FuluSignedBeaconBlock: FuluBlockAssembler<E>,
     E::CapellaExecutionPayload:
         TryFrom<pharos_engine::types::ExecutionPayloadV2, Error = pharos_engine::EngineError>,
     E::ExecutionPayload:
@@ -1676,6 +2053,7 @@ where
                 post_state,
                 exec_value,
                 vec![],
+                vec![],
             ))
         }
 
@@ -1730,6 +2108,7 @@ where
                 post_state,
                 pharos_utils::Uint256::ZERO,
                 vec![],
+                vec![],
             ))
         }
 
@@ -1776,6 +2155,7 @@ where
                 block_inner.into_signed_block(),
                 post_state,
                 pharos_utils::Uint256::ZERO,
+                vec![],
                 vec![],
             ))
         }
@@ -1901,6 +2281,7 @@ where
                 post_state,
                 exec_value,
                 blob_sidecars,
+                vec![],
             ))
         }
 
@@ -2036,12 +2417,148 @@ where
                 post_state,
                 exec_value,
                 blob_sidecars,
+                vec![],
             ))
         }
+
+        // ── Fulu: V5 execution payload + EIP-7594 column sidecars ────────────
         ForkVariant::Fulu => {
-            // Fulu block production (Engine V5 / getPayloadV5) lands in M13-Fulu
-            // Phase 4; the VC does not produce fulu blocks during Phase 1 plumbing.
-            Err(ProduceError::WrongFork)
+            // ── RI-6: read the proposer from `proposer_lookahead` ─────────────
+            // EIP-7917 makes the proposer schedule deterministic; the fulu state
+            // carries the precomputed `proposer_lookahead`. The shared
+            // `proposer_index` above used the phase0 8-bit accessor, which yields
+            // a DIFFERENT proposer for fulu states. Read the lookahead via the
+            // single source of truth (`BeaconStateView::proposer_lookahead_at`,
+            // backed by `proposer_lookahead[slot % SLOTS_PER_EPOCH]`); fall back
+            // to the assembled value only if the field is somehow absent (it is
+            // present on every fulu state, so the fallback is unreachable).
+            let proposer_index = state
+                .proposer_lookahead_at(E::SLOTS_PER_EPOCH)
+                .unwrap_or(proposer_index);
+
+            // ── Step (d): Drain sync aggregate ────────────────────────────────
+            let (sync_bits, sync_sig) = pools.drain_sync_aggregate_raw(
+                sync_agg_slot,
+                parent_root,
+                &committee_pubkeys_cur,
+                validator_pubkey_fn,
+            );
+
+            // ── Step (e): Prepare execution payload (V5 / getPayloadV5) ───────
+            // `parent_beacon_block_root` = hash_tree_root(state.latest_block_header)
+            // (unchanged from deneb/electra).
+            let parent_beacon_block_root = state.latest_block_header().tree_hash_root();
+            let fulu_inner = E::into_fulu_state(state.clone()).ok_or(ProduceError::WrongFork)?;
+            // Fulu reuses the electra withdrawal sweep (the withdrawal logic is
+            // unchanged; only the blob limit and proposer lookahead differ).
+            let electra_for_withdrawals =
+                E::into_electra_state(state.clone()).ok_or(ProduceError::WrongFork)?;
+            let withdrawals_v1: Vec<pharos_engine::types::WithdrawalV1> = electra_for_withdrawals
+                .get_expected_withdrawals_electra_dispatch()
+                .into_iter()
+                .map(|w| pharos_engine::types::WithdrawalV1 {
+                    index: format!("0x{:x}", w.index),
+                    validator_index: format!("0x{:x}", w.validator_index.0),
+                    address: bytes_to_data_hex(w.address.as_slice()),
+                    amount: format!("0x{:x}", w.amount.0),
+                })
+                .collect();
+            // Fulu reuses PayloadAttributesV3 (no V4/V5 attrs); FCU is V3.
+            let attrs = build_payload_attributes_v3::<E>(
+                &state,
+                withdrawals_v1,
+                slot,
+                fee_recipient,
+                parent_beacon_block_root,
+                runtime_cfg,
+            );
+            let fcu_state = build_fcu_state::<E>(fc_store, head_root);
+            // V5 returns the V2 blobs bundle (cell proofs) + executionRequests.
+            let (wire_payload, blobs_bundle_v2, exec_value, execution_requests) =
+                prepare_execution_payload_v5(engine, fcu_state, attrs)
+                    .map_err(ProduceError::from)?;
+
+            // Decode `blob_kzg_commitments` from the V2 bundle (fail-fast on a bad
+            // commitment, identical to the deneb/electra arms).
+            let blob_kzg_commitments: Vec<pharos_types::deneb::KZGCommitment> = blobs_bundle_v2
+                .commitments
+                .iter()
+                .map(|hex| {
+                    let bytes = hex_data_to_bytes(hex).ok_or_else(|| {
+                        ProduceError::Engine(format!("bad commitment hex: {hex}"))
+                    })?;
+                    let arr: [u8; 48] = bytes
+                        .try_into()
+                        .map_err(|_| ProduceError::Engine("commitment not 48 bytes".into()))?;
+                    Ok(pharos_types::deneb::KZGCommitment::from_array(arr))
+                })
+                .collect::<Result<Vec<_>, ProduceError>>()?;
+
+            // Decode the EIP-7685 execution requests (hex DATA → Vec<Vec<u8>>).
+            let execution_requests_bytes: Vec<Vec<u8>> = execution_requests
+                .iter()
+                .map(|hex| {
+                    hex_data_to_bytes(hex)
+                        .ok_or_else(|| ProduceError::Engine(format!("bad request hex: {hex}")))
+                })
+                .collect::<Result<Vec<_>, ProduceError>>()?;
+
+            // Fulu reuses the deneb ExecutionPayload wire type (V3).
+            let execution_payload: E::DenebExecutionPayload = wire_payload
+                .try_into()
+                .map_err(|e: pharos_engine::EngineError| ProduceError::Engine(e.to_string()))?;
+
+            // ── Step (f): Drain operations ────────────────────────────────────
+            let block_ops = pools.drain_for_block(slot.0);
+
+            // ── Step (g): Assemble block (fulu = electra envelope) ────────────
+            let mut block_inner = E::FuluSignedBeaconBlock::assemble(
+                slot,
+                proposer_index,
+                parent_root,
+                randao_reveal,
+                eth1_data,
+                graffiti_bytes,
+                block_ops.proposer_slashings,
+                block_ops.attester_slashings,
+                block_ops.attestations,
+                block_ops.voluntary_exits,
+                sync_bits,
+                sync_sig,
+                execution_payload,
+                block_ops.bls_to_execution_changes,
+                blob_kzg_commitments,
+                execution_requests_bytes,
+            )?;
+
+            // ── Step (h): Run STF ─────────────────────────────────────────────
+            let block_enum = E::fulu_into_block(block_inner.message_clone());
+            let ee = ExecutionEngineHandle::new(engine.clone());
+            let post_state = process_block_for_production::<E, ExecutionEngineHandle>(
+                state,
+                &block_enum,
+                &ee,
+                runtime_cfg,
+            )?;
+
+            // ── Step (i): Seal with state_root ────────────────────────────────
+            block_inner.set_state_root(post_state.tree_hash_root());
+
+            // ── Step (j): Build data-column sidecars ──────────────────────────
+            // EIP-7594: fulu publishes 128 `DataColumnSidecar`s (NOT blob
+            // sidecars). Must happen AFTER set_state_root so the sidecar headers
+            // carry the correct state_root/body_root. Cells are computed from the
+            // V2 bundle blobs; the cell proofs come from the EL.
+            let column_sidecars = block_inner.build_data_column_sidecars(kzg, &blobs_bundle_v2);
+
+            let _ = fulu_inner; // state was consumed by process_block_for_production
+            Ok((
+                block_inner.into_signed_block(),
+                post_state,
+                exec_value,
+                vec![],
+                column_sidecars,
+            ))
         }
     }
 }

@@ -19,9 +19,9 @@ use tracing::{error, info, warn};
 use pharos_engine::{
     EngineError, EngineHandle, ForkchoiceUpdatedVersion, NewPayloadVersion, NewPayloadWire,
     types::{
-        BlobsBundleV1, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
-        ForkchoiceStateV1, GetPayloadV3Response, GetPayloadV4Response, PayloadAttributesV1,
-        PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, WithdrawalV1,
+        BlobsBundleV1, BlobsBundleV2, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
+        ForkchoiceStateV1, GetPayloadV3Response, GetPayloadV4Response, GetPayloadV5Response,
+        PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, WithdrawalV1,
     },
 };
 use pharos_fork_choice::{
@@ -846,6 +846,51 @@ pub fn prepare_execution_payload_v4(
         execution_requests,
         ..
     } = engine.get_payload_v4_blocking(payload_id)?;
+    let value: pharos_utils::Uint256 = block_value.parse().unwrap_or(pharos_utils::Uint256::ZERO);
+    Ok((execution_payload, blobs_bundle, value, execution_requests))
+}
+
+/// Prepare a Fulu execution payload: FCU V3 + `engine_getPayloadV5`.
+///
+/// Steps:
+/// 1. Call `engine_forkchoiceUpdatedV3(fcu_state, Some(attrs))` (Fulu reuses
+///    FCU V3 per `execution-apis/src/engine/osaka.md`: there is no FCU V4/V5 —
+///    the getPayload bump alone carries the BlobsBundleV2 change).
+/// 2. Extract `payloadId` — if absent returns `PreparePayloadError::PayloadNotReady`.
+/// 3. Call `engine_getPayloadV5(payload_id)` and return `(ExecutionPayloadV3,
+///    BlobsBundleV2, block_value, executionRequests)`.
+///
+/// `BlobsBundleV2` carries CELL proofs (`CELLS_PER_EXT_BLOB` per blob); pharos
+/// does NOT compute the cell proofs — the EL returns them. The caller computes
+/// the per-blob cells (via `KzgVerifier::compute_cells`) and pairs them with the
+/// bundle's proofs to build the data-column sidecars (`get_data_column_sidecars`).
+///
+/// Per `execution-apis/src/engine/osaka.md` (`engine_getPayloadV5`).
+pub fn prepare_execution_payload_v5(
+    engine: &EngineHandle,
+    fcu_state: ForkchoiceStateV1,
+    attrs: PayloadAttributesV3,
+) -> Result<
+    (
+        ExecutionPayloadV3,
+        BlobsBundleV2,
+        pharos_utils::Uint256,
+        Vec<String>,
+    ),
+    PreparePayloadError,
+> {
+    // Fulu uses FCU V3 — no separate FCU V4/V5 method exists for Osaka.
+    let fcu_resp = engine.forkchoice_updated_v3_blocking(fcu_state, Some(attrs))?;
+    let payload_id: PayloadIdV1 = fcu_resp
+        .payload_id
+        .ok_or(PreparePayloadError::PayloadNotReady)?;
+    let GetPayloadV5Response {
+        execution_payload,
+        block_value,
+        blobs_bundle,
+        execution_requests,
+        ..
+    } = engine.get_payload_v5_blocking(payload_id)?;
     let value: pharos_utils::Uint256 = block_value.parse().unwrap_or(pharos_utils::Uint256::ZERO);
     Ok((execution_payload, blobs_bundle, value, execution_requests))
 }

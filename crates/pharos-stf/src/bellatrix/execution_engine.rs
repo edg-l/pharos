@@ -218,6 +218,52 @@ pub trait ExecutionEngine: Send + Sync + 'static {
         self.notify_new_payload_deneb(payload, versioned_hashes, parent_beacon_block_root)
     }
 
+    /// `notify_new_payload` for Fulu payloads.
+    ///
+    /// Fulu does NOT reshape the execution payload (it remains the deneb-shape
+    /// `ExecutionPayload` with blob-gas fields + `execution_requests`); the only
+    /// CL-side fulu delta is the EIP-7892 epoch-driven blob-commitment limit,
+    /// enforced in the STF before this notify. On the IMPORT path the engine is
+    /// notified via V4 (`engine_newPayloadV4`); the V5 surface
+    /// (`engine_getPayloadV5`) is production-only. This default therefore
+    /// delegates to `notify_new_payload_electra` (the V4 path); the production
+    /// `ExecutionEngineHandle` in `pharos-node` keeps that same V4 import notify.
+    #[allow(clippy::too_many_arguments)]
+    fn notify_new_payload_fulu<
+        const MAX_BYTES_PER_TRANSACTION: u64,
+        const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+        const BYTES_PER_LOGS_BLOOM: u64,
+        const MAX_EXTRA_DATA_BYTES: u64,
+        const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+        const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
+        const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,
+        const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64,
+    >(
+        &self,
+        payload: &DenebExecutionPayload<
+            MAX_BYTES_PER_TRANSACTION,
+            MAX_TRANSACTIONS_PER_PAYLOAD,
+            BYTES_PER_LOGS_BLOOM,
+            MAX_EXTRA_DATA_BYTES,
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+        >,
+        versioned_hashes: &[[u8; 32]],
+        parent_beacon_block_root: Root,
+        execution_requests: &pharos_types::electra::requests::ExecutionRequests<
+            MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+            MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+            MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+        >,
+    ) -> PayloadVerificationStatus {
+        // Default: fulu import uses the electra/V4 notify (same payload shape).
+        self.notify_new_payload_electra(
+            payload,
+            versioned_hashes,
+            parent_beacon_block_root,
+            execution_requests,
+        )
+    }
+
     /// Retrieve blob data from the local EL blob pool for the given versioned hashes.
     ///
     /// Returns `None` for each missing blob (preserves request order).  Used as a

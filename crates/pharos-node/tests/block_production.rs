@@ -492,10 +492,12 @@ async fn produce_block_state_root_consistent_capella() {
     let runtime_cfg_clone = runtime_cfg.clone();
 
     let produce_result = tokio::task::spawn_blocking(move || {
+        let kzg = pharos_kzg::KzgVerifier::mainnet();
         produce_block::<MinimalBeaconSpec>(
             &fc_store_clone,
             &pools_clone,
             &engine_clone,
+            &kzg,
             Slot(PRODUCE_SLOT),
             BLSSignature::default(), // randao_reveal (not verified; verify_signatures=false)
             [0u8; 32],               // graffiti
@@ -507,7 +509,7 @@ async fn produce_block_state_root_consistent_capella() {
     .expect("spawn_blocking join")
     .expect("produce_block succeeded");
 
-    let (signed_block, post_state, _exec_value, _blob_sidecars) = produce_result;
+    let (signed_block, post_state, _exec_value, _blob_sidecars, _column_sidecars) = produce_result;
 
     // ── Assert (b): state_root consistency ────────────────────────────────────
     // The fork-enum SignedBeaconBlock does not implement the generic message()
@@ -784,10 +786,12 @@ async fn produce_block_concurrent_no_deadlock() {
         let e = engine_handle.clone();
         let r = runtime_cfg.clone();
         tokio::task::spawn_blocking(move || {
+            let kzg = pharos_kzg::KzgVerifier::mainnet();
             produce_block::<MinimalBeaconSpec>(
                 &fc,
                 &p,
                 &e,
+                &kzg,
                 Slot(1),
                 BLSSignature::default(),
                 [0u8; 32],
@@ -802,10 +806,12 @@ async fn produce_block_concurrent_no_deadlock() {
         let e = engine_handle.clone();
         let r = runtime_cfg.clone();
         tokio::task::spawn_blocking(move || {
+            let kzg = pharos_kzg::KzgVerifier::mainnet();
             produce_block::<MinimalBeaconSpec>(
                 &fc,
                 &p,
                 &e,
+                &kzg,
                 Slot(1),
                 BLSSignature::default(),
                 [0u8; 32],
@@ -954,10 +960,12 @@ async fn produce_block_signed_reimports_validated_capella() {
         let e = engine_handle.clone();
         let r = runtime_cfg.clone();
         move || {
+            let kzg = pharos_kzg::KzgVerifier::mainnet();
             produce_block::<MinimalBeaconSpec>(
                 &fc,
                 &p,
                 &e,
+                &kzg,
                 Slot(PRODUCE_SLOT),
                 randao_reveal,
                 [0u8; 32],
@@ -969,7 +977,7 @@ async fn produce_block_signed_reimports_validated_capella() {
     .await
     .expect("spawn_blocking join")
     .expect("produce_block succeeded");
-    let (signed_block, _post_state, _exec_value, _blob_sidecars) = produce_result;
+    let (signed_block, _post_state, _exec_value, _blob_sidecars, _column_sidecars) = produce_result;
 
     let inner = match &signed_block {
         MinForkSignedBlock::Capella(i) => i.clone(),
@@ -1294,10 +1302,12 @@ async fn produce_block_signed_reimports_validated_electra() {
         let e = engine_handle.clone();
         let r = runtime_cfg.clone();
         move || {
+            let kzg = pharos_kzg::KzgVerifier::mainnet();
             produce_block::<MinimalBeaconSpec>(
                 &fc,
                 &p,
                 &e,
+                &kzg,
                 Slot(PRODUCE_SLOT),
                 randao_reveal,
                 [0u8; 32],
@@ -1309,7 +1319,7 @@ async fn produce_block_signed_reimports_validated_electra() {
     .await
     .expect("spawn_blocking join")
     .expect("produce_block succeeded");
-    let (signed_block, _post_state, _exec_value, _blob_sidecars) = produce_result;
+    let (signed_block, _post_state, _exec_value, _blob_sidecars, _column_sidecars) = produce_result;
 
     let inner = match &signed_block {
         MinForkSignedBlock::Electra(i) => i.clone(),

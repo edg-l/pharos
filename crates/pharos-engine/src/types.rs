@@ -566,6 +566,31 @@ pub struct BlobsBundleV1 {
     pub blobs: Vec<String>,
 }
 
+// ── BlobsBundleV2 ─────────────────────────────────────────────────────────────
+
+/// `BlobsBundleV2` per `execution-apis/src/engine/osaka.md` (Fulu / Osaka).
+///
+/// Returned by `engine_getPayloadV5` alongside the execution payload. The shape
+/// is the same field names as `BlobsBundleV1` (`commitments`, `proofs`,
+/// `blobs`), but the `proofs` semantics changed (EIP-7594): they are now CELL
+/// proofs, and `proofs.len() == CELLS_PER_EXT_BLOB * blobs.len()` (128 cell
+/// proofs per blob) rather than one proof per blob. `blobs` and `commitments`
+/// arrays MUST be the same length.
+///
+/// This is the JSON-RPC wire type; conversion to the consensus-specs
+/// `BlobsBundle` SSZ view happens at the engine-client boundary in
+/// `pharos-node` (pharos does NOT compute the cell proofs — the EL returns them).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobsBundleV2 {
+    /// KZG commitments, 48 bytes each (hex DATA).
+    pub commitments: Vec<String>,
+    /// KZG cell proofs, 48 bytes each (hex DATA). `CELLS_PER_EXT_BLOB` per blob.
+    pub proofs: Vec<String>,
+    /// Blob data, 131072 bytes each (hex DATA).
+    pub blobs: Vec<String>,
+}
+
 // ── BlobAndProofV1 ────────────────────────────────────────────────────────────
 
 /// `BlobAndProofV1` per `execution-apis/src/engine/cancun.md`.
@@ -626,6 +651,33 @@ pub struct GetPayloadV4Response {
     pub execution_payload: ExecutionPayloadV3,
     pub block_value: String,
     pub blobs_bundle: BlobsBundleV1,
+    pub should_override_builder: bool,
+    /// `executionRequests: Array of DATA` — EIP-7685 request list.
+    pub execution_requests: Vec<String>,
+}
+
+// ── GetPayloadV5Response ──────────────────────────────────────────────────────
+
+/// Response to `engine_getPayloadV5` per `execution-apis/src/engine/osaka.md`.
+///
+/// Identical envelope to `GetPayloadV4Response` (V3 payload + block value +
+/// `shouldOverrideBuilder` + `executionRequests`) EXCEPT the blobs bundle is the
+/// fulu `BlobsBundleV2` (cell proofs, `proofs.len() == CELLS_PER_EXT_BLOB *
+/// blobs.len()`) instead of `BlobsBundleV1` (one proof per blob).
+///
+/// Per `execution-apis/src/engine/osaka.md` `engine_getPayloadV5` (lines 56-79):
+/// > result: object
+/// >   - executionPayload: ExecutionPayloadV3
+/// >   - blockValue: QUANTITY
+/// >   - blobsBundle: BlobsBundleV2
+/// >   - shouldOverrideBuilder: BOOLEAN
+/// >   - executionRequests: Array of DATA
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPayloadV5Response {
+    pub execution_payload: ExecutionPayloadV3,
+    pub block_value: String,
+    pub blobs_bundle: BlobsBundleV2,
     pub should_override_builder: bool,
     /// `executionRequests: Array of DATA` — EIP-7685 request list.
     pub execution_requests: Vec<String>,
@@ -1198,5 +1250,77 @@ mod tests {
         );
         let decoded: PayloadAttributesV2 = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, attrs);
+    }
+
+    // ── BlobsBundleV2 + GetPayloadV5Response serde round-trip ──────────────────
+
+    /// `BlobsBundleV2` round-trips against an osaka.md-shaped JSON. Per
+    /// `execution-apis/src/engine/osaka.md` `BlobsBundleV2`: `commitments`,
+    /// `proofs`, `blobs`, with `proofs.len() == CELLS_PER_EXT_BLOB * blobs.len()`
+    /// (128 cell proofs per blob). This sample uses 1 blob → 1 commitment → 2
+    /// abbreviated proofs to exercise the length-asymmetry shape (the spec value
+    /// 128 is not material to the serde mapping; the field names are).
+    #[test]
+    fn blobs_bundle_v2_serde_round_trip() {
+        let json = serde_json::json!({
+            "commitments": ["0xc0"],
+            "proofs": ["0xp0", "0xp1"],
+            "blobs": ["0xb0"],
+        });
+        let bundle: BlobsBundleV2 = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(bundle.commitments.len(), 1);
+        assert_eq!(bundle.proofs.len(), 2);
+        assert_eq!(bundle.blobs.len(), 1);
+
+        let re_json = serde_json::to_value(&bundle).unwrap();
+        let re_decoded: BlobsBundleV2 = serde_json::from_value(re_json).unwrap();
+        assert_eq!(re_decoded, bundle);
+    }
+
+    /// `GetPayloadV5Response` round-trips against an osaka.md-shaped JSON
+    /// envelope: `executionPayload`, `blockValue`, `blobsBundle` (V2),
+    /// `shouldOverrideBuilder`, `executionRequests`.
+    #[test]
+    fn get_payload_v5_response_serde_round_trip() {
+        let json = serde_json::json!({
+            "executionPayload": {
+                "parentHash": "0x3b8fb240d288781d4aac94d3fd16809ee413bc99294a085798a589dae51ddd4a",
+                "feeRecipient": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b",
+                "stateRoot": "0xca3149fa9e37db08d1cd49c9061db1002ef1cd58db2210f2115c8c989b2bdf45",
+                "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                "logsBloom": "0x00",
+                "prevRandao": "0xc130d5e63c61c935f6089e61140ca9136172677cf6aa5800dcc1cf0a02152a14",
+                "blockNumber": "0x112720f",
+                "gasLimit": "0x1c9c380",
+                "gasUsed": "0xbad2e8",
+                "timestamp": "0x64e7785b",
+                "extraData": "0x",
+                "baseFeePerGas": "0x7",
+                "blockHash": "0x3559e851470f6e7bbed1db474980683e8c315bfce99b2a6ef47c057c04de7858",
+                "transactions": ["0xdeadbeef"],
+                "withdrawals": [],
+                "blobGasUsed": "0x0",
+                "excessBlobGas": "0x0"
+            },
+            "blockValue": "0x1",
+            "blobsBundle": {
+                "commitments": ["0xc0"],
+                "proofs": ["0xp0", "0xp1"],
+                "blobs": ["0xb0"]
+            },
+            "shouldOverrideBuilder": false,
+            "executionRequests": ["0x0100"]
+        });
+
+        let resp: GetPayloadV5Response = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(resp.block_value, "0x1");
+        assert_eq!(resp.blobs_bundle.proofs.len(), 2);
+        assert_eq!(resp.blobs_bundle.blobs.len(), 1);
+        assert_eq!(resp.execution_requests, vec!["0x0100".to_string()]);
+        assert!(!resp.should_override_builder);
+
+        let re_json = serde_json::to_value(&resp).unwrap();
+        let re_decoded: GetPayloadV5Response = serde_json::from_value(re_json).unwrap();
+        assert_eq!(re_decoded, resp);
     }
 }

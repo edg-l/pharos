@@ -22,8 +22,8 @@ use crate::jwt::{JwtSecret, sign_token};
 use crate::types::{
     BlobAndProofV1, BlockHeader, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
     ForkchoiceStateV1, ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response,
-    GetPayloadV4Response, PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3,
-    PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
+    GetPayloadV4Response, GetPayloadV5Response, PayloadAttributesV1, PayloadAttributesV2,
+    PayloadAttributesV3, PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
 };
 
 const ENGINE_RPC_TIMEOUT: Duration = Duration::from_secs(8);
@@ -43,6 +43,7 @@ pub const DEFAULT_ENGINE_CAPABILITIES: &[&str] = &[
     "engine_getPayloadV2",
     "engine_getPayloadV3",
     "engine_getPayloadV4",
+    "engine_getPayloadV5",
     "engine_getBlobsV1",
     "engine_exchangeCapabilities",
     "engine_exchangeTransitionConfigurationV1",
@@ -86,6 +87,9 @@ pub enum GetPayloadVersion {
     V3,
     /// Electra / Prague: `engine_getPayloadV4` — V3 + `executionRequests`.
     V4,
+    /// Fulu / Osaka: `engine_getPayloadV5` — V4 envelope + `BlobsBundleV2`
+    /// (cell proofs) per `execution-apis/src/engine/osaka.md`.
+    V5,
 }
 
 // ── NewPayloadWire ────────────────────────────────────────────────────────────
@@ -457,6 +461,19 @@ impl EngineClient {
         self.rpc_call("engine_getPayloadV4", [id]).await
     }
 
+    /// `engine_getPayloadV5` — Fulu / Osaka block production.
+    ///
+    /// Returns `{executionPayload, blockValue, blobsBundle (V2), shouldOverrideBuilder,
+    /// executionRequests}` per `execution-apis/src/engine/osaka.md`. The only
+    /// envelope difference from V4 is the `blobsBundle` type (`BlobsBundleV2`,
+    /// carrying `CELLS_PER_EXT_BLOB` cell proofs per blob).
+    pub async fn get_payload_v5(
+        &self,
+        id: PayloadIdV1,
+    ) -> Result<GetPayloadV5Response, EngineError> {
+        self.rpc_call("engine_getPayloadV5", [id]).await
+    }
+
     /// `engine_getBlobsV1` — retrieve blobs from the local EL blob pool.
     ///
     /// Per `execution-apis/src/engine/cancun.md`:
@@ -506,6 +523,13 @@ impl EngineClient {
                 // `get_payload_v4` directly.
                 Err(EngineError::UnexpectedResponse(
                     "get_payload(V4): use get_payload_v4 directly for the V4 envelope".into(),
+                ))
+            }
+            GetPayloadVersion::V5 => {
+                // V5 returns a V4-envelope with BlobsBundleV2; callers must use
+                // `get_payload_v5` directly.
+                Err(EngineError::UnexpectedResponse(
+                    "get_payload(V5): use get_payload_v5 directly for the V5 envelope".into(),
                 ))
             }
         }

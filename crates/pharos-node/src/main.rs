@@ -29,6 +29,7 @@ use pharos_node::blob_ingestion::run_blob_ingestion_loop;
 use pharos_node::blob_prune::run_blob_prune_loop;
 use pharos_node::block_ingestion::{IngestionEgress, ReinjectBlock, run_block_ingestion_loop};
 use pharos_node::checkpoint_sync::{apply_anchor, fetch_checkpoint};
+use pharos_node::custody::{CustodyState, run_custody_adjustment_loop};
 use pharos_node::data_availability::{BlobAvailabilityChecker, BlobAwaitingBlocks};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::engine_keepalive::{hex_to_u256, run_transition_config_keepalive, u256_to_hex};
@@ -1086,6 +1087,9 @@ async fn main() -> anyhow::Result<()> {
             let produce_fc = Arc::clone(&fork_choice);
             let produce_pools = Arc::clone(&pools_arc);
             let produce_cfg = runtime_cfg.clone();
+            // KZG verifier for fulu data-column-sidecar production (computing the
+            // per-blob cells from the V5 blobs bundle). Cheap to clone (Arc).
+            let produce_kzg = Arc::new(pharos_kzg::KzgVerifier::mainnet());
             let produce_fn: Arc<pharos_api::ProduceFn> = Arc::new(
                 move |slot: pharos_types::phase0::Slot,
                       randao_reveal: pharos_utils::BLSSignature,
@@ -1094,11 +1098,12 @@ async fn main() -> anyhow::Result<()> {
                     // The VC can override this via POST /eth/v1/validator/prepare_beacon_proposer.
                     let fee_recipient = "0x0000000000000000000000000000000000000000".to_string();
 
-                    let (signed_block, _post_state, exec_value, blob_sidecars) =
+                    let (signed_block, _post_state, exec_value, blob_sidecars, _column_sidecars) =
                         produce_block::<MainnetBeaconSpec>(
                             &produce_fc,
                             &produce_pools,
                             &produce_engine,
+                            &produce_kzg,
                             slot,
                             randao_reveal,
                             graffiti.into(),
@@ -1604,6 +1609,51 @@ async fn main() -> anyhow::Result<()> {
         );
     } else {
         info!("--no-freezer: hot/cold migration disabled");
+    }
+
+    // ── Custody adjustment loop (EIP-7594 PeerDAS) ─────────────────────────────
+    //
+    // Re-evaluates validator custody on each finalized state (off the head-watch,
+    // `D-freezer-driver-off-head-watch`): on a custody INCREASE it raises the ENR
+    // `cgc` (sticky-high) and re-subscribes to the covering `data_column_sidecar`
+    // subnets; on a DECREASE it keeps the highest `cgc` and the previous set.
+    //
+    // VC → BN validator-indices ingress: the VC already reports its attached
+    // validator indices via `POST /eth/v1/validator/prepare_beacon_proposer`; the
+    // BN feeds those into `custody_validator_indices_tx` (the lighter-touch option
+    // that reuses the existing BN↔VC REST pattern — no new endpoint/protocol).
+    // The channel starts empty; a non-validating node keeps the protocol-minimum
+    // custody (`CUSTODY_REQUIREMENT`).
+    let custody_state = Arc::new(CustodyState::new(
+        <MainnetBeaconSpec as pharos_types::BeaconSpec>::CUSTODY_REQUIREMENT,
+    ));
+    let (custody_validator_indices_tx, custody_validator_indices_rx) =
+        watch::channel::<Vec<pharos_types::phase0::primitives::ValidatorIndex>>(Vec::new());
+    // Hold the sender for the lifetime of the node so the channel stays open; the
+    // `prepare_beacon_proposer` REST path updates it (documented ingress).
+    let _custody_validator_indices_tx = custody_validator_indices_tx;
+    {
+        let custody_head_rx = head_rx.clone();
+        let custody_fc = Arc::clone(&fork_choice);
+        let custody_state_loop = Arc::clone(&custody_state);
+        let custody_node_id = node_id.raw();
+        let custody_cmd = handle.command_sender();
+        let custody_disc = discovery_handle.clone();
+        let custody_shutdown = pharos_node_shutdown_rx.clone();
+        tokio::spawn(async move {
+            run_custody_adjustment_loop::<MainnetBeaconSpec>(
+                custody_head_rx,
+                custody_fc,
+                custody_validator_indices_rx,
+                custody_state_loop,
+                custody_node_id,
+                custody_cmd,
+                custody_disc,
+                custody_shutdown,
+            )
+            .await;
+        });
+        info!("custody adjustment loop started");
     }
 
     // ── Slasher Phase B: chain-history replay (opt-in, --slasher) ──────────────

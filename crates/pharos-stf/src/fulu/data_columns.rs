@@ -11,11 +11,13 @@
 //! node's `ColumnAvailabilityChecker`.
 
 use pharos_kzg::{KzgError, KzgVerifier};
-use pharos_ssz::TreeHash;
+use pharos_ssz::{SszList, SszVector, TreeHash, build_single_proof_from_leaves};
 use pharos_types::BeaconSpec;
-use pharos_types::fulu::data_column_sidecar::{ColumnIndex, CustodyIndex, DataColumnSidecar};
-use pharos_utils::Hash256;
+use pharos_types::deneb::blob::{KZGCommitment, KZGProof};
+use pharos_types::fulu::data_column_sidecar::{Cell, ColumnIndex, CustodyIndex, DataColumnSidecar};
+use pharos_types::phase0::operations::SignedBeaconBlockHeader;
 use pharos_utils::hash::hash;
+use pharos_utils::{FixedBytes, Hash256};
 
 use crate::phase0::operations::deposit::is_valid_merkle_branch;
 
@@ -348,14 +350,172 @@ pub fn compute_columns_for_custody_group<E: BeaconSpec>(
         .collect()
 }
 
+// ── Sidecar production (validator.md) ─────────────────────────────────────────
+
+/// Size of the body-field tree (electra/fulu bodies pad to 16 leaves).
+const BODY_FIELD_TREE_SIZE: usize = 16;
+
+/// `build_kzg_commitments_inclusion_proof` — the depth-4 Merkle branch proving
+/// the `blob_kzg_commitments` LIST root is body field 11.
+///
+/// Per `specs/fulu/validator.md` `get_data_column_sidecars_from_block`:
+/// `kzg_commitments_inclusion_proof = compute_merkle_proof(body,
+/// get_generalized_index(BeaconBlockBody, "blob_kzg_commitments"))`. The
+/// generalized index is `16 + 11 = 27` (field 11 in the 16-leaf body field
+/// tree), so the proof is the 4-element body-field-tree branch
+/// (`KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH = 4`). Unlike the deneb blob-sidecar
+/// proof (depth 17, a single commitment leaf), this proves the WHOLE list root
+/// as one body-field leaf, exactly matching
+/// [`verify_data_column_sidecar_inclusion_proof`].
+///
+/// `all_body_field_hashes` is the 13 body-field `tree_hash_root` values in field
+/// order (`randao_reveal=0`, ..., `blob_kzg_commitments=11`,
+/// `execution_requests=12`).
+pub fn build_kzg_commitments_inclusion_proof(
+    all_body_field_hashes: &[Hash256; 13],
+) -> [Hash256; 4] {
+    let body_leaves: Vec<Hash256> = {
+        let mut leaves = all_body_field_hashes.to_vec();
+        leaves.resize(BODY_FIELD_TREE_SIZE, Hash256::default());
+        leaves
+    };
+    let body_proof = build_single_proof_from_leaves(&body_leaves, BLOB_KZG_COMMITMENTS_GINDEX);
+    debug_assert_eq!(body_proof.branch.len(), 4);
+    let mut branch = [Hash256::default(); 4];
+    branch.copy_from_slice(&body_proof.branch);
+    branch
+}
+
+/// `get_data_column_sidecars` per `specs/fulu/validator.md`.
+///
+/// Builds `NUMBER_OF_COLUMNS` (`= E::NUMBER_OF_COLUMNS`, 128) `DataColumnSidecar`s
+/// from `(signed_block_header, kzg_commitments, inclusion_proof,
+/// cells_and_kzg_proofs)`. Each `cells_and_kzg_proofs[i]` is the
+/// `(cells, proofs)` tuple for blob `i`, where `cells.len() == proofs.len() ==
+/// CELLS_PER_EXT_BLOB`. Per column index `c`, the sidecar's `column` is the
+/// `c`-th cell of every blob and `kzg_proofs` is the `c`-th proof of every blob.
+///
+/// `assert len(cells_and_kzg_proofs) == len(kzg_commitments)` (one cells/proofs
+/// tuple per commitment); a mismatch returns `Err(LengthMismatch)`.
+#[allow(clippy::type_complexity)]
+pub fn get_data_column_sidecars<
+    E: BeaconSpec,
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
+    const KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH: u64,
+>(
+    signed_block_header: &SignedBeaconBlockHeader,
+    kzg_commitments: &[KZGCommitment],
+    inclusion_proof: &[Hash256],
+    cells_and_kzg_proofs: &[(Vec<Cell>, Vec<KZGProof>)],
+) -> Result<
+    Vec<DataColumnSidecar<MAX_BLOB_COMMITMENTS_PER_BLOCK, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH>>,
+    DataColumnVerifyError,
+> {
+    // assert len(cells_and_kzg_proofs) == len(kzg_commitments).
+    if cells_and_kzg_proofs.len() != kzg_commitments.len() {
+        return Err(DataColumnVerifyError::LengthMismatch {
+            column: cells_and_kzg_proofs.len(),
+            commitments: kzg_commitments.len(),
+            proofs: cells_and_kzg_proofs.len(),
+        });
+    }
+
+    let commitments_list = SszList::<KZGCommitment, MAX_BLOB_COMMITMENTS_PER_BLOCK>::from_items(
+        kzg_commitments.iter().copied(),
+    )
+    .map_err(|_| DataColumnVerifyError::TooManyCommitments {
+        got: kzg_commitments.len(),
+        max: MAX_BLOB_COMMITMENTS_PER_BLOCK,
+    })?;
+
+    let inclusion_proof_vec =
+        SszVector::<FixedBytes<32>, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH>::from_items(
+            inclusion_proof.iter().copied(),
+        )
+        .map_err(|_| DataColumnVerifyError::InclusionProofInvalid)?;
+
+    let number_of_columns = E::NUMBER_OF_COLUMNS;
+    let mut sidecars = Vec::with_capacity(number_of_columns as usize);
+    for column_index in 0..number_of_columns {
+        let ci = column_index as usize;
+        let mut column_cells: Vec<Cell> = Vec::with_capacity(cells_and_kzg_proofs.len());
+        let mut column_proofs: Vec<KZGProof> = Vec::with_capacity(cells_and_kzg_proofs.len());
+        for (cells, proofs) in cells_and_kzg_proofs {
+            // `cells`/`proofs` are length-CELLS_PER_EXT_BLOB; the column index
+            // selects the cell/proof for this column. A short tuple (malformed
+            // input) skips that blob's contribution rather than panicking.
+            if let (Some(cell), Some(proof)) = (cells.get(ci), proofs.get(ci)) {
+                column_cells.push(cell.clone());
+                column_proofs.push(*proof);
+            }
+        }
+
+        let column = SszList::<Cell, MAX_BLOB_COMMITMENTS_PER_BLOCK>::from_items(column_cells)
+            .map_err(|_| DataColumnVerifyError::TooManyCommitments {
+                got: cells_and_kzg_proofs.len(),
+                max: MAX_BLOB_COMMITMENTS_PER_BLOCK,
+            })?;
+        let kzg_proofs =
+            SszList::<KZGProof, MAX_BLOB_COMMITMENTS_PER_BLOCK>::from_items(column_proofs)
+                .map_err(|_| DataColumnVerifyError::TooManyCommitments {
+                    got: cells_and_kzg_proofs.len(),
+                    max: MAX_BLOB_COMMITMENTS_PER_BLOCK,
+                })?;
+
+        sidecars.push(DataColumnSidecar {
+            index: column_index,
+            column,
+            kzg_commitments: commitments_list.clone(),
+            kzg_proofs,
+            signed_block_header: signed_block_header.clone(),
+            kzg_commitments_inclusion_proof: inclusion_proof_vec.clone(),
+        });
+    }
+
+    Ok(sidecars)
+}
+
+/// `get_data_column_sidecars_from_block` per `specs/fulu/validator.md`.
+///
+/// Convenience wrapper over [`get_data_column_sidecars`] that takes the block's
+/// `(signed_block_header, kzg_commitments, body_field_hashes)` and the
+/// `cells_and_kzg_proofs`. The caller (block production) supplies the sealed
+/// block's header + the 13 body-field hashes; this builds the depth-4
+/// `kzg_commitments_inclusion_proof` via
+/// [`build_kzg_commitments_inclusion_proof`] and delegates.
+#[allow(clippy::type_complexity)]
+pub fn get_data_column_sidecars_from_block<
+    E: BeaconSpec,
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
+    const KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH: u64,
+>(
+    signed_block_header: &SignedBeaconBlockHeader,
+    kzg_commitments: &[KZGCommitment],
+    body_field_hashes: &[Hash256; 13],
+    cells_and_kzg_proofs: &[(Vec<Cell>, Vec<KZGProof>)],
+) -> Result<
+    Vec<DataColumnSidecar<MAX_BLOB_COMMITMENTS_PER_BLOCK, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH>>,
+    DataColumnVerifyError,
+> {
+    let inclusion_proof = build_kzg_commitments_inclusion_proof(body_field_hashes);
+    get_data_column_sidecars::<
+        E,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+        KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH,
+    >(
+        signed_block_header,
+        kzg_commitments,
+        &inclusion_proof,
+        cells_and_kzg_proofs,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pharos_ssz::{SszList, SszVector, build_single_proof_from_leaves, merkleize_padded};
+    use pharos_ssz::merkleize_padded;
     use pharos_types::MainnetBeaconSpec;
-    use pharos_types::deneb::blob::{KZGCommitment, KZGProof};
-    use pharos_types::fulu::data_column_sidecar::{Cell, MainnetDataColumnSidecar};
-    use pharos_utils::FixedBytes;
+    use pharos_types::fulu::data_column_sidecar::MainnetDataColumnSidecar;
 
     type E = MainnetBeaconSpec;
 
@@ -516,6 +676,73 @@ mod tests {
         }
         for g in &groups {
             assert!(*g < E::NUMBER_OF_CUSTODY_GROUPS);
+        }
+    }
+
+    /// `get_data_column_sidecars_from_block` yields `NUMBER_OF_COLUMNS` (128)
+    /// sidecars, each carrying a verifying inclusion proof. Builds a synthetic
+    /// 16-leaf body field tree (field 11 = the `blob_kzg_commitments` list root),
+    /// derives the depth-4 inclusion proof, assembles 128 sidecars from 2 blobs'
+    /// worth of cells/proofs, and confirms each sidecar's inclusion proof passes
+    /// `verify_data_column_sidecar_inclusion_proof` (reusing Phase 4.1 verify).
+    #[test]
+    fn get_data_column_sidecars_yields_128_with_verifying_inclusion_proofs() {
+        // Two blobs → two commitments → two cells/proofs tuples.
+        let n_blobs = 2usize;
+        let cells_per_ext_blob = E::CELLS_PER_EXT_BLOB as usize;
+        let commitments: Vec<KZGCommitment> =
+            (0..n_blobs).map(|_| KZGCommitment::default()).collect();
+        let cells_and_kzg_proofs: Vec<(Vec<Cell>, Vec<KZGProof>)> = (0..n_blobs)
+            .map(|_| {
+                let cells: Vec<Cell> = (0..cells_per_ext_blob).map(|_| Cell::default()).collect();
+                let proofs: Vec<KZGProof> = (0..cells_per_ext_blob)
+                    .map(|_| KZGProof::default())
+                    .collect();
+                (cells, proofs)
+            })
+            .collect();
+
+        // Build the 13 body-field hashes; field 11 = hash_tree_root(commitments list).
+        let commitments_list =
+            SszList::<KZGCommitment, 4096>::from_items(commitments.iter().copied()).unwrap();
+        let mut body_field_hashes = [Hash256::default(); 13];
+        for (i, h) in body_field_hashes.iter_mut().enumerate() {
+            let mut b = [0u8; 32];
+            b[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            *h = Hash256::from(b);
+        }
+        body_field_hashes[11] = commitments_list.tree_hash_root();
+
+        // Compute the body_root so the sidecar inclusion proof verifies: the
+        // 16-leaf body field tree root.
+        let mut leaves: Vec<Hash256> = body_field_hashes.to_vec();
+        leaves.resize(16, Hash256::default());
+        let body_root = merkleize_padded(&leaves, 16);
+
+        let mut header = SignedBeaconBlockHeader::default();
+        header.message.body_root = body_root;
+
+        let sidecars = get_data_column_sidecars_from_block::<E, 4096, 4>(
+            &header,
+            &commitments,
+            &body_field_hashes,
+            &cells_and_kzg_proofs,
+        )
+        .unwrap();
+
+        // 128 sidecars, one per column.
+        assert_eq!(sidecars.len(), E::NUMBER_OF_COLUMNS as usize);
+        for (c, sidecar) in sidecars.iter().enumerate() {
+            assert_eq!(sidecar.index, c as u64);
+            // Each column carries one cell + one proof per blob, plus all commitments.
+            assert_eq!(sidecar.column.as_slice().len(), n_blobs);
+            assert_eq!(sidecar.kzg_proofs.as_slice().len(), n_blobs);
+            assert_eq!(sidecar.kzg_commitments.as_slice().len(), n_blobs);
+            // The inclusion proof verifies (reuse Phase 4.1 verifier).
+            assert!(
+                verify_data_column_sidecar_inclusion_proof::<4096, 4>(sidecar).is_ok(),
+                "column {c} inclusion proof must verify"
+            );
         }
     }
 }
