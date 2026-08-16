@@ -1125,8 +1125,8 @@ pub enum BeaconBlockBody<
     Electra(
         electra::BeaconBlockBody<
             MAX_PROPOSER_SLASHINGS,
-            MAX_ATTESTER_SLASHINGS, // = MAX_ATTESTER_SLASHINGS_ELECTRA
-            MAX_ATTESTATIONS,       // = MAX_ATTESTATIONS_ELECTRA
+            1, // MAX_ATTESTER_SLASHINGS_ELECTRA (spec literal; preset-independent, mixed into htr)
+            8, // MAX_ATTESTATIONS_ELECTRA (spec literal; preset-independent, mixed into htr)
             MAX_DEPOSITS,
             MAX_VOLUNTARY_EXITS,
             MAX_VALIDATORS_PER_COMMITTEE,
@@ -1583,8 +1583,8 @@ impl<
             >::from_ssz_bytes(rest)?)),
             0x05 => Ok(BeaconBlockBody::Electra(electra::BeaconBlockBody::<
                 MAX_PROPOSER_SLASHINGS,
-                MAX_ATTESTER_SLASHINGS,
-                MAX_ATTESTATIONS,
+                1, // MAX_ATTESTER_SLASHINGS_ELECTRA
+                8, // MAX_ATTESTATIONS_ELECTRA
                 MAX_DEPOSITS,
                 MAX_VOLUNTARY_EXITS,
                 MAX_VALIDATORS_PER_COMMITTEE,
@@ -1782,8 +1782,8 @@ pub enum BeaconBlock<
     Electra(
         electra::BeaconBlock<
             MAX_PROPOSER_SLASHINGS,
-            MAX_ATTESTER_SLASHINGS,
-            MAX_ATTESTATIONS,
+            1, // MAX_ATTESTER_SLASHINGS_ELECTRA
+            8, // MAX_ATTESTATIONS_ELECTRA
             MAX_DEPOSITS,
             MAX_VOLUNTARY_EXITS,
             MAX_VALIDATORS_PER_COMMITTEE,
@@ -2197,8 +2197,8 @@ impl<
             >::from_ssz_bytes(rest)?)),
             0x05 => Ok(BeaconBlock::Electra(electra::BeaconBlock::<
                 MAX_PROPOSER_SLASHINGS,
-                MAX_ATTESTER_SLASHINGS,
-                MAX_ATTESTATIONS,
+                1, // MAX_ATTESTER_SLASHINGS_ELECTRA
+                8, // MAX_ATTESTATIONS_ELECTRA
                 MAX_DEPOSITS,
                 MAX_VOLUNTARY_EXITS,
                 MAX_VALIDATORS_PER_COMMITTEE,
@@ -2394,8 +2394,8 @@ pub enum SignedBeaconBlock<
     Electra(
         electra::SignedBeaconBlock<
             MAX_PROPOSER_SLASHINGS,
-            MAX_ATTESTER_SLASHINGS,
-            MAX_ATTESTATIONS,
+            1, // MAX_ATTESTER_SLASHINGS_ELECTRA
+            8, // MAX_ATTESTATIONS_ELECTRA
             MAX_DEPOSITS,
             MAX_VOLUNTARY_EXITS,
             MAX_VALIDATORS_PER_COMMITTEE,
@@ -2785,8 +2785,8 @@ impl<
             )?)),
             0x05 => Ok(SignedBeaconBlock::Electra(electra::SignedBeaconBlock::<
                 MAX_PROPOSER_SLASHINGS,
-                MAX_ATTESTER_SLASHINGS,
-                MAX_ATTESTATIONS,
+                1, // MAX_ATTESTER_SLASHINGS_ELECTRA
+                8, // MAX_ATTESTATIONS_ELECTRA
                 MAX_DEPOSITS,
                 MAX_VOLUNTARY_EXITS,
                 MAX_VALIDATORS_PER_COMMITTEE,

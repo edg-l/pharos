@@ -290,8 +290,8 @@ impl<
 /// Mainnet electra `BeaconBlock`.
 pub type MainnetBeaconBlock = BeaconBlock<
     16,
-    2,
-    128,
+    1,
+    8,
     16,
     16,
     2048,
@@ -314,8 +314,8 @@ pub type MainnetBeaconBlock = BeaconBlock<
 /// Minimal electra `BeaconBlock`.
 pub type MinimalBeaconBlock = BeaconBlock<
     16,
-    2,
-    128,
+    1,
+    8,
     16,
     16,
     2048,
@@ -338,8 +338,8 @@ pub type MinimalBeaconBlock = BeaconBlock<
 /// Mainnet electra `SignedBeaconBlock`.
 pub type MainnetSignedBeaconBlock = SignedBeaconBlock<
     16,
-    2,
-    128,
+    1,
+    8,
     16,
     16,
     2048,
@@ -362,8 +362,8 @@ pub type MainnetSignedBeaconBlock = SignedBeaconBlock<
 /// Minimal electra `SignedBeaconBlock`.
 pub type MinimalSignedBeaconBlock = SignedBeaconBlock<
     16,
-    2,
-    128,
+    1,
+    8,
     16,
     16,
     2048,

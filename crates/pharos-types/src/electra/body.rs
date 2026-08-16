@@ -214,53 +214,53 @@ impl<
 
 /// Mainnet electra `BeaconBlockBody`.
 ///
-/// Note: positions 2-3 use `2, 128` (pre-Electra limits) so that the fork-enum
-/// `BeaconBlock` can hold blocks from any fork with the same const params.
-/// The spec limits (`MAX_ATTESTER_SLASHINGS_ELECTRA=1`, `MAX_ATTESTATIONS_ELECTRA=8`)
-/// are enforced at the STF/gossip validation layer, not at the container level.
+/// Positions 2-3 use the EIP-7549 spec limits (`MAX_ATTESTER_SLASHINGS_ELECTRA=1`,
+/// `MAX_ATTESTATIONS_ELECTRA=8`). These limits are mixed into `hash_tree_root`
+/// (they set the List merkle-padding depth), so they MUST match the spec preset —
+/// using the pre-Electra values would corrupt every BeaconBlockBody root.
 pub type MainnetBeaconBlockBody = BeaconBlockBody<
     16,            // MAX_PROPOSER_SLASHINGS
-    2,    // MAX_ATTESTER_SLASHINGS_ELECTRA (aligned to pre-Electra max for fork-enum compat)
-    128,  // MAX_ATTESTATIONS_ELECTRA (aligned to pre-Electra max for fork-enum compat)
-    16,   // MAX_DEPOSITS
-    16,   // MAX_VOLUNTARY_EXITS
-    2048, // MAX_VALIDATORS_PER_COMMITTEE
-    33,   // DEPOSIT_PROOF_LENGTH
-    512,  // SYNC_COMMITTEE_SIZE
+    1,             // MAX_ATTESTER_SLASHINGS_ELECTRA
+    8,             // MAX_ATTESTATIONS_ELECTRA
+    16,            // MAX_DEPOSITS
+    16,            // MAX_VOLUNTARY_EXITS
+    2048,          // MAX_VALIDATORS_PER_COMMITTEE
+    33,            // DEPOSIT_PROOF_LENGTH
+    512,           // SYNC_COMMITTEE_SIZE
     1_073_741_824, // MAX_BYTES_PER_TRANSACTION
-    1_048_576, // MAX_TRANSACTIONS_PER_PAYLOAD
-    256,  // BYTES_PER_LOGS_BLOOM
-    32,   // MAX_EXTRA_DATA_BYTES
-    16,   // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet)
-    16,   // MAX_BLS_TO_EXECUTION_CHANGES
-    4096, // MAX_BLOB_COMMITMENTS_PER_BLOCK
-    131072, // MAX_AGGREGATION_BITS (2048 * 64)
-    64,   // MAX_COMMITTEES_PER_SLOT (mainnet)
-    8192, // MAX_DEPOSIT_REQUESTS_PER_PAYLOAD
-    16,   // MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD
-    2,    // MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD
+    1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
+    256,           // BYTES_PER_LOGS_BLOOM
+    32,            // MAX_EXTRA_DATA_BYTES
+    16,            // MAX_WITHDRAWALS_PER_PAYLOAD (mainnet)
+    16,            // MAX_BLS_TO_EXECUTION_CHANGES
+    4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK
+    131072,        // MAX_AGGREGATION_BITS (2048 * 64)
+    64,            // MAX_COMMITTEES_PER_SLOT (mainnet)
+    8192,          // MAX_DEPOSIT_REQUESTS_PER_PAYLOAD
+    16,            // MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD
+    2,             // MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD
 >;
 
 /// Minimal electra `BeaconBlockBody`.
 pub type MinimalBeaconBlockBody = BeaconBlockBody<
     16,            // MAX_PROPOSER_SLASHINGS
-    2,    // MAX_ATTESTER_SLASHINGS_ELECTRA (aligned to pre-Electra max for fork-enum compat)
-    128,  // MAX_ATTESTATIONS_ELECTRA (aligned to pre-Electra max for fork-enum compat)
-    16,   // MAX_DEPOSITS
-    16,   // MAX_VOLUNTARY_EXITS
-    2048, // MAX_VALIDATORS_PER_COMMITTEE
-    33,   // DEPOSIT_PROOF_LENGTH
-    32,   // SYNC_COMMITTEE_SIZE (minimal)
+    1,             // MAX_ATTESTER_SLASHINGS_ELECTRA
+    8,             // MAX_ATTESTATIONS_ELECTRA
+    16,            // MAX_DEPOSITS
+    16,            // MAX_VOLUNTARY_EXITS
+    2048,          // MAX_VALIDATORS_PER_COMMITTEE
+    33,            // DEPOSIT_PROOF_LENGTH
+    32,            // SYNC_COMMITTEE_SIZE (minimal)
     1_073_741_824, // MAX_BYTES_PER_TRANSACTION
-    1_048_576, // MAX_TRANSACTIONS_PER_PAYLOAD
-    256,  // BYTES_PER_LOGS_BLOOM
-    32,   // MAX_EXTRA_DATA_BYTES
-    4,    // MAX_WITHDRAWALS_PER_PAYLOAD (minimal)
-    16,   // MAX_BLS_TO_EXECUTION_CHANGES
-    4096, // MAX_BLOB_COMMITMENTS_PER_BLOCK
-    8192, // MAX_AGGREGATION_BITS (2048 * 4)
-    4,    // MAX_COMMITTEES_PER_SLOT (minimal)
-    8192, // MAX_DEPOSIT_REQUESTS_PER_PAYLOAD
-    16,   // MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD
-    2,    // MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD
+    1_048_576,     // MAX_TRANSACTIONS_PER_PAYLOAD
+    256,           // BYTES_PER_LOGS_BLOOM
+    32,            // MAX_EXTRA_DATA_BYTES
+    4,             // MAX_WITHDRAWALS_PER_PAYLOAD (minimal)
+    16,            // MAX_BLS_TO_EXECUTION_CHANGES
+    4096,          // MAX_BLOB_COMMITMENTS_PER_BLOCK
+    8192,          // MAX_AGGREGATION_BITS (2048 * 4)
+    4,             // MAX_COMMITTEES_PER_SLOT (minimal)
+    8192,          // MAX_DEPOSIT_REQUESTS_PER_PAYLOAD
+    16,            // MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD
+    2,             // MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD
 >;
