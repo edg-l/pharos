@@ -112,7 +112,7 @@ where
             EPOCHS_PER_SLASHINGS_VECTOR,
             JUSTIFICATION_BITS_LENGTH,
             SYNC_COMMITTEE_SIZE,
-        >(state, ValidatorIndex(i as u64), Gwei(penalty));
+        >(state, ValidatorIndex(i as u64), Gwei(penalty))?;
     }
 
     Ok(())

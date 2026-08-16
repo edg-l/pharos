@@ -328,7 +328,7 @@ where
         EPOCHS_PER_SLASHINGS_VECTOR,
         JUSTIFICATION_BITS_LENGTH,
         SYNC_COMMITTEE_SIZE,
-    >(state, proposer_index, proposer_reward);
+    >(state, proposer_index, proposer_reward)?;
 
     Ok(())
 }

@@ -176,7 +176,7 @@ pub(crate) fn decrease_balance_capella<
     >,
     index: ValidatorIndex,
     delta: Gwei,
-) {
+) -> Result<(), crate::error::StateTransitionError> {
     let cur = state
         .balances
         .as_slice()
@@ -191,7 +191,8 @@ pub(crate) fn decrease_balance_capella<
     state.balances = state
         .balances
         .with_set(index.0 as usize, new_val)
-        .expect("balance index in range");
+        .map_err(|_| crate::error::StateTransitionError::IndexOutOfRange(index.0 as usize))?;
+    Ok(())
 }
 
 /// `increase_balance` for a capella `BeaconState`.
@@ -223,7 +224,7 @@ pub(crate) fn increase_balance_capella<
     >,
     index: ValidatorIndex,
     delta: Gwei,
-) {
+) -> Result<(), crate::error::StateTransitionError> {
     let cur = state
         .balances
         .as_slice()
@@ -233,7 +234,8 @@ pub(crate) fn increase_balance_capella<
     state.balances = state
         .balances
         .with_set(index.0 as usize, Gwei(cur.0.saturating_add(delta.0)))
-        .expect("balance index in range");
+        .map_err(|_| crate::error::StateTransitionError::IndexOutOfRange(index.0 as usize))?;
+    Ok(())
 }
 
 // ── State-projection helpers ──────────────────────────────────────────────────
@@ -823,7 +825,7 @@ where
         SYNC_COMMITTEE_SIZE,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
-    >(state, slashed_index, penalty);
+    >(state, slashed_index, penalty)?;
 
     // Proposer reward via altair projection (reads only shared fields).
     let altair_state = capella_state_to_altair(state);
@@ -854,7 +856,7 @@ where
         SYNC_COMMITTEE_SIZE,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
-    >(state, proposer_index, proposer_reward);
+    >(state, proposer_index, proposer_reward)?;
     increase_balance_capella::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
@@ -870,7 +872,7 @@ where
         state,
         whistleblower_idx,
         Gwei(whistleblower_reward.0 - proposer_reward.0),
-    );
+    )?;
 
     Ok(())
 }

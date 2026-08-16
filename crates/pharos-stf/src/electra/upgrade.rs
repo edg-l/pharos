@@ -220,17 +220,20 @@ where
 
     // [New in Electra:EIP7251] queue pre-activation validators sorted by
     // (activation_eligibility_epoch, index).
-    let mut pre_activation: Vec<usize> = post
-        .validators
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| v.activation_epoch.0 == FAR_FUTURE_EPOCH)
-        .map(|(idx, _)| idx)
+    // Collect (sort_key, index) pairs up front so the index read is fallible
+    // (a sort_by_key closure cannot return a Result). For valid input every
+    // index is in range; an out-of-range index returns IndexOutOfRange.
+    let mut pre_activation_keyed: Vec<((u64, usize), usize)> = Vec::new();
+    for (idx, v) in post.validators.iter().enumerate() {
+        if v.activation_epoch.0 == FAR_FUTURE_EPOCH {
+            pre_activation_keyed.push(((v.activation_eligibility_epoch.0, idx), idx));
+        }
+    }
+    pre_activation_keyed.sort_by_key(|(key, _)| *key);
+    let pre_activation: Vec<usize> = pre_activation_keyed
+        .into_iter()
+        .map(|(_, idx)| idx)
         .collect();
-    pre_activation.sort_by_key(|&idx| {
-        let v = post.validators.get(idx).expect("index in range");
-        (v.activation_eligibility_epoch.0, idx)
-    });
 
     // bls.G2_POINT_AT_INFINITY signature placeholder (0xc0 || zeros).
     let mut sig_bytes = [0u8; 96];

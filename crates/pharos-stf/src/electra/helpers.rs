@@ -453,7 +453,7 @@ pub(crate) fn decrease_balance_electra<
     >,
     index: ValidatorIndex,
     delta: Gwei,
-) {
+) -> Result<(), StateTransitionError> {
     let cur = state
         .balances
         .as_slice()
@@ -468,7 +468,8 @@ pub(crate) fn decrease_balance_electra<
     state.balances = state
         .balances
         .with_set(index.0 as usize, new_val)
-        .expect("balance index in range");
+        .map_err(|_| StateTransitionError::IndexOutOfRange(index.0 as usize))?;
+    Ok(())
 }
 
 /// `increase_balance` for an electra `BeaconState`.
@@ -504,7 +505,7 @@ pub(crate) fn increase_balance_electra<
     >,
     index: ValidatorIndex,
     delta: Gwei,
-) {
+) -> Result<(), StateTransitionError> {
     let cur = state
         .balances
         .as_slice()
@@ -514,7 +515,8 @@ pub(crate) fn increase_balance_electra<
     state.balances = state
         .balances
         .with_set(index.0 as usize, Gwei(cur.0.saturating_add(delta.0)))
-        .expect("balance index in range");
+        .map_err(|_| StateTransitionError::IndexOutOfRange(index.0 as usize))?;
+    Ok(())
 }
 
 // ── Task 2a.1: electra compute_proposer_index / get_beacon_proposer_index ──────
@@ -1369,7 +1371,7 @@ where
         PENDING_DEPOSITS_LIMIT,
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
-    >(state, slashed_index, penalty);
+    >(state, slashed_index, penalty)?;
 
     // Proposer via electra get_beacon_proposer_index over the enum state.
     let proposer_index =
@@ -1394,7 +1396,7 @@ where
         PENDING_DEPOSITS_LIMIT,
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
-    >(state, proposer_index, proposer_reward);
+    >(state, proposer_index, proposer_reward)?;
     increase_balance_electra::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
@@ -1413,7 +1415,7 @@ where
         state,
         whistleblower_idx,
         Gwei(whistleblower_reward.0 - proposer_reward.0),
-    );
+    )?;
 
     Ok(())
 }

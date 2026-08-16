@@ -146,7 +146,7 @@ where
                 state,
                 pharos_types::phase0::ValidatorIndex(i as u64),
                 total_rewards[i],
-            );
+            )?;
         }
         if total_penalties[i].0 > 0 {
             decrease_balance_altair::<
@@ -162,7 +162,7 @@ where
                 state,
                 pharos_types::phase0::ValidatorIndex(i as u64),
                 total_penalties[i],
-            );
+            )?;
         }
     }
 

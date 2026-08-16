@@ -17,6 +17,7 @@ use pharos_types::{
 };
 use pharos_utils::Gwei;
 
+use crate::error::StateTransitionError;
 use crate::phase0::{accessors::compute_epoch_at_slot, predicates::is_active_validator};
 
 // ── Epoch helpers ─────────────────────────────────────────────────────────────
@@ -119,7 +120,7 @@ pub(crate) fn decrease_balance_bellatrix<
     >,
     index: ValidatorIndex,
     delta: Gwei,
-) {
+) -> Result<(), StateTransitionError> {
     let cur = state
         .balances
         .as_slice()
@@ -134,7 +135,8 @@ pub(crate) fn decrease_balance_bellatrix<
     state.balances = state
         .balances
         .with_set(index.0 as usize, new_val)
-        .expect("balance index in range");
+        .map_err(|_| StateTransitionError::IndexOutOfRange(index.0 as usize))?;
+    Ok(())
 }
 
 // ── State-projection helpers ──────────────────────────────────────────────────
@@ -362,7 +364,7 @@ pub(crate) fn increase_balance_bellatrix<
     >,
     index: ValidatorIndex,
     delta: Gwei,
-) {
+) -> Result<(), StateTransitionError> {
     let cur = state
         .balances
         .as_slice()
@@ -372,7 +374,8 @@ pub(crate) fn increase_balance_bellatrix<
     state.balances = state
         .balances
         .with_set(index.0 as usize, Gwei(cur.0.saturating_add(delta.0)))
-        .expect("balance index in range");
+        .map_err(|_| StateTransitionError::IndexOutOfRange(index.0 as usize))?;
+    Ok(())
 }
 
 // ── initiate_validator_exit for bellatrix state ───────────────────────────────
@@ -615,7 +618,7 @@ where
         SYNC_COMMITTEE_SIZE,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
-    >(state, slashed_index, penalty);
+    >(state, slashed_index, penalty)?;
 
     // Proposer reward: PROPOSER_WEIGHT / (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT).
     // Derive proposer index via projection to altair state (reads only shared fields).
@@ -647,7 +650,7 @@ where
         SYNC_COMMITTEE_SIZE,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
-    >(state, proposer_index, proposer_reward);
+    >(state, proposer_index, proposer_reward)?;
     increase_balance_bellatrix::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
@@ -663,7 +666,7 @@ where
         state,
         whistleblower_idx,
         Gwei(whistleblower_reward.0 - proposer_reward.0),
-    );
+    )?;
 
     Ok(())
 }

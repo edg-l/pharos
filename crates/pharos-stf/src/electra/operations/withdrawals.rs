@@ -472,7 +472,7 @@ fn apply_withdrawals_electra<
         PENDING_CONSOLIDATIONS_LIMIT,
     >,
     withdrawals: &[Withdrawal],
-) {
+) -> Result<(), crate::error::StateTransitionError> {
     for w in withdrawals {
         decrease_balance_electra::<
             SLOTS_PER_HISTORICAL_ROOT,
@@ -488,8 +488,9 @@ fn apply_withdrawals_electra<
             PENDING_DEPOSITS_LIMIT,
             PENDING_PARTIAL_WITHDRAWALS_LIMIT,
             PENDING_CONSOLIDATIONS_LIMIT,
-        >(state, w.validator_index, w.amount);
+        >(state, w.validator_index, w.amount)?;
     }
+    Ok(())
 }
 
 // ── update_next_withdrawal_index ─────────────────────────────────────────────
@@ -725,7 +726,7 @@ pub fn process_withdrawals_electra<
         PENDING_DEPOSITS_LIMIT,
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
-    >(state, &expected.withdrawals);
+    >(state, &expected.withdrawals)?;
 
     update_next_withdrawal_index_electra::<
         SLOTS_PER_HISTORICAL_ROOT,

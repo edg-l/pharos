@@ -1211,7 +1211,7 @@ where
         EPOCHS_PER_SLASHINGS_VECTOR,
         JUSTIFICATION_BITS_LENGTH,
         SYNC_COMMITTEE_SIZE,
-    >(state, slashed_index, penalty);
+    >(state, slashed_index, penalty)?;
 
     // Proposer reward: PROPOSER_WEIGHT / (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT).
     let proposer_index = get_proposer_index_altair::<
@@ -1239,7 +1239,7 @@ where
         EPOCHS_PER_SLASHINGS_VECTOR,
         JUSTIFICATION_BITS_LENGTH,
         SYNC_COMMITTEE_SIZE,
-    >(state, proposer_index, proposer_reward);
+    >(state, proposer_index, proposer_reward)?;
     increase_balance_altair::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
@@ -1253,7 +1253,7 @@ where
         state,
         whistleblower_idx,
         Gwei(whistleblower_reward.0 - proposer_reward.0),
-    );
+    )?;
 
     Ok(())
 }
@@ -1287,7 +1287,7 @@ pub(crate) fn increase_balance_altair<
     >,
     index: ValidatorIndex,
     delta: Gwei,
-) {
+) -> Result<(), StateTransitionError> {
     let cur = state
         .balances
         .as_slice()
@@ -1297,7 +1297,8 @@ pub(crate) fn increase_balance_altair<
     state.balances = state
         .balances
         .with_set(index.0 as usize, Gwei(cur.0.saturating_add(delta.0)))
-        .expect("balance index in range");
+        .map_err(|_| StateTransitionError::IndexOutOfRange(index.0 as usize))?;
+    Ok(())
 }
 
 pub(crate) fn decrease_balance_altair<
@@ -1322,7 +1323,7 @@ pub(crate) fn decrease_balance_altair<
     >,
     index: ValidatorIndex,
     delta: Gwei,
-) {
+) -> Result<(), StateTransitionError> {
     let cur = state
         .balances
         .as_slice()
@@ -1337,7 +1338,8 @@ pub(crate) fn decrease_balance_altair<
     state.balances = state
         .balances
         .with_set(index.0 as usize, new_val)
-        .expect("balance index in range");
+        .map_err(|_| StateTransitionError::IndexOutOfRange(index.0 as usize))?;
+    Ok(())
 }
 
 // ── Altair-local proposer index ───────────────────────────────────────────────

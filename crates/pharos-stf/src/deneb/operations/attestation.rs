@@ -372,7 +372,7 @@ where
         SYNC_COMMITTEE_SIZE,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
-    >(state, proposer_index, proposer_reward);
+    >(state, proposer_index, proposer_reward)?;
 
     Ok(())
 }

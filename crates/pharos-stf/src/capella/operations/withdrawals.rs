@@ -279,7 +279,7 @@ pub fn apply_withdrawals<
         MAX_EXTRA_DATA_BYTES,
     >,
     withdrawals: &[Withdrawal],
-) {
+) -> Result<(), crate::error::StateTransitionError> {
     for withdrawal in withdrawals {
         decrease_balance_capella::<
             SLOTS_PER_HISTORICAL_ROOT,
@@ -292,8 +292,9 @@ pub fn apply_withdrawals<
             SYNC_COMMITTEE_SIZE,
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
-        >(state, withdrawal.validator_index, withdrawal.amount);
+        >(state, withdrawal.validator_index, withdrawal.amount)?;
     }
+    Ok(())
 }
 
 // ── update_next_withdrawal_index ──────────────────────────────────────────────
@@ -460,7 +461,7 @@ pub fn process_withdrawals<
         SYNC_COMMITTEE_SIZE,
         BYTES_PER_LOGS_BLOOM,
         MAX_EXTRA_DATA_BYTES,
-    >(state, &expected);
+    >(state, &expected)?;
 
     update_next_withdrawal_index::<
         SLOTS_PER_HISTORICAL_ROOT,

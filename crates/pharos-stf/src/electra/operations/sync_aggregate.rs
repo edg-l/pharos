@@ -276,7 +276,7 @@ where
                 EPOCHS_PER_SLASHINGS_VECTOR,
                 JUSTIFICATION_BITS_LENGTH,
                 SYNC_COMMITTEE_SIZE,
-            >(&mut altair, *participant_index, participant_reward);
+            >(&mut altair, *participant_index, participant_reward)?;
             increase_balance_altair::<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,
@@ -286,7 +286,7 @@ where
                 EPOCHS_PER_SLASHINGS_VECTOR,
                 JUSTIFICATION_BITS_LENGTH,
                 SYNC_COMMITTEE_SIZE,
-            >(&mut altair, proposer_index, proposer_reward);
+            >(&mut altair, proposer_index, proposer_reward)?;
         } else {
             decrease_balance_altair::<
                 SLOTS_PER_HISTORICAL_ROOT,
@@ -297,7 +297,7 @@ where
                 EPOCHS_PER_SLASHINGS_VECTOR,
                 JUSTIFICATION_BITS_LENGTH,
                 SYNC_COMMITTEE_SIZE,
-            >(&mut altair, *participant_index, participant_reward);
+            >(&mut altair, *participant_index, participant_reward)?;
         }
     }
 

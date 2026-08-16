@@ -42,7 +42,7 @@ where
     for (i, effective_balance) in slashable {
         let penalty_numerator = effective_balance / increment * adjusted;
         let penalty = penalty_numerator / total_balance * increment;
-        decrease_balance::<E>(state, ValidatorIndex(i as u64), Gwei(penalty));
+        decrease_balance::<E>(state, ValidatorIndex(i as u64), Gwei(penalty))?;
     }
 
     Ok(())

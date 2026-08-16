@@ -449,7 +449,7 @@ where
             SYNC_COMMITTEE_SIZE,
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
-        >(state, ValidatorIndex(i as u64), Gwei(penalty));
+        >(state, ValidatorIndex(i as u64), Gwei(penalty))?;
     }
 
     Ok(())
@@ -604,7 +604,7 @@ where
                 state,
                 pharos_types::phase0::ValidatorIndex(i as u64),
                 total_rewards[i],
-            );
+            )?;
         }
         if total_penalties[i].0 > 0 {
             decrease_balance_capella::<
@@ -622,7 +622,7 @@ where
                 state,
                 pharos_types::phase0::ValidatorIndex(i as u64),
                 total_penalties[i],
-            );
+            )?;
         }
     }
 

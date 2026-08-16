@@ -79,6 +79,14 @@ pub enum StateTransitionError {
     /// `MAX_BLOBS_PER_BLOCK` per EIP-4844.
     #[error("too many blob commitments in block: {count} > max {max}")]
     TooManyBlobCommitments { count: usize, max: u64 },
+
+    /// A state-mutation helper attempted to write a collection index that was
+    /// out of range. For valid input this never fires (the indices are always
+    /// in range); it replaces the previous `.expect(...)` panics so genuinely
+    /// malformed / never-reached input returns an error instead of aborting
+    /// the process.
+    #[error("state index out of range: {0}")]
+    IndexOutOfRange(usize),
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]

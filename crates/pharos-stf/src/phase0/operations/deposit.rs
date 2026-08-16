@@ -73,7 +73,7 @@ where
                 state,
                 pharos_types::phase0::ValidatorIndex(idx as u64),
                 Gwei(amount),
-            );
+            )?;
         }
         None => {
             // New validator: verify BLS proof of possession when required.

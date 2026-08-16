@@ -33,7 +33,11 @@ use crate::phase0::{
 };
 
 /// `increase_balance` per `specs/phase0/beacon-chain.md:1205-1210`.
-pub fn increase_balance<E: EthSpec>(state: &mut E::BeaconState, index: ValidatorIndex, delta: Gwei)
+pub fn increase_balance<E: EthSpec>(
+    state: &mut E::BeaconState,
+    index: ValidatorIndex,
+    delta: Gwei,
+) -> Result<(), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite,
 {
@@ -42,13 +46,17 @@ where
         .get(index.0 as usize)
         .copied()
         .unwrap_or(Gwei(0));
-    state.set_balance(index.0 as usize, Gwei(cur.0.saturating_add(delta.0)));
+    state.set_balance(index.0 as usize, Gwei(cur.0.saturating_add(delta.0)))
 }
 
 /// `decrease_balance` per `specs/phase0/beacon-chain.md:1215-1221`.
 ///
 /// Underflow-protected: clamps to 0.
-pub fn decrease_balance<E: EthSpec>(state: &mut E::BeaconState, index: ValidatorIndex, delta: Gwei)
+pub fn decrease_balance<E: EthSpec>(
+    state: &mut E::BeaconState,
+    index: ValidatorIndex,
+    delta: Gwei,
+) -> Result<(), StateTransitionError>
 where
     E::BeaconState: BeaconStateWrite,
 {
@@ -62,7 +70,7 @@ where
     } else {
         Gwei(cur.0 - delta.0)
     };
-    state.set_balance(index.0 as usize, new_val);
+    state.set_balance(index.0 as usize, new_val)
 }
 
 /// `initiate_validator_exit` per `specs/phase0/beacon-chain.md:1225-1245`.
@@ -177,7 +185,7 @@ where
     )?;
 
     let penalty = Gwei(effective_balance.0 / E::MIN_SLASHING_PENALTY_QUOTIENT);
-    decrease_balance::<E>(state, slashed_index, penalty);
+    decrease_balance::<E>(state, slashed_index, penalty)?;
 
     let proposer_index = get_beacon_proposer_index::<E>(state);
     let whistleblower_idx = whistleblower_index.unwrap_or(proposer_index);
@@ -185,12 +193,12 @@ where
     let whistleblower_reward = Gwei(effective_balance.0 / E::WHISTLEBLOWER_REWARD_QUOTIENT);
     let proposer_reward = Gwei(whistleblower_reward.0 / E::PROPOSER_REWARD_QUOTIENT);
 
-    increase_balance::<E>(state, proposer_index, proposer_reward);
+    increase_balance::<E>(state, proposer_index, proposer_reward)?;
     increase_balance::<E>(
         state,
         whistleblower_idx,
         Gwei(whistleblower_reward.0 - proposer_reward.0),
-    );
+    )?;
 
     Ok(())
 }

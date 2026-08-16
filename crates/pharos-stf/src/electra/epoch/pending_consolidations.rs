@@ -112,7 +112,7 @@ pub fn process_pending_consolidations<
             PENDING_DEPOSITS_LIMIT,
             PENDING_PARTIAL_WITHDRAWALS_LIMIT,
             PENDING_CONSOLIDATIONS_LIMIT,
-        >(state, source_index, Gwei(source_effective_balance));
+        >(state, source_index, Gwei(source_effective_balance))?;
         increase_balance_electra::<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
@@ -127,7 +127,7 @@ pub fn process_pending_consolidations<
             PENDING_DEPOSITS_LIMIT,
             PENDING_PARTIAL_WITHDRAWALS_LIMIT,
             PENDING_CONSOLIDATIONS_LIMIT,
-        >(state, target_index, Gwei(source_effective_balance));
+        >(state, target_index, Gwei(source_effective_balance))?;
         next_pending_consolidation += 1;
     }
 

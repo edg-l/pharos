@@ -129,7 +129,7 @@ pub fn apply_pending_deposit<
                 PENDING_DEPOSITS_LIMIT,
                 PENDING_PARTIAL_WITHDRAWALS_LIMIT,
                 PENDING_CONSOLIDATIONS_LIMIT,
-            >(state, validator_index, deposit.amount);
+            >(state, validator_index, deposit.amount)?;
         }
     }
 

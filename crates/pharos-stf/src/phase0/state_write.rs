@@ -34,7 +34,7 @@ pub trait BeaconStateWrite: BeaconStateView {
     fn increment_eth1_deposit_index(&mut self);
     fn set_validator(&mut self, idx: usize, v: Validator) -> Result<(), StateTransitionError>;
     fn push_validator(&mut self, v: Validator) -> Result<(), StateTransitionError>;
-    fn set_balance(&mut self, idx: usize, val: Gwei);
+    fn set_balance(&mut self, idx: usize, val: Gwei) -> Result<(), StateTransitionError>;
     fn push_balance(&mut self, val: Gwei) -> Result<(), StateTransitionError>;
     fn set_slashing(&mut self, idx: usize, val: Gwei) -> Result<(), StateTransitionError>;
     fn set_randao_mix(&mut self, idx: usize, mix: Hash256) -> Result<(), StateTransitionError>;
@@ -170,11 +170,12 @@ where
         Ok(())
     }
 
-    fn set_balance(&mut self, idx: usize, val: Gwei) {
+    fn set_balance(&mut self, idx: usize, val: Gwei) -> Result<(), StateTransitionError> {
         self.balances = self
             .balances
             .with_set(idx, val)
-            .expect("balance index in range");
+            .map_err(|_| StateTransitionError::IndexOutOfRange(idx))?;
+        Ok(())
     }
 
     fn push_balance(&mut self, val: Gwei) -> Result<(), StateTransitionError> {
@@ -534,7 +535,7 @@ where
         }
     }
 
-    fn set_balance(&mut self, idx: usize, val: Gwei) {
+    fn set_balance(&mut self, idx: usize, val: Gwei) -> Result<(), StateTransitionError> {
         match self {
             ForkBeaconState::Phase0(s) => s.set_balance(idx, val),
             ForkBeaconState::Altair(_) => {

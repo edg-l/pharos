@@ -142,7 +142,7 @@ fn apply_deposit_altair<
             state.balances = state
                 .balances
                 .with_set(idx, Gwei(cur.0 + amount))
-                .expect("balance index in range");
+                .map_err(|_| StateTransitionError::IndexOutOfRange(idx))?;
         }
         None => {
             // New validator: optionally verify BLS proof of possession.

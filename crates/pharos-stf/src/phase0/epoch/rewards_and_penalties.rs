@@ -34,7 +34,6 @@ use super::helpers::{
 
 // ── Small spec helpers ─────────────────────────────────────────────────────────
 
-
 /// `get_finality_delay` per `specs/phase0/beacon-chain.md:1593-1594`.
 fn get_finality_delay<E: EthSpec>(state: &E::BeaconState) -> u64 {
     let prev = get_previous_epoch::<E>(state).0;
@@ -256,7 +255,8 @@ where
                 .validator(index.0 as usize)
                 .map(|v| v.effective_balance.0)
                 .unwrap_or(0);
-            effective_balance * E::BASE_REWARD_FACTOR / sqrt_total_balance
+            effective_balance * E::BASE_REWARD_FACTOR
+                / sqrt_total_balance
                 / E::BASE_REWARDS_PER_EPOCH
         };
 
@@ -358,8 +358,8 @@ where
     let (rewards, penalties) = get_attestation_deltas::<E>(state)?;
     let n = state.num_validators();
     for i in 0..n {
-        increase_balance::<E>(state, ValidatorIndex(i as u64), Gwei(rewards[i]));
-        decrease_balance::<E>(state, ValidatorIndex(i as u64), Gwei(penalties[i]));
+        increase_balance::<E>(state, ValidatorIndex(i as u64), Gwei(rewards[i]))?;
+        decrease_balance::<E>(state, ValidatorIndex(i as u64), Gwei(penalties[i]))?;
     }
 
     Ok(())

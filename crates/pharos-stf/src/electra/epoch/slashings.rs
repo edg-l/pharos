@@ -130,7 +130,7 @@ pub fn process_slashings<
             PENDING_DEPOSITS_LIMIT,
             PENDING_PARTIAL_WITHDRAWALS_LIMIT,
             PENDING_CONSOLIDATIONS_LIMIT,
-        >(state, ValidatorIndex(i as u64), Gwei(penalty));
+        >(state, ValidatorIndex(i as u64), Gwei(penalty))?;
     }
 
     Ok(())

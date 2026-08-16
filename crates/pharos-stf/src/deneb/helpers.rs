@@ -478,7 +478,7 @@ pub(crate) fn decrease_balance_deneb<
     >,
     index: ValidatorIndex,
     delta: Gwei,
-) {
+) -> Result<(), crate::error::StateTransitionError> {
     let cur = state
         .balances
         .as_slice()
@@ -493,7 +493,8 @@ pub(crate) fn decrease_balance_deneb<
     state.balances = state
         .balances
         .with_set(index.0 as usize, new_val)
-        .expect("balance index in range");
+        .map_err(|_| crate::error::StateTransitionError::IndexOutOfRange(index.0 as usize))?;
+    Ok(())
 }
 
 /// `increase_balance` for a deneb `BeaconState`.
@@ -523,7 +524,7 @@ pub(crate) fn increase_balance_deneb<
     >,
     index: ValidatorIndex,
     delta: Gwei,
-) {
+) -> Result<(), crate::error::StateTransitionError> {
     let cur = state
         .balances
         .as_slice()
@@ -533,7 +534,8 @@ pub(crate) fn increase_balance_deneb<
     state.balances = state
         .balances
         .with_set(index.0 as usize, Gwei(cur.0.saturating_add(delta.0)))
-        .expect("balance index in range");
+        .map_err(|_| crate::error::StateTransitionError::IndexOutOfRange(index.0 as usize))?;
+    Ok(())
 }
 
 // ── initiate_validator_exit (deneb) ───────────────────────────────────────────

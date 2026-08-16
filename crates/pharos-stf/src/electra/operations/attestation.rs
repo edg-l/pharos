@@ -346,7 +346,7 @@ where
         PENDING_DEPOSITS_LIMIT,
         PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PENDING_CONSOLIDATIONS_LIMIT,
-    >(state, proposer_index, proposer_reward);
+    >(state, proposer_index, proposer_reward)?;
 
     Ok(())
 }
