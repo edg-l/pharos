@@ -497,6 +497,26 @@ pub trait EthSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + Defa
     /// Both presets: `32000000000` (same as `MAX_EFFECTIVE_BALANCE`).
     const MIN_ACTIVATION_BALANCE: u64;
 
+    /// `MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `4096` (`2**12`). EIP-7251.
+    const MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA: u64;
+
+    /// `WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA` from `presets/{mainnet,minimal}/electra.yaml`.
+    ///
+    /// Both presets: `4096` (`2**12`). EIP-7251.
+    const WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA: u64;
+
+    /// `MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA` from `configs/{mainnet,minimal}.yaml`.
+    ///
+    /// Mainnet: `128000000000`. Minimal: `64000000000`. EIP-7251 (churn-as-balance).
+    const MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA: u64;
+
+    /// `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` from `configs/{mainnet,minimal}.yaml`.
+    ///
+    /// Mainnet: `256000000000`. Minimal: `128000000000`. EIP-7251.
+    const MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT: u64;
+
     /// `MAX_BLOBS_PER_BLOCK_ELECTRA` from `configs/mainnet.yaml` / `configs/minimal.yaml`.
     ///
     /// Both presets default: `9` (EIP-7691).
@@ -2236,6 +2256,14 @@ impl EthSpec for MainnetEthSpec {
     const MAX_EFFECTIVE_BALANCE_ELECTRA: u64 = 2_048_000_000_000;
     /// `MIN_ACTIVATION_BALANCE` = 32000000000 (same as pre-electra MAX_EFFECTIVE_BALANCE).
     const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
+    /// `MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA` from `presets/mainnet/electra.yaml` (2^12).
+    const MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA: u64 = 4_096;
+    /// `WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA` from `presets/mainnet/electra.yaml` (2^12).
+    const WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA: u64 = 4_096;
+    /// `MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA` from `configs/mainnet.yaml`.
+    const MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA: u64 = 128_000_000_000;
+    /// `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` from `configs/mainnet.yaml`.
+    const MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT: u64 = 256_000_000_000;
     /// `MAX_BLOBS_PER_BLOCK_ELECTRA` from `configs/mainnet.yaml` (EIP-7691, default 9).
     const MAX_BLOBS_PER_BLOCK_ELECTRA: u64 = 9;
     /// `MAX_AGGREGATION_BITS_ELECTRA` = MAX_VALIDATORS_PER_COMMITTEE * MAX_COMMITTEES_PER_SLOT = 2048 * 64 = 131072.
@@ -2650,6 +2678,14 @@ impl EthSpec for MinimalEthSpec {
     const MAX_EFFECTIVE_BALANCE_ELECTRA: u64 = 2_048_000_000_000;
     /// `MIN_ACTIVATION_BALANCE` = 32000000000.
     const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
+    /// `MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA` from `presets/minimal/electra.yaml` (2^12).
+    const MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA: u64 = 4_096;
+    /// `WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA` from `presets/minimal/electra.yaml` (2^12).
+    const WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA: u64 = 4_096;
+    /// `MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA` from `configs/minimal.yaml`.
+    const MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA: u64 = 64_000_000_000;
+    /// `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` from `configs/minimal.yaml`.
+    const MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT: u64 = 128_000_000_000;
     /// `MAX_BLOBS_PER_BLOCK_ELECTRA` (EIP-7691, default 9).
     const MAX_BLOBS_PER_BLOCK_ELECTRA: u64 = 9;
     /// `MAX_AGGREGATION_BITS_ELECTRA` = MAX_VALIDATORS_PER_COMMITTEE * MAX_COMMITTEES_PER_SLOT = 2048 * 4 = 8192.
