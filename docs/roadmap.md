@@ -269,6 +269,7 @@ what actually shipped.** Order as shipped (v0.13.0):
 | M8-OptimisticSync | Spec-correct optimistic sync | DONE |
 | M9-Validator | In-house validator client (`pharos-vc`) + BN production surface | DONE |
 | **M10-Deneb** | Deneb fork (KZG/blobs) | **next fork, not started** |
+| Devnet dashboard | Standalone Python web dashboard for the local devnet (tooling) | planned (after M10-DA) |
 | M11 | Productionization (entrenched bucket; parallel hardening track) | planned |
 | M12-Electra | Electra fork | planned |
 | M13-Fulu | Fulu / PeerDAS | planned |
@@ -1050,6 +1051,29 @@ The server MUST NOT return 400 on an unrecognised-but-spec-listed topic.
 - New req-resp methods: `BlobSidecarsByRange`,
   `BlobSidecarsByRoot`. Codec extension required.
 - `engine_getBlobsV1` Engine API call for blob retrieval.
+
+### Devnet dashboard — local-devnet web monitor (tooling, planned after M10-DA)
+
+Small standalone web tool to watch the local devnet (`~/.cache/pharos-devnet/run-blockprod.sh`:
+pharos + Lighthouse v8.1.3 + ethrex v13) and surface what pharos is doing at a
+glance. Slots in after M10-DA closes, before/alongside M10-Deneb (the EL panel
+gets richer once Deneb blob/gas fields land).
+
+- **Scope: pharos-only.** All data sourced from pharos's own Beacon API (the
+  axum server shipped in M7). Does NOT query Lighthouse or ethrex directly.
+- **Form factor: a single-file Python script** (stdlib `http.server` is fine)
+  that polls the pharos Beacon API, aggregates, and serves one HTML page. Lives
+  in `scripts/` or the devnet dir — NOT integrated into the `pharos` binary, and
+  NOT a static-HTML-only file (Beacon API CORS would block that).
+- **Panels:**
+  - *Chain status* — head slot/root, justified + finalized checkpoints, current
+    epoch, fork name, wall-clock lag.
+  - *Sync & peers* — `is_syncing` / `is_optimistic`, peer count + list, sync distance.
+  - *Validator activity* — `pharos-vc` proposals/attestations, recent blocks
+    proposed, slot timing.
+  - *Execution layer* — sourced from pharos's view (head block's execution-payload
+    block hash/number + `execution_optimistic` / payload VALID-SYNCING status),
+    plus blob/gas info once Deneb lands. Does not talk to ethrex directly.
 
 ### M12 — Electra
 - EIP-6110, 7002, 7251, 7549, 7685, 7691.
