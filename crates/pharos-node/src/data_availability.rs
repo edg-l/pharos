@@ -407,6 +407,120 @@ impl<E: BeaconSpec> DataAvailabilityChecker<E> for ColumnAvailabilityChecker<E> 
     }
 }
 
+// ── ForkAwareDataAvailabilityChecker ──────────────────────────────────────────
+
+/// Live-node DA checker spanning the Deneb/Electra → Fulu boundary.
+///
+/// A long-running node imports both pre-Fulu blocks (data delivered as
+/// `BlobSidecar`s) and Fulu+ blocks (data delivered as `DataColumnSidecar`s),
+/// so a single static checker is wrong: a `BlobAvailabilityChecker` would gate
+/// a Fulu block against blob sidecars that never arrive post-Fulu and park it
+/// forever (and vice-versa for backfilled pre-Fulu blocks).
+///
+/// The `DataAvailabilityChecker` trait is fork-agnostic by design (it sees only
+/// `(block_root, kzg_commitments)`, never the slot), so this wrapper cannot
+/// learn the block's fork from its arguments. Instead it delegates to BOTH
+/// sub-checkers and combines: each sub-checker returns `Available` only when
+/// ITS sidecar type is present in the store, and a node only ever ingests the
+/// fork-correct sidecar type for a given block, so "`Available` if either is
+/// `Available`" is exactly right. Empty commitments → both `Irrelevant` →
+/// `Irrelevant`. The column checker is tried first (Fulu is the active mainnet
+/// fork) so the common path short-circuits without a redundant blob-store scan.
+///
+/// Per `D-fork-aware-live-da-checker`.
+pub struct ForkAwareDataAvailabilityChecker<E: BeaconSpec> {
+    blob: BlobAvailabilityChecker<E>,
+    column: ColumnAvailabilityChecker<E>,
+}
+
+impl<E: BeaconSpec> ForkAwareDataAvailabilityChecker<E> {
+    /// Build both sub-checkers from the shared store/verifier/runtime config and
+    /// the node's `NodeID` + custody-group count (for the column sampling set).
+    pub fn new(
+        store: Arc<RocksStore>,
+        verifier: Arc<KzgVerifier>,
+        runtime_cfg: Arc<RuntimeConfig>,
+        node_id: [u8; 32],
+        custody_group_count: u64,
+    ) -> Self {
+        Self {
+            blob: BlobAvailabilityChecker::new(Arc::clone(&store), Arc::clone(&verifier)),
+            column: ColumnAvailabilityChecker::new(
+                store,
+                verifier,
+                runtime_cfg,
+                node_id,
+                custody_group_count,
+            ),
+        }
+    }
+}
+
+impl<E: BeaconSpec> DataAvailabilityChecker<E> for ForkAwareDataAvailabilityChecker<E> {
+    fn is_data_available(
+        &self,
+        block_root: Root,
+        kzg_commitments: &[KZGCommitment],
+    ) -> DataAvailabilityVerdict {
+        // Column first: Fulu is the active mainnet fork, so most tip blocks
+        // resolve here and skip the (redundant) blob-store scan below.
+        let column_verdict = self.column.is_data_available(block_root, kzg_commitments);
+        if column_verdict == DataAvailabilityVerdict::Available {
+            return DataAvailabilityVerdict::Available;
+        }
+        let blob_verdict = self.blob.is_data_available(block_root, kzg_commitments);
+        combine_da_verdicts(blob_verdict, column_verdict)
+    }
+}
+
+/// Combine the blob and column sub-checker verdicts (see
+/// [`ForkAwareDataAvailabilityChecker`]). `Available` if either sub-checker is
+/// (only the fork-correct sidecar type is ever present); `Irrelevant` only when
+/// both are (empty commitments); otherwise `NotAvailable`.
+fn combine_da_verdicts(
+    blob: DataAvailabilityVerdict,
+    column: DataAvailabilityVerdict,
+) -> DataAvailabilityVerdict {
+    use DataAvailabilityVerdict::*;
+    match (blob, column) {
+        (Available, _) | (_, Available) => Available,
+        (Irrelevant, Irrelevant) => Irrelevant,
+        _ => NotAvailable,
+    }
+}
+
+#[cfg(test)]
+mod fork_aware_tests {
+    use super::DataAvailabilityVerdict::*;
+    use super::combine_da_verdicts;
+
+    #[test]
+    fn fulu_block_with_columns_present_is_available() {
+        // Column sidecars present (Fulu block), blobs absent: Available.
+        assert_eq!(combine_da_verdicts(NotAvailable, Available), Available);
+    }
+
+    #[test]
+    fn pre_fulu_block_with_blobs_present_is_available() {
+        // Blob sidecars present (pre-Fulu block), columns absent: Available.
+        assert_eq!(combine_da_verdicts(Available, NotAvailable), Available);
+    }
+
+    #[test]
+    fn neither_sidecar_type_present_is_not_available() {
+        assert_eq!(
+            combine_da_verdicts(NotAvailable, NotAvailable),
+            NotAvailable
+        );
+    }
+
+    #[test]
+    fn empty_commitments_is_irrelevant() {
+        // Both sub-checkers short-circuit on empty commitments.
+        assert_eq!(combine_da_verdicts(Irrelevant, Irrelevant), Irrelevant);
+    }
+}
+
 // ── BlobAwaitingBlocks ────────────────────────────────────────────────────────
 
 /// Maximum time to hold a DA-pending block before evicting it.

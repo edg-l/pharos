@@ -32,7 +32,7 @@ use pharos_node::checkpoint_sync::{apply_anchor, fetch_checkpoint};
 use pharos_node::column_ingestion::{ColumnAwaitingBlocks, run_column_ingestion_loop};
 use pharos_node::column_prune::run_column_prune_loop;
 use pharos_node::custody::{CustodyState, run_custody_adjustment_loop};
-use pharos_node::data_availability::{BlobAvailabilityChecker, BlobAwaitingBlocks};
+use pharos_node::data_availability::{BlobAwaitingBlocks, ForkAwareDataAvailabilityChecker};
 use pharos_node::engine_driver::{HeadChange, NewPayloadRequest, run_engine_driver_loop};
 use pharos_node::engine_keepalive::{hex_to_u256, run_transition_config_keepalive, u256_to_hex};
 use pharos_node::fork_migration::{run_bpo_migration_loop, run_fork_migration_loop};
@@ -1846,10 +1846,21 @@ async fn main() -> anyhow::Result<()> {
         let (reinject_tx, reinject_rx) = mpsc::channel::<ReinjectBlock>(64);
 
         // DA checker + blob-awaiting registry.
+        //
+        // Fork-aware: a live node spans the Electra→Fulu boundary and must gate
+        // pre-Fulu blocks against blob sidecars and Fulu+ blocks against data
+        // column sidecars. A static BlobAvailabilityChecker would park Fulu
+        // blocks forever (blobs never arrive post-Fulu). Per
+        // `D-fork-aware-live-da-checker`. The column sampling set uses the
+        // node's NodeID + the baseline CUSTODY_REQUIREMENT (sampling_size =
+        // max(SAMPLES_PER_SLOT, cgc) governs the actual expected-column count).
         let kzg_verifier = Arc::new(pharos_kzg::KzgVerifier::mainnet());
-        let da_checker = Arc::new(BlobAvailabilityChecker::<MainnetBeaconSpec>::new(
+        let da_checker = Arc::new(ForkAwareDataAvailabilityChecker::<MainnetBeaconSpec>::new(
             Arc::clone(&store_arc),
             Arc::clone(&kzg_verifier),
+            Arc::new(runtime_cfg.clone()),
+            node_id.raw(),
+            MainnetBeaconSpec::CUSTODY_REQUIREMENT,
         ));
         let blob_awaiting = Arc::new(BlobAwaitingBlocks::new());
 
@@ -1890,7 +1901,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) = run_block_ingestion_loop::<
                     MainnetBeaconSpec,
                     ExecutionEngineHandle,
-                    BlobAvailabilityChecker<MainnetBeaconSpec>,
+                    ForkAwareDataAvailabilityChecker<MainnetBeaconSpec>,
                 >(
                     event_rx,
                     reinject_rx,
