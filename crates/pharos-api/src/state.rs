@@ -1145,6 +1145,27 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
         vec![]
     }
 
+    // ── Data-column sidecar reads (M15 Phase 5) ──────────────────────────────
+
+    /// Return all `DataColumnSidecar`s for `block_root`, ordered by ascending
+    /// column index.
+    ///
+    /// Returns an empty `Vec` when no sidecars are stored for that root (pre-Fulu
+    /// blocks or blocks with no columns carry zero sidecars — this is NOT a 404).
+    /// The handler is responsible for 404 when the block itself is not found.
+    ///
+    /// Default impl returns an empty `Vec` so mocks need only override when testing
+    /// the column-read path. `NodeChainState` overrides with a real store read.
+    ///
+    /// Per `~/dev/beacon-APIs/apis/debug/data_column_sidecars.yaml`
+    /// (`getDebugDataColumnSidecars`).
+    fn data_column_sidecars_by_root(
+        &self,
+        _root: pharos_types::phase0::Root,
+    ) -> Vec<pharos_types::fulu::MainnetDataColumnSidecar> {
+        vec![]
+    }
+
     // ── Light-client REST endpoints (M7-followup) ─────────────────────────────
 
     /// Return the `LcEnvelope` for the bootstrap at `block_root`, if stored.
@@ -2555,6 +2576,19 @@ where
         // treats empty as "block exists but carried no blobs"; a missing block
         // is detected by `resolve_block_id` before this is called).
         <RocksStore as DbStore<E>>::get_blob_sidecars_by_root(&self.store, &root)
+            .unwrap_or_default()
+    }
+
+    // ── Data-column sidecar reads (M15 Phase 5) ──────────────────────────────
+
+    fn data_column_sidecars_by_root(
+        &self,
+        root: pharos_types::phase0::Root,
+    ) -> Vec<pharos_types::fulu::MainnetDataColumnSidecar> {
+        // On a storage error, return empty rather than propagating (the handler
+        // treats empty as "block exists but carried no columns"; a missing block
+        // is detected by `resolve_block_id` before this is called).
+        <RocksStore as DbStore<E>>::get_all_data_column_sidecars_by_root(&self.store, &root)
             .unwrap_or_default()
     }
 }

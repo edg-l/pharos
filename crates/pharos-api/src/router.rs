@@ -71,6 +71,7 @@ use crate::state::ApiState;
 /// - `GET  /eth/v1/debug/fork_choice`
 /// - `GET  /eth/v2/debug/beacon/heads`
 /// - `GET  /eth/v2/debug/beacon/states/{state_id}`
+/// - `GET  /eth/v1/debug/beacon/data_column_sidecars/{block_id}` (public, M15 Phase 5)
 ///
 /// **M9 Phase 5 — Validator production + beacon pool + publish**
 /// - `GET  /eth/v3/validator/blocks/{slot}`             (auth-gated)
@@ -310,7 +311,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
         )
         // SSE event stream (Phase 4)
         .route("/eth/v1/events", get(events_handlers::get_events::<E>))
-        // Debug namespace (Phase 5)
+        // Debug namespace (Phase 5 + M15 Phase 5)
         .route(
             "/eth/v1/debug/fork_choice",
             get(debug_handlers::get_fork_choice::<E>),
@@ -322,6 +323,11 @@ pub fn build_router_with_auth<E: BeaconSpec>(
         .route(
             "/eth/v2/debug/beacon/states/{state_id}",
             get(debug_handlers::get_debug_state::<E>),
+        )
+        // M15 Phase 5 — PeerDAS data column sidecars (public)
+        .route(
+            "/eth/v1/debug/beacon/data_column_sidecars/{block_id}",
+            get(debug_handlers::get_data_column_sidecars::<E>),
         )
         // Light-client namespace (M7-followup)
         .route(
