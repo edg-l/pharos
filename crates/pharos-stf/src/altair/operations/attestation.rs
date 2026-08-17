@@ -398,11 +398,10 @@ where
                 .unwrap_or_default()
         })
         .collect();
-    let agg_pubkey = aggregate_pubkeys(&pubkeys).map_err(|_| {
-        StateTransitionError::InvalidAttestation {
+    let agg_pubkey =
+        aggregate_pubkeys(&pubkeys).map_err(|_| StateTransitionError::InvalidAttestation {
             reason: AttestationInvalidReason::InvalidSignature,
-        }
-    })?;
+        })?;
 
     let domain = get_domain_altair::<
         SLOTS_PER_HISTORICAL_ROOT,

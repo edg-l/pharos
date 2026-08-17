@@ -21,6 +21,7 @@ use pharos_types::{
     phase0::{Epoch, ValidatorIndex},
 };
 use pharos_utils::Gwei;
+use pharos_utils::bls::{SignatureSet, aggregate_pubkeys, verify_signature_sets};
 
 use crate::altair::helpers::{
     PROPOSER_WEIGHT, get_attestation_participation_flag_indices, get_base_reward_per_increment,
@@ -50,6 +51,16 @@ use crate::phase0::{
 /// - per-committee attester loop with `committee_offset` accumulation.
 /// - `len(aggregation_bits) == committee_offset` assertion.
 /// - proposer index from `get_beacon_proposer_index_electra`.
+///
+/// Compute-once batched-BLS contract (matches deneb): when `verify_signatures`,
+/// this builds the indexed attestation's [`SignatureSet`] and returns
+/// `Ok(Some(set))` WITHOUT verifying it inline — the caller batches every
+/// attestation into one `verify_signature_sets` call
+/// (`process_operations_electra`) or verifies the single returned set (the
+/// `operations` conformance runner). Structural validity (non-empty, strictly
+/// sorted indices, all pubkeys present) is still checked here and surfaces as an
+/// immediate `Err`. Returns `Ok(None)` when `!verify_signatures`. Apply-before-
+/// verify is safe: a block/op failure discards the state.
 pub fn process_attestation_electra<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
@@ -86,7 +97,7 @@ pub fn process_attestation_electra<
     attestation: &pharos_types::electra::Attestation<MAX_AGGREGATION_BITS, MAX_COMMITTEES_PER_SLOT>,
     verify_signatures: bool,
     proposer_override: Option<ValidatorIndex>,
-) -> Result<(), StateTransitionError>
+) -> Result<Option<SignatureSet>, StateTransitionError>
 where
     E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
@@ -233,20 +244,27 @@ where
         E,
     >(&altair, data, inclusion_delay, true)?;
 
-    if verify_signatures {
-        // Build indexed attestation and verify signature.
+    // Build the batched signature set once (no inline verify): the caller batches
+    // it. Structural validity (non-empty, strictly sorted, pubkeys present) is
+    // still enforced here. See the function doc.
+    let sig_set = if verify_signatures {
         let indexed = get_indexed_attestation_electra_inner::<
             MAX_AGGREGATION_BITS,
             MAX_COMMITTEES_PER_SLOT,
             E,
         >(&enum_state, attestation);
 
-        if !is_valid_indexed_attestation_electra(state, &indexed, verify_signatures) {
-            return Err(StateTransitionError::InvalidAttestation {
-                reason: AttestationInvalidReason::InvalidSignature,
-            });
+        match indexed_attestation_signature_set_electra(state, &indexed) {
+            Some(set) => Some(set),
+            None => {
+                return Err(StateTransitionError::InvalidAttestation {
+                    reason: AttestationInvalidReason::InvalidSignature,
+                });
+            }
         }
-    }
+    } else {
+        None
+    };
 
     // Get attesting indices for participation update.
     let attesting_indices = get_attesting_indices_electra::<
@@ -316,7 +334,7 @@ where
         PENDING_CONSOLIDATIONS_LIMIT,
     >(state, proposer_index, proposer_reward)?;
 
-    Ok(())
+    Ok(sig_set)
 }
 
 /// `process_attester_slashing` for Electra.
@@ -506,14 +524,75 @@ fn is_valid_indexed_attestation_electra<
         return true;
     }
 
+    // Shares the signing-root/aggregate-pubkey construction with the batched
+    // `process_attestation_electra` path via the helper below.
+    match indexed_attestation_signature_set_electra(state, indexed_att) {
+        Some(set) => verify_signature_sets(std::slice::from_ref(&set)).unwrap_or(false),
+        None => false,
+    }
+}
+
+/// Build the batched BLS [`SignatureSet`] for an electra `IndexedAttestation`:
+/// structural validity (non-empty, strictly sorted indices, every index resolves
+/// to a validator pubkey) then the aggregate signer pubkey + signing root.
+/// Returns `None` if the attestation is structurally invalid (the caller maps
+/// that to a rejection). Verification itself is performed by the caller via
+/// `verify_signature_sets`, so this same construction backs both the inline
+/// `is_valid_indexed_attestation_electra` check and the batched
+/// `process_attestation_electra` path.
+#[allow(clippy::type_complexity)]
+fn indexed_attestation_signature_set_electra<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const PENDING_DEPOSITS_LIMIT: u64,
+    const PENDING_PARTIAL_WITHDRAWALS_LIMIT: u64,
+    const PENDING_CONSOLIDATIONS_LIMIT: u64,
+    const MAX_AGGREGATION_BITS: u64,
+>(
+    state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        PENDING_CONSOLIDATIONS_LIMIT,
+    >,
+    indexed_att: &IndexedAttestation<MAX_AGGREGATION_BITS>,
+) -> Option<SignatureSet> {
+    let indices = indexed_att.attesting_indices.as_slice();
+
+    if indices.is_empty() {
+        return None;
+    }
+    for w in indices.windows(2) {
+        if w[0] >= w[1] {
+            return None;
+        }
+    }
+
     let pubkeys: Vec<pharos_utils::BLSPubkey> = indices
         .iter()
         .filter_map(|i| state.validators.get(i.0 as usize).map(|v| v.pubkey))
         .collect();
-
     if pubkeys.len() != indices.len() {
-        return false;
+        return None;
     }
+    let agg_pubkey = aggregate_pubkeys(&pubkeys).ok()?;
 
     let domain = {
         let target_epoch = indexed_att.data.target.epoch;
@@ -528,11 +607,13 @@ fn is_valid_indexed_attestation_electra<
             &state.genesis_validators_root,
         )
     };
-
     let msg = compute_signing_root(&indexed_att.data, domain);
 
-    pharos_utils::bls::fast_aggregate_verify(&pubkeys, msg.as_slice(), &indexed_att.signature)
-        .unwrap_or(false)
+    Some(SignatureSet {
+        pubkey: agg_pubkey,
+        message: msg.as_slice().to_vec(),
+        signature: indexed_att.signature,
+    })
 }
 
 /// Build an electra `IndexedAttestation` from an electra `Attestation`.

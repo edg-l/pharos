@@ -1253,6 +1253,26 @@ fn altair_op_outcome(
     }
 }
 
+/// Flatten a deneb `process_attestation` result into the `Result<(), _>` shape
+/// `altair_op_outcome` expects. Deneb's `process_attestation` returns the
+/// attestation's batched `SignatureSet` instead of verifying inline (compute-once
+/// batching), so the operations runner verifies the single returned set here to
+/// keep rejecting invalid-signature cases.
+fn flatten_att_sig_result(
+    result: Result<Option<pharos_utils::bls::SignatureSet>, pharos_stf::StateTransitionError>,
+) -> Result<(), pharos_stf::StateTransitionError> {
+    use pharos_stf::{AttestationInvalidReason, StateTransitionError};
+    match result? {
+        None => Ok(()),
+        Some(set) => match pharos_utils::bls::verify_signature_sets(std::slice::from_ref(&set)) {
+            Ok(true) => Ok(()),
+            _ => Err(StateTransitionError::InvalidAttestation {
+                reason: AttestationInvalidReason::InvalidSignature,
+            }),
+        },
+    }
+}
+
 /// Enumerate all altair operation cases for one preset, returning `CaseTask`s
 /// with sequential `case_ordinal` in (sub-table-order, walk-order).
 fn enumerate_operations_altair(
@@ -4168,7 +4188,13 @@ fn deneb_op_table_mainnet() -> Vec<(
                     E,
                 >(&mut pre, &op, bls_verify(&meta));
                 let current_bytes = E::deneb_into_state(pre).as_ssz_bytes();
-                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+                altair_op_outcome(
+                    flatten_att_sig_result(result),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attestation",
+                )
             }),
         ),
         // voluntary_exit: direct on deneb state (EIP-7044 fixed domain).
@@ -4890,7 +4916,13 @@ fn deneb_op_table_minimal() -> Vec<(
                     E,
                 >(&mut pre, &op, bls_verify(&meta));
                 let current_bytes = E::deneb_into_state(pre).as_ssz_bytes();
-                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+                altair_op_outcome(
+                    flatten_att_sig_result(result),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attestation",
+                )
             }),
         ),
         // voluntary_exit: direct on deneb state (EIP-7044 fixed domain).
@@ -5673,7 +5705,13 @@ fn electra_op_table_mainnet() -> Vec<(
                     E,
                 >(&mut pre, &op, bls_verify(&meta), None);
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
-                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+                altair_op_outcome(
+                    flatten_att_sig_result(result),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attestation",
+                )
             }),
         ),
         // attester_slashing: direct on electra state (EIP-7251 slash_validator).
@@ -6441,7 +6479,13 @@ fn electra_op_table_minimal() -> Vec<(
                     E,
                 >(&mut pre, &op, bls_verify(&meta), None);
                 let current_bytes = E::electra_into_state(pre).as_ssz_bytes();
-                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+                altair_op_outcome(
+                    flatten_att_sig_result(result),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attestation",
+                )
             }),
         ),
         // attester_slashing: direct on electra state (EIP-7251 slash_validator).
@@ -7229,7 +7273,13 @@ fn fulu_op_table_mainnet() -> Vec<(
                 let mut pre = pre;
                 update_fulu_from_electra(&mut pre, electra);
                 let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
-                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+                altair_op_outcome(
+                    flatten_att_sig_result(result),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attestation",
+                )
             }),
         ),
         (
@@ -7831,7 +7881,13 @@ fn fulu_op_table_minimal() -> Vec<(
                 let mut pre = pre;
                 update_fulu_from_electra(&mut pre, electra);
                 let current_bytes = E::fulu_into_state(pre).as_ssz_bytes();
-                altair_op_outcome(result, current_bytes, post_bytes, &case_name, "attestation")
+                altair_op_outcome(
+                    flatten_att_sig_result(result),
+                    current_bytes,
+                    post_bytes,
+                    &case_name,
+                    "attestation",
+                )
             }),
         ),
         (

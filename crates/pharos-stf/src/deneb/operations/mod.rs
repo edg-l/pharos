@@ -26,7 +26,7 @@ use crate::capella::operations::{
     process_proposer_slashing_capella as process_proposer_slashing_deneb,
 };
 use crate::deneb::helpers::{deneb_state_to_capella, update_deneb_from_capella};
-use crate::error::StateTransitionError;
+use crate::error::{AttestationInvalidReason, StateTransitionError};
 
 /// `process_operations` for Deneb.
 ///
@@ -231,9 +231,14 @@ where
         MAX_EXTRA_DATA_BYTES,
     >(state, capella);
 
-    // Step 3: Attestations — deneb handler (EIP-7045).
+    // Step 3: Attestations — deneb handler (EIP-7045). Apply each with signature
+    // checks deferred, collecting each one's BLS signature set, then verify them
+    // all in a single batched `verify_signature_sets` call (≈1 pairing instead of
+    // one per attestation — the dominant per-block BLS cost). A whole-block
+    // failure discards the state, so apply-before-verify is safe.
+    let mut att_sig_sets: Vec<pharos_utils::bls::SignatureSet> = Vec::new();
     for attestation in body.attestations() {
-        process_attestation::<
+        if let Some(set) = process_attestation::<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
             ETH1_DATA_VOTES_LIMIT,
@@ -245,7 +250,21 @@ where
             BYTES_PER_LOGS_BLOOM,
             MAX_EXTRA_DATA_BYTES,
             E,
-        >(state, attestation, verify_signatures)?;
+        >(state, attestation, verify_signatures)?
+        {
+            att_sig_sets.push(set);
+        }
+    }
+    if !att_sig_sets.is_empty()
+        && !pharos_utils::bls::verify_signature_sets(&att_sig_sets).map_err(|_| {
+            StateTransitionError::InvalidAttestation {
+                reason: AttestationInvalidReason::InvalidSignature,
+            }
+        })?
+    {
+        return Err(StateTransitionError::InvalidAttestation {
+            reason: AttestationInvalidReason::InvalidSignature,
+        });
     }
 
     // Step 4: Deposits — altair handler via altair projection.

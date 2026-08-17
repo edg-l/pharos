@@ -13,7 +13,8 @@ use pharos_types::{
     deneb::BeaconState,
     phase0::{Attestation, Epoch, ValidatorIndex},
 };
-use pharos_utils::Gwei;
+use pharos_utils::bls::{SignatureSet, aggregate_pubkeys};
+use pharos_utils::{BLSPubkey, Gwei};
 
 use crate::altair::helpers::{
     PROPOSER_WEIGHT, get_attestation_participation_flag_indices, get_base_reward_per_increment,
@@ -36,6 +37,17 @@ use crate::phase0::accessors::compute_epoch_at_slot;
 /// `state.slot <= data.slot + SLOTS_PER_EPOCH` is removed (EIP-7045):
 /// any attestation for the previous or current epoch target is valid
 /// regardless of inclusion delay.
+///
+/// Compute-once batched-BLS contract: this projects the deneb state to altair
+/// exactly once. When `verify_signatures`, it builds the attestation's
+/// [`SignatureSet`] from that single projection and returns `Ok(Some(set))`
+/// WITHOUT verifying it inline — the caller batches every attestation's set into
+/// one `verify_signature_sets` call (`process_operations_deneb`), or verifies the
+/// single returned set (the `operations` conformance runner). A side helper that
+/// recomputed the committee would re-run the (eth1_data_votes-cloning) projection
+/// per attestation, eating the batching win. Returns `Ok(None)` when
+/// `!verify_signatures`. Apply-before-verify is safe: a block/op failure discards
+/// the state.
 pub fn process_attestation<
     const SLOTS_PER_HISTORICAL_ROOT: u64,
     const HISTORICAL_ROOTS_LIMIT: u64,
@@ -63,7 +75,7 @@ pub fn process_attestation<
     >,
     attestation: &Attestation<2048>,
     verify_signatures: bool,
-) -> Result<(), StateTransitionError>
+) -> Result<Option<SignatureSet>, StateTransitionError>
 where
     E: BeaconSpec<
             AltairBeaconState = pharos_types::altair::BeaconState<
@@ -186,28 +198,30 @@ where
         E,
     >(&altair, data, inclusion_delay, true)?;
 
-    if verify_signatures {
-        // Build sorted attesting indices.
-        let mut attesting_sorted: Vec<ValidatorIndex> = committee
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &vi)| {
-                if attestation.aggregation_bits.get(i).unwrap_or(false) {
-                    Some(vi)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        attesting_sorted.sort();
+    // Attesting indices in committee order — reused for both signature
+    // aggregation (BLS aggregation is order-independent) and participation flags.
+    let attesting_indices: Vec<ValidatorIndex> = committee
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &vi)| {
+            if attestation.aggregation_bits.get(i).unwrap_or(false) {
+                Some(vi)
+            } else {
+                None
+            }
+        })
+        .collect();
 
-        if attesting_sorted.is_empty() {
+    // Build the batched signature set once from this projection (no inline
+    // verify): the caller batches it. See the function doc.
+    let sig_set = if verify_signatures {
+        if attesting_indices.is_empty() {
             return Err(StateTransitionError::InvalidAttestation {
                 reason: AttestationInvalidReason::EmptyAttestingIndices,
             });
         }
 
-        let pubkeys: Vec<pharos_utils::BLSPubkey> = attesting_sorted
+        let pubkeys: Vec<BLSPubkey> = attesting_indices
             .iter()
             .map(|vi| {
                 state
@@ -217,6 +231,10 @@ where
                     .unwrap_or_default()
             })
             .collect();
+        let agg_pubkey =
+            aggregate_pubkeys(&pubkeys).map_err(|_| StateTransitionError::InvalidAttestation {
+                reason: AttestationInvalidReason::InvalidSignature,
+            })?;
 
         let domain = get_domain_deneb::<
             SLOTS_PER_HISTORICAL_ROOT,
@@ -236,46 +254,22 @@ where
             Some(data.target.epoch),
         );
 
-        use pharos_ssz::{SszList, TreeHash};
-        use pharos_types::phase0::{IndexedAttestation, SigningData};
-        let indexed = IndexedAttestation::<2048> {
-            attesting_indices: SszList::from_vec(attesting_sorted)
-                .expect("indices within capacity"),
-            data: data.clone(),
-            signature: attestation.signature,
-        };
+        use pharos_ssz::TreeHash;
+        use pharos_types::phase0::SigningData;
         let msg = SigningData {
-            object_root: indexed.data.tree_hash_root(),
+            object_root: data.tree_hash_root(),
             domain,
         }
         .tree_hash_root();
 
-        let valid = pharos_utils::bls::fast_aggregate_verify(
-            &pubkeys,
-            msg.as_slice(),
-            &attestation.signature,
-        )
-        .unwrap_or(false);
-
-        if !valid {
-            return Err(StateTransitionError::InvalidAttestation {
-                reason: AttestationInvalidReason::InvalidSignature,
-            });
-        }
-    }
-
-    // Get attesting indices for participation update.
-    let attesting_indices: Vec<ValidatorIndex> = committee
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &vi)| {
-            if attestation.aggregation_bits.get(i).unwrap_or(false) {
-                Some(vi)
-            } else {
-                None
-            }
+        Some(SignatureSet {
+            pubkey: agg_pubkey,
+            message: msg.as_slice().to_vec(),
+            signature: attestation.signature,
         })
-        .collect();
+    } else {
+        None
+    };
 
     // Hoist BRPI outside the participation loop (loop-invariant: active-balance
     // total does not change within a single attestation).
@@ -352,7 +346,7 @@ where
         MAX_EXTRA_DATA_BYTES,
     >(state, proposer_index, proposer_reward)?;
 
-    Ok(())
+    Ok(sig_set)
 }
 
 fn get_domain_deneb<

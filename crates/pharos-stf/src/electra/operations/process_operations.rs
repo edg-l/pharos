@@ -33,7 +33,7 @@ use crate::electra::operations::{
     process_deposit_electra, process_deposit_request, process_proposer_slashing_electra,
     process_voluntary_exit_electra, process_withdrawal_request,
 };
-use crate::error::StateTransitionError;
+use crate::error::{AttestationInvalidReason, StateTransitionError};
 
 /// `process_operations` for Electra per `specs/electra/beacon-chain.md:1472-1503`.
 #[allow(clippy::too_many_arguments)]
@@ -246,9 +246,14 @@ where
         >(state, slashing, verify_signatures, proposer_override)?;
     }
 
-    // Step 4: Attestations — electra handler (EIP-7549).
+    // Step 4: Attestations — electra handler (EIP-7549). Apply each with
+    // signature checks deferred, collecting each one's BLS signature set, then
+    // verify them all in a single batched `verify_signature_sets` call (≈1 pairing
+    // instead of one per attestation — the dominant per-block BLS cost). A
+    // whole-block failure discards the state, so apply-before-verify is safe.
+    let mut att_sig_sets: Vec<pharos_utils::bls::SignatureSet> = Vec::new();
     for attestation in body.attestations.iter() {
-        process_attestation_electra::<
+        if let Some(set) = process_attestation_electra::<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,
             ETH1_DATA_VOTES_LIMIT,
@@ -265,7 +270,21 @@ where
             MAX_AGGREGATION_BITS,
             MAX_COMMITTEES_PER_SLOT,
             E,
-        >(state, attestation, verify_signatures, proposer_override)?;
+        >(state, attestation, verify_signatures, proposer_override)?
+        {
+            att_sig_sets.push(set);
+        }
+    }
+    if !att_sig_sets.is_empty()
+        && !pharos_utils::bls::verify_signature_sets(&att_sig_sets).map_err(|_| {
+            StateTransitionError::InvalidAttestation {
+                reason: AttestationInvalidReason::InvalidSignature,
+            }
+        })?
+    {
+        return Err(StateTransitionError::InvalidAttestation {
+            reason: AttestationInvalidReason::InvalidSignature,
+        });
     }
 
     // Step 5: Deposits — electra handler (EIP-6110 PendingDeposit append).
