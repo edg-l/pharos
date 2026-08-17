@@ -321,30 +321,81 @@ impl PoolMock {
 }
 
 impl ChainStateApi<MainnetBeaconSpec> for PoolMock {
-    fn head_root(&self) -> Root { self.inner.head_root() }
-    fn current_slot(&self) -> Slot { self.inner.current_slot() }
-    fn genesis(&self) -> (u64, Root, [u8; 4]) { self.inner.genesis() }
-    fn finalized_checkpoint(&self) -> Checkpoint { self.inner.finalized_checkpoint() }
-    fn justified_checkpoint(&self) -> Checkpoint { self.inner.justified_checkpoint() }
-    fn block_header_at(&self, root: Root) -> Option<BeaconBlockHeader> { self.inner.block_header_at(root) }
-    fn runtime_cfg(&self) -> Arc<RuntimeConfig> { Arc::clone(&self.runtime_cfg) }
-    fn is_optimistic(&self) -> bool { false }
-    fn is_optimistic_for_root(&self, _root: Root) -> bool { false }
-    fn is_optimistic_node(&self) -> bool { false }
-    fn is_syncing(&self) -> bool { false }
-    fn node_identity(&self) -> &NodeIdentityCache { self.inner.node_identity() }
-    fn state_by_block_root(&self, root: Root) -> Option<State> { self.inner.state_by_block_root(root) }
-    fn state_by_state_root(&self, root: Root) -> Option<State> { self.inner.state_by_state_root(root) }
-    fn block_root_for_slot(&self, slot: Slot) -> Option<Root> { self.inner.block_root_for_slot(slot) }
-    fn genesis_block_root(&self) -> Root { self.inner.genesis_block_root() }
-    fn sync_committee_pubkeys(&self, root: Root) -> Option<SyncCommitteePubkeys> { self.inner.sync_committee_pubkeys(root) }
-    fn block_by_root_for_api(&self, root: Root) -> Result<Option<pharos_api::dto::block::SignedBlockForApi>, pharos_api::ApiError> { self.inner.block_by_root_for_api(root) }
-    fn signed_block_header_at(&self, root: Root) -> Option<(BeaconBlockHeader, BLSSignature)> { self.inner.signed_block_header_at(root) }
-    fn regenerate_state(&self, target: RegenTarget) -> Result<State, pharos_api::ApiError> { self.inner.regenerate_state(target) }
-    fn state_to_json(&self, state: State) -> Result<JsonValue, pharos_api::ApiError> { self.inner.state_to_json(state) }
-    fn fork_choice_dump(&self) -> Result<JsonValue, pharos_api::ApiError> { self.inner.fork_choice_dump() }
-    fn fork_choice_heads(&self) -> Result<JsonValue, pharos_api::ApiError> { self.inner.fork_choice_heads() }
-    fn publish_block(&self, block: JsonValue) -> Result<bool, pharos_api::ApiError> { self.inner.publish_block(block) }
+    fn head_root(&self) -> Root {
+        self.inner.head_root()
+    }
+    fn current_slot(&self) -> Slot {
+        self.inner.current_slot()
+    }
+    fn genesis(&self) -> (u64, Root, [u8; 4]) {
+        self.inner.genesis()
+    }
+    fn finalized_checkpoint(&self) -> Checkpoint {
+        self.inner.finalized_checkpoint()
+    }
+    fn justified_checkpoint(&self) -> Checkpoint {
+        self.inner.justified_checkpoint()
+    }
+    fn block_header_at(&self, root: Root) -> Option<BeaconBlockHeader> {
+        self.inner.block_header_at(root)
+    }
+    fn runtime_cfg(&self) -> Arc<RuntimeConfig> {
+        Arc::clone(&self.runtime_cfg)
+    }
+    fn is_optimistic(&self) -> bool {
+        false
+    }
+    fn is_optimistic_for_root(&self, _root: Root) -> bool {
+        false
+    }
+    fn is_optimistic_node(&self) -> bool {
+        false
+    }
+    fn is_syncing(&self) -> bool {
+        false
+    }
+    fn node_identity(&self) -> &NodeIdentityCache {
+        self.inner.node_identity()
+    }
+    fn state_by_block_root(&self, root: Root) -> Option<State> {
+        self.inner.state_by_block_root(root)
+    }
+    fn state_by_state_root(&self, root: Root) -> Option<State> {
+        self.inner.state_by_state_root(root)
+    }
+    fn block_root_for_slot(&self, slot: Slot) -> Option<Root> {
+        self.inner.block_root_for_slot(slot)
+    }
+    fn genesis_block_root(&self) -> Root {
+        self.inner.genesis_block_root()
+    }
+    fn sync_committee_pubkeys(&self, root: Root) -> Option<SyncCommitteePubkeys> {
+        self.inner.sync_committee_pubkeys(root)
+    }
+    fn block_by_root_for_api(
+        &self,
+        root: Root,
+    ) -> Result<Option<pharos_api::dto::block::SignedBlockForApi>, pharos_api::ApiError> {
+        self.inner.block_by_root_for_api(root)
+    }
+    fn signed_block_header_at(&self, root: Root) -> Option<(BeaconBlockHeader, BLSSignature)> {
+        self.inner.signed_block_header_at(root)
+    }
+    fn regenerate_state(&self, target: RegenTarget) -> Result<State, pharos_api::ApiError> {
+        self.inner.regenerate_state(target)
+    }
+    fn state_to_json(&self, state: State) -> Result<JsonValue, pharos_api::ApiError> {
+        self.inner.state_to_json(state)
+    }
+    fn fork_choice_dump(&self) -> Result<JsonValue, pharos_api::ApiError> {
+        self.inner.fork_choice_dump()
+    }
+    fn fork_choice_heads(&self) -> Result<JsonValue, pharos_api::ApiError> {
+        self.inner.fork_choice_heads()
+    }
+    fn publish_block(&self, block: JsonValue) -> Result<bool, pharos_api::ApiError> {
+        self.inner.publish_block(block)
+    }
 
     fn submit_single_attestations(
         &self,
