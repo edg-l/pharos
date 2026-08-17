@@ -39,8 +39,16 @@ pub const COLUMN_BACKFILL_CHUNK_SLOTS: u64 = 32;
 /// Per-request timeout for `DataColumnSidecarsByRange`.
 pub const COLUMN_BACKFILL_REQ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Wait between retries when no peers are available or the provider fails.
+/// Wait between retries when a peer served an empty chunk or the provider failed.
 pub const COLUMN_BACKFILL_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Wait between retries while no peers are connected yet (e.g. at startup,
+/// before discovery yields peers). Longer than [`COLUMN_BACKFILL_RETRY_DELAY`]
+/// because there is nothing to poll — we are simply parked waiting for peers —
+/// so a short delay would only spam the log. This path does NOT count toward
+/// the per-chunk retry budget (see `run_column_backfill_loop`).
+pub const COLUMN_BACKFILL_NO_PEERS_PARK_DELAY: std::time::Duration =
+    std::time::Duration::from_secs(12);
 
 // ── ColumnBackfillError ─────────────────────────────────────────────────────────
 
@@ -235,26 +243,38 @@ where
                 info!("data-column backfill: shutdown; exiting");
                 return Ok(());
             }
-            match provider
+            // Delay before the next iteration. The no-peers path parks longer
+            // and does NOT consume the retry budget (see below).
+            let delay = match provider
                 .data_columns_by_range(Slot(start), chunk_count, columns.clone())
                 .await
             {
                 Ok(v) if !v.is_empty() => break v,
                 Ok(_) => {
-                    // Peer returned no columns for this chunk; back off and retry.
+                    // A peer answered but served no columns for this chunk;
+                    // count it as a real attempt and back off briefly.
                     warn!(
                         start,
                         chunk_count, "data-column backfill: empty response; retrying after delay"
                     );
+                    attempt += 1;
+                    COLUMN_BACKFILL_RETRY_DELAY
                 }
                 Err(ColumnBackfillError::NoUsablePeers) => {
-                    warn!("data-column backfill: no usable peers; retrying after delay");
+                    // No peers connected yet (common at startup, before discovery
+                    // yields peers). Park and wait — do NOT count this toward the
+                    // per-chunk retry budget, or we would abandon the entire serve
+                    // window in ~25s before any peer connects. Mirrors the block
+                    // backfill loop, which retries NoUsablePeers unbounded.
+                    warn!("data-column backfill: no usable peers; parking until peers connect");
+                    COLUMN_BACKFILL_NO_PEERS_PARK_DELAY
                 }
                 Err(e) => {
                     warn!(error = %e, "data-column backfill: provider failed; retrying after delay");
+                    attempt += 1;
+                    COLUMN_BACKFILL_RETRY_DELAY
                 }
-            }
-            attempt += 1;
+            };
             if attempt >= COLUMN_BACKFILL_MAX_CHUNK_RETRIES {
                 warn!(
                     start,
@@ -265,7 +285,7 @@ where
                 break Vec::new();
             }
             tokio::select! {
-                _ = tokio::time::sleep(COLUMN_BACKFILL_RETRY_DELAY) => {}
+                _ = tokio::time::sleep(delay) => {}
                 _ = shutdown_rx.changed() => {}
             }
         };

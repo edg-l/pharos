@@ -85,6 +85,60 @@ impl BackfillColumnProvider<E> for FixtureColumnProvider {
     }
 }
 
+// ── FlakyPeersProvider ───────────────────────────────────────────────────────────
+
+/// Returns `NoUsablePeers` for the first `no_peers_rounds` calls (simulating the
+/// startup window before discovery yields peers), then `Ok(Vec::new())` (peers
+/// connected but serve nothing). Records every call like `FixtureColumnProvider`.
+///
+/// Used to prove the peer-race fix: `NoUsablePeers` must NOT consume the
+/// per-chunk retry budget, so the loop parks through all `no_peers_rounds`
+/// rather than abandoning the first chunk after `COLUMN_BACKFILL_MAX_CHUNK_RETRIES`.
+#[derive(Clone)]
+struct FlakyPeersProvider {
+    calls: Arc<Mutex<Vec<RecordedCall>>>,
+    seen: Arc<Mutex<u32>>,
+    no_peers_rounds: u32,
+}
+
+impl FlakyPeersProvider {
+    fn new(no_peers_rounds: u32) -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            seen: Arc::new(Mutex::new(0)),
+            no_peers_rounds,
+        }
+    }
+
+    fn calls(&self) -> Vec<RecordedCall> {
+        self.calls.lock().expect("calls mutex").clone()
+    }
+}
+
+impl BackfillColumnProvider<E> for FlakyPeersProvider {
+    async fn data_columns_by_range(
+        &self,
+        start_slot: Slot,
+        count: u64,
+        columns: Vec<u64>,
+    ) -> Result<Vec<DataColumnSidecar<4096, 4>>, ColumnBackfillError> {
+        self.calls
+            .lock()
+            .expect("calls mutex")
+            .push((start_slot, count, columns));
+        let n = {
+            let mut seen = self.seen.lock().expect("seen mutex");
+            *seen += 1;
+            *seen
+        };
+        if n <= self.no_peers_rounds {
+            Err(ColumnBackfillError::NoUsablePeers)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
+
 // ── Test fixtures ──────────────────────────────────────────────────────────────
 
 /// Wall-clock current slot used by both tests. The window is
@@ -316,6 +370,69 @@ async fn backfill_skips_already_present_slots() {
         assert!(
             slot_covered_by_calls(&calls, slot),
             "missing window slot {slot} must be requested"
+        );
+    }
+}
+
+// ── peer-race: NoUsablePeers must not consume the retry budget ─────────────────────
+
+/// Regression for the startup peer-race: `NoUsablePeers` (no peers connected
+/// yet) must NOT count toward `COLUMN_BACKFILL_MAX_CHUNK_RETRIES`. The loop must
+/// park through every no-peers round rather than abandoning the whole serve
+/// window in ~25s before discovery yields peers.
+///
+/// `NO_PEERS_ROUNDS` (8) exceeds the 5-attempt retry budget. Under the old
+/// behavior the first chunk would be abandoned after exactly 5 calls (each
+/// no-peers response burning one attempt), so slot-0 would see at most 5 calls.
+/// With the fix the loop keeps parking, so the first chunk is requested well
+/// past 8 times, and the full window is still eventually covered.
+#[tokio::test(start_paused = true)]
+async fn backfill_parks_through_no_peers_without_burning_budget() {
+    const NO_PEERS_ROUNDS: u32 = 8;
+
+    let (store, _dir) = open_store();
+    let fc_store = fc_store_at_current_slot();
+
+    for slot in window_slots() {
+        seed_slot_root(&store, slot, root_for_slot(slot));
+    }
+
+    let provider = FlakyPeersProvider::new(NO_PEERS_ROUNDS);
+    let custody_state = Arc::new(CustodyState::new(E::CUSTODY_REQUIREMENT));
+    let runtime_cfg = fulu_runtime_cfg();
+    let node_id = [0u8; 32];
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    run_column_backfill_loop::<E, _>(
+        provider.clone(),
+        Arc::clone(&store),
+        fc_store,
+        node_id,
+        custody_state,
+        runtime_cfg,
+        shutdown_rx,
+    )
+    .await
+    .expect("loop runs to completion");
+
+    let calls = provider.calls();
+
+    // The first chunk (start_slot 0) must be requested MORE than NO_PEERS_ROUNDS
+    // times: all no-peers rounds park (budget untouched), then real attempts
+    // exhaust the budget. The old bug would cap this at the 5-attempt budget.
+    let first_chunk_calls = calls.iter().filter(|(start, _, _)| start.0 == 0).count();
+    assert!(
+        first_chunk_calls as u32 > NO_PEERS_ROUNDS,
+        "first chunk requested {first_chunk_calls} times; NoUsablePeers must not \
+         consume the retry budget (expected > {NO_PEERS_ROUNDS})"
+    );
+
+    // The loop must not wedge: once peers "connect", it advances and covers the
+    // whole window.
+    for slot in window_slots() {
+        assert!(
+            slot_covered_by_calls(&calls, slot),
+            "window slot {slot} was never requested"
         );
     }
 }
