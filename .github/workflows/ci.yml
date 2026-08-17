@@ -4,16 +4,31 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Keeps the build caches alive between bursts of work: GitHub evicts any cache
+  # untouched for 7 days, and rust-cache drops artifacts older than a week
+  # before saving.
+  schedule:
+    - cron: "0 5 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   SPEC_TESTS_TAG: v1.7.0-alpha.8
   PHAROS_SPEC_TESTS: ~/.cache/pharos-spec-tests
+  # Overrides .cargo/config.toml for CI. Its `target-cpu=native` bakes the
+  # building machine's ISA into the artifacts, which is wrong here: cached
+  # artifacts are restored onto a different runner than built them, and the
+  # hosted fleet is not microarchitecturally uniform. Keeps mold.
+  RUSTFLAGS: -C link-arg=-fuse-ld=mold
 
 jobs:
   fmt:
     name: fmt
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -25,6 +40,7 @@ jobs:
   clippy:
     name: clippy (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -40,12 +56,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: clippy-${{ matrix.toolchain }}
+          cache-on-failure: true
       - name: cargo clippy
         run: make lint
 
   test:
     name: test (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -60,12 +78,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: test-${{ matrix.toolchain }}
+          cache-on-failure: true
+          # The 78 integration-test binaries dominate this job, and each links
+          # the whole workspace. Caching the workspace crates too means a change
+          # confined to one crate only recompiles that crate and its dependents;
+          # cargo fingerprints on source, so restored artifacts are never stale.
+          cache-workspace-crates: true
       - name: cargo test --workspace
         run: make test
 
   conformance:
     name: conformance
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - name: Install mold linker
@@ -74,6 +99,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: conformance-stable
+          cache-on-failure: true
       - name: Restore spec-test fixtures
         id: cache-spec-tests
         uses: actions/cache@v4
@@ -89,6 +115,7 @@ jobs:
   fuzz-smoke:
     name: fuzz-smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - name: Install mold linker
@@ -97,6 +124,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: fuzz-nightly
+          cache-on-failure: true
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@v2
         with:
