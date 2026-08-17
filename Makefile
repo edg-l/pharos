@@ -160,18 +160,24 @@ bench: ## Run criterion benches. Captured to $(LOGS)/bench.log. Records bench-hi
 bench-check: ## Compare HEAD's bench-history/<sha>.json vs the latest baseline; fail on regression. Run on PERF_HOST after `make bench`. Tune with REGRESSION_PCT / NOISE_SIGMA. NOT part of `make ci` (benches are slow + PERF_HOST-only).
 	./scripts/bench-check.sh
 
+# Pin the fuzz target triple. cargo-fuzz defaults --target to the triple it was
+# itself built for; the musl-static prebuilt binary (e.g. taiki-e/install-action
+# in CI) would otherwise default to a musl target that isn't installed and is
+# incompatible with ASan (static libc). gnu is the host on both dev and CI.
+FUZZ_TARGET ?= x86_64-unknown-linux-gnu
+
 .PHONY: fuzz-build
 fuzz-build: ## Build all fuzz targets (requires nightly). Captured to $(LOGS)/fuzz-build.log.
 	@mkdir -p $(LOGS)
-	cargo +nightly fuzz build 2>&1 | tee $(LOGS)/fuzz-build.log
+	cargo +nightly fuzz build --target $(FUZZ_TARGET) 2>&1 | tee $(LOGS)/fuzz-build.log
 
 .PHONY: fuzz-smoke
 fuzz-smoke: ## Run each fuzz target for 30 s each (smoke test, requires nightly). Captured to $(LOGS)/fuzz-smoke.log.
 	@mkdir -p $(LOGS)
 	@: > $(LOGS)/fuzz-smoke.log
-	cargo +nightly fuzz run ssz_decode   -- -max_total_time=30 2>&1 | tee -a $(LOGS)/fuzz-smoke.log
-	cargo +nightly fuzz run process_block -- -max_total_time=30 2>&1 | tee -a $(LOGS)/fuzz-smoke.log
-	cargo +nightly fuzz run rpc_codec    -- -max_total_time=30 2>&1 | tee -a $(LOGS)/fuzz-smoke.log
+	cargo +nightly fuzz run --target $(FUZZ_TARGET) ssz_decode   -- -max_total_time=30 2>&1 | tee -a $(LOGS)/fuzz-smoke.log
+	cargo +nightly fuzz run --target $(FUZZ_TARGET) process_block -- -max_total_time=30 2>&1 | tee -a $(LOGS)/fuzz-smoke.log
+	cargo +nightly fuzz run --target $(FUZZ_TARGET) rpc_codec    -- -max_total_time=30 2>&1 | tee -a $(LOGS)/fuzz-smoke.log
 
 .PHONY: clean
 clean: ## Clear the cargo target directory.
