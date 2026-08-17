@@ -636,7 +636,7 @@ async fn main() -> anyhow::Result<()> {
         info!("cold start: seeding fork-choice from genesis state");
         let genesis_bytes = std::fs::read(genesis_path)
             .with_context(|| format!("reading genesis state from {genesis_path:?}"))?;
-        // The genesis state is a raw phase0 SSZ blob. Decode lands `Backend::Naive`
+        // The genesis state is a raw phase0 SSZ blob. Decode lands `Backend::Flat`
         // per `D-no-tree-backend-on-decode`; flip the seven hot fields to
         // `Backend::Tree` so the fork-choice store and subsequent STF benefit
         // from per-node hash caching from the very first block.

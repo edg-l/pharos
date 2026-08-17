@@ -741,4 +741,26 @@ async fn restart_across_split_rehydrates_correctly() {
         "rehydrated block_states must contain post-split block at slot {}",
         hot_slot.0
     );
+
+    // ── 7e. Assert: rehydrated states are Tree-backed (P1 restart fix) ─────────
+    //
+    // Decode/replay lands `Backend::Flat`; `rehydrate_fork_choice_store` must
+    // flip every state entering `block_states` to `Backend::Tree`, or a restarted
+    // node runs the live fork-choice/STF loop on the slow full-rehash path
+    // forever. Probe a tree-flipped field (`block_roots`) on the post-split entry.
+    {
+        let fc = fc_for_regen.read();
+        let hot_state = fc
+            .block_states
+            .get(&hot_root)
+            .expect("post-split block state present");
+        let tree_backed = match hot_state {
+            ForkMinState::Bellatrix(s) => s.block_roots.backend_is_tree(),
+            _ => panic!("test chain is bellatrix; unexpected fork variant"),
+        };
+        assert!(
+            tree_backed,
+            "rehydrated block_states entry must be Tree-backed (P1); got Naive"
+        );
+    }
 }

@@ -57,7 +57,7 @@ use pharos_types::config::RuntimeConfig;
 use pharos_types::phase0::Checkpoint;
 use pharos_types::phase0::primitives::{Root, Slot};
 use pharos_types::views::BeaconBlockBodyView;
-use pharos_types::{BeaconBlockView, BeaconSpec, SignedBeaconBlockView};
+use pharos_types::{BeaconBlockView, BeaconSpec, BeaconStateView, SignedBeaconBlockView};
 use pharos_utils::{Hash256, Uint256};
 use tracing::warn;
 
@@ -369,13 +369,20 @@ where
     let anchor_slot = anchor_block.slot();
 
     // Try hot states CF first; fall through to cold restore-point + replay.
+    // Decode/replay lands `Backend::Flat`; flip to `Backend::Tree` before the
+    // state enters `block_states` so the live fork-choice/STF hot loop gets
+    // per-node hash caching (matches the checkpoint-sync / genesis / state-load
+    // entry points). Without this, a restarted node silently runs the whole live
+    // loop on the Naive full-rehash path forever. Every insertion into
+    // `block_states` below is tree-backed for the same reason.
     let anchor_state = load_state_hot_or_cold::<E>(
         store,
         anchor_state_root,
         split_slot.max(anchor_slot),
         runtime_cfg,
     )?
-    .ok_or(StorageError::KeyNotFound)?;
+    .ok_or(StorageError::KeyNotFound)?
+    .into_tree_backend()?;
 
     // Seed the maps with the anchor.
     let mut blocks: HashMap<Root, E::BeaconBlock> = HashMap::new();
@@ -439,6 +446,8 @@ where
             // Try the hot states CF first (epoch-boundary states).
             match <RocksStore as Store<E>>::get_state(store, &state_root)? {
                 Some(state) => {
+                    // get_state decodes to Naive; convert before it enters the loop.
+                    let state = state.into_tree_backend()?;
                     block_states.insert(block_root, state.clone());
                     replay_anchor = Some((block_root, state, block_slot));
                 }
@@ -455,6 +464,10 @@ where
                             runtime_cfg,
                         ) {
                             Ok(replayed) => {
+                                // A replay crossing a fork boundary (upgrade_to_*)
+                                // builds the newly-added fields Naive; re-flip so the
+                                // whole post-state stays tree-backed.
+                                let replayed = replayed.into_tree_backend()?;
                                 block_states.insert(block_root, replayed.clone());
                                 replay_anchor = Some((block_root, replayed, block_slot));
                             }

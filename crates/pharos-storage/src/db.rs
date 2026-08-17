@@ -415,7 +415,7 @@ impl<E: BeaconSpec> Store<E> for RocksStore {
         match self.db.get_cf(cf, root_key(state_root))? {
             None => Ok(None),
             Some(bytes) => {
-                // Decode lands `Backend::Naive` per `D-no-tree-backend-on-decode`;
+                // Decode lands `Backend::Flat` per `D-no-tree-backend-on-decode`;
                 // flip the seven hot fields to `Backend::Tree` here so live-node
                 // consumers (fork-choice, STF, Beacon API) get per-node hash
                 // caching and CoW path-copy writes amortised across calls.
