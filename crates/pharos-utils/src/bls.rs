@@ -251,23 +251,82 @@ pub struct SignatureSet {
     pub signature: BLSSignature,
 }
 
-/// Verify a batch of signature sets.
+/// Next 64-bit random multiplier for batch verification.
 ///
-/// Each set is independently verified. Returns `Ok(true)` only when every set
-/// passes; returns `Ok(false)` if any set fails cryptographic verification;
-/// returns `Err` if any set has a decoding error.
+/// The scalars must be unpredictable to an adversary who chose the signatures
+/// (otherwise a set of individually-invalid signatures could be crafted to
+/// cancel in the weighted sum). We seed a counter once from OS-backed entropy
+/// (`RandomState`, thread-local OS-seeded) kept secret for the process, then
+/// stream `splitmix64` outputs — the same "secret seed + fast stream" approach
+/// production clients use. `| 1` guarantees a non-zero scalar (a zero would drop
+/// a set from the check).
+fn next_batch_rand() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEED: OnceLock<u64> = OnceLock::new();
+    static CTR: AtomicU64 = AtomicU64::new(0);
+
+    let seed = *SEED.get_or_init(|| {
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+            | 1
+    });
+    let c = CTR.fetch_add(1, Ordering::Relaxed);
+    // splitmix64 over (seed-offset + counter).
+    let mut z = seed.wrapping_add(c.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) | 1
+}
+
+fn scalar_from_u64(r: u64) -> blst::blst_scalar {
+    let mut s = blst::blst_scalar::default();
+    let limbs = [r, 0u64, 0u64, 0u64];
+    // SAFETY: `s` is a valid out-pointer and `limbs` is a 4-limb (256-bit) array.
+    unsafe { blst::blst_scalar_from_uint64(&mut s, limbs.as_ptr()) };
+    s
+}
+
+/// Verify a batch of `(pubkey, message, signature)` sets in one operation.
 ///
-/// This function verifies sets one-by-one. A future optimisation using
-/// `blst::Signature::verify_multiple_aggregate_signatures` with random
-/// scalars can reduce the number of pairings from `2n` to `n+1` for large
-/// batches — that is an M1+ performance item.
+/// Uses `blst::Signature::verify_multiple_aggregate_signatures` with secret,
+/// per-set random scalars: one batched check instead of `n` independent
+/// pairings (≈`n+1` Miller loops vs `2n`). Returns `Ok(true)` only when every
+/// set verifies, `Ok(false)` if the batch fails, `Err` on a decode error.
+///
+/// Each pubkey is subgroup-validated here (`pks_validate = false` is then passed
+/// to blst); signatures are subgroup-validated by blst (`sigs_validate = true`).
 pub fn verify_signature_sets(sets: &[SignatureSet]) -> Result<bool, BlsError> {
-    for set in sets {
-        if !verify(&set.pubkey, &set.message, &set.signature)? {
-            return Ok(false);
-        }
+    match sets.len() {
+        0 => return Ok(true),
+        // A single set has no batching benefit and avoids the rand machinery.
+        1 => return verify(&sets[0].pubkey, &sets[0].message, &sets[0].signature),
+        _ => {}
     }
-    Ok(true)
+
+    let pks: Vec<min_pk::PublicKey> = sets
+        .iter()
+        .map(|s| parse_pubkey_validated(&s.pubkey))
+        .collect::<Result<_, _>>()?;
+    let sigs: Vec<min_pk::Signature> = sets
+        .iter()
+        .map(|s| parse_signature(&s.signature))
+        .collect::<Result<_, _>>()?;
+
+    let msgs: Vec<&[u8]> = sets.iter().map(|s| s.message.as_slice()).collect();
+    let pk_refs: Vec<&min_pk::PublicKey> = pks.iter().collect();
+    let sig_refs: Vec<&min_pk::Signature> = sigs.iter().collect();
+    let rands: Vec<blst::blst_scalar> = (0..sets.len())
+        .map(|_| scalar_from_u64(next_batch_rand()))
+        .collect();
+
+    let res = min_pk::Signature::verify_multiple_aggregate_signatures(
+        &msgs, BLS_DST, &pk_refs, false, &sig_refs, true, &rands, 64,
+    );
+    Ok(res == BLST_ERROR::BLST_SUCCESS)
 }
 
 #[cfg(test)]
