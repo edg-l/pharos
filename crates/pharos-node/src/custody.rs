@@ -17,8 +17,10 @@
 //!   to custody, advertise, and serve the previous highest `cgc`; the highest
 //!   `cgc` SHOULD persist across restarts).
 //!
-//! `earliest_available_slot` (`Status` v2) is updated to the slot at which the
-//! `cgc` was last raised.
+//! `last_updated_slot` is internal `cgc` bookkeeping (the slot at which `cgc` was
+//! last raised) and does NOT feed the `Status` v2 `earliest_available_slot` field.
+//! That value is computed in `HostImpl::earliest_available_slot` from the
+//! `lowest_column_slot` watermark clamped to the spec serve window.
 //!
 //! ## VC → BN validator-indices ingress
 //!
@@ -50,21 +52,38 @@ use pharos_types::{BeaconSpec, BeaconStateView, phase0::primitives::ValidatorInd
 
 use crate::engine_driver::HeadChange;
 
-/// Shared, restart-persistent custody state (`cgc` sticky-high + last-updated slot).
+/// Shared, restart-persistent custody state (`cgc` sticky-high + last-updated
+/// slot + lowest-held-column watermark).
 ///
-/// `HostImpl` clones this `Arc` so its `Host::custody_group_count`,
-/// `Host::earliest_available_slot`, and `Host::custody_columns` accessors read
-/// the live `cgc` the loop maintains, and the network gossip/ENR/Status surfaces
-/// reflect dynamic custody adjustment.
+/// `HostImpl` clones this `Arc` so its `Host::custody_group_count` and
+/// `Host::custody_columns` accessors read the live `cgc` the loop maintains, and
+/// the network gossip/ENR surfaces reflect dynamic custody adjustment.
+///
+/// Three shared values:
+/// - `cgc`: the sticky-high custody group count (backs `custody_group_count` /
+///   `custody_columns` and the ENR `cgc` field).
+/// - `last_updated_slot`: internal `cgc` bookkeeping (last raise slot); not wired
+///   to any `Status` field.
+/// - `lowest_column_slot`: the lowest block slot for which a data-column sidecar
+///   is held; `HostImpl::earliest_available_slot` clamps it to the spec serve
+///   window for the `Status` v2 `earliest_available_slot` field.
 #[derive(Debug)]
 pub struct CustodyState {
     /// The current (highest-seen) custody group count. Sticky-high: never
     /// lowered (`D-cgc-enr-field`). Seeded at `CUSTODY_REQUIREMENT` (the
     /// protocol minimum) at startup.
     cgc: AtomicU64,
-    /// The slot at which `cgc` was last raised. Backs the `Status` v2
-    /// `earliest_available_slot` field (`specs/fulu/validator.md`).
+    /// The slot at which `cgc` was last raised. `cgc` bookkeeping only:
+    /// internal record of the last sticky-high raise (`specs/fulu/validator.md`).
+    /// It does NOT back the `Status` v2 `earliest_available_slot` field — that is
+    /// computed in `HostImpl` from `lowest_column_slot`.
     last_updated_slot: AtomicU64,
+    /// The lowest block slot for which this node currently holds a persisted
+    /// data-column sidecar. Lowered (`fetch_min`) by the column ingestion loop on
+    /// each successful persist. `HostImpl::earliest_available_slot` clamps this to
+    /// the spec serve window to produce the `Status` v2 `earliest_available_slot`.
+    /// `u64::MAX` is the sentinel meaning "no columns held yet".
+    lowest_column_slot: AtomicU64,
 }
 
 impl CustodyState {
@@ -76,6 +95,7 @@ impl CustodyState {
         Self {
             cgc: AtomicU64::new(initial_cgc),
             last_updated_slot: AtomicU64::new(0),
+            lowest_column_slot: AtomicU64::new(u64::MAX),
         }
     }
 
@@ -84,9 +104,21 @@ impl CustodyState {
         self.cgc.load(Ordering::Acquire)
     }
 
-    /// The slot at which `cgc` was last raised (`earliest_available_slot`).
+    /// The slot at which `cgc` was last raised (`cgc` bookkeeping only).
     pub fn last_updated_slot(&self) -> u64 {
         self.last_updated_slot.load(Ordering::Acquire)
+    }
+
+    /// The lowest block slot for which a data-column sidecar is held, or
+    /// `u64::MAX` when no columns have been persisted yet.
+    pub fn lowest_column_slot(&self) -> u64 {
+        self.lowest_column_slot.load(Ordering::Acquire)
+    }
+
+    /// Record that a data-column sidecar for block `slot` was persisted, lowering
+    /// the watermark when `slot` is below the current minimum (`fetch_min`).
+    pub fn observe_column_slot(&self, slot: u64) {
+        self.lowest_column_slot.fetch_min(slot, Ordering::AcqRel);
     }
 
     /// Raise `cgc` to `new_cgc` (sticky-high). Returns `true` when the value
@@ -379,6 +411,26 @@ mod tests {
         assert!(state.try_raise(32, 400));
         assert_eq!(state.custody_group_count(), 32);
         assert_eq!(state.last_updated_slot(), 400);
+    }
+
+    /// `observe_column_slot` is a monotonic minimum: the watermark starts at the
+    /// `u64::MAX` "no columns held" sentinel and only ever moves downward.
+    #[test]
+    fn lowest_column_slot_is_monotonic_min() {
+        let state = CustodyState::new(E::CUSTODY_REQUIREMENT);
+        assert_eq!(state.lowest_column_slot(), u64::MAX);
+
+        // First observation sets the watermark.
+        state.observe_column_slot(100);
+        assert_eq!(state.lowest_column_slot(), 100);
+
+        // A lower slot lowers the watermark.
+        state.observe_column_slot(50);
+        assert_eq!(state.lowest_column_slot(), 50);
+
+        // A higher slot does not raise it.
+        state.observe_column_slot(80);
+        assert_eq!(state.lowest_column_slot(), 50);
     }
 
     /// `custody_columns_for_cgc` grows the column set as `cgc` increases (more

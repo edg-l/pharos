@@ -121,12 +121,15 @@ pub trait ForkContext: Send + Sync + 'static {
         false
     }
 
-    /// The slot of the earliest available block (`SignedBeaconBlock`) this node
-    /// can serve, for the Fulu `Status` v2 `earliest_available_slot` field.
+    /// The earliest slot this node can serve for the Fulu `Status` v2
+    /// `earliest_available_slot` field — sidecar-honest, not "earliest block".
     ///
-    /// Per `specs/fulu/p2p-interface.md` (`Status v2`). The default returns
-    /// `Slot(0)` (genesis) so non-Fulu test mocks compile unchanged; HostImpl
-    /// overrides it with the finalized-checkpoint slot.
+    /// Per `specs/fulu/p2p-interface.md` (`Status v2`): a node serving blocks but
+    /// not the full data-column-sidecar history over the request window MUST
+    /// advertise the earliest slot for which it can serve SIDECARS. The default
+    /// returns `Slot(0)` (genesis) so non-Fulu test mocks compile unchanged;
+    /// HostImpl overrides it with the lowest-held-column watermark clamped to the
+    /// spec serve window (finalized-checkpoint slot pre-Fulu).
     fn earliest_available_slot(&self) -> Slot {
         Slot::default()
     }

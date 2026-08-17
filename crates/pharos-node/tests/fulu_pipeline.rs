@@ -61,6 +61,7 @@ use pharos_network::topics::{GossipTopic, GossipTopicKind};
 use pharos_network::types::ForkDigest;
 use pharos_node::block_ingestion::ReinjectBlock;
 use pharos_node::column_ingestion::{ColumnAwaitingBlocks, run_column_ingestion_loop};
+use pharos_node::custody::CustodyState;
 use pharos_node::data_availability::{
     ColumnAvailabilityChecker, DataAvailabilityChecker, DataAvailabilityVerdict,
 };
@@ -535,8 +536,15 @@ async fn column_ingestion_loop_persists_and_reinjects() {
     let (event_tx, event_rx) = mpsc::channel::<NetworkEvent>(8);
     let loop_store = Arc::clone(&store);
     let loop_registry = Arc::clone(&column_awaiting);
+    let loop_custody = Arc::new(CustodyState::new(MinimalBeaconSpec::CUSTODY_REQUIREMENT));
     let handle = tokio::spawn(async move {
-        run_column_ingestion_loop::<MinimalBeaconSpec>(event_rx, loop_store, loop_registry).await;
+        run_column_ingestion_loop::<MinimalBeaconSpec>(
+            event_rx,
+            loop_store,
+            loop_registry,
+            loop_custody,
+        )
+        .await;
     });
     let data = {
         use pharos_ssz::Encode as _;

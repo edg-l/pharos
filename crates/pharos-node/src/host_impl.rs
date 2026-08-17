@@ -861,6 +861,43 @@ impl<E: BeaconSpec> HostImpl<E> {
 
 // ── ForkContext ───────────────────────────────────────────────────────────────
 
+/// Clamp the lowest-held-column `watermark` (a block slot) to the Fulu data-column
+/// serve window for the `Status` v2 `earliest_available_slot` field.
+///
+/// Per `specs/fulu/p2p-interface.md` (`Status v2`, the sidecar-honest rule): a node
+/// that serves blocks but not the full sidecar history over the request window MUST
+/// advertise the earliest slot for which it can serve SIDECARS. The serve range is
+/// `[max(current_epoch - MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS, FULU_FORK_EPOCH),
+/// current_epoch]`.
+///
+/// - `watermark == u64::MAX` (no columns held yet): advertise the NEXT epoch's start
+///   slot, never over-claiming the current epoch's not-yet-held columns, so peers
+///   skip us rather than request sidecars we lack.
+/// - otherwise: `max(watermark, serve_floor)` — the floor rises as the pruner
+///   advances; the `max` keeps us from ever claiming below the spec serve floor.
+///
+/// All arguments are plain `u64` (epoch newtypes are unwrapped at the call site).
+fn clamp_earliest_available(
+    watermark: u64,
+    current_epoch: u64,
+    fulu_fork_epoch: u64,
+    min_epochs: u64,
+    slots_per_epoch: u64,
+) -> u64 {
+    if watermark == u64::MAX {
+        // No columns yet: advertise next-epoch start so peers skip us rather than
+        // request sidecars we do not hold.
+        return current_epoch
+            .saturating_add(1)
+            .saturating_mul(slots_per_epoch);
+    }
+    let serve_floor = current_epoch
+        .saturating_sub(min_epochs)
+        .max(fulu_fork_epoch)
+        .saturating_mul(slots_per_epoch);
+    watermark.max(serve_floor)
+}
+
 impl<E: BeaconSpec> ForkContext for HostImpl<E> {
     /// Compute the current fork digest from the wall-clock epoch.
     ///
@@ -1005,20 +1042,39 @@ impl<E: BeaconSpec> ForkContext for HostImpl<E> {
         self.current_epoch() >= self.fork_context.fork_schedule.fulu_fork_epoch
     }
 
-    /// The slot of the earliest available block this node can serve, for the
-    /// Fulu `Status v2` `earliest_available_slot` field.
+    /// The earliest slot for which this node can serve `Status` v2
+    /// `earliest_available_slot` — sidecar-honest under Fulu.
     ///
-    /// Returns the start slot of the finalized checkpoint epoch as a
-    /// conservative lower bound: the finalized block and state are always
-    /// present in the local store. A dedicated `anchor_slot` or `split_slot`
-    /// accessor would be more precise (it would reflect the cold-freeze
-    /// boundary), but neither is currently exposed as a public `Store` method.
-    /// The finalized epoch's start slot never overclaims availability.
+    /// Per `specs/fulu/p2p-interface.md` (`Status v2`): a node serving blocks but
+    /// not the full data-column-sidecar history over the request window MUST
+    /// advertise the earliest slot for which it can serve SIDECARS, not blocks.
+    /// The data-column serve range is `[max(current_epoch -
+    /// MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS, FULU_FORK_EPOCH),
+    /// current_epoch]`.
+    ///
+    /// - Pre-Fulu (`!is_fulu_active`) or when `custody_state` is unwired: return
+    ///   the finalized-checkpoint start slot, an honest block-availability floor.
+    /// - Under Fulu: clamp the `lowest_column_slot` watermark to the serve window
+    ///   via [`clamp_earliest_available`]. When no columns are held yet
+    ///   (`u64::MAX`) the helper advertises the next-epoch start so peers skip us
+    ///   rather than request sidecars we lack. The `max(watermark, serve_floor)`
+    ///   clamp makes the advertised floor rise as the pruner advances.
     ///
     /// Per `D-fulu-statusv2-handshake` + `specs/fulu/p2p-interface.md`.
     fn earliest_available_slot(&self) -> Slot {
-        let cp = self.fork_choice.read().finalized_checkpoint.clone();
-        cp.epoch.start_slot(E::SLOTS_PER_EPOCH)
+        match (self.is_fulu_active(), self.custody_state.as_ref()) {
+            (true, Some(custody_state)) => Slot(clamp_earliest_available(
+                custody_state.lowest_column_slot(),
+                self.current_epoch().0,
+                self.fork_context.fork_schedule.fulu_fork_epoch.0,
+                E::MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS,
+                E::SLOTS_PER_EPOCH,
+            )),
+            _ => {
+                let cp = self.fork_choice.read().finalized_checkpoint.clone();
+                cp.epoch.start_slot(E::SLOTS_PER_EPOCH)
+            }
+        }
     }
 }
 
@@ -4251,6 +4307,40 @@ mod tests {
     };
     use pharos_types::phase0::operations::BeaconBlockHeader;
     use pharos_types::phase0::primitives::Version;
+
+    /// `clamp_earliest_available` honors the Fulu data-column serve window:
+    /// the floor wins when the watermark is below it, the watermark wins when it
+    /// is above the floor, the no-columns sentinel advertises next-epoch start,
+    /// and the `FULU_FORK_EPOCH` floor wins when `current_epoch - min_epochs`
+    /// underflows past Fulu.
+    #[test]
+    fn clamp_earliest_available_serve_window() {
+        const SPE: u64 = 32;
+        // current_epoch=5000, min=4096 → floor_epoch = max(904, fulu=100) = 904.
+        let floor = 904 * SPE;
+
+        // (i) watermark below the serve floor → clamped up to the floor.
+        assert_eq!(
+            clamp_earliest_available(500 * SPE, 5000, 100, 4096, SPE),
+            floor
+        );
+
+        // (ii) watermark above the serve floor → watermark wins.
+        assert_eq!(
+            clamp_earliest_available(2000 * SPE, 5000, 100, 4096, SPE),
+            2000 * SPE
+        );
+
+        // (iii) no columns held (u64::MAX) → next-epoch start, never over-claim.
+        assert_eq!(
+            clamp_earliest_available(u64::MAX, 5000, 100, 4096, SPE),
+            5001 * SPE
+        );
+
+        // (iv) current_epoch - min underflows below Fulu → FULU_FORK_EPOCH floor
+        // wins (current_epoch=200, min=4096 → 0, max with fulu=100 → 100).
+        assert_eq!(clamp_earliest_available(0, 200, 100, 4096, SPE), 100 * SPE);
+    }
 
     fn make_host(dir: &tempfile::TempDir) -> HostImpl<MainnetBeaconSpec> {
         use pharos_ssz::TreeHash;

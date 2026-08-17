@@ -2107,11 +2107,13 @@ async fn main() -> anyhow::Result<()> {
         {
             let column_store = Arc::clone(&store_arc);
             let column_awaiting_col = Arc::clone(&column_awaiting);
+            let column_custody = Arc::clone(&custody_state);
             tokio::spawn(async move {
                 run_column_ingestion_loop::<MainnetBeaconSpec>(
                     column_event_rx,
                     column_store,
                     column_awaiting_col,
+                    column_custody,
                 )
                 .await;
             });

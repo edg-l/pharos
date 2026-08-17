@@ -39,6 +39,8 @@ use pharos_types::BeaconSpec;
 use pharos_types::fulu::MainnetDataColumnSidecar as DataColumnSidecar;
 use pharos_types::phase0::primitives::Root;
 
+use crate::custody::CustodyState;
+
 // ── ColumnAwaitingBlocks ──────────────────────────────────────────────────────
 
 /// Maximum time to hold a DA-pending block before evicting it.
@@ -141,12 +143,16 @@ impl ColumnAwaitingBlocks {
 /// - `store`: RocksDB handle for persisting sidecars.
 /// - `column_awaiting`: shared registry; notified on each column arrival so
 ///   DA-pending blocks can be re-injected when their expected set completes.
+/// - `custody_state`: shared custody state; its `lowest_column_slot` watermark is
+///   lowered on each successful persist so `HostImpl::earliest_available_slot`
+///   advertises an honest `Status` v2 serve floor.
 ///
 /// The loop exits when `event_rx` closes.
 pub async fn run_column_ingestion_loop<E: BeaconSpec>(
     mut event_rx: mpsc::Receiver<NetworkEvent>,
     store: Arc<RocksStore>,
     column_awaiting: Arc<ColumnAwaitingBlocks>,
+    custody_state: Arc<CustodyState>,
 ) {
     loop {
         let event = match event_rx.recv().await {
@@ -192,6 +198,9 @@ pub async fn run_column_ingestion_loop<E: BeaconSpec>(
 
         match persist_result {
             Ok(Ok(())) => {
+                // Lower the held-column watermark so the Status v2
+                // `earliest_available_slot` reflects what we can actually serve.
+                custody_state.observe_column_slot(sidecar.signed_block_header.message.slot.0);
                 debug!(%block_root, index, subnet, "column_ingestion: persisted sidecar");
             }
             Ok(Err(e)) => {
