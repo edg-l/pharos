@@ -23,3 +23,7 @@ pharos-types = { path = "../pharos-types" }
 [[bench]]
 name = "tree_hash_beacon_state"
 harness = false
+
+[[bench]]
+name = "decode_backend"
+harness = false

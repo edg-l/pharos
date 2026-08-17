@@ -239,3 +239,76 @@ proptest! {
         }
     }
 }
+
+// ── PackedLeaf: raw `u64` is a multi-per-chunk basic (4 per 32-byte chunk) ──────
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: CASES, ..Default::default() })]
+
+    /// Lockstep transcript for a packed-basic `SszList<u64, MAX_N>`: every
+    /// `push`/`set`/`from_vec` must keep the chunk-indexed `PackedLeaf` tree
+    /// byte-identical to the Naive backend (root, ssz bytes, and per-element
+    /// reads). Exercises partial final chunks, cross-chunk sets, and CoW.
+    #[test]
+    fn packed_tree_and_naive_agree_on_list(
+        ops in prop::collection::vec(op_strategy(), 1..=60)
+    ) {
+        let mut naive = SszList::<u64, MAX_N>::new();
+        let mut tree = SszList::<u64, MAX_N>::empty_tree();
+
+        for (step_idx, op) in ops.iter().enumerate() {
+            match op {
+                Op::Push(v) => {
+                    if naive.len() < MAX_N as usize {
+                        naive = naive.with_push(*v).unwrap();
+                        tree = tree.with_push(*v).unwrap();
+                    }
+                }
+                Op::Set(i, v) => {
+                    let len = naive.len();
+                    if len > 0 {
+                        let idx = i % len;
+                        naive = naive.with_set(idx, *v).unwrap();
+                        tree = tree.with_set(idx, *v).unwrap();
+                    }
+                }
+                Op::FromVec(values) => {
+                    let clamped: Vec<u64> =
+                        values.iter().take(MAX_N as usize).copied().collect();
+                    naive = SszList::<u64, MAX_N>::from_vec(clamped.clone()).unwrap();
+                    tree = SszList::<u64, MAX_N>::from_vec_tree(clamped).unwrap();
+                }
+            }
+
+            prop_assert_eq!(naive.len(), tree.len(), "len mismatch at step {}", step_idx);
+            prop_assert_eq!(
+                naive.tree_hash_root(),
+                tree.tree_hash_root(),
+                "root mismatch at step {}",
+                step_idx
+            );
+            prop_assert_eq!(naive.as_ssz_bytes(), tree.as_ssz_bytes());
+            for i in 0..naive.len() {
+                prop_assert_eq!(naive.get(i), tree.get(i), "get({}) mismatch", i);
+            }
+        }
+    }
+
+    /// Packed `SszVector` at sizes that stress chunk boundaries: N=5 spans two
+    /// chunks with a partial final chunk; N=8 is exactly two full chunks.
+    #[test]
+    fn packed_tree_and_naive_agree_on_vectors(
+        a in prop::collection::vec(0u64..u64::MAX, 5),
+        b in prop::collection::vec(0u64..u64::MAX, 8),
+    ) {
+        let n5 = SszVector::<u64, 5>::from_vec(a.clone()).unwrap();
+        let t5 = SszVector::<u64, 5>::from_vec_tree(a).unwrap();
+        prop_assert_eq!(n5.tree_hash_root(), t5.tree_hash_root());
+        prop_assert_eq!(n5.as_ssz_bytes(), t5.as_ssz_bytes());
+
+        let n8 = SszVector::<u64, 8>::from_vec(b.clone()).unwrap();
+        let t8 = SszVector::<u64, 8>::from_vec_tree(b).unwrap();
+        prop_assert_eq!(n8.tree_hash_root(), t8.tree_hash_root());
+        prop_assert_eq!(n8.as_ssz_bytes(), t8.as_ssz_bytes());
+    }
+}
