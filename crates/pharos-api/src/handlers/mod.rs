@@ -3,6 +3,7 @@
 pub mod beacon_basic;
 pub mod beacon_blocks_publish;
 pub mod beacon_pool;
+pub mod blob_sidecars;
 pub mod blocks;
 pub mod config;
 pub mod config_extra;

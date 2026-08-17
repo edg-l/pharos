@@ -3222,6 +3222,7 @@ dependencies = [
  "libp2p",
  "parking_lot",
  "pharos-fork-choice",
+ "pharos-kzg",
  "pharos-network",
  "pharos-ssz",
  "pharos-stf",

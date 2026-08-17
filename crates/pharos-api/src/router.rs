@@ -10,6 +10,7 @@ use crate::auth::validator_auth_layer;
 use crate::handlers::beacon_basic;
 use crate::handlers::beacon_blocks_publish;
 use crate::handlers::beacon_pool;
+use crate::handlers::blob_sidecars;
 use crate::handlers::blocks as blocks_handlers;
 use crate::handlers::config as config_handlers;
 use crate::handlers::config_extra;
@@ -103,6 +104,7 @@ use crate::state::ApiState;
 /// - `POST /eth/v1/beacon/pool/bls_to_execution_changes`  (public)
 /// - `GET  /eth/v1/beacon/pool/sync_committees`      (public)
 /// - `POST /eth/v1/beacon/pool/sync_committees`      (public)
+/// - `GET  /eth/v1/beacon/blobs/{block_id}`          (public, M15 Phase 4)
 ///
 /// The validator sub-router has `validator_auth_layer` applied; `None` means
 /// no auth (default).  The debug and pool routes are unauthenticated.
@@ -388,6 +390,11 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v1/beacon/pool/sync_committees",
             get(beacon_pool::get_pool_sync_committees::<E>)
                 .post(beacon_pool::post_pool_sync_committees::<E>),
+        )
+        // M15 Phase 4 — blob retrieval (public)
+        .route(
+            "/eth/v1/beacon/blobs/{block_id}",
+            get(blob_sidecars::get_blobs::<E>),
         )
         .with_state(Arc::clone(&state))
         // Merge validator sub-router (has its own auth layer + state)

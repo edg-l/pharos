@@ -519,12 +519,12 @@ fn parse_indexed_attestation_json_as_phase0(
     let mut parsed: Vec<ValidatorIndex> = Vec::with_capacity(indices_arr.len().min(2048));
     for (i, idx_val) in indices_arr.iter().enumerate() {
         let raw = match idx_val {
-            JsonValue::String(s) => s
-                .parse::<u64>()
-                .map_err(|_| ApiError::BadRequest(format!("attesting_indices[{i}]: invalid u64")))?,
-            JsonValue::Number(n) => n
-                .as_u64()
-                .ok_or_else(|| ApiError::BadRequest(format!("attesting_indices[{i}]: invalid u64")))?,
+            JsonValue::String(s) => s.parse::<u64>().map_err(|_| {
+                ApiError::BadRequest(format!("attesting_indices[{i}]: invalid u64"))
+            })?,
+            JsonValue::Number(n) => n.as_u64().ok_or_else(|| {
+                ApiError::BadRequest(format!("attesting_indices[{i}]: invalid u64"))
+            })?,
             _ => {
                 return Err(ApiError::BadRequest(format!(
                     "attesting_indices[{i}]: expected string or number"
@@ -561,9 +561,8 @@ fn parse_indexed_attestation_json_as_phase0(
     let bbr_hex = data_v["beacon_block_root"]
         .as_str()
         .ok_or_else(|| ApiError::BadRequest("data.beacon_block_root missing".into()))?;
-    let bbr_bytes =
-        hex::decode(bbr_hex.strip_prefix("0x").unwrap_or(bbr_hex))
-            .map_err(|e| ApiError::BadRequest(format!("data.beacon_block_root: {e}")))?;
+    let bbr_bytes = hex::decode(bbr_hex.strip_prefix("0x").unwrap_or(bbr_hex))
+        .map_err(|e| ApiError::BadRequest(format!("data.beacon_block_root: {e}")))?;
     let bbr_arr: [u8; 32] = bbr_bytes
         .try_into()
         .map_err(|_| ApiError::BadRequest("data.beacon_block_root: must be 32 bytes".into()))?;
@@ -581,9 +580,8 @@ fn parse_indexed_attestation_json_as_phase0(
         let root_hex = cv["root"]
             .as_str()
             .ok_or_else(|| ApiError::BadRequest("checkpoint root missing".into()))?;
-        let root_bytes =
-            hex::decode(root_hex.strip_prefix("0x").unwrap_or(root_hex))
-                .map_err(|e| ApiError::BadRequest(format!("checkpoint root: {e}")))?;
+        let root_bytes = hex::decode(root_hex.strip_prefix("0x").unwrap_or(root_hex))
+            .map_err(|e| ApiError::BadRequest(format!("checkpoint root: {e}")))?;
         let root_arr: [u8; 32] = root_bytes
             .try_into()
             .map_err(|_| ApiError::BadRequest("checkpoint root: must be 32 bytes".into()))?;
@@ -1126,6 +1124,25 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
         self.peers()
             .into_iter()
             .find(|p| p.get("peer_id").and_then(|v| v.as_str()) == Some(peer_id))
+    }
+
+    // ── Blob sidecar reads (M15 Phase 4) ─────────────────────────────────────
+
+    /// Return all `BlobSidecar`s for `block_root`, ordered by ascending blob index.
+    ///
+    /// Returns an empty `Vec` when no sidecars are stored for that root (pre-Deneb
+    /// blocks or blocks with no blobs carry zero sidecars — this is NOT a 404).
+    /// The handler is responsible for 404 when the block itself is not found.
+    ///
+    /// Default impl returns an empty `Vec` so mocks need only override when testing
+    /// the blob-read path. `NodeChainState` overrides with a real store read.
+    ///
+    /// Per `~/dev/beacon-APIs/apis/beacon/blobs/blobs.yaml` (`getBlobs`).
+    fn blob_sidecars_by_root(
+        &self,
+        _root: pharos_types::phase0::Root,
+    ) -> Vec<pharos_types::deneb::BlobSidecar> {
+        vec![]
     }
 
     // ── Light-client REST endpoints (M7-followup) ─────────────────────────────
@@ -2005,15 +2022,15 @@ where
         // with {attesting_indices, data, signature}) is identical to phase0.
         // Parse it as Phase0.AttesterSlashing<2048>, truncating any indices
         // beyond the pool's 2048 limit, and insert into the shared pool.
-        let phase0_slashing =
-            parse_indexed_attestation_json_as_phase0(&slashing["attestation_1"])
-                .and_then(|att1| {
-                    parse_indexed_attestation_json_as_phase0(&slashing["attestation_2"])
-                        .map(|att2| Phase0AttesterSlashing {
-                            attestation_1: att1,
-                            attestation_2: att2,
-                        })
-                })?;
+        let phase0_slashing = parse_indexed_attestation_json_as_phase0(&slashing["attestation_1"])
+            .and_then(|att1| {
+                parse_indexed_attestation_json_as_phase0(&slashing["attestation_2"]).map(|att2| {
+                    Phase0AttesterSlashing {
+                        attestation_1: att1,
+                        attestation_2: att2,
+                    }
+                })
+            })?;
         pools.insert_attester_slashing(phase0_slashing);
         Ok(())
     }
@@ -2526,6 +2543,19 @@ where
             .collect();
 
         Ok(serde_json::json!({ "data": heads }))
+    }
+
+    // ── Blob sidecar reads (M15 Phase 4) ─────────────────────────────────────
+
+    fn blob_sidecars_by_root(
+        &self,
+        root: pharos_types::phase0::Root,
+    ) -> Vec<pharos_types::deneb::BlobSidecar> {
+        // On a storage error, return empty rather than propagating (the handler
+        // treats empty as "block exists but carried no blobs"; a missing block
+        // is detected by `resolve_block_id` before this is called).
+        <RocksStore as DbStore<E>>::get_blob_sidecars_by_root(&self.store, &root)
+            .unwrap_or_default()
     }
 }
 

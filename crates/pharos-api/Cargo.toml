@@ -14,6 +14,7 @@ pharos-fork-choice.workspace = true
 pharos-stf.workspace = true
 pharos-utils.workspace = true
 pharos-ssz.workspace = true
+pharos-kzg.workspace = true
 pharos-network.workspace = true
 axum.workspace = true
 futures.workspace = true
@@ -38,3 +39,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 discv5.workspace = true
 arc-swap.workspace = true
 serde_json.workspace = true
+pharos-kzg.workspace = true
+hex.workspace = true
+pharos-utils.workspace = true
