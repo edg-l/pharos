@@ -254,7 +254,7 @@ impl<const N: u64> Bitlist<N> {
         if self.bit_len as u64 >= N {
             return Err(SszError::BitlistOverflow { limit: N });
         }
-        if self.bit_len % 8 == 0 {
+        if self.bit_len.is_multiple_of(8) {
             self.data.push(0);
         }
         let i = self.bit_len;
@@ -399,7 +399,7 @@ impl<const N: u64> Decode for Bitlist<N> {
         // clear it so it is not counted as a data bit.
         // If `bit_len % 8 == 0`, the sentinel is in a separate byte beyond the data
         // bytes and was not copied, so no clearing needed.
-        if bit_len % 8 != 0 {
+        if !bit_len.is_multiple_of(8) {
             bl.data[data_bytes - 1] &= !(1u8 << highest_bit_pos);
         }
         Ok(bl)

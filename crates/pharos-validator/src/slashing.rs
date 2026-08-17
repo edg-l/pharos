@@ -265,41 +265,41 @@ impl SlashingProtection for SqliteSlashingProtection {
         let min_src = min_src_opt.map(|v| v as u64);
         let min_tgt = min_tgt_opt.map(|v| v as u64);
 
-        if let Some(min) = min_src {
-            if source_epoch < min {
-                return Err(SlashingError::AttestationSourceBelowLowWatermark {
-                    source_epoch,
-                    min_source: min,
-                });
-            }
+        if let Some(min) = min_src
+            && source_epoch < min
+        {
+            return Err(SlashingError::AttestationSourceBelowLowWatermark {
+                source_epoch,
+                min_source: min,
+            });
         }
-        if let Some(min) = min_tgt {
-            if target_epoch <= min {
-                // Check for exact-same-target repeat signing.
-                let existing: Option<(i64, Option<String>)> = tx
-                    .query_row(
-                        "SELECT target_epoch, signing_root FROM signed_attestation \
+        if let Some(min) = min_tgt
+            && target_epoch <= min
+        {
+            // Check for exact-same-target repeat signing.
+            let existing: Option<(i64, Option<String>)> = tx
+                .query_row(
+                    "SELECT target_epoch, signing_root FROM signed_attestation \
                          WHERE pubkey = ?1 AND target_epoch = ?2",
-                        params![pubkey_hex, tgt_i],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?;
+                    params![pubkey_hex, tgt_i],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
 
-                if let Some((_, stored_root_opt)) = existing {
-                    match (stored_root_opt.as_deref(), signing_root) {
-                        (Some(stored), Some(new)) if stored == new => return Ok(()),
-                        (None, None) => return Ok(()),
-                        _ => {
-                            return Err(SlashingError::DoubleAttestation { target_epoch });
-                        }
+            if let Some((_, stored_root_opt)) = existing {
+                match (stored_root_opt.as_deref(), signing_root) {
+                    (Some(stored), Some(new)) if stored == new => return Ok(()),
+                    (None, None) => return Ok(()),
+                    _ => {
+                        return Err(SlashingError::DoubleAttestation { target_epoch });
                     }
                 }
-
-                return Err(SlashingError::AttestationTargetBelowLowWatermark {
-                    target_epoch,
-                    min_target: min,
-                });
             }
+
+            return Err(SlashingError::AttestationTargetBelowLowWatermark {
+                target_epoch,
+                min_target: min,
+            });
         }
 
         // Check for double vote at this target_epoch.

@@ -236,13 +236,13 @@ impl<'a> SszDecoder<'a> {
             if offset > total {
                 return Err(SszError::OffsetOutOfRange { offset, max: total });
             }
-            if let Some(prev) = prev_offset {
-                if offset < prev {
-                    return Err(SszError::OffsetsNotMonotonic);
-                }
-                // Equal offsets produce a zero-length element which is valid
-                // for some types, but monotonicity requires non-decreasing.
+            if let Some(prev) = prev_offset
+                && offset < prev
+            {
+                return Err(SszError::OffsetsNotMonotonic);
             }
+            // Equal offsets produce a zero-length element which is valid
+            // for some types, but monotonicity requires non-decreasing.
             prev_offset = Some(offset);
         }
 

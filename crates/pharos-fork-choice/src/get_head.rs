@@ -541,7 +541,7 @@ pub fn is_head_late<E: BeaconSpec>(store: &Store<E>, head_root: Root) -> bool {
 
 /// `is_shuffling_stable` per `specs/phase0/fork-choice.md:541-543`.
 pub fn is_shuffling_stable<E: BeaconSpec>(slot: Slot) -> bool {
-    slot.0 % E::SLOTS_PER_EPOCH != 0
+    !slot.0.is_multiple_of(E::SLOTS_PER_EPOCH)
 }
 
 /// `is_ffg_competitive` per `specs/phase0/fork-choice.md:547-551`.

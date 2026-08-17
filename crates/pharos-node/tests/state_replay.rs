@@ -556,7 +556,7 @@ async fn state_regen_replay_matches_inline() {
     // Pick slot 11 (intermediate, post-epoch-boundary).
     let rt_slot = 11u64;
     assert!(
-        rt_slot % spe != 0,
+        !rt_slot.is_multiple_of(spe),
         "slot {rt_slot} must be non-boundary for this test"
     );
     let inline_rt_state = &inline_states[(rt_slot - 1) as usize];

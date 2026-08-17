@@ -1182,10 +1182,10 @@ where
             let fc = self.fork_choice.read();
 
             // Step 5 — RB4: proposer index out of range (REJECT).
-            if let Some(state) = fc.block_states.get(&block_msg.parent_root()) {
-                if block_msg.proposer_index().0 as usize >= state.num_validators() {
-                    return GossipVerdict::Reject("block: proposer index out of range".into());
-                }
+            if let Some(state) = fc.block_states.get(&block_msg.parent_root())
+                && block_msg.proposer_index().0 as usize >= state.num_validators()
+            {
+                return GossipVerdict::Reject("block: proposer index out of range".into());
             }
             // (If state is None, fall through — RB6 below handles missing parent.)
 
@@ -2537,10 +2537,8 @@ where
             let mut write = self.seen_sync_contribution_data.write();
             let stored = write.get_or_insert_mut(data_key, || vec![false; agg_bits.len()]);
             for (i, &b) in agg_bits.iter().enumerate() {
-                if b {
-                    if let Some(slot) = stored.get_mut(i) {
-                        *slot = true;
-                    }
+                if b && let Some(slot) = stored.get_mut(i) {
+                    *slot = true;
                 }
             }
         }
@@ -7119,12 +7117,12 @@ mod tests {
         {
             let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
             let mut fc = host.fork_choice.write();
-            if let Some(state) = fc.block_states.get_mut(&head_root) {
-                if let ForkMinimalState::Phase0(s) = state {
-                    let mut v = s.validators.get(0).unwrap().clone();
-                    v.exit_epoch = Epoch(0); // exited already
-                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
-                }
+            if let Some(state) = fc.block_states.get_mut(&head_root)
+                && let ForkMinimalState::Phase0(s) = state
+            {
+                let mut v = s.validators.get(0).unwrap().clone();
+                v.exit_epoch = Epoch(0); // exited already
+                s.validators = SszList::with_push(&SszList::default(), v).unwrap();
             }
         }
         let exit = SignedVoluntaryExit {
@@ -7150,12 +7148,12 @@ mod tests {
         {
             let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
             let mut fc = host.fork_choice.write();
-            if let Some(state) = fc.block_states.get_mut(&head_root) {
-                if let ForkMinimalState::Phase0(s) = state {
-                    let mut v = s.validators.get(0).unwrap().clone();
-                    v.exit_epoch = Epoch(100); // future exit planned
-                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
-                }
+            if let Some(state) = fc.block_states.get_mut(&head_root)
+                && let ForkMinimalState::Phase0(s) = state
+            {
+                let mut v = s.validators.get(0).unwrap().clone();
+                v.exit_epoch = Epoch(100); // future exit planned
+                s.validators = SszList::with_push(&SszList::default(), v).unwrap();
             }
         }
         let exit = SignedVoluntaryExit {
@@ -7201,15 +7199,15 @@ mod tests {
         {
             let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
             let mut fc = host.fork_choice.write();
-            if let Some(state) = fc.block_states.get_mut(&head_root) {
-                if let ForkMinimalState::Phase0(s) = state {
-                    let mut v = s.validators.get(0).unwrap().clone();
-                    // SHARD_COMMITTEE_PERIOD=64 for minimal; current_epoch=0 < 0+64
-                    v.activation_epoch = Epoch(0);
-                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
-                    // Advance slot to epoch 1 so exit_epoch=0 isn't "future"
-                    s.slot = Slot(MinimalBeaconSpec::SLOTS_PER_EPOCH); // epoch 1
-                }
+            if let Some(state) = fc.block_states.get_mut(&head_root)
+                && let ForkMinimalState::Phase0(s) = state
+            {
+                let mut v = s.validators.get(0).unwrap().clone();
+                // SHARD_COMMITTEE_PERIOD=64 for minimal; current_epoch=0 < 0+64
+                v.activation_epoch = Epoch(0);
+                s.validators = SszList::with_push(&SszList::default(), v).unwrap();
+                // Advance slot to epoch 1 so exit_epoch=0 isn't "future"
+                s.slot = Slot(MinimalBeaconSpec::SLOTS_PER_EPOCH); // epoch 1
             }
         }
         let exit = SignedVoluntaryExit {
@@ -7474,12 +7472,12 @@ mod tests {
         {
             let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
             let mut fc = host.fork_choice.write();
-            if let Some(state) = fc.block_states.get_mut(&head_root) {
-                if let ForkMinimalState::Phase0(s) = state {
-                    let mut v = s.validators.get(0).unwrap().clone();
-                    v.slashed = true;
-                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
-                }
+            if let Some(state) = fc.block_states.get_mut(&head_root)
+                && let ForkMinimalState::Phase0(s) = state
+            {
+                let mut v = s.validators.get(0).unwrap().clone();
+                v.slashed = true;
+                s.validators = SszList::with_push(&SszList::default(), v).unwrap();
             }
         }
         let ps = make_ps_headers(&host, Slot(1), 0, true, false, false);
@@ -7795,12 +7793,12 @@ mod tests {
         {
             let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
             let mut fc = host.fork_choice.write();
-            if let Some(state) = fc.block_states.get_mut(&head_root) {
-                if let ForkMinimalState::Phase0(s) = state {
-                    let mut v = s.validators.get(0).unwrap().clone();
-                    v.slashed = true;
-                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
-                }
+            if let Some(state) = fc.block_states.get_mut(&head_root)
+                && let ForkMinimalState::Phase0(s) = state
+            {
+                let mut v = s.validators.get(0).unwrap().clone();
+                v.slashed = true;
+                s.validators = SszList::with_push(&SszList::default(), v).unwrap();
             }
         }
         use pharos_types::phase0::AttesterSlashing;
@@ -8041,14 +8039,14 @@ mod tests {
         {
             let head_root = pharos_fork_choice::get_head(&*host.fork_choice.read());
             let mut fc = host.fork_choice.write();
-            if let Some(state) = fc.block_states.get_mut(&head_root) {
-                if let ForkMinimalState::Phase0(s) = state {
-                    let mut v = s.validators.get(0).unwrap().clone();
-                    let mut creds: [u8; 32] = v.withdrawal_credentials.into();
-                    creds[0] = 0x01; // ETH1 prefix
-                    v.withdrawal_credentials = pharos_utils::Hash256::from_array(creds);
-                    s.validators = SszList::with_push(&SszList::default(), v).unwrap();
-                }
+            if let Some(state) = fc.block_states.get_mut(&head_root)
+                && let ForkMinimalState::Phase0(s) = state
+            {
+                let mut v = s.validators.get(0).unwrap().clone();
+                let mut creds: [u8; 32] = v.withdrawal_credentials.into();
+                creds[0] = 0x01; // ETH1 prefix
+                v.withdrawal_credentials = pharos_utils::Hash256::from_array(creds);
+                s.validators = SszList::with_push(&SszList::default(), v).unwrap();
             }
         }
         let signed = make_valid_bls_to_exec(&host);

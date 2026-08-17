@@ -151,10 +151,11 @@ async fn rpc_handler(
             "engine_newPayloadV2" => ctr.new_payload_v2 += 1,
             "engine_getPayloadV2" => ctr.get_payload_v2 += 1,
             "engine_forkchoiceUpdatedV2" => {
-                if let Some(arr) = req.params.as_array() {
-                    if arr.len() > 1 && !arr[1].is_null() {
-                        ctr.fcu_v2_with_attrs += 1;
-                    }
+                if let Some(arr) = req.params.as_array()
+                    && arr.len() > 1
+                    && !arr[1].is_null()
+                {
+                    ctr.fcu_v2_with_attrs += 1;
                 }
             }
             _ => {}

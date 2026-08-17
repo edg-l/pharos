@@ -91,10 +91,10 @@ impl DoppelgangerGuard {
     /// Called once per epoch boundary.
     pub fn advance(&mut self, current_epoch: u64) {
         for state in self.states.values_mut() {
-            if let ValidatorState::HoldOff { clear_epoch } = state {
-                if current_epoch >= *clear_epoch {
-                    *state = ValidatorState::Cleared;
-                }
+            if let ValidatorState::HoldOff { clear_epoch } = state
+                && current_epoch >= *clear_epoch
+            {
+                *state = ValidatorState::Cleared;
             }
         }
     }

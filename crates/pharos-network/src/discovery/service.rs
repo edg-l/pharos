@@ -151,10 +151,10 @@ impl DiscoveryService {
 
         // Persist the initial seq now that the ENR is built (write-on-start so a
         // crash before the first mutation still advances the seq on next restart).
-        if let Some(ref dir) = cfg.network_dir {
-            if let Err(e) = save_enr_seq(dir, discv5.local_enr().seq()) {
-                warn!(error = %e, "failed to persist initial ENR seq; continuing without persistence");
-            }
+        if let Some(ref dir) = cfg.network_dir
+            && let Err(e) = save_enr_seq(dir, discv5.local_enr().seq())
+        {
+            warn!(error = %e, "failed to persist initial ENR seq; continuing without persistence");
         }
 
         Ok(Self {

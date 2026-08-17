@@ -194,7 +194,7 @@ impl<T: Decode> Decode for ProgressiveList<T> {
             if elem_size == 0 {
                 return Err(SszError::Custom("ProgressiveList element size is 0".into()));
             }
-            if bytes.len() % elem_size != 0 {
+            if !bytes.len().is_multiple_of(elem_size) {
                 return Err(SszError::InvalidByteLength {
                     found: bytes.len(),
                     expected: (bytes.len() / elem_size) * elem_size,
@@ -222,7 +222,7 @@ impl<T: Decode> Decode for ProgressiveList<T> {
                     .try_into()
                     .map_err(|_| SszError::Custom("offset slice conversion failed".into()))?,
             ) as usize;
-            if first_offset % BYTES_PER_LENGTH_OFFSET != 0 {
+            if !first_offset.is_multiple_of(BYTES_PER_LENGTH_OFFSET) {
                 return Err(SszError::Custom(format!(
                     "ProgressiveList: first offset {first_offset} is not offset-aligned"
                 )));
@@ -331,7 +331,7 @@ impl ProgressiveBitlist {
 
     /// Push a bit.
     pub fn push(&mut self, value: bool) {
-        if self.bit_len % 8 == 0 {
+        if self.bit_len.is_multiple_of(8) {
             self.data.push(0);
         }
         let i = self.bit_len;
@@ -402,7 +402,7 @@ impl Decode for ProgressiveBitlist {
         if data_bytes > 0 {
             data.copy_from_slice(&bytes[..data_bytes]);
             // Clear the sentinel bit if it shares a byte with real data.
-            if bit_len % 8 != 0 {
+            if !bit_len.is_multiple_of(8) {
                 data[data_bytes - 1] &= !(1u8 << highest_bit_pos);
             }
         }

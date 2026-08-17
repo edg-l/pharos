@@ -630,10 +630,10 @@ pub async fn get_pool_attestations_v2<E: BeaconSpec>(
                                 .as_str()
                                 .and_then(|s| s.parse::<usize>().ok());
                             let mut bits = vec![0u8; n_bytes];
-                            if let Some(idx) = committee_idx {
-                                if idx < n_committees {
-                                    bits[idx / 8] |= 1 << (idx % 8);
-                                }
+                            if let Some(idx) = committee_idx
+                                && idx < n_committees
+                            {
+                                bits[idx / 8] |= 1 << (idx % 8);
                             }
                             let committee_bits_hex = format!("0x{}", hex::encode(&bits));
                             serde_json::json!({

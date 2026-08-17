@@ -256,13 +256,13 @@ where
     }
 
     // ── Step 6d: tamper-flag check (operator-supplied expected root) ──────────
-    if let Some(expected) = expected_block_root {
-        if block_root != expected {
-            return Err(CheckpointSyncError::TamperFlagMismatch {
-                expected,
-                actual: block_root,
-            });
-        }
+    if let Some(expected) = expected_block_root
+        && block_root != expected
+    {
+        return Err(CheckpointSyncError::TamperFlagMismatch {
+            expected,
+            actual: block_root,
+        });
     }
 
     Ok(CheckpointAnchor {

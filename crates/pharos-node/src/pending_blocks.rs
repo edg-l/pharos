@@ -112,10 +112,10 @@ impl PendingBlocks {
         let mut inner = self.0.lock();
 
         // 1. Dedup: is block_root already present under this parent?
-        if let Some(bucket) = inner.by_parent.get(&parent_root) {
-            if bucket.iter().any(|e| e.block_root == block_root) {
-                return false;
-            }
+        if let Some(bucket) = inner.by_parent.get(&parent_root)
+            && bucket.iter().any(|e| e.block_root == block_root)
+        {
+            return false;
         }
 
         // 2. Per-peer cap.
@@ -203,22 +203,22 @@ impl PendingBlocks {
             None => return,
         };
 
-        if let Some(bucket) = inner.by_parent.get_mut(&parent_root) {
-            if let Some(pos) = bucket.iter().position(|e| e.block_root == block_root) {
-                let entry = bucket.remove(pos);
-                inner.total -= 1;
+        if let Some(bucket) = inner.by_parent.get_mut(&parent_root)
+            && let Some(pos) = bucket.iter().position(|e| e.block_root == block_root)
+        {
+            let entry = bucket.remove(pos);
+            inner.total -= 1;
 
-                let count = inner.per_peer_count.entry(entry.peer).or_insert(0);
-                if *count > 0 {
-                    *count -= 1;
-                }
-                if *count == 0 {
-                    inner.per_peer_count.remove(&entry.peer);
-                }
+            let count = inner.per_peer_count.entry(entry.peer).or_insert(0);
+            if *count > 0 {
+                *count -= 1;
+            }
+            if *count == 0 {
+                inner.per_peer_count.remove(&entry.peer);
+            }
 
-                if bucket.is_empty() {
-                    inner.by_parent.remove(&parent_root);
-                }
+            if bucket.is_empty() {
+                inner.by_parent.remove(&parent_root);
             }
         }
     }

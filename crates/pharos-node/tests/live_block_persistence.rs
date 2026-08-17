@@ -546,7 +546,7 @@ async fn live_block_persistence_asserts() {
     let slots_per_epoch = MinimalBeaconSpec::SLOTS_PER_EPOCH;
     for (i, _root) in block_roots.iter().enumerate() {
         let slot = i as u64 + 1;
-        if slot % slots_per_epoch == 0 {
+        if slot.is_multiple_of(slots_per_epoch) {
             // Epoch boundary: state must be stored.
             // Look up via the block's state_root from the signed block.
             let signed_block = signed_blocks[i].clone();
@@ -566,7 +566,7 @@ async fn live_block_persistence_asserts() {
     // ── (d) Intermediate-slot states are absent ───────────────────────────────
     for (i, _root) in block_roots.iter().enumerate() {
         let slot = i as u64 + 1;
-        if slot % slots_per_epoch != 0 {
+        if !slot.is_multiple_of(slots_per_epoch) {
             // Non-epoch-boundary: state must NOT be stored.
             let signed_block = signed_blocks[i].clone();
             let state_root = match &signed_block {

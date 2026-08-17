@@ -809,7 +809,7 @@ where
         // Only epoch-boundary blocks persist a full post-state (per
         // `D-epoch-boundary-state-cadence`), so clone it only then: ~31/32 imports
         // skip a multi-MB state clone that was previously built and dropped unused.
-        let post_state_persist = if block_slot.0 % E::SLOTS_PER_EPOCH == 0 {
+        let post_state_persist = if block_slot.0.is_multiple_of(E::SLOTS_PER_EPOCH) {
             Some(post_state_for_return.clone())
         } else {
             None

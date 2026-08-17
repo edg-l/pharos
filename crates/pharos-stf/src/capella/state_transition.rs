@@ -119,7 +119,7 @@ where
             E,
         >(state)?;
 
-        if (state.slot.0 + 1) % E::SLOTS_PER_EPOCH == 0 {
+        if (state.slot.0 + 1).is_multiple_of(E::SLOTS_PER_EPOCH) {
             process_epoch::<
                 SLOTS_PER_HISTORICAL_ROOT,
                 HISTORICAL_ROOTS_LIMIT,

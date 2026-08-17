@@ -187,7 +187,7 @@ pub async fn run_api_event_adapter<E>(
         };
 
         // Determine epoch_transition: did this block's slot start a new epoch?
-        let epoch_transition = head_slot_u64 % E::SLOTS_PER_EPOCH == 0;
+        let epoch_transition = head_slot_u64.is_multiple_of(E::SLOTS_PER_EPOCH);
 
         // ── block event ──────────────────────────────────────────────────────
         let block_event = ApiEvent::Block(BlockEventDto {
@@ -230,21 +230,21 @@ pub async fn run_api_event_adapter<E>(
         }
 
         // ── chain_reorg event ─────────────────────────────────────────────
-        if let Some(depth) = reorg_depth {
-            if let Some(ref old) = prev_head {
-                let reorg_event = ApiEvent::ChainReorg(ChainReorgEventDto {
-                    slot: head_slot_u64,
-                    depth,
-                    old_head_block: old.root,
-                    new_head_block: head_root_bytes,
-                    old_head_state: old.state_root,
-                    new_head_state: head_state_root,
-                    epoch: head_epoch,
-                    execution_optimistic: is_optimistic,
-                });
-                if tx.send(reorg_event).is_err() {
-                    debug!("api_event_adapter: no SSE subscribers for chain_reorg event");
-                }
+        if let Some(depth) = reorg_depth
+            && let Some(ref old) = prev_head
+        {
+            let reorg_event = ApiEvent::ChainReorg(ChainReorgEventDto {
+                slot: head_slot_u64,
+                depth,
+                old_head_block: old.root,
+                new_head_block: head_root_bytes,
+                old_head_state: old.state_root,
+                new_head_state: head_state_root,
+                epoch: head_epoch,
+                execution_optimistic: is_optimistic,
+            });
+            if tx.send(reorg_event).is_err() {
+                debug!("api_event_adapter: no SSE subscribers for chain_reorg event");
             }
         }
 

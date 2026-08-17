@@ -142,21 +142,21 @@ where
             Some(r) => r,
             None => continue,
         };
-        if let Ok(Some(summary)) = <RocksStore as Store<E>>::get_state_summary(store, &block_root) {
-            if summary.state_root == state_root {
-                // Replay from the cold restore point to this slot.
-                return match inline_replay_to::<E>(store, cold_state, rp_slot, slot, runtime_cfg) {
-                    Ok(replayed) => Ok(Some(replayed)),
-                    Err(e) => {
-                        warn!(
-                            state_root = ?state_root,
-                            error = %e,
-                            "rehydrate: cold restore-point replay failed"
-                        );
-                        Ok(None)
-                    }
-                };
-            }
+        if let Ok(Some(summary)) = <RocksStore as Store<E>>::get_state_summary(store, &block_root)
+            && summary.state_root == state_root
+        {
+            // Replay from the cold restore point to this slot.
+            return match inline_replay_to::<E>(store, cold_state, rp_slot, slot, runtime_cfg) {
+                Ok(replayed) => Ok(Some(replayed)),
+                Err(e) => {
+                    warn!(
+                        state_root = ?state_root,
+                        error = %e,
+                        "rehydrate: cold restore-point replay failed"
+                    );
+                    Ok(None)
+                }
+            };
         }
     }
     Ok(None)

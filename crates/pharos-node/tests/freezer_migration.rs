@@ -532,21 +532,18 @@ async fn freezer_migration_cold_presence_and_regen() {
             }
 
             // Collect state roots to prune at epoch boundaries.
-            if s % SPE == 0 {
-                if let Ok(Some(summary)) =
+            if s % SPE == 0
+                && let Ok(Some(summary)) =
                     <RocksStore as DbStore<MinimalBeaconSpec>>::get_state_summary(&store, &root)
-                {
-                    if <RocksStore as DbStore<MinimalBeaconSpec>>::get_state(
-                        &store,
-                        &summary.state_root,
-                    )
-                    .ok()
-                    .flatten()
-                    .is_some()
-                    {
-                        prune_state_roots.push(summary.state_root);
-                    }
-                }
+                && <RocksStore as DbStore<MinimalBeaconSpec>>::get_state(
+                    &store,
+                    &summary.state_root,
+                )
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                prune_state_roots.push(summary.state_root);
             }
         }
     }
@@ -859,18 +856,16 @@ async fn cold_state_density_equals_restore_points() {
             // Collect restore-point states at interval-multiple epoch boundaries only.
             // With INTERVAL_SLOTS=8=SPE, every epoch boundary is also an interval
             // multiple, so the condition simplifies to: s % INTERVAL_SLOTS == 0.
-            if s % INTERVAL_SLOTS == 0 {
-                if let Ok(Some(summary)) =
+            if s % INTERVAL_SLOTS == 0
+                && let Ok(Some(summary)) =
                     <RocksStore as DbStore<MinimalBeaconSpec>>::get_state_summary(&store, &root)
-                {
-                    if let Ok(Some(state)) = <RocksStore as DbStore<MinimalBeaconSpec>>::get_state(
-                        &store,
-                        &summary.state_root,
-                    ) {
-                        prune_state_roots.push(summary.state_root);
-                        cold_states.push((slot, summary.state_root, state));
-                    }
-                }
+                && let Ok(Some(state)) = <RocksStore as DbStore<MinimalBeaconSpec>>::get_state(
+                    &store,
+                    &summary.state_root,
+                )
+            {
+                prune_state_roots.push(summary.state_root);
+                cold_states.push((slot, summary.state_root, state));
             }
         }
     }

@@ -867,7 +867,7 @@ impl<T, const N: u64> SszSequence<T, N> for SszList<T, N> {
                     arc.with_set(self.len, v, depth)
                 } else {
                     let chunk_idx = self.len / epc;
-                    if self.len % epc == 0 {
+                    if self.len.is_multiple_of(epc) {
                         // Start a fresh chunk.
                         arc.with_chunk(chunk_idx, vec![v], depth)
                     } else {
@@ -1494,7 +1494,7 @@ fn decode_list_items<T: Decode>(bytes: &[u8]) -> Result<Vec<T>, SszError> {
                 "zero-size element type in list/vector".to_string(),
             ));
         }
-        if bytes.len() % elem_len != 0 {
+        if !bytes.len().is_multiple_of(elem_len) {
             return Err(SszError::InvalidByteLength {
                 found: bytes.len(),
                 expected: (bytes.len() / elem_len) * elem_len,
@@ -1519,7 +1519,7 @@ fn decode_list_items<T: Decode>(bytes: &[u8]) -> Result<Vec<T>, SszError> {
         let first_offset =
             u32::from_le_bytes(bytes[..4].try_into().expect("checked above")) as usize;
 
-        if first_offset % BYTES_PER_LENGTH_OFFSET != 0 {
+        if !first_offset.is_multiple_of(BYTES_PER_LENGTH_OFFSET) {
             return Err(SszError::OffsetIntoFixedRegion);
         }
         if first_offset > bytes.len() {

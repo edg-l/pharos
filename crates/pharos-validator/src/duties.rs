@@ -270,11 +270,11 @@ pub async fn run_duty_refresh_loop(
                                     });
                                 }
 
-                                if event_type == "head" {
-                                    if let Ok(ev) = serde_json::from_str::<HeadEvent>(&data_buf) {
-                                        handle_head_event(&ev, epoch, &scheduler, slots_per_epoch)
-                                            .await;
-                                    }
+                                if event_type == "head"
+                                    && let Ok(ev) = serde_json::from_str::<HeadEvent>(&data_buf)
+                                {
+                                    handle_head_event(&ev, epoch, &scheduler, slots_per_epoch)
+                                        .await;
                                 }
 
                                 event_type.clear();
@@ -340,10 +340,10 @@ async fn handle_head_event(
         }
         // Also pre-fetch next epoch.
         let next = epoch.saturating_add(1);
-        if current_epoch == epoch {
-            if let Err(e) = sched_ref.refresh_epoch(next).await {
-                warn!(epoch = next, %e, "next epoch duty refresh failed");
-            }
+        if current_epoch == epoch
+            && let Err(e) = sched_ref.refresh_epoch(next).await
+        {
+            warn!(epoch = next, %e, "next epoch duty refresh failed");
         }
     }
 }

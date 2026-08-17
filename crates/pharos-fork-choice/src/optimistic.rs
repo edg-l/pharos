@@ -61,10 +61,10 @@ pub fn is_optimistic_candidate_block<E: BeaconSpec>(
 ) -> bool {
     // Branch 1 — parent is an execution block.
     // `consensus-specs/sync/optimistic.md:115`
-    if let Some(parent_block) = store.blocks.get(&parent_root) {
-        if block_is_execution_enabled::<E>(parent_block) {
-            return true;
-        }
+    if let Some(parent_block) = store.blocks.get(&parent_root)
+        && block_is_execution_enabled::<E>(parent_block)
+    {
+        return true;
     }
 
     // Branch 2 — block is old enough (SAFE_SLOTS behind wall clock).

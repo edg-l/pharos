@@ -212,17 +212,13 @@ pub async fn run_freezer_loop<E: BeaconSpec>(
                         );
                         prune_orphan_block_roots.push(root);
                         // Prune orphan's epoch-boundary state if stored.
-                        if slot.0 % E::SLOTS_PER_EPOCH == 0 {
-                            if let Ok(Some(summary)) =
+                        if slot.0 % E::SLOTS_PER_EPOCH == 0
+                            && let Ok(Some(summary)) =
                                 <RocksStore as DbStore<E>>::get_state_summary(&store, &root)
-                            {
-                                if let Ok(Some(_)) = <RocksStore as DbStore<E>>::get_state(
-                                    &store,
-                                    &summary.state_root,
-                                ) {
-                                    prune_state_roots.push(summary.state_root);
-                                }
-                            }
+                            && let Ok(Some(_)) =
+                                <RocksStore as DbStore<E>>::get_state(&store, &summary.state_root)
+                        {
+                            prune_state_roots.push(summary.state_root);
                         }
                     }
                 }
@@ -366,7 +362,7 @@ where
         };
 
         // Every interval-multiple boundary becomes a restore point.
-        if interval_slots > 0 && slot.0 % interval_slots == 0 {
+        if interval_slots > 0 && slot.0.is_multiple_of(interval_slots) {
             rps.push((slot, summary.state_root, state));
         } else {
             // Track the latest non-multiple boundary as a fallback.
@@ -381,10 +377,10 @@ where
     }
 
     // Guarantee at least one restore point per migration window.
-    if rps.is_empty() {
-        if let Some(fb) = best_fallback {
-            rps.push(fb);
-        }
+    if rps.is_empty()
+        && let Some(fb) = best_fallback
+    {
+        rps.push(fb);
     }
     rps
 }

@@ -209,15 +209,15 @@ impl ForkContext for TestHost {
         if *ctx == self.fork_digest.into_inner() {
             return Some(Fork::Phase0);
         }
-        if let Some(afd) = &self.altair_fork_digest {
-            if *ctx == afd.into_inner() {
-                return Some(Fork::Altair);
-            }
+        if let Some(afd) = &self.altair_fork_digest
+            && *ctx == afd.into_inner()
+        {
+            return Some(Fork::Altair);
         }
-        if let Some(bfd) = &self.bellatrix_fork_digest {
-            if *ctx == bfd.into_inner() {
-                return Some(Fork::Bellatrix);
-            }
+        if let Some(bfd) = &self.bellatrix_fork_digest
+            && *ctx == bfd.into_inner()
+        {
+            return Some(Fork::Bellatrix);
         }
         None
     }
@@ -382,10 +382,10 @@ impl GossipValidator<MainnetBeaconSpec> for TestHost {
             SignedBeaconBlock::Electra(inner) => inner.message.slot.0,
             SignedBeaconBlock::Fulu(inner) => inner.message.slot.0,
         };
-        if let Some(ignore_slot) = self.ignore_parent_unseen_for_slot {
-            if slot == ignore_slot {
-                return GossipVerdict::Ignore(GOSSIP_REASON_PARENT_UNSEEN.into());
-            }
+        if let Some(ignore_slot) = self.ignore_parent_unseen_for_slot
+            && slot == ignore_slot
+        {
+            return GossipVerdict::Ignore(GOSSIP_REASON_PARENT_UNSEEN.into());
         }
         if let Some(reject_idx) = self.reject_proposer_index {
             let proposer_index = match block {

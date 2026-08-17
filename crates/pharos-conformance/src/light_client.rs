@@ -2661,12 +2661,11 @@ where
                 &mut store,
                 current_slot,
             );
-            if let Some(checks) = force_update.get("checks") {
-                if let Err(e) =
+            if let Some(checks) = force_update.get("checks")
+                && let Err(e) =
                     check_store::<SYNC_COMMITTEE_SIZE>(&store, checks, case_name, step_idx)
-                {
-                    return CaseResult::Fail(e);
-                }
+            {
+                return CaseResult::Fail(e);
             }
         } else if let Some(process_update) = step.get("process_update") {
             let update_file = match process_update.get("update").and_then(|v| v.as_str()) {
@@ -2723,12 +2722,11 @@ where
                 ));
             }
 
-            if let Some(checks) = process_update.get("checks") {
-                if let Err(e) =
+            if let Some(checks) = process_update.get("checks")
+                && let Err(e) =
                     check_store::<SYNC_COMMITTEE_SIZE>(&store, checks, case_name, step_idx)
-                {
-                    return CaseResult::Fail(e);
-                }
+            {
+                return CaseResult::Fail(e);
             }
         } else if step.get("upgrade_store").is_some() {
             // Cross-fork store upgrade; skip for altair-only runner.
@@ -2747,13 +2745,13 @@ fn check_store<const SYNC_COMMITTEE_SIZE: u64>(
 ) -> Result<(), String> {
     if let Some(fin_check) = checks.get("finalized_header") {
         let expected_slot = fin_check.get("slot").and_then(|v| v.as_u64()).map(Slot);
-        if let Some(expected_slot) = expected_slot {
-            if store.finalized_header.beacon.slot != expected_slot {
-                return Err(format!(
-                    "{case_name}: step {step_idx}: finalized_header.slot mismatch: got {}, expected {}",
-                    store.finalized_header.beacon.slot.0, expected_slot.0
-                ));
-            }
+        if let Some(expected_slot) = expected_slot
+            && store.finalized_header.beacon.slot != expected_slot
+        {
+            return Err(format!(
+                "{case_name}: step {step_idx}: finalized_header.slot mismatch: got {}, expected {}",
+                store.finalized_header.beacon.slot.0, expected_slot.0
+            ));
         }
         if let Some(expected_root_hex) = fin_check.get("beacon_root").and_then(|v| v.as_str()) {
             let expected_root = parse_root(expected_root_hex)
@@ -2768,13 +2766,13 @@ fn check_store<const SYNC_COMMITTEE_SIZE: u64>(
     }
     if let Some(opt_check) = checks.get("optimistic_header") {
         let expected_slot = opt_check.get("slot").and_then(|v| v.as_u64()).map(Slot);
-        if let Some(expected_slot) = expected_slot {
-            if store.optimistic_header.beacon.slot != expected_slot {
-                return Err(format!(
-                    "{case_name}: step {step_idx}: optimistic_header.slot mismatch: got {}, expected {}",
-                    store.optimistic_header.beacon.slot.0, expected_slot.0
-                ));
-            }
+        if let Some(expected_slot) = expected_slot
+            && store.optimistic_header.beacon.slot != expected_slot
+        {
+            return Err(format!(
+                "{case_name}: step {step_idx}: optimistic_header.slot mismatch: got {}, expected {}",
+                store.optimistic_header.beacon.slot.0, expected_slot.0
+            ));
         }
         if let Some(expected_root_hex) = opt_check.get("beacon_root").and_then(|v| v.as_str()) {
             let expected_root = parse_root(expected_root_hex)
@@ -3369,12 +3367,11 @@ where
                         }
                         apply_capella_lc_update::<S, B, X>(store, &best);
                     }
-                    if let Some(checks) = force_update.get("checks") {
-                        if let Err(e) =
+                    if let Some(checks) = force_update.get("checks")
+                        && let Err(e) =
                             check_capella_store::<S, B, X>(store, checks, case_name, step_idx)
-                        {
-                            return CaseResult::Fail(e);
-                        }
+                    {
+                        return CaseResult::Fail(e);
                     }
                 }
                 ActiveCapellaStore::Deneb(store) => {
@@ -3387,17 +3384,17 @@ where
                         }
                         apply_deneb_lc_update::<S, B, X>(store, &best);
                     }
-                    if let Some(checks) = force_update.get("checks") {
-                        if let Err(e) = check_deneb_store::<S, B, X>(
+                    if let Some(checks) = force_update.get("checks")
+                        && let Err(e) = check_deneb_store::<S, B, X>(
                             store,
                             checks,
                             case_name,
                             step_idx,
                             deneb_fork_epoch,
                             slots_per_epoch,
-                        ) {
-                            return CaseResult::Fail(e);
-                        }
+                        )
+                    {
+                        return CaseResult::Fail(e);
                     }
                 }
                 ActiveCapellaStore::Electra(store) => {
@@ -3410,17 +3407,17 @@ where
                         }
                         apply_electra_lc_update::<S, B, X>(store, &best);
                     }
-                    if let Some(checks) = force_update.get("checks") {
-                        if let Err(e) = check_electra_store::<S, B, X>(
+                    if let Some(checks) = force_update.get("checks")
+                        && let Err(e) = check_electra_store::<S, B, X>(
                             store,
                             checks,
                             case_name,
                             step_idx,
                             deneb_fork_epoch,
                             slots_per_epoch,
-                        ) {
-                            return CaseResult::Fail(e);
-                        }
+                        )
+                    {
+                        return CaseResult::Fail(e);
                     }
                 }
             }
@@ -3482,12 +3479,11 @@ where
                             "{case_name}: step {step_idx}: process_update: {e}"
                         ));
                     }
-                    if let Some(checks) = process_update.get("checks") {
-                        if let Err(e) =
+                    if let Some(checks) = process_update.get("checks")
+                        && let Err(e) =
                             check_capella_store::<S, B, X>(store, checks, case_name, step_idx)
-                        {
-                            return CaseResult::Fail(e);
-                        }
+                    {
+                        return CaseResult::Fail(e);
                     }
                 }
                 ActiveCapellaStore::Deneb(store) => {
@@ -3524,17 +3520,17 @@ where
                             "{case_name}: step {step_idx}: process_update: {e}"
                         ));
                     }
-                    if let Some(checks) = process_update.get("checks") {
-                        if let Err(e) = check_deneb_store::<S, B, X>(
+                    if let Some(checks) = process_update.get("checks")
+                        && let Err(e) = check_deneb_store::<S, B, X>(
                             store,
                             checks,
                             case_name,
                             step_idx,
                             deneb_fork_epoch,
                             slots_per_epoch,
-                        ) {
-                            return CaseResult::Fail(e);
-                        }
+                        )
+                    {
+                        return CaseResult::Fail(e);
                     }
                 }
                 ActiveCapellaStore::Electra(store) => {
@@ -3593,17 +3589,17 @@ where
                             "{case_name}: step {step_idx}: process_update: {e}"
                         ));
                     }
-                    if let Some(checks) = process_update.get("checks") {
-                        if let Err(e) = check_electra_store::<S, B, X>(
+                    if let Some(checks) = process_update.get("checks")
+                        && let Err(e) = check_electra_store::<S, B, X>(
                             store,
                             checks,
                             case_name,
                             step_idx,
                             deneb_fork_epoch,
                             slots_per_epoch,
-                        ) {
-                            return CaseResult::Fail(e);
-                        }
+                        )
+                    {
+                        return CaseResult::Fail(e);
                     }
                 }
             }
@@ -3707,13 +3703,13 @@ where
 {
     if let Some(fin_check) = checks.get("finalized_header") {
         let expected_slot = fin_check.get("slot").and_then(|v| v.as_u64()).map(Slot);
-        if let Some(expected_slot) = expected_slot {
-            if store.finalized_header.beacon.slot != expected_slot {
-                return Err(format!(
-                    "{case_name}: step {step_idx}: finalized_header.slot mismatch: got {}, expected {}",
-                    store.finalized_header.beacon.slot.0, expected_slot.0
-                ));
-            }
+        if let Some(expected_slot) = expected_slot
+            && store.finalized_header.beacon.slot != expected_slot
+        {
+            return Err(format!(
+                "{case_name}: step {step_idx}: finalized_header.slot mismatch: got {}, expected {}",
+                store.finalized_header.beacon.slot.0, expected_slot.0
+            ));
         }
         if let Some(expected_root_hex) = fin_check.get("beacon_root").and_then(|v| v.as_str()) {
             let expected_root = parse_root(expected_root_hex)
@@ -3738,13 +3734,13 @@ where
     }
     if let Some(opt_check) = checks.get("optimistic_header") {
         let expected_slot = opt_check.get("slot").and_then(|v| v.as_u64()).map(Slot);
-        if let Some(expected_slot) = expected_slot {
-            if store.optimistic_header.beacon.slot != expected_slot {
-                return Err(format!(
-                    "{case_name}: step {step_idx}: optimistic_header.slot mismatch: got {}, expected {}",
-                    store.optimistic_header.beacon.slot.0, expected_slot.0
-                ));
-            }
+        if let Some(expected_slot) = expected_slot
+            && store.optimistic_header.beacon.slot != expected_slot
+        {
+            return Err(format!(
+                "{case_name}: step {step_idx}: optimistic_header.slot mismatch: got {}, expected {}",
+                store.optimistic_header.beacon.slot.0, expected_slot.0
+            ));
         }
         if let Some(expected_root_hex) = opt_check.get("beacon_root").and_then(|v| v.as_str()) {
             let expected_root = parse_root(expected_root_hex)
@@ -4206,17 +4202,17 @@ where
                         }
                         apply_deneb_lc_update::<S, B, X>(store, &best);
                     }
-                    if let Some(checks) = force_update.get("checks") {
-                        if let Err(e) = check_deneb_store::<S, B, X>(
+                    if let Some(checks) = force_update.get("checks")
+                        && let Err(e) = check_deneb_store::<S, B, X>(
                             store,
                             checks,
                             case_name,
                             step_idx,
                             deneb_fork_epoch,
                             slots_per_epoch,
-                        ) {
-                            return CaseResult::Fail(e);
-                        }
+                        )
+                    {
+                        return CaseResult::Fail(e);
                     }
                 }
                 ActiveDenebStore::Electra(store) => {
@@ -4229,17 +4225,17 @@ where
                         }
                         apply_electra_lc_update::<S, B, X>(store, &best);
                     }
-                    if let Some(checks) = force_update.get("checks") {
-                        if let Err(e) = check_electra_store::<S, B, X>(
+                    if let Some(checks) = force_update.get("checks")
+                        && let Err(e) = check_electra_store::<S, B, X>(
                             store,
                             checks,
                             case_name,
                             step_idx,
                             deneb_fork_epoch,
                             slots_per_epoch,
-                        ) {
-                            return CaseResult::Fail(e);
-                        }
+                        )
+                    {
+                        return CaseResult::Fail(e);
                     }
                 }
             }
@@ -4300,17 +4296,17 @@ where
                             "{case_name}: step {step_idx}: process_update: {e}"
                         ));
                     }
-                    if let Some(checks) = process_update.get("checks") {
-                        if let Err(e) = check_deneb_store::<S, B, X>(
+                    if let Some(checks) = process_update.get("checks")
+                        && let Err(e) = check_deneb_store::<S, B, X>(
                             store,
                             checks,
                             case_name,
                             step_idx,
                             deneb_fork_epoch,
                             slots_per_epoch,
-                        ) {
-                            return CaseResult::Fail(e);
-                        }
+                        )
+                    {
+                        return CaseResult::Fail(e);
                     }
                 }
                 ActiveDenebStore::Electra(store) => {
@@ -4353,17 +4349,17 @@ where
                             "{case_name}: step {step_idx}: process_update: {e}"
                         ));
                     }
-                    if let Some(checks) = process_update.get("checks") {
-                        if let Err(e) = check_electra_store::<S, B, X>(
+                    if let Some(checks) = process_update.get("checks")
+                        && let Err(e) = check_electra_store::<S, B, X>(
                             store,
                             checks,
                             case_name,
                             step_idx,
                             deneb_fork_epoch,
                             slots_per_epoch,
-                        ) {
-                            return CaseResult::Fail(e);
-                        }
+                        )
+                    {
+                        return CaseResult::Fail(e);
                     }
                 }
             }
@@ -4446,13 +4442,13 @@ where
 {
     if let Some(fin_check) = checks.get("finalized_header") {
         let expected_slot = fin_check.get("slot").and_then(|v| v.as_u64()).map(Slot);
-        if let Some(expected_slot) = expected_slot {
-            if store.finalized_header.beacon.slot != expected_slot {
-                return Err(format!(
-                    "{case_name}: step {step_idx}: finalized_header.slot mismatch: got {}, expected {}",
-                    store.finalized_header.beacon.slot.0, expected_slot.0
-                ));
-            }
+        if let Some(expected_slot) = expected_slot
+            && store.finalized_header.beacon.slot != expected_slot
+        {
+            return Err(format!(
+                "{case_name}: step {step_idx}: finalized_header.slot mismatch: got {}, expected {}",
+                store.finalized_header.beacon.slot.0, expected_slot.0
+            ));
         }
         if let Some(expected_root_hex) = fin_check.get("beacon_root").and_then(|v| v.as_str()) {
             let expected_root = parse_root(expected_root_hex)
@@ -4488,13 +4484,13 @@ where
     }
     if let Some(opt_check) = checks.get("optimistic_header") {
         let expected_slot = opt_check.get("slot").and_then(|v| v.as_u64()).map(Slot);
-        if let Some(expected_slot) = expected_slot {
-            if store.optimistic_header.beacon.slot != expected_slot {
-                return Err(format!(
-                    "{case_name}: step {step_idx}: optimistic_header.slot mismatch: got {}, expected {}",
-                    store.optimistic_header.beacon.slot.0, expected_slot.0
-                ));
-            }
+        if let Some(expected_slot) = expected_slot
+            && store.optimistic_header.beacon.slot != expected_slot
+        {
+            return Err(format!(
+                "{case_name}: step {step_idx}: optimistic_header.slot mismatch: got {}, expected {}",
+                store.optimistic_header.beacon.slot.0, expected_slot.0
+            ));
         }
         if let Some(expected_root_hex) = opt_check.get("beacon_root").and_then(|v| v.as_str()) {
             let expected_root = parse_root(expected_root_hex)
@@ -4997,17 +4993,17 @@ where
                 }
                 apply_electra_lc_update::<S, B, X>(&mut store, &best);
             }
-            if let Some(checks) = force_update.get("checks") {
-                if let Err(e) = check_electra_store::<S, B, X>(
+            if let Some(checks) = force_update.get("checks")
+                && let Err(e) = check_electra_store::<S, B, X>(
                     &store,
                     checks,
                     case_name,
                     step_idx,
                     deneb_fork_epoch,
                     slots_per_epoch,
-                ) {
-                    return CaseResult::Fail(e);
-                }
+                )
+            {
+                return CaseResult::Fail(e);
             }
         } else if let Some(process_update) = step.get("process_update") {
             let update_file = match process_update.get("update").and_then(|v| v.as_str()) {
@@ -5051,17 +5047,17 @@ where
                 ));
             }
 
-            if let Some(checks) = process_update.get("checks") {
-                if let Err(e) = check_electra_store::<S, B, X>(
+            if let Some(checks) = process_update.get("checks")
+                && let Err(e) = check_electra_store::<S, B, X>(
                     &store,
                     checks,
                     case_name,
                     step_idx,
                     deneb_fork_epoch,
                     slots_per_epoch,
-                ) {
-                    return CaseResult::Fail(e);
-                }
+                )
+            {
+                return CaseResult::Fail(e);
             }
         } else if step.get("upgrade_store").is_some() {
             // Electra sync cases that would upgrade to fulu are gloas cases and are
@@ -5093,13 +5089,13 @@ where
     // Use epoch-conditional execution_root per spec's get_lc_execution_root.
     if let Some(fin_check) = checks.get("finalized_header") {
         let expected_slot = fin_check.get("slot").and_then(|v| v.as_u64()).map(Slot);
-        if let Some(expected_slot) = expected_slot {
-            if store.finalized_header.beacon.slot != expected_slot {
-                return Err(format!(
-                    "{case_name}: step {step_idx}: finalized_header.slot mismatch: got {}, expected {}",
-                    store.finalized_header.beacon.slot.0, expected_slot.0
-                ));
-            }
+        if let Some(expected_slot) = expected_slot
+            && store.finalized_header.beacon.slot != expected_slot
+        {
+            return Err(format!(
+                "{case_name}: step {step_idx}: finalized_header.slot mismatch: got {}, expected {}",
+                store.finalized_header.beacon.slot.0, expected_slot.0
+            ));
         }
         if let Some(expected_root_hex) = fin_check.get("beacon_root").and_then(|v| v.as_str()) {
             let expected_root = parse_root(expected_root_hex)
@@ -5135,13 +5131,13 @@ where
     }
     if let Some(opt_check) = checks.get("optimistic_header") {
         let expected_slot = opt_check.get("slot").and_then(|v| v.as_u64()).map(Slot);
-        if let Some(expected_slot) = expected_slot {
-            if store.optimistic_header.beacon.slot != expected_slot {
-                return Err(format!(
-                    "{case_name}: step {step_idx}: optimistic_header.slot mismatch: got {}, expected {}",
-                    store.optimistic_header.beacon.slot.0, expected_slot.0
-                ));
-            }
+        if let Some(expected_slot) = expected_slot
+            && store.optimistic_header.beacon.slot != expected_slot
+        {
+            return Err(format!(
+                "{case_name}: step {step_idx}: optimistic_header.slot mismatch: got {}, expected {}",
+                store.optimistic_header.beacon.slot.0, expected_slot.0
+            ));
         }
         if let Some(expected_root_hex) = opt_check.get("beacon_root").and_then(|v| v.as_str()) {
             let expected_root = parse_root(expected_root_hex)

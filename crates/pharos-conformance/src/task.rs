@@ -90,13 +90,12 @@ pub fn fold(mut outcomes: Vec<(u32, u32, CaseOutcome)>, table: &[RowSpec]) -> Fo
         }
 
         // Attach footnote on first encounter of a footnoted row, in row_ordinal order.
-        if !footnoted_rows.contains(row_ord) {
-            if let Some(spec) = table.get(*row_ord as usize) {
-                if let Some(footnote_text) = spec.footnote {
-                    footnotes.push((*row_ord, footnote_text));
-                    footnoted_rows.insert(*row_ord);
-                }
-            }
+        if !footnoted_rows.contains(row_ord)
+            && let Some(spec) = table.get(*row_ord as usize)
+            && let Some(footnote_text) = spec.footnote
+        {
+            footnotes.push((*row_ord, footnote_text));
+            footnoted_rows.insert(*row_ord);
         }
     }
 

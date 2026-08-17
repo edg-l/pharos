@@ -560,21 +560,18 @@ async fn restart_across_split_rehydrates_correctly() {
                 cold_blocks_vec.push((root, block));
                 prune_block_roots.push(root);
             }
-            if s % SPE == 0 {
-                if let Ok(Some(summary)) =
+            if s % SPE == 0
+                && let Ok(Some(summary)) =
                     <RocksStore as DbStore<MinimalBeaconSpec>>::get_state_summary(&store, &root)
-                {
-                    if <RocksStore as DbStore<MinimalBeaconSpec>>::get_state(
-                        &store,
-                        &summary.state_root,
-                    )
-                    .ok()
-                    .flatten()
-                    .is_some()
-                    {
-                        prune_state_roots.push(summary.state_root);
-                    }
-                }
+                && <RocksStore as DbStore<MinimalBeaconSpec>>::get_state(
+                    &store,
+                    &summary.state_root,
+                )
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                prune_state_roots.push(summary.state_root);
             }
         }
     }

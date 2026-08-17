@@ -68,7 +68,7 @@ where
     >(state)
     .0 + 1;
     let epochs_per_period = E::SLOTS_PER_HISTORICAL_ROOT / E::SLOTS_PER_EPOCH;
-    if next_epoch % epochs_per_period == 0 {
+    if next_epoch.is_multiple_of(epochs_per_period) {
         let historical_root = compute_historical_batch_root_altair::<
             SLOTS_PER_HISTORICAL_ROOT,
             HISTORICAL_ROOTS_LIMIT,

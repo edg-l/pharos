@@ -169,15 +169,15 @@ fn proposer_index_at_slot<E: BeaconSpec>(
     // epoch's first slot; `slot - current_epoch_start` indexes into it. Slots
     // outside the window fall through to the on-demand computation (which the spec
     // never requests for proposer duties — only current/next epoch).
-    if state.fork_variant() == ForkVariant::Fulu {
-        if let Some(lookahead) = state.proposer_lookahead_vec() {
-            let current_epoch = compute_epoch_at_slot(state.slot(), E::SLOTS_PER_EPOCH);
-            let window_start = current_epoch.0 * E::SLOTS_PER_EPOCH;
-            if slot.0 >= window_start {
-                let offset = (slot.0 - window_start) as usize;
-                if let Some(idx) = lookahead.get(offset).copied() {
-                    return idx;
-                }
+    if state.fork_variant() == ForkVariant::Fulu
+        && let Some(lookahead) = state.proposer_lookahead_vec()
+    {
+        let current_epoch = compute_epoch_at_slot(state.slot(), E::SLOTS_PER_EPOCH);
+        let window_start = current_epoch.0 * E::SLOTS_PER_EPOCH;
+        if slot.0 >= window_start {
+            let offset = (slot.0 - window_start) as usize;
+            if let Some(idx) = lookahead.get(offset).copied() {
+                return idx;
             }
         }
     }

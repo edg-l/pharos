@@ -77,10 +77,10 @@ where
             found: false,
         };
         event.record(&mut visitor);
-        if visitor.found {
-            if let Some(counter) = STALL_WARN_COUNT.get() {
-                counter.fetch_add(1, Ordering::Relaxed);
-            }
+        if visitor.found
+            && let Some(counter) = STALL_WARN_COUNT.get()
+        {
+            counter.fetch_add(1, Ordering::Relaxed);
         }
     }
 }

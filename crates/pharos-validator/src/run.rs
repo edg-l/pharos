@@ -1091,31 +1091,31 @@ pub async fn run_vc_loop(
 
         // ── Proposer path ─────────────────────────────────────────────────────
 
-        if let Some(proposer_pubkey) = duties_for_slot.proposer.get(&current_slot) {
-            if let Some(entry) = pubkey_map.get(proposer_pubkey) {
-                if doppelganger.may_sign(&entry.pubkey_hex, current_epoch) {
-                    let entry = *entry;
-                    let db_ref = Arc::clone(&slashing_db);
-                    let bn_ref = bn.clone();
-                    let slot = current_slot;
-                    let epoch = current_epoch;
-                    let graffiti = config.graffiti.clone();
-                    run_proposer(
-                        &bn_ref,
-                        entry,
-                        slot,
-                        epoch,
-                        &fork,
-                        db_ref.as_ref(),
-                        graffiti.as_deref(),
-                    )
-                    .await;
-                } else {
-                    info!(
-                        slot = current_slot,
-                        "doppelganger hold-off: proposer slot suppressed"
-                    );
-                }
+        if let Some(proposer_pubkey) = duties_for_slot.proposer.get(&current_slot)
+            && let Some(entry) = pubkey_map.get(proposer_pubkey)
+        {
+            if doppelganger.may_sign(&entry.pubkey_hex, current_epoch) {
+                let entry = *entry;
+                let db_ref = Arc::clone(&slashing_db);
+                let bn_ref = bn.clone();
+                let slot = current_slot;
+                let epoch = current_epoch;
+                let graffiti = config.graffiti.clone();
+                run_proposer(
+                    &bn_ref,
+                    entry,
+                    slot,
+                    epoch,
+                    &fork,
+                    db_ref.as_ref(),
+                    graffiti.as_deref(),
+                )
+                .await;
+            } else {
+                info!(
+                    slot = current_slot,
+                    "doppelganger hold-off: proposer slot suppressed"
+                );
             }
         }
 

@@ -62,7 +62,7 @@ where
         E,
     >(state)
     .0 + 1;
-    if next_epoch % E::EPOCHS_PER_ETH1_VOTING_PERIOD == 0 {
+    if next_epoch.is_multiple_of(E::EPOCHS_PER_ETH1_VOTING_PERIOD) {
         state.eth1_data_votes = pharos_ssz::SszList::default();
     }
     Ok(())

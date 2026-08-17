@@ -70,7 +70,7 @@ where
 
     let next_epoch = current_epoch.0 + 1;
 
-    if next_epoch % E::EPOCHS_PER_SYNC_COMMITTEE_PERIOD == 0 {
+    if next_epoch.is_multiple_of(E::EPOCHS_PER_SYNC_COMMITTEE_PERIOD) {
         state.current_sync_committee = state.next_sync_committee.clone();
         let new_next = get_next_sync_committee::<
             SLOTS_PER_HISTORICAL_ROOT,

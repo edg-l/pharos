@@ -30,7 +30,7 @@ where
     E::BeaconState: BeaconStateWrite,
 {
     let next_epoch = get_current_epoch::<E>(state).0 + 1;
-    if next_epoch % E::EPOCHS_PER_ETH1_VOTING_PERIOD == 0 {
+    if next_epoch.is_multiple_of(E::EPOCHS_PER_ETH1_VOTING_PERIOD) {
         state.clear_eth1_data_votes();
     }
     Ok(())
@@ -141,7 +141,7 @@ where
 {
     let next_epoch = get_current_epoch::<E>(state).0 + 1;
     let epochs_per_period = E::SLOTS_PER_HISTORICAL_ROOT / E::SLOTS_PER_EPOCH;
-    if next_epoch % epochs_per_period == 0 {
+    if next_epoch.is_multiple_of(epochs_per_period) {
         // Build HistoricalBatch from current block_roots and state_roots.
         // Both mainnet and minimal have the same SLOTS_PER_HISTORICAL_ROOT
         // associated with the preset, so we dispatch through E's associated type.

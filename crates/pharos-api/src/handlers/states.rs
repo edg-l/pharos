@@ -806,30 +806,30 @@ pub async fn get_committees<E: BeaconSpec>(
 
         // An explicit `?slot=` must fall within the target epoch (spec: 400
         // "Slot does not belong in epoch").
-        if let Some(qs) = query.slot {
-            if qs < epoch_start.0 || qs >= epoch_start.0 + E::SLOTS_PER_EPOCH {
-                return Err(ApiError::BadRequest(format!(
-                    "slot {qs} does not belong in epoch {}",
-                    target_epoch.0
-                )));
-            }
+        if let Some(qs) = query.slot
+            && (qs < epoch_start.0 || qs >= epoch_start.0 + E::SLOTS_PER_EPOCH)
+        {
+            return Err(ApiError::BadRequest(format!(
+                "slot {qs} does not belong in epoch {}",
+                target_epoch.0
+            )));
         }
 
         let mut data = Vec::new();
         for slot_offset in 0..E::SLOTS_PER_EPOCH {
             let slot = Slot(epoch_start.0 + slot_offset);
             // Apply slot filter.
-            if let Some(qs) = query.slot {
-                if slot.0 != qs {
-                    continue;
-                }
+            if let Some(qs) = query.slot
+                && slot.0 != qs
+            {
+                continue;
             }
             for committee_index in 0..committees_per_slot {
                 // Apply committee index filter.
-                if let Some(qi) = query.index {
-                    if committee_index != qi {
-                        continue;
-                    }
+                if let Some(qi) = query.index
+                    && committee_index != qi
+                {
+                    continue;
                 }
                 let validators = get_beacon_committee::<E>(&beacon_state, slot, committee_index);
                 let validator_strs: Vec<String> =

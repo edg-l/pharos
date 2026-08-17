@@ -681,10 +681,10 @@ fn parse_union_name(suite: &str) -> Option<String> {
         "CompatibleUnionA",
     ];
     for name in &known {
-        if let Some(rest) = suite.strip_prefix(name) {
-            if rest.is_empty() || rest.starts_with('_') {
-                return Some(name.to_string());
-            }
+        if let Some(rest) = suite.strip_prefix(name)
+            && (rest.is_empty() || rest.starts_with('_'))
+        {
+            return Some(name.to_string());
         }
     }
     None

@@ -641,10 +641,9 @@ impl<E: BeaconSpec> StateRegenService<E> {
 
                 if let Ok(Some(summary)) =
                     <RocksStore as DbStore<E>>::get_state_summary(&self.store, &block_root)
+                    && &summary.state_root == target_state_root
                 {
-                    if &summary.state_root == target_state_root {
-                        return Ok(Some(block_root));
-                    }
+                    return Ok(Some(block_root));
                 }
             }
 

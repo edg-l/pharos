@@ -241,20 +241,18 @@ where
                 let Some(event) = ev else { break }; // network task closed → exit
                 // Forward blob sidecar events to the blob ingestion loop.
                 if let NetworkEvent::GossipBlobSidecar { .. } = &event {
-                    if let Some(ref tx) = blob_event_tx {
-                        if tx.try_send(event).is_err() {
+                    if let Some(ref tx) = blob_event_tx
+                        && tx.try_send(event).is_err() {
                             warn!("blob_ingestion: blob_event channel full; dropping GossipBlobSidecar (awaiting block may be parked until timeout)");
                         }
-                    }
                     continue;
                 }
                 // Forward data-column sidecar events to the column ingestion loop.
                 if let NetworkEvent::GossipDataColumnSidecar { .. } = &event {
-                    if let Some(ref tx) = column_event_tx {
-                        if tx.try_send(event).is_err() {
+                    if let Some(ref tx) = column_event_tx
+                        && tx.try_send(event).is_err() {
                             warn!("column_ingestion: column_event channel full; dropping GossipDataColumnSidecar (awaiting block may be parked until timeout)");
                         }
-                    }
                     continue;
                 }
                 // Forward unknown-parent gossip blocks to the lookup loop.

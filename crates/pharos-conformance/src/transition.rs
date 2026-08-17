@@ -592,12 +592,12 @@ where
                     ));
                 }
             };
-            if altair_inner.slot() < fork_slot {
-                if let Err(e) = altair_inner.process_slots_altair(fork_slot) {
-                    return CaseResult::Fail(format!(
-                        "{case_name}: process_slots to fork before block {i}: {e}"
-                    ));
-                }
+            if altair_inner.slot() < fork_slot
+                && let Err(e) = altair_inner.process_slots_altair(fork_slot)
+            {
+                return CaseResult::Fail(format!(
+                    "{case_name}: process_slots to fork before block {i}: {e}"
+                ));
             }
             match do_upgrade(altair_inner, cfg) {
                 Ok(s) => current = s,
@@ -655,10 +655,10 @@ where
                 return CaseResult::Fail(format!("{case_name}: already bellatrix before upgrade"));
             }
         };
-        if altair_inner.slot() < fork_slot {
-            if let Err(e) = altair_inner.process_slots_altair(fork_slot) {
-                return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
-            }
+        if altair_inner.slot() < fork_slot
+            && let Err(e) = altair_inner.process_slots_altair(fork_slot)
+        {
+            return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
         }
         match do_upgrade(altair_inner, cfg) {
             Ok(s) => current = s,
@@ -770,12 +770,12 @@ where
         // Upgrade state before the first post-fork block.
         if !did_upgrade && block_slot >= fork_slot {
             // Advance state to fork_slot (process any slots between last block and fork).
-            if current.slot() < fork_slot {
-                if let Err(e) = pharos_stf::process_slots::<E>(&mut current, fork_slot) {
-                    return CaseResult::Fail(format!(
-                        "{case_name}: process_slots to fork before block {i}: {e}"
-                    ));
-                }
+            if current.slot() < fork_slot
+                && let Err(e) = pharos_stf::process_slots::<E>(&mut current, fork_slot)
+            {
+                return CaseResult::Fail(format!(
+                    "{case_name}: process_slots to fork before block {i}: {e}"
+                ));
             }
             let phase0_inner = match E::into_phase0_state(current) {
                 Some(s) => s,
@@ -833,10 +833,10 @@ where
 
     // If all blocks were pre-fork (or blocks_count == 0), advance and upgrade now.
     if !did_upgrade {
-        if current.slot() < fork_slot {
-            if let Err(e) = pharos_stf::process_slots::<E>(&mut current, fork_slot) {
-                return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
-            }
+        if current.slot() < fork_slot
+            && let Err(e) = pharos_stf::process_slots::<E>(&mut current, fork_slot)
+        {
+            return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
         }
         let phase0_inner = match E::into_phase0_state(current) {
             Some(s) => s,
@@ -1047,12 +1047,12 @@ where
                     ));
                 }
             };
-            if bellatrix_inner.slot() < fork_slot {
-                if let Err(e) = bellatrix_inner.process_slots_bellatrix(fork_slot) {
-                    return CaseResult::Fail(format!(
-                        "{case_name}: process_slots to fork before block {i}: {e}"
-                    ));
-                }
+            if bellatrix_inner.slot() < fork_slot
+                && let Err(e) = bellatrix_inner.process_slots_bellatrix(fork_slot)
+            {
+                return CaseResult::Fail(format!(
+                    "{case_name}: process_slots to fork before block {i}: {e}"
+                ));
             }
             match do_upgrade(bellatrix_inner, cfg) {
                 Ok(s) => current = s,
@@ -1105,10 +1105,10 @@ where
                 return CaseResult::Fail(format!("{case_name}: already capella before upgrade"));
             }
         };
-        if bellatrix_inner.slot() < fork_slot {
-            if let Err(e) = bellatrix_inner.process_slots_bellatrix(fork_slot) {
-                return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
-            }
+        if bellatrix_inner.slot() < fork_slot
+            && let Err(e) = bellatrix_inner.process_slots_bellatrix(fork_slot)
+        {
+            return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
         }
         match do_upgrade(bellatrix_inner, cfg) {
             Ok(s) => current = s,
@@ -1317,12 +1317,12 @@ where
                     ));
                 }
             };
-            if capella_inner.slot() < fork_slot {
-                if let Err(e) = capella_inner.process_slots_capella(fork_slot) {
-                    return CaseResult::Fail(format!(
-                        "{case_name}: process_slots to fork before block {i}: {e}"
-                    ));
-                }
+            if capella_inner.slot() < fork_slot
+                && let Err(e) = capella_inner.process_slots_capella(fork_slot)
+            {
+                return CaseResult::Fail(format!(
+                    "{case_name}: process_slots to fork before block {i}: {e}"
+                ));
             }
             match do_upgrade(capella_inner, cfg) {
                 Ok(s) => current = s,
@@ -1375,10 +1375,10 @@ where
                 return CaseResult::Fail(format!("{case_name}: already deneb before upgrade"));
             }
         };
-        if capella_inner.slot() < fork_slot {
-            if let Err(e) = capella_inner.process_slots_capella(fork_slot) {
-                return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
-            }
+        if capella_inner.slot() < fork_slot
+            && let Err(e) = capella_inner.process_slots_capella(fork_slot)
+        {
+            return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
         }
         match do_upgrade(capella_inner, cfg) {
             Ok(s) => current = s,
@@ -1604,12 +1604,12 @@ where
                     ));
                 }
             };
-            if deneb_inner.slot() < fork_slot {
-                if let Err(e) = deneb_inner.process_slots_deneb(fork_slot, cfg) {
-                    return CaseResult::Fail(format!(
-                        "{case_name}: process_slots to fork before block {i}: {e}"
-                    ));
-                }
+            if deneb_inner.slot() < fork_slot
+                && let Err(e) = deneb_inner.process_slots_deneb(fork_slot, cfg)
+            {
+                return CaseResult::Fail(format!(
+                    "{case_name}: process_slots to fork before block {i}: {e}"
+                ));
             }
             match do_upgrade(deneb_inner, cfg) {
                 Ok(s) => current = s,
@@ -1664,10 +1664,10 @@ where
                 return CaseResult::Fail(format!("{case_name}: already electra before upgrade"));
             }
         };
-        if deneb_inner.slot() < fork_slot {
-            if let Err(e) = deneb_inner.process_slots_deneb(fork_slot, cfg) {
-                return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
-            }
+        if deneb_inner.slot() < fork_slot
+            && let Err(e) = deneb_inner.process_slots_deneb(fork_slot, cfg)
+        {
+            return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
         }
         match do_upgrade(deneb_inner, cfg) {
             Ok(s) => current = s,
@@ -1901,12 +1901,12 @@ where
                     ));
                 }
             };
-            if electra_inner.slot() < fork_slot {
-                if let Err(e) = electra_inner.process_slots_electra(fork_slot, cfg) {
-                    return CaseResult::Fail(format!(
-                        "{case_name}: process_slots to fork before block {i}: {e}"
-                    ));
-                }
+            if electra_inner.slot() < fork_slot
+                && let Err(e) = electra_inner.process_slots_electra(fork_slot, cfg)
+            {
+                return CaseResult::Fail(format!(
+                    "{case_name}: process_slots to fork before block {i}: {e}"
+                ));
             }
             match do_upgrade(electra_inner, cfg) {
                 Ok(s) => current = s,
@@ -1961,10 +1961,10 @@ where
                 return CaseResult::Fail(format!("{case_name}: already fulu before upgrade"));
             }
         };
-        if electra_inner.slot() < fork_slot {
-            if let Err(e) = electra_inner.process_slots_electra(fork_slot, cfg) {
-                return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
-            }
+        if electra_inner.slot() < fork_slot
+            && let Err(e) = electra_inner.process_slots_electra(fork_slot, cfg)
+        {
+            return CaseResult::Fail(format!("{case_name}: process_slots to fork: {e}"));
         }
         match do_upgrade(electra_inner, cfg) {
             Ok(s) => current = s,

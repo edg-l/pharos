@@ -1262,10 +1262,10 @@ where
     E::BeaconBlock: BeaconBlockView + Clone,
     E::BeaconState: BeaconStateView,
 {
-    if let Some(want) = checks.time {
-        if store.time != want {
-            return Err(format!("time: want {want}, got {}", store.time));
-        }
+    if let Some(want) = checks.time
+        && store.time != want
+    {
+        return Err(format!("time: want {want}, got {}", store.time));
     }
     if let Some(want) = &checks.justified_checkpoint
         && (store.justified_checkpoint.epoch != want.epoch

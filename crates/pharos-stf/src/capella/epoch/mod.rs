@@ -325,7 +325,7 @@ pub fn process_historical_summaries_update<
     let next_epoch = current_epoch.0 + 1;
     let period = SLOTS_PER_HISTORICAL_ROOT / E::SLOTS_PER_EPOCH;
 
-    if next_epoch % period == 0 {
+    if next_epoch.is_multiple_of(period) {
         let historical_summary = HistoricalSummary {
             block_summary_root: state.block_roots.tree_hash_root(),
             state_summary_root: state.state_roots.tree_hash_root(),
