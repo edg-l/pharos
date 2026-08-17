@@ -9,6 +9,7 @@
 #   scripts/run-hoodi.sh stop       # kill both clients + the tmux session
 #
 # Override via env: HOODI_DIR, CHECKPOINT_URL, PHAROS_BIN, ETHREX_BIN,
+# CONSENSUS_SPECS (presets source, default ~/dev/consensus-specs),
 # TCP_PORT, DISCV5_PORT, HTTP_PORT, AUTHRPC_PORT, RUST_LOG, PHAROS_EXTRA.
 set -Euo pipefail
 
@@ -70,8 +71,24 @@ fi
 # Layout-tolerant: find config.yaml and the CL bootnode list wherever they live.
 CONFIG_YAML="$(find "$CL_META" -name config.yaml -print -quit 2>/dev/null || true)"
 [ -n "$CONFIG_YAML" ] || die "config.yaml not found under $CL_META"
-CONFIG_DIR="$(dirname "$CONFIG_YAML")"
-BOOTNODE_FILE="$(find "$CL_META" \( -name bootstrap_nodes.txt -o -name boot_enr.yaml -o -name boot_enr.txt \) -print -quit 2>/dev/null || true)"
+BOOTNODE_FILE="$(find "$CL_META" \( -name bootstrap_nodes.yaml -o -name bootstrap_nodes.txt -o -name boot_enr.yaml -o -name boot_enr.txt \) -print -quit 2>/dev/null || true)"
+
+# pharos' --config-dir loader follows the consensus-specs layout: it reads
+# <prefix>.yaml as the network config, then loads presets from
+# <prefix>/../../presets/<PRESET_BASE>/*.yaml. The eth-clients/hoodi repo ships
+# only a bare config.yaml (no sibling presets/), so assemble the expected tree
+# under $HOODI_DIR/cfg: configs/hoodi.yaml + a presets/ symlink into
+# consensus-specs. Pass the extension-less prefix configs/hoodi.
+CONSENSUS_SPECS="${CONSENSUS_SPECS:-$HOME/dev/consensus-specs}"
+PRESET_BASE="$(grep -E '^PRESET_BASE:' "$CONFIG_YAML" | head -1 | awk '{print $2}' | tr -d "'\"")"
+PRESET_BASE="${PRESET_BASE:-mainnet}"
+[ -d "$CONSENSUS_SPECS/presets/$PRESET_BASE" ] \
+  || die "presets/$PRESET_BASE not found under $CONSENSUS_SPECS (set CONSENSUS_SPECS=/path/to/consensus-specs)"
+CFG_ROOT="$HOODI_DIR/cfg"
+mkdir -p "$CFG_ROOT/configs"
+cp -f "$CONFIG_YAML" "$CFG_ROOT/configs/hoodi.yaml"
+ln -sfn "$CONSENSUS_SPECS/presets" "$CFG_ROOT/presets"
+CONFIG_PREFIX="$CFG_ROOT/configs/hoodi"
 
 # Collect every `enr:...` token from the CL bootnode file into --bootnode flags.
 PHAROS_BOOTNODES=()
@@ -79,7 +96,7 @@ if [ -n "$BOOTNODE_FILE" ]; then
   while IFS= read -r enr; do PHAROS_BOOTNODES+=(--bootnode "$enr"); done \
     < <(grep -oE 'enr:[A-Za-z0-9_-]+' "$BOOTNODE_FILE" | sort -u)
 fi
-say "Hoodi CL config: $CONFIG_DIR   (${#PHAROS_BOOTNODES[@]} bootnode flags, file: ${BOOTNODE_FILE:-none})"
+say "Hoodi CL config: $CONFIG_PREFIX.yaml (preset=$PRESET_BASE)   (${#PHAROS_BOOTNODES[@]} bootnode flags, file: ${BOOTNODE_FILE:-none})"
 [ "${#PHAROS_BOOTNODES[@]}" -gt 0 ] || echo "WARN: no CL bootnodes parsed; discv5 will rely on checkpoint peers only"
 
 # ── command lines ────────────────────────────────────────────────────────────
@@ -90,7 +107,7 @@ ETHREX_CMD="$ETHREX_BIN --network hoodi --datadir $HOODI_DIR/ethrex \
 
 # shellcheck disable=SC2206
 PHAROS_ARGS=(
-  --config-dir "$CONFIG_DIR"
+  --config-dir "$CONFIG_PREFIX"
   --checkpoint-sync-url "$CHECKPOINT_URL"
   --execution-endpoint "http://127.0.0.1:$AUTHRPC_PORT"
   --jwt-secret "$JWT"
@@ -98,6 +115,7 @@ PHAROS_ARGS=(
   --discv5-port "$DISCV5_PORT"
   --http --http-address 127.0.0.1 --http-port "$HTTP_PORT"
   --data-dir "$HOODI_DIR/pharos-data"
+  --log-file "$HOODI_DIR/pharos.log"
   "${PHAROS_BOOTNODES[@]}"
   ${PHAROS_EXTRA:-}
 )
@@ -131,8 +149,21 @@ tmux send-keys  -t hoodi:node.1 "sleep 3; RUST_LOG='$RUST_LOG' RUST_BACKTRACE=1 
 tmux select-pane -t hoodi:node.0
 tmux set-option -t hoodi mouse on >/dev/null 2>&1 || true
 
+# Tee each pane to a log file so a detached/headless soak is inspectable.
+# pharos writes its own clean (non-ANSI, daily-rolling) file via --log-file
+# ($HOODI_DIR/pharos.log.YYYY-MM-DD); capture ethrex's pane output here.
+tmux pipe-pane -o -t hoodi:node.0 "cat >> '$HOODI_DIR/ethrex.log'"
+
 say "launched tmux session 'hoodi' (left: ethrex, right: pharos)"
 echo "  attach:  tmux attach -t hoodi      detach: Ctrl-b d      stop: $0 stop"
+echo "  logs:    $HOODI_DIR/ethrex.log   $HOODI_DIR/pharos.log.<date>"
 echo "  CL sync: curl -s http://127.0.0.1:$HTTP_PORT/eth/v1/node/syncing | jq .data"
 echo "  peers:   curl -s http://127.0.0.1:$HTTP_PORT/eth/v1/node/peer_count | jq .data"
-tmux attach -t hoodi
+
+# Only attach when stdout is an interactive terminal; otherwise leave the
+# session running detached (so this is safe to launch from automation).
+if [ -t 1 ]; then
+  tmux attach -t hoodi
+else
+  echo "  (no TTY) session 'hoodi' is running detached; attach with: tmux attach -t hoodi"
+fi
