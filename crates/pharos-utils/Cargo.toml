@@ -20,6 +20,7 @@ serde = { workspace = true, optional = true }
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 tracing.workspace = true
+tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 axum.workspace = true
 tokio.workspace = true

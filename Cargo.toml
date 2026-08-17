@@ -99,7 +99,8 @@ serde_yaml_ng = "0.10"
 
 # Observability
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"] }
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 

@@ -288,6 +288,12 @@ struct Args {
     /// variable when set.
     #[arg(long, default_value = "info", value_name = "FILTER")]
     log_level: String,
+
+    /// Optional file to tee logs into, in addition to the console. The file
+    /// uses a non-blocking, daily-rolling writer with no ANSI colour codes.
+    /// A bad/unwritable path falls back to console-only (the node still starts).
+    #[arg(long, value_name = "PATH")]
+    log_file: Option<std::path::PathBuf>,
 }
 
 // ── `pharos debug` subcommands ──────────────────────────────────────────────────
@@ -413,7 +419,11 @@ async fn main() -> anyhow::Result<()> {
     // no-op subscriber; startup errors are surfaced via anyhow after init.
     let args = Args::parse();
 
-    pharos_utils::tracing::init_tracing(args.log_format, &args.log_level);
+    let (log_reload, _log_guard) = pharos_utils::tracing::init_tracing(
+        args.log_format,
+        &args.log_level,
+        args.log_file.as_deref(),
+    );
 
     // ── Metrics (opt-in via --metrics) ────────────────────────────────────────
     //
@@ -1725,13 +1735,20 @@ async fn main() -> anyhow::Result<()> {
             None
         };
 
-        let api_state = pharos_api::ApiState::new_with_bus(Arc::new(chain_state), event_bus);
+        let api_state = pharos_api::ApiState::new_with_bus_and_log_reload(
+            Arc::new(chain_state),
+            event_bus,
+            Some(log_reload.clone()),
+        );
         let http_addr = SocketAddr::new(args.http_address, args.http_port);
         tokio::spawn(async move {
             pharos_api::serve_with_auth::<MainnetBeaconSpec>(http_addr, api_state, validator_token)
                 .await;
         });
         info!(%http_addr, "Beacon API HTTP server spawned");
+        info!(
+            "runtime log-level endpoint enabled at POST /pharos/v1/log-level (validator-auth gated)"
+        );
     }
 
     // ── Freezer loop (hot→cold migration at finalization) ────────────────────

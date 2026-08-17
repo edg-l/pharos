@@ -2762,6 +2762,10 @@ pub struct ApiState<E: BeaconSpec> {
     /// SSE broadcast bus.  `None` when built without an event bus (e.g. tests
     /// that only exercise non-SSE endpoints).
     pub event_bus: Option<Arc<EventBus>>,
+    /// Runtime log-level reload handle.  `None` when the node was started
+    /// without a reload-capable subscriber (e.g. in tests or early startup).
+    /// Set via `ApiState::new_with_bus_and_log_reload`.
+    pub log_reload: Option<pharos_utils::tracing::LogReloadHandle>,
 }
 
 // ── Rewards helpers (M15 Phase 6) ──────────────────────────────────────────────
@@ -2872,6 +2876,7 @@ impl<E: BeaconSpec> ApiState<E> {
         Arc::new(Self {
             chain,
             event_bus: None,
+            log_reload: None,
         })
     }
 
@@ -2880,6 +2885,25 @@ impl<E: BeaconSpec> ApiState<E> {
         Arc::new(Self {
             chain,
             event_bus: Some(event_bus),
+            log_reload: None,
+        })
+    }
+
+    /// Construct with an SSE event bus and a runtime log-level reload handle.
+    ///
+    /// The `log_reload` handle is obtained from `pharos_utils::tracing::init_tracing`
+    /// and enables `POST /pharos/v1/log-level` to change the active `EnvFilter` at
+    /// runtime without restarting the node.  Pass `None` to disable the endpoint
+    /// (it returns 503 when the handle is absent).
+    pub fn new_with_bus_and_log_reload(
+        chain: Arc<dyn ChainStateApi<E>>,
+        event_bus: Arc<EventBus>,
+        log_reload: Option<pharos_utils::tracing::LogReloadHandle>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            chain,
+            event_bus: Some(event_bus),
+            log_reload,
         })
     }
 }

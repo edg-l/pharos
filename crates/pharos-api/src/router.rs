@@ -17,6 +17,7 @@ use crate::handlers::config_extra;
 use crate::handlers::debug as debug_handlers;
 use crate::handlers::events as events_handlers;
 use crate::handlers::light_client as lc_handlers;
+use crate::handlers::log_level;
 use crate::handlers::node;
 use crate::handlers::rewards as rewards_handlers;
 use crate::handlers::states;
@@ -110,6 +111,9 @@ use crate::state::ApiState;
 ///
 /// The validator sub-router has `validator_auth_layer` applied; `None` means
 /// no auth (default).  The debug and pool routes are unauthenticated.
+///
+/// **Pharos vendor namespace (auth-gated)**
+/// - `POST /pharos/v1/log-level` — change runtime log filter (Bearer token required when set)
 pub fn build_router<E: BeaconSpec>(state: Arc<ApiState<E>>) -> Router {
     build_router_with_auth::<E>(state, None)
 }
@@ -197,6 +201,8 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v1/validator/liveness/{epoch}",
             post(validator_liveness::post_validator_liveness::<E>),
         )
+        // Pharos vendor namespace — auth-gated like the validator endpoints above
+        .route("/pharos/v1/log-level", post(log_level::post_log_level::<E>))
         .layer(validator_auth_layer(validator_token))
         .with_state(Arc::clone(&state));
 

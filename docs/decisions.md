@@ -5463,3 +5463,40 @@ for `TestHost::new`) and asserts both sides reach `PeerConnected` and record
 sides still reach `PeerConnected`. A `TestHost` builder
 `with_distinct_fulu_fork_digest(ForkDigest)` is added so the test can represent a
 pre-Fulu node distinctly from a Fulu node.
+
+## M-LoggingUpgrade decisions
+
+### D-runtime-log-reload — runtime log-level reload and `--log-file` non-blocking appender
+
+**Reload-layer placement (decision: top-level `reload::Layer<EnvFilter, Registry>`).**
+`tracing_subscriber::reload::Layer` is placed first on `registry()`, before both
+the console fmt layer and the optional file layer. A single `LogReloadHandle`
+therefore gates ALL sinks simultaneously: a `handle.reload(new_filter)` call
+changes the effective level for both console and file output in one atomic swap.
+Startup filter priority is: `RUST_LOG` env var when set, `--log-level` CLI flag
+otherwise. A runtime `POST /pharos/v1/log-level` call overrides whichever source
+set the startup filter; it does not persist across restarts.
+
+**File logging (decision: non-blocking daily-rolling appender, no ANSI, WorkerGuard
+in `main`).**
+`--log-file <PATH>` activates `tracing_appender::rolling::daily` with a prefix
+derived from the supplied path (parent as directory, filename as prefix). The
+writer is wrapped in `tracing_appender::non_blocking` so disk I/O never blocks
+async executor threads. `.with_ansi(false)` is applied to the file fmt layer only;
+the console layer is unaffected. `WorkerGuard` is bound as a named local
+(`_log_guard`) in both `pharos-node/src/main.rs` and `pharos-validator/src/main.rs`
+and held for the full process lifetime so the background writer thread flushes
+cleanly on shutdown. Bad `--log-file` paths degrade gracefully: `create_dir_all`
+is attempted first; on any failure, `eprintln!` is emitted and the node starts
+console-only without panicking.
+
+**Endpoint and auth (decision: `POST /pharos/v1/log-level` on the validator sub-router).**
+The handler is mounted inside the `validator_router` chain in `pharos-api`'s
+`build_router_with_auth`, before `.layer(validator_auth_layer(...))`. It inherits
+the existing Bearer token middleware with no new CLI flag: localhost-open when
+`--validator-api-token` is absent, Bearer-required when set (constant-time
+compare). Request body: `{"filter":"<RUST_LOG directive>"}`. Responses: 200 echo,
+400 on bad directive, 401 on missing/wrong token, 503 when the reload handle is
+not wired (validator binary). Threat model: log-level mutation is low-sensitivity
+admin output; gating it identically to validator duties is proportionate, and the
+API binds 127.0.0.1 by default, so exposure is limited to localhost.

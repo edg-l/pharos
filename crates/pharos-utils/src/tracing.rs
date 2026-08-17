@@ -16,9 +16,41 @@
 //! `filter` parameter is the fallback directive used when `RUST_LOG` is not set
 //! or is invalid; it can carry a `--log-level` override supplied by the
 //! operator.
+//!
+//! # Optional file logging
+//!
+//! Pass `log_file: Some(path)` to additionally write logs to a daily-rolling
+//! file. The file writer uses [`tracing_appender::non_blocking`] (off the hot
+//! path) and writes without ANSI colour codes. The console output is unaffected.
+//!
+//! If the parent directory cannot be created, a warning is printed to stderr
+//! and the process falls back to console-only logging without panicking.
+//!
+//! # Return value
+//!
+//! Returns `(LogReloadHandle, Option<WorkerGuard>)`.
+//!
+//! - `LogReloadHandle` — a `Clone + Send + Sync` handle that can be stored in
+//!   API state to change the active log filter at runtime without restarting.
+//!   Call [`reload::Handle::reload`] with a new [`EnvFilter`].
+//! - `Option<WorkerGuard>` — the guard for the non-blocking file writer
+//!   background thread. **Must be kept alive for the entire process lifetime.**
+//!   Dropping it flushes any buffered log lines and terminates the writer thread;
+//!   any log events emitted after the drop may be silently discarded.
 
+use std::ffi::OsStr;
+use std::path::Path;
+
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{EnvFilter, Registry, fmt, reload};
+
+/// A handle for reloading the active [`EnvFilter`] at runtime.
+///
+/// The type parameter `S = Registry` reflects that the reload layer is the
+/// first layer mounted on `registry()` in [`init_tracing`]. The handle is
+/// `Clone + Send + Sync` and can be stored directly in API state.
+pub type LogReloadHandle = reload::Handle<EnvFilter, Registry>;
 
 /// Log output format selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,34 +83,86 @@ impl std::str::FromStr for LogFormat {
 /// - `format` — output format; see [`LogFormat`].
 /// - `filter` — `RUST_LOG`-style directive string used as the fallback when
 ///   `RUST_LOG` is not set (e.g. `"info"`, `"info,pharos_stf=debug"`).
+/// - `log_file` — optional path for a daily-rolling log file. If the parent
+///   directory cannot be created the function falls back to console-only
+///   logging and prints a warning to stderr. The returned
+///   [`WorkerGuard`] must be held for the process lifetime.
+///
+/// # Returns
+///
+/// `(LogReloadHandle, Option<WorkerGuard>)` — see module-level docs for the
+/// contract on each value.
 ///
 /// # Panics
 ///
 /// Panics if a global subscriber has already been installed (only one call per
 /// process is valid).
-pub fn init_tracing(format: LogFormat, filter: &str) {
+pub fn init_tracing(
+    format: LogFormat,
+    filter: &str,
+    log_file: Option<&Path>,
+) -> (LogReloadHandle, Option<WorkerGuard>) {
+    use tracing_subscriber::prelude::*;
+
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter));
 
+    let (filter_layer, reload_handle) = reload::Layer::new(env_filter);
+
+    // Build the optional non-blocking file writer before entering the match,
+    // so we can move `filter_layer` into exactly one arm.
+    let file_writer: Option<(tracing_appender::non_blocking::NonBlocking, WorkerGuard)> = log_file
+        .and_then(|path| {
+            let dir = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let prefix = path.file_name().unwrap_or_else(|| OsStr::new("pharos.log"));
+
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                eprintln!("warning: cannot create log dir {dir:?}: {e}; logging to console only");
+                return None;
+            }
+
+            let file_appender = tracing_appender::rolling::daily(dir, prefix);
+            let (nb, guard) = tracing_appender::non_blocking(file_appender);
+            Some((nb, guard))
+        });
+
+    let (nb_opt, guard) = match file_writer {
+        Some((nb, g)) => (Some(nb), Some(g)),
+        None => (None, None),
+    };
+
     match format {
-        LogFormat::Json => {
-            use tracing_subscriber::prelude::*;
+        LogFormat::Pretty => {
+            let console_layer = fmt::layer();
+            let file_layer_opt = nb_opt.map(|nb| fmt::layer().with_ansi(false).with_writer(nb));
             tracing_subscriber::registry()
-                .with(env_filter)
-                .with(
-                    fmt::layer()
-                        .json()
-                        .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT),
-                )
+                .with(filter_layer)
+                .with(console_layer)
+                .with(file_layer_opt)
                 .init();
         }
-        LogFormat::Pretty => {
-            use tracing_subscriber::prelude::*;
+        LogFormat::Json => {
+            let console_layer = fmt::layer()
+                .json()
+                .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT);
+            let file_layer_opt = nb_opt.map(|nb| {
+                fmt::layer()
+                    .json()
+                    .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT)
+                    .with_ansi(false)
+                    .with_writer(nb)
+            });
             tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt::layer())
+                .with(filter_layer)
+                .with(console_layer)
+                .with(file_layer_opt)
                 .init();
         }
     }
+
+    (reload_handle, guard)
 }
 
 /// Build a JSON-format tracing layer that writes to `writer`, with
@@ -106,6 +190,28 @@ mod tests {
     use tracing_subscriber::prelude::*;
 
     use super::*;
+
+    // ── File-layer helper (mirrors production file-layer construction) ─────────
+
+    /// Build a non-blocking file-writing layer for testing file output.
+    ///
+    /// Returns the layer and the [`WorkerGuard`] that must be dropped to flush.
+    /// The layer writes with ANSI codes disabled, matching production file output.
+    fn build_file_layer(path: &Path) -> (impl tracing_subscriber::Layer<Registry>, WorkerGuard) {
+        use std::ffi::OsStr;
+
+        let dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let prefix = path.file_name().unwrap_or_else(|| OsStr::new("pharos.log"));
+
+        std::fs::create_dir_all(dir).expect("test tempdir must be creatable");
+        let file_appender = tracing_appender::rolling::daily(dir, prefix);
+        let (nb, guard) = tracing_appender::non_blocking(file_appender);
+        let layer = fmt::layer().with_ansi(false).with_writer(nb);
+        (layer, guard)
+    }
 
     // ── Shared capture writer ─────────────────────────────────────────────────
 
@@ -314,5 +420,60 @@ mod tests {
     #[test]
     fn log_format_unknown_errors() {
         assert!("yaml".parse::<LogFormat>().is_err());
+    }
+
+    // ── Test: file layer writes without ANSI codes ────────────────────────────
+
+    /// Verifies that the file layer:
+    /// 1. Writes the emitted event to the rolled log file.
+    /// 2. Produces no ANSI escape sequences (0x1b byte) in the output.
+    #[test]
+    fn file_layer_writes_no_ansi() {
+        // Create a unique temp subdir for this test.
+        let base = std::env::temp_dir().join(format!("pharos-tracing-test-{}", std::process::id()));
+        std::fs::create_dir_all(&base).expect("create temp dir");
+
+        let log_path = base.join("pharos-test.log");
+        let (layer, guard) = build_file_layer(&log_path);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _sub_guard = tracing::subscriber::set_default(subscriber);
+
+        tracing::info!("file log test event");
+
+        // Drop the subscriber guard first so the subscriber is no longer active,
+        // then drop the worker guard. `WorkerGuard::drop` is synchronous: it
+        // signals the writer thread and blocks until the pending event is
+        // flushed, so the file is complete once this returns.
+        drop(_sub_guard);
+        drop(guard);
+
+        // Locate the rolled file: rolling::daily appends a date suffix, so glob
+        // for any file whose name starts with the prefix in our temp dir.
+        let prefix = "pharos-test.log";
+        let rolled_file = std::fs::read_dir(&base)
+            .expect("read temp dir")
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().starts_with(prefix))
+            .map(|e| e.path())
+            .expect("no rolled log file found in temp dir");
+
+        let contents = std::fs::read(&rolled_file).expect("read rolled log file");
+
+        // Assert the event message is present.
+        let text = String::from_utf8_lossy(&contents);
+        assert!(
+            text.contains("file log test event"),
+            "expected 'file log test event' in log file; got: {text}"
+        );
+
+        // Assert no ANSI escape byte (0x1b) is present.
+        assert!(
+            !contents.contains(&0x1b_u8),
+            "ANSI escape byte found in log file — with_ansi(false) not applied"
+        );
+
+        // Clean up.
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

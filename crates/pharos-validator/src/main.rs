@@ -114,6 +114,12 @@ struct Args {
     /// `info,pharos_validator=debug`. Overridden by `RUST_LOG` when set.
     #[arg(long, default_value = "info", value_name = "FILTER")]
     log_level: String,
+
+    /// Optional file to tee logs into, in addition to the console. The file
+    /// uses a non-blocking, daily-rolling writer with no ANSI colour codes.
+    /// A bad/unwritable path falls back to console-only (the node still starts).
+    #[arg(long, value_name = "PATH")]
+    log_file: Option<std::path::PathBuf>,
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
@@ -122,7 +128,14 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    pharos_utils::tracing::init_tracing(args.log_format, &args.log_level);
+    // The validator client runs no Beacon API, so the reload handle is unused;
+    // the WorkerGuard MUST stay bound for the whole program so the file writer
+    // keeps flushing (dropping it stops the background thread).
+    let (_log_reload, _log_guard) = pharos_utils::tracing::init_tracing(
+        args.log_format,
+        &args.log_level,
+        args.log_file.as_deref(),
+    );
 
     info!("pharos-vc {} starting", env!("CARGO_PKG_VERSION"));
 

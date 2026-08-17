@@ -10,6 +10,7 @@ pub mod config_extra;
 pub mod debug;
 pub mod events;
 pub mod light_client;
+pub mod log_level;
 pub mod node;
 pub mod rewards;
 pub mod states;
