@@ -30,10 +30,12 @@ use crate::state::ApiState;
 /// **Phase 1 — Tier-1 probes**
 /// - `GET /eth/v1/node/identity`
 /// - `GET /eth/v1/node/version`
+/// - `GET /eth/v2/node/version`
 /// - `GET /eth/v1/node/syncing`
 /// - `GET /eth/v1/node/health`
 /// - `GET /eth/v1/node/peers`
 /// - `GET /eth/v1/node/peer_count`
+/// - `GET /eth/v1/node/peers/{peer_id}`
 /// - `GET /eth/v1/beacon/genesis`
 /// - `GET /eth/v1/config/spec`
 ///
@@ -186,13 +188,15 @@ pub fn build_router_with_auth<E: BeaconSpec>(
         .with_state(Arc::clone(&state));
 
     Router::new()
-        // Node namespace (Phase 1 + M9 Phase 5 peers)
+        // Node namespace (Phase 1 + M9 Phase 5 peers + M15 Phase 1)
         .route("/eth/v1/node/identity", get(node::get_identity::<E>))
         .route("/eth/v1/node/version", get(node::get_version::<E>))
+        .route("/eth/v2/node/version", get(node::get_version_v2::<E>))
         .route("/eth/v1/node/syncing", get(node::get_syncing::<E>))
         .route("/eth/v1/node/health", get(node::get_health::<E>))
         .route("/eth/v1/node/peers", get(node::get_peers::<E>))
         .route("/eth/v1/node/peer_count", get(node::get_peer_count::<E>))
+        .route("/eth/v1/node/peers/{peer_id}", get(node::get_peer::<E>))
         // Beacon basic namespace (Phase 1; migrated to ApiResponse in Phase 2)
         .route(
             "/eth/v1/beacon/genesis",

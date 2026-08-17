@@ -959,6 +959,22 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
         vec![]
     }
 
+    /// Look up a single peer by `peer_id` string.
+    ///
+    /// Default impl is a linear scan of `self.peers()` matching the
+    /// `"peer_id"` field.  This is correct for all callers; no override is
+    /// required in `NodeChainState` because `peers()` already returns the
+    /// complete per-peer JSON.
+    ///
+    /// Returns `None` when no peer with the given id is connected.
+    ///
+    /// Per `~/dev/beacon-APIs/apis/node/peer.yaml` (`getPeer`).
+    fn peer_by_id(&self, peer_id: &str) -> Option<JsonValue> {
+        self.peers()
+            .into_iter()
+            .find(|p| p.get("peer_id").and_then(|v| v.as_str()) == Some(peer_id))
+    }
+
     // ── Light-client REST endpoints (M7-followup) ─────────────────────────────
 
     /// Return the `LcEnvelope` for the bootstrap at `block_root`, if stored.

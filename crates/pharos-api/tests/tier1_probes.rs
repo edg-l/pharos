@@ -207,6 +207,143 @@ impl ChainStateApi<MainnetBeaconSpec> for MockChain {
     }
 }
 
+/// A mock that returns a single fixed peer via `peers()`, for peer-lookup tests.
+struct MockChainWithPeers {
+    inner: MockChain,
+    peers: Vec<serde_json::Value>,
+}
+
+impl MockChainWithPeers {
+    fn with_one_peer(peer_id: &str) -> Self {
+        Self {
+            inner: MockChain::new(),
+            peers: vec![serde_json::json!({
+                "peer_id": peer_id,
+                "enr": "enr:-IS4QHtest",
+                "last_seen_p2p_address": "/ip4/1.2.3.4/tcp/9000",
+                "state": "connected",
+                "direction": "outbound"
+            })],
+        }
+    }
+}
+
+impl ChainStateApi<MainnetBeaconSpec> for MockChainWithPeers {
+    fn head_root(&self) -> Root {
+        self.inner.head_root()
+    }
+
+    fn current_slot(&self) -> Slot {
+        self.inner.current_slot()
+    }
+
+    fn genesis(&self) -> (u64, Root, [u8; 4]) {
+        self.inner.genesis()
+    }
+
+    fn finalized_checkpoint(&self) -> pharos_types::phase0::Checkpoint {
+        self.inner.finalized_checkpoint()
+    }
+
+    fn justified_checkpoint(&self) -> pharos_types::phase0::Checkpoint {
+        self.inner.justified_checkpoint()
+    }
+
+    fn block_header_at(&self, root: Root) -> Option<BeaconBlockHeader> {
+        self.inner.block_header_at(root)
+    }
+
+    fn runtime_cfg(&self) -> Arc<pharos_types::config::RuntimeConfig> {
+        self.inner.runtime_cfg()
+    }
+
+    fn is_optimistic(&self) -> bool {
+        false
+    }
+
+    fn is_optimistic_for_root(&self, _root: Root) -> bool {
+        false
+    }
+
+    fn is_optimistic_node(&self) -> bool {
+        false
+    }
+
+    fn is_syncing(&self) -> bool {
+        false
+    }
+
+    fn node_identity(&self) -> &pharos_api::NodeIdentityCache {
+        self.inner.node_identity()
+    }
+
+    fn state_by_block_root(
+        &self,
+        root: Root,
+    ) -> Option<<MainnetBeaconSpec as BeaconSpec>::BeaconState> {
+        self.inner.state_by_block_root(root)
+    }
+
+    fn state_by_state_root(
+        &self,
+        root: Root,
+    ) -> Option<<MainnetBeaconSpec as BeaconSpec>::BeaconState> {
+        self.inner.state_by_state_root(root)
+    }
+
+    fn block_root_for_slot(&self, slot: Slot) -> Option<Root> {
+        self.inner.block_root_for_slot(slot)
+    }
+
+    fn genesis_block_root(&self) -> Root {
+        self.inner.genesis_block_root()
+    }
+
+    fn sync_committee_pubkeys(&self, root: Root) -> Option<(Vec<[u8; 48]>, Vec<[u8; 48]>)> {
+        self.inner.sync_committee_pubkeys(root)
+    }
+
+    fn block_by_root_for_api(
+        &self,
+        root: Root,
+    ) -> Result<Option<pharos_api::dto::block::SignedBlockForApi>, pharos_api::ApiError> {
+        self.inner.block_by_root_for_api(root)
+    }
+
+    fn signed_block_header_at(
+        &self,
+        root: Root,
+    ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)> {
+        self.inner.signed_block_header_at(root)
+    }
+
+    fn regenerate_state(
+        &self,
+        target: RegenTarget,
+    ) -> Result<<MainnetBeaconSpec as BeaconSpec>::BeaconState, pharos_api::ApiError> {
+        self.inner.regenerate_state(target)
+    }
+
+    fn fork_choice_dump(&self) -> Result<serde_json::Value, pharos_api::ApiError> {
+        self.inner.fork_choice_dump()
+    }
+
+    fn fork_choice_heads(&self) -> Result<serde_json::Value, pharos_api::ApiError> {
+        self.inner.fork_choice_heads()
+    }
+
+    fn state_to_json(
+        &self,
+        state: <MainnetBeaconSpec as pharos_types::BeaconSpec>::BeaconState,
+    ) -> Result<serde_json::Value, pharos_api::ApiError> {
+        self.inner.state_to_json(state)
+    }
+
+    fn peers(&self) -> Vec<serde_json::Value> {
+        self.peers.clone()
+    }
+}
+
 /// A minimal mock that delegates everything to `MockChain` but overrides
 /// `is_syncing` and `is_optimistic` independently, for health-endpoint tests.
 struct MockChainHealth {
@@ -548,5 +685,104 @@ async fn test_config_spec() {
             .unwrap()
             .starts_with("0x"),
         "CAPELLA_FORK_VERSION must be 0x-hex"
+    );
+}
+
+// ── M15 Phase 1 tests ─────────────────────────────────────────────────────────
+
+/// `GET /eth/v2/node/version` must return
+/// `{ "data": { "beacon_node": { "code", "name", "version", "commit" } } }`
+/// per `~/dev/beacon-APIs/apis/node/version.v2.yaml` (schema `ClientVersionV1`).
+#[tokio::test]
+async fn node_version_v2_shape() {
+    let router = make_router();
+    let (status, json) = get(&router, "/eth/v2/node/version").await;
+    assert_eq!(status, StatusCode::OK);
+    let beacon_node = &json["data"]["beacon_node"];
+    assert!(
+        beacon_node.is_object(),
+        "data.beacon_node must be an object"
+    );
+    // All four ClientVersionV1 required fields must be present.
+    let code = beacon_node["code"].as_str().expect("code must be a string");
+    assert_eq!(code, "PH", "code must be 'PH' for Pharos");
+    let name = beacon_node["name"].as_str().expect("name must be a string");
+    assert_eq!(name, "Pharos", "name must be 'Pharos'");
+    let version = beacon_node["version"]
+        .as_str()
+        .expect("version must be a string");
+    assert!(!version.is_empty(), "version must be non-empty");
+    let commit = beacon_node["commit"]
+        .as_str()
+        .expect("commit must be a string");
+    // Commit is 0x + 8 hex digits per the spec pattern ^0x[a-fA-F0-9]{8}$
+    assert!(
+        commit.starts_with("0x"),
+        "commit must start with 0x; got {commit}"
+    );
+    assert_eq!(commit.len(), 10, "commit must be 10 chars (0x + 8 hex)");
+    // execution_client is optional and must NOT be required (omitted is OK).
+    // The spec marks it optional; assert it is absent in pharos's response.
+    assert!(
+        json["data"]["execution_client"].is_null(),
+        "execution_client must be absent (optional per spec)"
+    );
+}
+
+/// `GET /eth/v1/node/peers/{peer_id}` — found case.
+///
+/// Mock returns one peer; looking it up by exact peer_id must yield
+/// `{ "data": Peer }` with all five spec-required fields:
+/// `peer_id`, `enr`, `last_seen_p2p_address`, `state`, `direction`.
+#[tokio::test]
+async fn node_peer_by_id_found() {
+    // Use a real libp2p PeerId so the parse-validation in the handler passes.
+    let pid = libp2p::PeerId::random().to_string();
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> =
+        Arc::new(MockChainWithPeers::with_one_peer(&pid));
+    let state = pharos_api::ApiState::new(chain);
+    let router = pharos_api::build_router(state);
+
+    let path = format!("/eth/v1/node/peers/{pid}");
+    let (status, json) = get(&router, &path).await;
+    assert_eq!(status, StatusCode::OK, "found peer must be 200");
+    let data = &json["data"];
+    assert!(data.is_object(), "data must be an object");
+    // Verify all five Peer schema fields are present.
+    assert_eq!(data["peer_id"].as_str().unwrap(), pid);
+    assert!(data["enr"].is_string(), "enr must be a string");
+    assert!(
+        data["last_seen_p2p_address"].is_string(),
+        "last_seen_p2p_address must be a string"
+    );
+    assert!(data["state"].is_string(), "state must be a string");
+    assert!(data["direction"].is_string(), "direction must be a string");
+}
+
+/// `GET /eth/v1/node/peers/{peer_id}` — not found case.
+///
+/// Mock returns one peer; looking up a different (but valid) peer_id must
+/// yield 404 `{ "code": 404, "message": "..." }`.
+#[tokio::test]
+async fn node_peer_by_id_404() {
+    let pid = libp2p::PeerId::random().to_string();
+    let chain: Arc<dyn ChainStateApi<MainnetBeaconSpec>> =
+        Arc::new(MockChainWithPeers::with_one_peer(&pid));
+    let state = pharos_api::ApiState::new(chain);
+    let router = pharos_api::build_router(state);
+
+    // A different valid peer id that is not in the mock's list.
+    let other_pid = libp2p::PeerId::random().to_string();
+    let path = format!("/eth/v1/node/peers/{other_pid}");
+    let (status, json) = get(&router, &path).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "missing peer must be 404");
+    assert_eq!(
+        json["code"].as_u64().unwrap(),
+        404,
+        "error body code must be 404"
+    );
+    assert!(
+        json["message"].is_string(),
+        "error body must have a message field"
     );
 }
