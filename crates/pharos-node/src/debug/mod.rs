@@ -8,3 +8,4 @@
 //! `D-custody-uint-to-bytes-little-endian`).
 
 pub mod das;
+pub mod payload_bodies;

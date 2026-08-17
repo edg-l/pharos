@@ -229,6 +229,39 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
             }
         }
     }
+
+    /// Override the default: call `engine_getBlobsV2` on the local EL blob pool.
+    ///
+    /// Returns one `Option<(blob_bytes, cell_proof_bytes)>` per versioned hash;
+    /// `cell_proof_bytes` holds one decoded byte-vec per KZG cell proof. `None`
+    /// means the EL does not have that blob. Any engine transport/JSON-RPC error
+    /// results in an empty vec (no fallback).
+    fn get_blobs_v2(&self, versioned_hashes: &[[u8; 32]]) -> Vec<Option<(Vec<u8>, Vec<Vec<u8>>)>> {
+        let vh_hex: Vec<String> = versioned_hashes
+            .iter()
+            .map(|h| bytes_to_data_hex(h))
+            .collect();
+        match self.engine.get_blobs_v2_blocking(vh_hex) {
+            Ok(blobs) => blobs
+                .into_iter()
+                .map(|opt| {
+                    opt.map(|b| {
+                        let blob = hex_data_to_bytes(&b.blob).unwrap_or_default();
+                        let proofs = b
+                            .proofs
+                            .iter()
+                            .filter_map(|p| hex_data_to_bytes(p))
+                            .collect();
+                        (blob, proofs)
+                    })
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "get_blobs_v2: engine error; skipping EL fallback");
+                vec![]
+            }
+        }
+    }
 }
 
 impl ExecutionEngineHandle {

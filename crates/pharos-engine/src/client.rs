@@ -32,7 +32,21 @@ const ENGINE_RPC_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Engine API methods advertised by pharos in `engine_exchangeCapabilities`.
 ///
-/// Includes V1 (Bellatrix/Paris), V2 (Capella/Shanghai), and V3 (Deneb/Cancun) methods.
+/// Per `execution-apis/src/engine/common.md`, this is the set of methods the CL
+/// **will call** (not merely implements). pharos's fork frontier is Fulu/Osaka,
+/// which reuses `newPayloadV4` + `forkchoiceUpdatedV3` and adds `getPayloadV5`;
+/// so the driven set is `newPayload` V1–V4, `forkchoiceUpdated` V1–V3,
+/// `getPayload` V1–V5, `getBlobsV1`, `getPayloadBodiesByHashV1`,
+/// `getPayloadBodiesByRangeV1`, the capability/identity helpers, and
+/// `exchangeTransitionConfigurationV1` (issued at cold start for the TTD sanity
+/// check). Amsterdam methods (`newPayloadV5`, `forkchoiceUpdatedV4`,
+/// `getPayloadV6`, `getBlobsV4`, `getPayloadBodiesBy{Hash,Range}V2`) are
+/// implemented on `EngineClient` but NOT advertised: pharos has no Amsterdam
+/// fork configured, so it never calls them. `getBlobsV2` (Fulu) is added here
+/// once its DA-fastpath call site lands. The two advertised payload-bodies
+/// methods are driven by the `pharos debug payload-bodies` tool
+/// (`pharos-node/src/debug/payload_bodies.rs`); there is no live-sync call
+/// site for them yet.
 pub const DEFAULT_ENGINE_CAPABILITIES: &[&str] = &[
     "engine_newPayloadV1",
     "engine_newPayloadV2",
@@ -47,6 +61,8 @@ pub const DEFAULT_ENGINE_CAPABILITIES: &[&str] = &[
     "engine_getPayloadV4",
     "engine_getPayloadV5",
     "engine_getBlobsV1",
+    "engine_getPayloadBodiesByHashV1",
+    "engine_getPayloadBodiesByRangeV1",
     "engine_exchangeCapabilities",
     "engine_exchangeTransitionConfigurationV1",
     "engine_getClientVersionV1",

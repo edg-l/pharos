@@ -390,6 +390,31 @@ pub fn signed_block_header<E: BeaconSpec>(
     }
 }
 
+/// Return the 13 body field `tree_hash_root()` values (field order 0..12) of a
+/// Fulu block's body, or `None` if `b` is not a Fulu block.
+///
+/// Fork-unwraps via `E::unwrap_fulu_signed_block` (mirrors [`signed_block_header`]'s
+/// fork-unwrap style), reaches the concrete Fulu body through
+/// `SignedBeaconBlockView`/`BeaconBlockView`, and delegates to
+/// `FuluBodyFieldHashes::body_field_hashes` — the same helper `block_production.rs`
+/// uses when building a Fulu block's data-column sidecars. Shared here so the
+/// EL column-DA reconstruction path (Phase 4) computes byte-identical field
+/// hashes without re-deriving the 13-field list.
+#[allow(dead_code)]
+pub(crate) fn fulu_body_field_hashes<E: BeaconSpec>(
+    b: &E::SignedBeaconBlock,
+) -> Option<[pharos_utils::Hash256; 13]>
+where
+    <E::FuluBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
+        pharos_stf::fulu::data_columns::FuluBodyFieldHashes,
+{
+    use pharos_stf::fulu::data_columns::FuluBodyFieldHashes;
+    use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
+
+    let inner = E::unwrap_fulu_signed_block(b)?;
+    Some(inner.message().body().body_field_hashes())
+}
+
 // ── import_block ──────────────────────────────────────────────────────────────
 
 /// Core block-import sequence.
@@ -1965,5 +1990,54 @@ mod tests {
             assert_eq!(count, 0, "{fork:?} must report 0 data items");
             assert_eq!(kind, "blobs", "{fork:?} must label as blobs");
         }
+    }
+
+    // ── fulu_body_field_hashes anti-drift guard ───────────────────────────────
+
+    /// `fulu_body_field_hashes` (the import-side helper the EL column-DA
+    /// reconstruction path will use) MUST return the same 13 body-field hashes
+    /// as block production's `FuluBlockAssembler::body_field_hashes` for the
+    /// same self-produced Fulu block. A divergence here would silently corrupt
+    /// the `kzg_commitments_inclusion_proof` of reconstructed data-column
+    /// sidecars.
+    #[test]
+    fn fulu_body_field_hashes_matches_block_production() {
+        use crate::block_production::FuluBlockAssembler;
+        use pharos_types::deneb::MinimalExecutionPayload as MinimalDenebExecutionPayload;
+        use pharos_types::phase0::misc::Eth1Data;
+
+        type E = MinimalBeaconSpec;
+        type Assembler = <E as BeaconSpec>::FuluSignedBeaconBlock;
+
+        let block = <Assembler as FuluBlockAssembler<E>>::assemble(
+            Slot(1),
+            ValidatorIndex(0),
+            Root::default(),
+            BLSSignature::default(),
+            Eth1Data::default(),
+            pharos_utils::Bytes32::default(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            BLSSignature::default(),
+            MinimalDenebExecutionPayload::default(),
+            vec![],
+            vec![],
+            vec![],
+        )
+        .expect("assemble must succeed with empty inputs");
+
+        let expected = <Assembler as FuluBlockAssembler<E>>::body_field_hashes(&block);
+        let signed = <Assembler as FuluBlockAssembler<E>>::into_signed_block(block);
+
+        let actual = fulu_body_field_hashes::<E>(&signed)
+            .expect("fulu_body_field_hashes must recognize a Fulu block");
+
+        assert_eq!(
+            actual, expected,
+            "import-side and block-production body-field hashes must be byte-identical"
+        );
     }
 }

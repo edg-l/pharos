@@ -280,6 +280,25 @@ pub trait ExecutionEngine: Send + Sync + 'static {
         vec![]
     }
 
+    /// Retrieve blob data + KZG cell proofs from the local EL blob pool for the
+    /// given versioned hashes (Fulu/Osaka `engine_getBlobsV2`).
+    ///
+    /// Returns `None` for each missing blob (preserves request order). Each
+    /// present entry is `(blob_bytes, cell_proof_bytes)` where `cell_proof_bytes`
+    /// holds one byte-vec per KZG cell proof (`CELLS_PER_EXT_BLOB` proofs per
+    /// blob), unlike `get_blobs_v1`'s single proof per blob.
+    ///
+    /// Default: returns an empty vec (no fallback — block will be parked as usual).
+    /// The production `ExecutionEngineHandle` in `pharos-node` overrides this to call
+    /// `engine_getBlobsV2`.
+    ///
+    /// `versioned_hashes` are 32-byte versioned hash values
+    /// (`VERSIONED_HASH_VERSION_KZG || sha256(commitment)[1:]`).
+    #[allow(clippy::type_complexity)]
+    fn get_blobs_v2(&self, _versioned_hashes: &[[u8; 32]]) -> Vec<Option<(Vec<u8>, Vec<Vec<u8>>)>> {
+        vec![]
+    }
+
     /// `verify_and_notify_new_payload` per `specs/bellatrix/beacon-chain.md:337-357`.
     ///
     /// Default implementation mirrors the Python spec:

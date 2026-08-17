@@ -386,6 +386,90 @@ pub fn build_kzg_commitments_inclusion_proof(
     branch
 }
 
+// ── FuluBodyFieldHashes ───────────────────────────────────────────────────────
+
+/// Return the 13 body field `tree_hash_root()` values, in field order, for a
+/// concrete Electra/Fulu `BeaconBlockBody`.
+///
+/// Mirrors `block_production.rs`'s `FuluBlockAssembler::body_field_hashes` /
+/// `ElectraBlockAssembler::body_field_hashes` (same field order); factored out
+/// here so the import-side reconstruction path (`fulu_body_field_hashes` in
+/// `pharos-node`) and block production share one implementation instead of
+/// duplicating the 13-field list.
+///
+/// Implemented for the concrete `electra::BeaconBlockBody<..>` type (reused
+/// as-is by Fulu; see `pharos_types::fulu::body`) because the generic
+/// `BeaconBlockBodyView` trait does not expose the 13 individual fields.
+pub trait FuluBodyFieldHashes {
+    /// The 13 body field `tree_hash_root()` values, field order 0..12
+    /// (including `execution_requests` at index 12).
+    fn body_field_hashes(&self) -> [Hash256; 13];
+}
+
+impl<
+    const MAX_PROPOSER_SLASHINGS: u64,
+    const MAX_ATTESTER_SLASHINGS_ELECTRA: u64,
+    const MAX_ATTESTATIONS_ELECTRA: u64,
+    const MAX_DEPOSITS: u64,
+    const MAX_VOLUNTARY_EXITS: u64,
+    const MAX_VALIDATORS_PER_COMMITTEE: u64,
+    const DEPOSIT_PROOF_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    const MAX_BYTES_PER_TRANSACTION: u64,
+    const MAX_TRANSACTIONS_PER_PAYLOAD: u64,
+    const BYTES_PER_LOGS_BLOOM: u64,
+    const MAX_EXTRA_DATA_BYTES: u64,
+    const MAX_WITHDRAWALS_PER_PAYLOAD: u64,
+    const MAX_BLS_TO_EXECUTION_CHANGES: u64,
+    const MAX_BLOB_COMMITMENTS_PER_BLOCK: u64,
+    const MAX_AGGREGATION_BITS: u64,
+    const MAX_COMMITTEES_PER_SLOT: u64,
+    const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: u64,
+    const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: u64,
+> FuluBodyFieldHashes
+    for pharos_types::electra::BeaconBlockBody<
+        MAX_PROPOSER_SLASHINGS,
+        MAX_ATTESTER_SLASHINGS_ELECTRA,
+        MAX_ATTESTATIONS_ELECTRA,
+        MAX_DEPOSITS,
+        MAX_VOLUNTARY_EXITS,
+        MAX_VALIDATORS_PER_COMMITTEE,
+        DEPOSIT_PROOF_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD,
+        BYTES_PER_LOGS_BLOOM,
+        MAX_EXTRA_DATA_BYTES,
+        MAX_WITHDRAWALS_PER_PAYLOAD,
+        MAX_BLS_TO_EXECUTION_CHANGES,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+        MAX_AGGREGATION_BITS,
+        MAX_COMMITTEES_PER_SLOT,
+        MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+        MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+    >
+{
+    fn body_field_hashes(&self) -> [Hash256; 13] {
+        [
+            self.randao_reveal.tree_hash_root(),
+            self.eth1_data.tree_hash_root(),
+            self.graffiti.tree_hash_root(),
+            self.proposer_slashings.tree_hash_root(),
+            self.attester_slashings.tree_hash_root(),
+            self.attestations.tree_hash_root(),
+            self.deposits.tree_hash_root(),
+            self.voluntary_exits.tree_hash_root(),
+            self.sync_aggregate.tree_hash_root(),
+            self.execution_payload.tree_hash_root(),
+            self.bls_to_execution_changes.tree_hash_root(),
+            self.blob_kzg_commitments.tree_hash_root(),
+            self.execution_requests.tree_hash_root(),
+        ]
+    }
+}
+
 /// `get_data_column_sidecars` per `specs/fulu/validator.md`.
 ///
 /// Builds `NUMBER_OF_COLUMNS` (`= E::NUMBER_OF_COLUMNS`, 128) `DataColumnSidecar`s

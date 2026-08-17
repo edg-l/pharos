@@ -340,11 +340,43 @@ enum DebugTool {
         #[arg(long)]
         json: bool,
     },
+    /// `engine_getPayloadBodiesBy{Hash,Range}V1` consumer: drives a live EL over
+    /// the Engine API and prints the returned payload bodies.
+    PayloadBodies {
+        /// Engine API (auth-RPC) endpoint URL of the execution client.
+        #[arg(long, default_value = "http://127.0.0.1:8551", value_name = "URL")]
+        execution_endpoint: String,
+        /// Path to the JWT secret file for Engine API authentication.
+        ///
+        /// When absent, reuses/creates `<data-dir>/jwt.hex` (same as the node).
+        #[arg(long, value_name = "PATH")]
+        jwt_secret: Option<PathBuf>,
+        /// Data directory used to locate/generate the JWT secret.
+        #[arg(long, default_value = "./data")]
+        data_dir: PathBuf,
+        /// One or more 0x-prefixed block hashes (`engine_getPayloadBodiesByHashV1`).
+        /// Mutually exclusive with `--start`/`--count`.
+        #[arg(long = "block-hash", value_name = "HASH")]
+        block_hash: Vec<String>,
+        /// Starting block number for `engine_getPayloadBodiesByRangeV1`.
+        /// Requires `--count`; mutually exclusive with `--block-hash`.
+        #[arg(long, value_name = "N")]
+        start: Option<u64>,
+        /// Number of blocks for `engine_getPayloadBodiesByRangeV1`. Requires `--start`.
+        #[arg(long, value_name = "N")]
+        count: Option<u64>,
+        /// Use the Amsterdam-era V2 variant instead of the advertised V1.
+        #[arg(long)]
+        v2: bool,
+        /// Emit JSON instead of the human-readable listing.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Dispatch a `pharos debug <tool>` invocation. Returns after printing; never
 /// starts the node.
-fn run_debug(cli: DebugCli) -> anyhow::Result<()> {
+async fn run_debug(cli: DebugCli) -> anyhow::Result<()> {
     let DebugGroup::Debug { tool } = cli.cmd;
     match tool {
         DebugTool::Das {
@@ -354,6 +386,41 @@ fn run_debug(cli: DebugCli) -> anyhow::Result<()> {
             column,
             json,
         } => pharos_node::debug::das::run(&node_id, cgc, preset, column, json),
+        DebugTool::PayloadBodies {
+            execution_endpoint,
+            jwt_secret,
+            data_dir,
+            block_hash,
+            start,
+            count,
+            v2,
+            json,
+        } => {
+            let by_hash = !block_hash.is_empty();
+            let by_range = start.is_some() || count.is_some();
+            let mode = if by_hash && by_range {
+                bail!(
+                    "--block-hash and --start/--count are mutually exclusive; provide exactly one"
+                );
+            } else if by_hash {
+                pharos_node::debug::payload_bodies::Mode::ByHash(block_hash)
+            } else if let (Some(start), Some(count)) = (start, count) {
+                pharos_node::debug::payload_bodies::Mode::ByRange { start, count }
+            } else if by_range {
+                bail!("--start and --count must both be provided together");
+            } else {
+                bail!("provide either --block-hash (one or more) or --start/--count");
+            };
+            pharos_node::debug::payload_bodies::run(
+                &execution_endpoint,
+                jwt_secret.as_deref(),
+                &data_dir,
+                mode,
+                v2,
+                json,
+            )
+            .await
+        }
     }
 }
 
@@ -411,7 +478,7 @@ async fn main() -> anyhow::Result<()> {
     // `pharos debug <tool>` is an offline calculator path: parse the separate
     // debug CLI (so the node-run `Args` constraints don't apply), run it, exit.
     if std::env::args().nth(1).as_deref() == Some("debug") {
-        return run_debug(DebugCli::parse());
+        return run_debug(DebugCli::parse()).await;
     }
 
     // Parse args first so --log-format / --log-level are available before the

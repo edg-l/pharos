@@ -33,7 +33,8 @@ use crate::client::{
 };
 use crate::error::EngineError;
 use crate::types::{
-    BlobAndProofV1, ClientVersionV1, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
+    BlobAndProofV1, BlobAndProofV2, ClientVersionV1, ExecutionPayloadBodyV1,
+    ExecutionPayloadBodyV2, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
     ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response, GetPayloadV4Response,
     GetPayloadV5Response, GetPayloadV6Response, PayloadAttributesV1, PayloadAttributesV2,
     PayloadAttributesV3, PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
@@ -130,6 +131,33 @@ pub enum EngineRequest {
     GetBlobsV1 {
         versioned_hashes: Vec<String>,
         reply: oneshot::Sender<Result<Vec<Option<BlobAndProofV1>>, EngineError>>,
+    },
+    /// `engine_getBlobsV2` — retrieve blobs + cell proofs from the local EL blob pool.
+    GetBlobsV2 {
+        versioned_hashes: Vec<String>,
+        reply: oneshot::Sender<Result<Vec<Option<BlobAndProofV2>>, EngineError>>,
+    },
+    /// `engine_getPayloadBodiesByHashV1` — retrieve execution payload bodies by block hash.
+    GetPayloadBodiesByHashV1 {
+        block_hashes: Vec<String>,
+        reply: oneshot::Sender<Result<Vec<Option<ExecutionPayloadBodyV1>>, EngineError>>,
+    },
+    /// `engine_getPayloadBodiesByHashV2` — retrieve execution payload bodies by block hash.
+    GetPayloadBodiesByHashV2 {
+        block_hashes: Vec<String>,
+        reply: oneshot::Sender<Result<Vec<Option<ExecutionPayloadBodyV2>>, EngineError>>,
+    },
+    /// `engine_getPayloadBodiesByRangeV1` — retrieve execution payload bodies by block range.
+    GetPayloadBodiesByRangeV1 {
+        start: String,
+        count: String,
+        reply: oneshot::Sender<Result<Vec<Option<ExecutionPayloadBodyV1>>, EngineError>>,
+    },
+    /// `engine_getPayloadBodiesByRangeV2` — retrieve execution payload bodies by block range.
+    GetPayloadBodiesByRangeV2 {
+        start: String,
+        count: String,
+        reply: oneshot::Sender<Result<Vec<Option<ExecutionPayloadBodyV2>>, EngineError>>,
     },
     GetBlockByHash {
         hash: String,
@@ -383,6 +411,80 @@ impl EngineHandle {
         })
     }
 
+    /// Sync `engine_getBlobsV2` — retrieve blobs + cell proofs from the local EL blob pool.
+    ///
+    /// Returns a `Vec<Option<BlobAndProofV2>>` preserving the request order.
+    /// Missing blobs are represented as `None` per osaka.md.
+    pub fn get_blobs_v2_blocking(
+        &self,
+        versioned_hashes: Vec<String>,
+    ) -> Result<Vec<Option<BlobAndProofV2>>, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetBlobsV2 {
+            versioned_hashes,
+            reply,
+        })
+    }
+
+    /// Sync `engine_getPayloadBodiesByHashV1` — retrieve execution payload bodies by block hash.
+    ///
+    /// Returns a `Vec<Option<ExecutionPayloadBodyV1>>` preserving the request order.
+    /// Absent blocks are represented as `None` per shanghai.md.
+    pub fn get_payload_bodies_by_hash_v1_blocking(
+        &self,
+        block_hashes: Vec<String>,
+    ) -> Result<Vec<Option<ExecutionPayloadBodyV1>>, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetPayloadBodiesByHashV1 {
+            block_hashes,
+            reply,
+        })
+    }
+
+    /// Sync `engine_getPayloadBodiesByHashV2` — retrieve execution payload bodies by block hash.
+    ///
+    /// Returns a `Vec<Option<ExecutionPayloadBodyV2>>` preserving the request order.
+    /// Absent blocks are represented as `None` per amsterdam.md.
+    pub fn get_payload_bodies_by_hash_v2_blocking(
+        &self,
+        block_hashes: Vec<String>,
+    ) -> Result<Vec<Option<ExecutionPayloadBodyV2>>, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetPayloadBodiesByHashV2 {
+            block_hashes,
+            reply,
+        })
+    }
+
+    /// Sync `engine_getPayloadBodiesByRangeV1` — retrieve execution payload bodies by block range.
+    ///
+    /// `start` is the starting block number (hex QUANTITY), `count` is the number of blocks.
+    /// Returns a `Vec<Option<ExecutionPayloadBodyV1>>`; absent blocks are `None` per shanghai.md.
+    pub fn get_payload_bodies_by_range_v1_blocking(
+        &self,
+        start: String,
+        count: String,
+    ) -> Result<Vec<Option<ExecutionPayloadBodyV1>>, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetPayloadBodiesByRangeV1 {
+            start,
+            count,
+            reply,
+        })
+    }
+
+    /// Sync `engine_getPayloadBodiesByRangeV2` — retrieve execution payload bodies by block range.
+    ///
+    /// `start` is the starting block number (hex QUANTITY), `count` is the number of blocks.
+    /// Returns a `Vec<Option<ExecutionPayloadBodyV2>>`; absent blocks are `None` per amsterdam.md.
+    pub fn get_payload_bodies_by_range_v2_blocking(
+        &self,
+        start: String,
+        count: String,
+    ) -> Result<Vec<Option<ExecutionPayloadBodyV2>>, EngineError> {
+        self.dispatch_blocking(|reply| EngineRequest::GetPayloadBodiesByRangeV2 {
+            start,
+            count,
+            reply,
+        })
+    }
+
     /// Sync `eth_chainId`.
     pub fn chain_id_blocking(&self) -> Result<u64, EngineError> {
         self.dispatch_blocking(|reply| EngineRequest::ChainId { reply })
@@ -604,6 +706,38 @@ async fn dispatch(client: &EngineClient, req: EngineRequest) {
         } => {
             let _ = reply.send(client.get_blobs_v1(versioned_hashes).await);
         }
+        EngineRequest::GetBlobsV2 {
+            versioned_hashes,
+            reply,
+        } => {
+            let _ = reply.send(client.get_blobs_v2(versioned_hashes).await);
+        }
+        EngineRequest::GetPayloadBodiesByHashV1 {
+            block_hashes,
+            reply,
+        } => {
+            let _ = reply.send(client.get_payload_bodies_by_hash_v1(block_hashes).await);
+        }
+        EngineRequest::GetPayloadBodiesByHashV2 {
+            block_hashes,
+            reply,
+        } => {
+            let _ = reply.send(client.get_payload_bodies_by_hash_v2(block_hashes).await);
+        }
+        EngineRequest::GetPayloadBodiesByRangeV1 {
+            start,
+            count,
+            reply,
+        } => {
+            let _ = reply.send(client.get_payload_bodies_by_range_v1(start, count).await);
+        }
+        EngineRequest::GetPayloadBodiesByRangeV2 {
+            start,
+            count,
+            reply,
+        } => {
+            let _ = reply.send(client.get_payload_bodies_by_range_v2(start, count).await);
+        }
         EngineRequest::GetBlockByHash { hash, reply } => {
             let _ = reply.send(client.get_block_by_hash(&hash).await);
         }
@@ -759,5 +893,41 @@ mod tests {
             .expect("exchange_transition_configuration_async must succeed");
         assert_eq!(result.terminal_total_difficulty, "0x123");
         assert_eq!(result.terminal_block_number, "0x0");
+    }
+
+    #[tokio::test]
+    async fn get_payload_bodies_by_hash_v1_dispatch() {
+        let mock = spawn_mock().await;
+        // One present body (no withdrawals) followed by one absent block (`null`).
+        mock.set(
+            "engine_getPayloadBodiesByHashV1",
+            json!([
+                {
+                    "transactions": ["0xdeadbeef"],
+                    "withdrawals": null,
+                },
+                null,
+            ]),
+        );
+
+        let primary = EngineClient::new(mock.url.clone(), mock.secret.clone()).unwrap();
+        let handle = spawn_engine_actor(primary, None);
+
+        let block_hashes = vec![
+            "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+            "0x0000000000000000000000000000000000000000000000000000000000000002".to_string(),
+        ];
+        let result = tokio::task::spawn_blocking(move || {
+            handle.get_payload_bodies_by_hash_v1_blocking(block_hashes)
+        })
+        .await
+        .expect("spawn_blocking must not panic")
+        .expect("get_payload_bodies_by_hash_v1_blocking must succeed");
+
+        assert_eq!(result.len(), 2);
+        let body = result[0].as_ref().expect("first body must be present");
+        assert_eq!(body.transactions, vec!["0xdeadbeef".to_string()]);
+        assert!(body.withdrawals.is_none());
+        assert!(result[1].is_none());
     }
 }

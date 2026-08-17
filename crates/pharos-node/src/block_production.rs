@@ -1278,22 +1278,8 @@ where
     }
 
     fn body_field_hashes(&self) -> [pharos_utils::Hash256; 13] {
-        let b = &self.message.body;
-        [
-            b.randao_reveal.tree_hash_root(),
-            b.eth1_data.tree_hash_root(),
-            b.graffiti.tree_hash_root(),
-            b.proposer_slashings.tree_hash_root(),
-            b.attester_slashings.tree_hash_root(),
-            b.attestations.tree_hash_root(),
-            b.deposits.tree_hash_root(),
-            b.voluntary_exits.tree_hash_root(),
-            b.sync_aggregate.tree_hash_root(),
-            b.execution_payload.tree_hash_root(),
-            b.bls_to_execution_changes.tree_hash_root(),
-            b.blob_kzg_commitments.tree_hash_root(),
-            b.execution_requests.tree_hash_root(),
-        ]
+        use pharos_stf::fulu::data_columns::FuluBodyFieldHashes;
+        self.message.body.body_field_hashes()
     }
 
     fn signed_block_header(&self) -> pharos_types::phase0::operations::SignedBeaconBlockHeader {
