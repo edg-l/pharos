@@ -205,7 +205,7 @@ where
     Root: Default + Clone,
     Hash256: Default + Clone,
 {
-    /// Convert all tree-set fields from Naive to Tree backend.
+    /// Convert the tree-eligible list/vector fields (roots, validators, randao_mixes, balances, slashings, plus participation/inactivity on altair+) from the Flat to the Tree backend.
     ///
     /// Called at the end of `Decode::from_ssz_bytes` so that SSZ-decoded states
     /// land on the tree backend for all seven tree-set fields.
@@ -217,6 +217,8 @@ where
         self.randao_mixes = self.randao_mixes.into_tree()?;
         self.previous_epoch_attestations = self.previous_epoch_attestations.into_tree()?;
         self.current_epoch_attestations = self.current_epoch_attestations.into_tree()?;
+        self.balances = self.balances.into_tree()?;
+        self.slashings = self.slashings.into_tree()?;
         Ok(self)
     }
 

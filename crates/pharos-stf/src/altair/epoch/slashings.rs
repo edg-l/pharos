@@ -79,7 +79,7 @@ where
     >(state)
     .0;
 
-    let total_slashings: u64 = state.slashings.as_slice().iter().map(|g| g.0).sum();
+    let total_slashings: u64 = state.slashings.iter().map(|g| g.0).sum();
     // Altair: use PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR.
     let adjusted =
         (total_slashings * E::PROPORTIONAL_SLASHING_MULTIPLIER_ALTAIR).min(total_balance);

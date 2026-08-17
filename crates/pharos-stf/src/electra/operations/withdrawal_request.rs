@@ -184,7 +184,6 @@ where
 
     let balance = state
         .balances
-        .as_slice()
         .get(index.0 as usize)
         .copied()
         .unwrap_or(Gwei(0));

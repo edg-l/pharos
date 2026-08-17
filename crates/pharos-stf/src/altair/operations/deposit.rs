@@ -133,12 +133,7 @@ fn apply_deposit_altair<
     match existing_index {
         Some(idx) => {
             // Top up: always increase balance.
-            let cur = state
-                .balances
-                .as_slice()
-                .get(idx)
-                .copied()
-                .unwrap_or(Gwei(0));
+            let cur = state.balances.get(idx).copied().unwrap_or(Gwei(0));
             state.balances = state
                 .balances
                 .with_set(idx, Gwei(cur.0 + amount))

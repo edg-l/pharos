@@ -63,7 +63,6 @@ fn get_balance_after_withdrawals_electra<
 ) -> Gwei {
     let balance = state
         .balances
-        .as_slice()
         .get(validator_index.0 as usize)
         .copied()
         .unwrap_or(Gwei(0));

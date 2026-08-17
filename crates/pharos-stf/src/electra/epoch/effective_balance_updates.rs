@@ -60,13 +60,7 @@ pub fn process_effective_balance_updates<
     // computation. The ceiling is per-validator (compounding-aware) in Electra.
     let snapshot: Vec<(u64, u64, u64)> = (0..n)
         .map(|i| {
-            let balance = state
-                .balances
-                .as_slice()
-                .get(i)
-                .copied()
-                .unwrap_or(Gwei(0))
-                .0;
+            let balance = state.balances.get(i).copied().unwrap_or(Gwei(0)).0;
             let (eff_bal, max_eff) = state
                 .validators
                 .get(i)

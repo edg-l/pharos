@@ -481,7 +481,6 @@ pub(crate) fn decrease_balance_deneb<
 ) -> Result<(), crate::error::StateTransitionError> {
     let cur = state
         .balances
-        .as_slice()
         .get(index.0 as usize)
         .copied()
         .unwrap_or(Gwei(0));
@@ -527,7 +526,6 @@ pub(crate) fn increase_balance_deneb<
 ) -> Result<(), crate::error::StateTransitionError> {
     let cur = state
         .balances
-        .as_slice()
         .get(index.0 as usize)
         .copied()
         .unwrap_or(Gwei(0));
@@ -753,7 +751,6 @@ where
                 .unwrap_or(0);
             let inactivity_score = state
                 .inactivity_scores
-                .as_slice()
                 .get(index.0 as usize)
                 .copied()
                 .unwrap_or(0);

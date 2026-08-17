@@ -210,7 +210,6 @@ where
             let i = index.0 as usize;
             let current_flags = post
                 .previous_epoch_participation
-                .as_slice()
                 .get(i)
                 .copied()
                 .unwrap_or(0);

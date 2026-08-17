@@ -136,12 +136,7 @@ where
         .iter()
         .map(|vi| {
             let i = vi.0 as usize;
-            let score = state
-                .inactivity_scores
-                .as_slice()
-                .get(i)
-                .copied()
-                .unwrap_or(0);
+            let score = state.inactivity_scores.get(i).copied().unwrap_or(0);
             let mut new_score = score;
             if participating_set.contains(&vi.0) {
                 // Decrease by min(1, score) for active timely-target participants.
@@ -161,12 +156,7 @@ where
     // Apply updated scores back to state.
     for (vi, new_score) in eligible.iter().zip(new_scores.iter()) {
         let i = vi.0 as usize;
-        let old_score = state
-            .inactivity_scores
-            .as_slice()
-            .get(i)
-            .copied()
-            .unwrap_or(0);
+        let old_score = state.inactivity_scores.get(i).copied().unwrap_or(0);
         if *new_score != old_score {
             state.inactivity_scores = state
                 .inactivity_scores

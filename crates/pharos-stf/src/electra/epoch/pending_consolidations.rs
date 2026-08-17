@@ -91,7 +91,6 @@ pub fn process_pending_consolidations<
         // balance is `min(balance, effective_balance)`. Excess is withdrawable.
         let source_balance = state
             .balances
-            .as_slice()
             .get(source_index.0 as usize)
             .copied()
             .unwrap_or(Gwei(0))

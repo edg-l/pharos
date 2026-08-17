@@ -377,14 +377,12 @@ where
         let ep_flags: u8 = if is_current {
             state
                 .current_epoch_participation
-                .as_slice()
                 .get(validator_index.0 as usize)
                 .copied()
                 .unwrap_or(0)
         } else {
             state
                 .previous_epoch_participation
-                .as_slice()
                 .get(validator_index.0 as usize)
                 .copied()
                 .unwrap_or(0)

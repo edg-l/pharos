@@ -300,10 +300,12 @@ where
 {
     let current_epoch = compute_epoch_at_slot(state.slot, E::SLOTS_PER_EPOCH);
 
-    let epoch_participation: &[ParticipationFlags] = if epoch == current_epoch {
-        state.current_epoch_participation.as_slice()
+    // Reference the SszList directly (not a slice) so `.get(i)` works on both
+    // the Naive and Tree backends — `as_slice()` panics on the tree backend.
+    let epoch_participation = if epoch == current_epoch {
+        &state.current_epoch_participation
     } else {
-        state.previous_epoch_participation.as_slice()
+        &state.previous_epoch_participation
     };
 
     state
@@ -861,7 +863,6 @@ where
                 .unwrap_or(0);
             let inactivity_score = state
                 .inactivity_scores
-                .as_slice()
                 .get(index.0 as usize)
                 .copied()
                 .unwrap_or(0);
@@ -1188,7 +1189,6 @@ where
     let slashing_slot = (epoch.0 % E::EPOCHS_PER_SLASHINGS_VECTOR) as usize;
     let cur_slashing = state
         .slashings
-        .as_slice()
         .get(slashing_slot)
         .copied()
         .unwrap_or(Gwei(0));
@@ -1290,7 +1290,6 @@ pub(crate) fn increase_balance_altair<
 ) -> Result<(), StateTransitionError> {
     let cur = state
         .balances
-        .as_slice()
         .get(index.0 as usize)
         .copied()
         .unwrap_or(Gwei(0));
@@ -1326,7 +1325,6 @@ pub(crate) fn decrease_balance_altair<
 ) -> Result<(), StateTransitionError> {
     let cur = state
         .balances
-        .as_slice()
         .get(index.0 as usize)
         .copied()
         .unwrap_or(Gwei(0));

@@ -123,7 +123,6 @@ pub(crate) fn decrease_balance_bellatrix<
 ) -> Result<(), StateTransitionError> {
     let cur = state
         .balances
-        .as_slice()
         .get(index.0 as usize)
         .copied()
         .unwrap_or(Gwei(0));
@@ -367,7 +366,6 @@ pub(crate) fn increase_balance_bellatrix<
 ) -> Result<(), StateTransitionError> {
     let cur = state
         .balances
-        .as_slice()
         .get(index.0 as usize)
         .copied()
         .unwrap_or(Gwei(0));
@@ -593,7 +591,6 @@ where
     let slashing_slot = (epoch.0 % E::EPOCHS_PER_SLASHINGS_VECTOR) as usize;
     let cur_slashing = state
         .slashings
-        .as_slice()
         .get(slashing_slot)
         .copied()
         .unwrap_or(Gwei(0));
@@ -795,7 +792,6 @@ where
                 .unwrap_or(0);
             let inactivity_score = state
                 .inactivity_scores
-                .as_slice()
                 .get(index.0 as usize)
                 .copied()
                 .unwrap_or(0);

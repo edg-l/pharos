@@ -62,13 +62,7 @@ where
     // Snapshot (balance, eff_balance) pairs for parallel computation.
     let snapshot: Vec<(u64, u64)> = (0..n)
         .map(|i| {
-            let balance = state
-                .balances
-                .as_slice()
-                .get(i)
-                .copied()
-                .unwrap_or(Gwei(0))
-                .0;
+            let balance = state.balances.get(i).copied().unwrap_or(Gwei(0)).0;
             let eff_bal = state
                 .validators
                 .get(i)

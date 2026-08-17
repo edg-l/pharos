@@ -286,7 +286,7 @@ where
     Root: Default + Clone,
     Hash256: Default + Clone,
 {
-    /// Convert the five hot list/vector fields from Naive to Tree backend.
+    /// Convert the tree-eligible list/vector fields (roots, validators, randao_mixes, balances, slashings, plus participation/inactivity on altair+) from the Flat to the Tree backend.
     ///
     /// Same set as electra: `block_roots`, `state_roots`, `historical_roots`,
     /// `validators`, `randao_mixes`.
@@ -296,6 +296,11 @@ where
         self.historical_roots = self.historical_roots.into_tree()?;
         self.validators = self.validators.into_tree()?;
         self.randao_mixes = self.randao_mixes.into_tree()?;
+        self.balances = self.balances.into_tree()?;
+        self.slashings = self.slashings.into_tree()?;
+        self.inactivity_scores = self.inactivity_scores.into_tree()?;
+        self.previous_epoch_participation = self.previous_epoch_participation.into_tree()?;
+        self.current_epoch_participation = self.current_epoch_participation.into_tree()?;
         Ok(self)
     }
 
@@ -587,8 +592,14 @@ where
     fn num_validators(&self) -> usize {
         self.validators.len()
     }
-    fn balances(&self) -> &[Gwei] {
-        self.balances.as_slice()
+    fn balances(&self) -> Vec<Gwei> {
+        self.balances.iter().copied().collect()
+    }
+    fn balance_at(&self, idx: usize) -> Option<Gwei> {
+        self.balances.get(idx).copied()
+    }
+    fn num_balances(&self) -> usize {
+        self.balances.len()
     }
     fn block_roots(&self) -> Vec<Root> {
         self.block_roots.to_vec()
@@ -608,8 +619,8 @@ where
     fn randao_mix_at(&self, idx: usize) -> Option<Hash256> {
         self.randao_mixes.get(idx).copied()
     }
-    fn slashings(&self) -> &[Gwei] {
-        self.slashings.as_slice()
+    fn slashings(&self) -> Vec<Gwei> {
+        self.slashings.iter().copied().collect()
     }
     fn eth1_data(&self) -> &Eth1Data {
         &self.eth1_data

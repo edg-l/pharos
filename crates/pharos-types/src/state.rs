@@ -291,7 +291,7 @@ impl<
 
     /// Flip the seven hot list/vector fields (`validators`, `historical_roots`,
     /// `state_roots`, `block_roots`, `randao_mixes`, `previous/current_epoch_attestations`)
-    /// from `Backend::Naive` to `Backend::Tree`. Live-node entry points
+    /// from `Backend::Flat` to `Backend::Tree`. Live-node entry points
     /// (checkpoint-sync apply, genesis init, storage rehydrate) must call this
     /// after SSZ-decoding a `BeaconState`; the decode path itself leaves states
     /// `Naive` per `D-no-tree-backend-on-decode`.
@@ -476,7 +476,7 @@ impl<
             BeaconState::Fulu(s) => s.num_validators(),
         }
     }
-    fn balances(&self) -> &[Gwei] {
+    fn balances(&self) -> Vec<Gwei> {
         match self {
             BeaconState::Phase0(s) => s.balances(),
             BeaconState::Altair(s) => s.balances(),
@@ -485,6 +485,28 @@ impl<
             BeaconState::Deneb(s) => s.balances(),
             BeaconState::Electra(s) => s.balances(),
             BeaconState::Fulu(s) => s.balances(),
+        }
+    }
+    fn balance_at(&self, idx: usize) -> Option<Gwei> {
+        match self {
+            BeaconState::Phase0(s) => s.balance_at(idx),
+            BeaconState::Altair(s) => s.balance_at(idx),
+            BeaconState::Bellatrix(s) => s.balance_at(idx),
+            BeaconState::Capella(s) => s.balance_at(idx),
+            BeaconState::Deneb(s) => s.balance_at(idx),
+            BeaconState::Electra(s) => s.balance_at(idx),
+            BeaconState::Fulu(s) => s.balance_at(idx),
+        }
+    }
+    fn num_balances(&self) -> usize {
+        match self {
+            BeaconState::Phase0(s) => s.num_balances(),
+            BeaconState::Altair(s) => s.num_balances(),
+            BeaconState::Bellatrix(s) => s.num_balances(),
+            BeaconState::Capella(s) => s.num_balances(),
+            BeaconState::Deneb(s) => s.num_balances(),
+            BeaconState::Electra(s) => s.num_balances(),
+            BeaconState::Fulu(s) => s.num_balances(),
         }
     }
     fn block_roots(&self) -> Vec<Root> {
@@ -553,7 +575,7 @@ impl<
             BeaconState::Fulu(s) => s.randao_mix_at(idx),
         }
     }
-    fn slashings(&self) -> &[Gwei] {
+    fn slashings(&self) -> Vec<Gwei> {
         match self {
             BeaconState::Phase0(s) => s.slashings(),
             BeaconState::Altair(s) => s.slashings(),

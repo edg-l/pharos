@@ -410,7 +410,13 @@ pub trait BeaconStateView {
     fn validator(&self, idx: usize) -> Option<&Validator>;
     /// Number of validators (cheap on both Naive and Tree backends).
     fn num_validators(&self) -> usize;
-    fn balances(&self) -> &[Gwei];
+    /// All balances, materialized (cold path; clones on both backends).
+    fn balances(&self) -> Vec<Gwei>;
+    /// Single balance by index — O(log N) on the tree backend, no Vec clone.
+    /// Use this in per-validator loops; `balances()` clones the whole list.
+    fn balance_at(&self, idx: usize) -> Option<Gwei>;
+    /// Number of balances (cheap on both backends).
+    fn num_balances(&self) -> usize;
     fn block_roots(&self) -> Vec<Root>;
     /// Direct indexed block-root lookup (no Vec materialization).
     fn block_root_at(&self, idx: usize) -> Option<Root>;
@@ -418,7 +424,8 @@ pub trait BeaconStateView {
     fn state_root_at(&self, idx: usize) -> Option<Root>;
     fn randao_mixes(&self) -> Vec<Hash256>;
     fn randao_mix_at(&self, idx: usize) -> Option<Hash256>;
-    fn slashings(&self) -> &[Gwei];
+    /// All slashings, materialized (cold path; the vector is small/fixed).
+    fn slashings(&self) -> Vec<Gwei>;
     fn eth1_data(&self) -> &Eth1Data;
     /// `eth1_data_votes` as a materialized vec; needed by the debug-state JSON serializer.
     fn eth1_data_votes(&self) -> Vec<Eth1Data>;
@@ -578,7 +585,7 @@ pub trait BeaconStateView {
 
     /// Flip the seven hot list/vector fields (`validators`, `historical_roots`,
     /// `state_roots`, `block_roots`, `randao_mixes`, `previous/current_epoch_attestations`)
-    /// from `Backend::Naive` to `Backend::Tree`. Live-node entry points
+    /// from `Backend::Flat` to `Backend::Tree`. Live-node entry points
     /// (`Store::get_state`, `apply_anchor`, backfill genesis anchor write,
     /// genesis init) must call this after SSZ-decoding or constructing a fresh
     /// `BeaconState`; the decode path itself leaves states `Naive` per
@@ -737,8 +744,14 @@ impl<
     fn num_validators(&self) -> usize {
         self.validators.len()
     }
-    fn balances(&self) -> &[Gwei] {
-        self.balances.as_slice()
+    fn balances(&self) -> Vec<Gwei> {
+        self.balances.iter().copied().collect()
+    }
+    fn balance_at(&self, idx: usize) -> Option<Gwei> {
+        self.balances.get(idx).copied()
+    }
+    fn num_balances(&self) -> usize {
+        self.balances.len()
     }
     fn block_roots(&self) -> Vec<Root> {
         self.block_roots.iter().cloned().collect()
@@ -758,8 +771,8 @@ impl<
     fn randao_mix_at(&self, idx: usize) -> Option<Hash256> {
         self.randao_mixes.get(idx).copied()
     }
-    fn slashings(&self) -> &[Gwei] {
-        self.slashings.as_slice()
+    fn slashings(&self) -> Vec<Gwei> {
+        self.slashings.iter().copied().collect()
     }
     fn eth1_data(&self) -> &Eth1Data {
         &self.eth1_data

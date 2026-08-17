@@ -240,12 +240,7 @@ where
     sig_bytes[0] = 0xc0;
 
     for index in pre_activation {
-        let balance = post
-            .balances
-            .as_slice()
-            .get(index)
-            .copied()
-            .unwrap_or(Gwei(0));
+        let balance = post.balances.get(index).copied().unwrap_or(Gwei(0));
         post.balances = post
             .balances
             .with_set(index, Gwei(0))

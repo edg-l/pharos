@@ -150,12 +150,6 @@ mod tests {
         .expect("process_participation_flag_updates");
 
         assert_eq!(state.current_epoch_participation.len(), 5);
-        assert!(
-            state
-                .current_epoch_participation
-                .as_slice()
-                .iter()
-                .all(|&f| f == 0u8)
-        );
+        assert!(state.current_epoch_participation.iter().all(|&f| f == 0u8));
     }
 }

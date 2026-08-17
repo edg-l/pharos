@@ -41,11 +41,7 @@ pub fn increase_balance<E: BeaconSpec>(
 where
     E::BeaconState: BeaconStateWrite,
 {
-    let cur = state
-        .balances()
-        .get(index.0 as usize)
-        .copied()
-        .unwrap_or(Gwei(0));
+    let cur = state.balance_at(index.0 as usize).unwrap_or(Gwei(0));
     state.set_balance(index.0 as usize, Gwei(cur.0.saturating_add(delta.0)))
 }
 
@@ -60,11 +56,7 @@ pub fn decrease_balance<E: BeaconSpec>(
 where
     E::BeaconState: BeaconStateWrite,
 {
-    let cur = state
-        .balances()
-        .get(index.0 as usize)
-        .copied()
-        .unwrap_or(Gwei(0));
+    let cur = state.balance_at(index.0 as usize).unwrap_or(Gwei(0));
     let new_val = if delta.0 > cur.0 {
         Gwei(0)
     } else {

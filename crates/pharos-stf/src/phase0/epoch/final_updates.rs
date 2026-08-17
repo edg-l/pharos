@@ -55,7 +55,7 @@ where
     // parallel map below has no shared mutable access.
     let snapshot: Vec<(u64, u64)> = (0..n)
         .map(|i| {
-            let balance = state.balances().get(i).copied().unwrap_or(Gwei(0)).0;
+            let balance = state.balance_at(i).unwrap_or(Gwei(0)).0;
             let eff_bal = state
                 .validator(i)
                 .map(|v| v.effective_balance.0)

@@ -3,6 +3,7 @@ use std::path::Path;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 use pharos_ssz::Decode;
+use pharos_ssz::tree_hash::TreeHash;
 use pharos_stf::{NullExecutionEngine, state_transition};
 use pharos_types::BeaconSpec;
 use pharos_types::MainnetBeaconSpec as E;
@@ -25,7 +26,7 @@ fn load_ssz_snappy<S: Decode>(path: &Path) -> S {
 
 /// Load `(pre_state, signed_block)` from a single `sanity/blocks` test case.
 ///
-/// `fork` is "phase0", "altair", or "bellatrix".
+/// `fork` is one of "phase0".."fulu".
 /// `case` is the case directory name, e.g. "empty_block_transition".
 fn load_fixture<State: Decode, Block: Decode>(fork: &str, case: &str) -> (State, Block) {
     let base = dirs_spec_tests();
@@ -51,87 +52,122 @@ fn dirs_spec_tests() -> std::path::PathBuf {
 
 // ── Criterion benchmark ───────────────────────────────────────────────────────
 
+/// Load the `empty_block_transition` fixture for `$fork`, wrap it into the
+/// enum-of-forks `BeaconState`/`SignedBeaconBlock`, and register a
+/// `process_block/<fork>` bench that times a full `state_transition`.
+///
+/// The pre-state is put into the SAME shape the live node runs: decode yields a
+/// `Backend::Flat` state, so live converts it once via `into_tree_backend()` at
+/// every entry point (checkpoint-sync / genesis / storage load), then runs
+/// Tree-backed forever after — `clone`-mutate preserves the per-node `OnceLock`
+/// caches by structural sharing, so re-hashing only touches changed paths. The
+/// bench replicates that exactly: convert + warm the caches before timing, so
+/// the numbers reflect production, not the decode-only Naive path.
+macro_rules! bench_fork {
+    ($c:expr, $engine:expr, $cfg:expr, $fork:literal,
+     $State:ident, $Block:ident, $into_state:ident, $into_block:ident) => {{
+        let (pre_inner, block_inner) = load_fixture::<
+            <E as BeaconSpec>::$State,
+            <E as BeaconSpec>::$Block,
+        >($fork, "empty_block_transition");
+        let block = E::$into_block(block_inner);
+
+        // Match live: decode (Naive) -> into_tree_backend -> warm caches.
+        let pre = E::$into_state(pre_inner)
+            .into_tree_backend()
+            .unwrap_or_else(|e| panic!("{} into_tree_backend failed: {e:?}", $fork));
+        let _ = pre.tree_hash_root(); // warm per-node OnceLock caches
+
+        $c.bench_function(concat!("process_block/", $fork), |b| {
+            b.iter(|| {
+                state_transition::<E, NullExecutionEngine>(
+                    pre.clone(),
+                    &block,
+                    $engine,
+                    false,
+                    $cfg,
+                )
+                .map(|(s, _)| s)
+                .unwrap_or_else(|e| panic!("{} state_transition failed in bench: {e:?}", $fork))
+            })
+        });
+    }};
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
     let engine = NullExecutionEngine;
     let cfg = RuntimeConfig::default();
 
-    // ── phase0 ────────────────────────────────────────────────────────────────
-    let (phase0_pre, phase0_block) = {
-        let (pre_inner, block_inner) = load_fixture::<
-            <E as BeaconSpec>::Phase0BeaconState,
-            <E as BeaconSpec>::Phase0SignedBeaconBlock,
-        >("phase0", "empty_block_transition");
-        (
-            E::phase0_into_state(pre_inner),
-            E::phase0_into_signed_block(block_inner),
-        )
-    };
-
-    c.bench_function("process_block/phase0", |b| {
-        b.iter(|| {
-            state_transition::<E, NullExecutionEngine>(
-                phase0_pre.clone(),
-                &phase0_block,
-                &engine,
-                false,
-                &cfg,
-            )
-            .map(|(s, _)| s)
-            .expect("phase0 state_transition failed in bench")
-        })
-    });
-
-    // ── altair ────────────────────────────────────────────────────────────────
-    let (altair_pre, altair_block) = {
-        let (pre_inner, block_inner) = load_fixture::<
-            <E as BeaconSpec>::AltairBeaconState,
-            <E as BeaconSpec>::AltairSignedBeaconBlock,
-        >("altair", "empty_block_transition");
-        (
-            E::altair_into_state(pre_inner),
-            E::altair_into_signed_block(block_inner),
-        )
-    };
-
-    c.bench_function("process_block/altair", |b| {
-        b.iter(|| {
-            state_transition::<E, NullExecutionEngine>(
-                altair_pre.clone(),
-                &altair_block,
-                &engine,
-                false,
-                &cfg,
-            )
-            .map(|(s, _)| s)
-            .expect("altair state_transition failed in bench")
-        })
-    });
-
-    // ── bellatrix ─────────────────────────────────────────────────────────────
-    let (bellatrix_pre, bellatrix_block) = {
-        let (pre_inner, block_inner) = load_fixture::<
-            <E as BeaconSpec>::BellatrixBeaconState,
-            <E as BeaconSpec>::BellatrixSignedBeaconBlock,
-        >("bellatrix", "empty_block_transition");
-        (
-            E::bellatrix_into_state(pre_inner),
-            E::bellatrix_into_signed_block(block_inner),
-        )
-    };
-
-    c.bench_function("process_block/bellatrix", |b| {
-        b.iter(|| {
-            state_transition::<E, NullExecutionEngine>(
-                bellatrix_pre.clone(),
-                &bellatrix_block,
-                &engine,
-                false,
-                &cfg,
-            )
-            .map(|(s, _)| s)
-            .expect("bellatrix state_transition failed in bench")
-        })
-    });
+    bench_fork!(
+        c,
+        &engine,
+        &cfg,
+        "phase0",
+        Phase0BeaconState,
+        Phase0SignedBeaconBlock,
+        phase0_into_state,
+        phase0_into_signed_block
+    );
+    bench_fork!(
+        c,
+        &engine,
+        &cfg,
+        "altair",
+        AltairBeaconState,
+        AltairSignedBeaconBlock,
+        altair_into_state,
+        altair_into_signed_block
+    );
+    bench_fork!(
+        c,
+        &engine,
+        &cfg,
+        "bellatrix",
+        BellatrixBeaconState,
+        BellatrixSignedBeaconBlock,
+        bellatrix_into_state,
+        bellatrix_into_signed_block
+    );
+    bench_fork!(
+        c,
+        &engine,
+        &cfg,
+        "capella",
+        CapellaBeaconState,
+        CapellaSignedBeaconBlock,
+        capella_into_state,
+        capella_into_signed_block
+    );
+    bench_fork!(
+        c,
+        &engine,
+        &cfg,
+        "deneb",
+        DenebBeaconState,
+        DenebSignedBeaconBlock,
+        deneb_into_state,
+        deneb_into_signed_block
+    );
+    bench_fork!(
+        c,
+        &engine,
+        &cfg,
+        "electra",
+        ElectraBeaconState,
+        ElectraSignedBeaconBlock,
+        electra_into_state,
+        electra_into_signed_block
+    );
+    bench_fork!(
+        c,
+        &engine,
+        &cfg,
+        "fulu",
+        FuluBeaconState,
+        FuluSignedBeaconBlock,
+        fulu_into_state,
+        fulu_into_signed_block
+    );
 }
 
 criterion_group!(benches, criterion_benchmark);
