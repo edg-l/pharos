@@ -18,6 +18,7 @@ pub mod electra;
 pub mod error;
 pub mod fulu;
 pub mod phase0;
+pub mod rewards_api;
 
 pub use altair::light_client_dispatch::{
     AltairDispatchBounds, BellatrixDispatchBounds, CapellaDispatchBounds, DenebDispatchBounds,

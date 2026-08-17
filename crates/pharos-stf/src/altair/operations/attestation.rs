@@ -13,8 +13,8 @@ use pharos_types::{
 use pharos_utils::Gwei;
 
 use crate::altair::helpers::{
-    PROPOSER_WEIGHT, add_flag, get_attestation_participation_flag_indices, get_base_reward,
-    get_proposer_index_altair, has_flag, increase_balance_altair,
+    PROPOSER_WEIGHT, add_flag, get_attestation_participation_flag_indices,
+    get_base_reward_per_increment, get_proposer_index_altair, has_flag, increase_balance_altair,
 };
 use crate::error::{AttestationInvalidReason, StateTransitionError};
 use crate::phase0::accessors::compute_epoch_at_slot;
@@ -248,60 +248,36 @@ where
         .collect();
 
     // Update epoch participation flags and accumulate proposer reward numerator.
+    // Hoist BRPI (= get_total_active_balance √) outside the per-attester loop.
+    let brpi = get_base_reward_per_increment::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        E,
+    >(state);
     let is_current = data.target.epoch == current_epoch;
-    let mut proposer_reward_numerator: u64 = 0;
-
-    for validator_index in &attesting_indices {
-        let ep_flags: u8 = if is_current {
-            state
-                .current_epoch_participation
-                .as_slice()
-                .get(validator_index.0 as usize)
-                .copied()
-                .unwrap_or(0)
-        } else {
-            state
-                .previous_epoch_participation
-                .as_slice()
-                .get(validator_index.0 as usize)
-                .copied()
-                .unwrap_or(0)
-        };
-
-        let base_reward = get_base_reward::<
-            SLOTS_PER_HISTORICAL_ROOT,
-            HISTORICAL_ROOTS_LIMIT,
-            ETH1_DATA_VOTES_LIMIT,
-            VALIDATOR_REGISTRY_LIMIT,
-            EPOCHS_PER_HISTORICAL_VECTOR,
-            EPOCHS_PER_SLASHINGS_VECTOR,
-            JUSTIFICATION_BITS_LENGTH,
-            SYNC_COMMITTEE_SIZE,
-            E,
-        >(state, *validator_index);
-
-        let mut new_flags = ep_flags;
-        for (flag_index, weight) in E::PARTICIPATION_FLAG_WEIGHTS.iter().enumerate() {
-            if participation_flag_indices.contains(&flag_index) && !has_flag(new_flags, flag_index)
-            {
-                new_flags = add_flag(new_flags, flag_index);
-                proposer_reward_numerator += base_reward.0 * weight;
-            }
-        }
-        if new_flags != ep_flags {
-            if is_current {
-                state.current_epoch_participation = state
-                    .current_epoch_participation
-                    .with_set(validator_index.0 as usize, new_flags)
-                    .map_err(StateTransitionError::Ssz)?;
-            } else {
-                state.previous_epoch_participation = state
-                    .previous_epoch_participation
-                    .with_set(validator_index.0 as usize, new_flags)
-                    .map_err(StateTransitionError::Ssz)?;
-            }
-        }
-    }
+    let proposer_reward_numerator = accumulate_attestation_participation_altair::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        E,
+    >(
+        state,
+        &attesting_indices,
+        &participation_flag_indices,
+        is_current,
+        brpi,
+    )?;
 
     // Reward proposer.
     // proposer_reward_denominator = (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * WEIGHT_DENOMINATOR / PROPOSER_WEIGHT
@@ -331,6 +307,122 @@ where
     >(state, proposer_index, proposer_reward)?;
 
     Ok(())
+}
+
+/// Update epoch-participation flags for `attesting_indices` and accumulate the
+/// proposer-reward numerator, per the per-attester loop of `process_attestation`
+/// (`specs/altair/beacon-chain.md:520-547`).
+///
+/// Factored out of `process_attestation` so the same per-attestation flag-set +
+/// numerator accumulation can be reused by the Beacon API `block_rewards`
+/// endpoint (replaying a block's attestations against the parent state) without
+/// duplicating the math. The altair / deneb / electra attestation ops all call
+/// this on their (projected) altair state, so the `altair/rewards`,
+/// `bellatrix..deneb` operations, and `electra/operations` conformance suites
+/// gate that this factoring is behaviour-preserving.
+///
+/// `brpi` is `get_base_reward_per_increment(state)`, which the CALLER must hoist
+/// outside any enclosing attestation loop. This avoids re-calling
+/// `get_total_active_balance` (a full-validator scan) on every attester, which
+/// would degrade to O(N²) per attestation. Numeric result is identical:
+/// `get_base_reward(state, idx) == (effective_balance / INCREMENT) * brpi`.
+///
+/// Returns the proposer-reward NUMERATOR (the caller divides by
+/// `(WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * WEIGHT_DENOMINATOR / PROPOSER_WEIGHT`
+/// to obtain the proposer reward in gwei).
+#[allow(clippy::type_complexity)]
+pub fn accumulate_attestation_participation_altair<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    E,
+>(
+    state: &mut BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    attesting_indices: &[ValidatorIndex],
+    participation_flag_indices: &[usize],
+    is_current: bool,
+    brpi: Gwei,
+) -> Result<u64, StateTransitionError>
+where
+    E: BeaconSpec<
+        AltairBeaconState = BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+        >,
+    >,
+{
+    let mut proposer_reward_numerator: u64 = 0;
+
+    for validator_index in attesting_indices {
+        let ep_flags: u8 = if is_current {
+            state
+                .current_epoch_participation
+                .as_slice()
+                .get(validator_index.0 as usize)
+                .copied()
+                .unwrap_or(0)
+        } else {
+            state
+                .previous_epoch_participation
+                .as_slice()
+                .get(validator_index.0 as usize)
+                .copied()
+                .unwrap_or(0)
+        };
+
+        // base_reward = (effective_balance / INCREMENT) * brpi
+        // (equivalent to get_base_reward, without re-scanning active validators)
+        let increments = state
+            .validators
+            .get(validator_index.0 as usize)
+            .map(|v| v.effective_balance.0 / E::EFFECTIVE_BALANCE_INCREMENT)
+            .unwrap_or(0);
+        let base_reward = increments * brpi.0;
+
+        let mut new_flags = ep_flags;
+        for (flag_index, weight) in E::PARTICIPATION_FLAG_WEIGHTS.iter().enumerate() {
+            if participation_flag_indices.contains(&flag_index) && !has_flag(new_flags, flag_index)
+            {
+                new_flags = add_flag(new_flags, flag_index);
+                proposer_reward_numerator += base_reward * weight;
+            }
+        }
+        if new_flags != ep_flags {
+            if is_current {
+                state.current_epoch_participation = state
+                    .current_epoch_participation
+                    .with_set(validator_index.0 as usize, new_flags)
+                    .map_err(StateTransitionError::Ssz)?;
+            } else {
+                state.previous_epoch_participation = state
+                    .previous_epoch_participation
+                    .with_set(validator_index.0 as usize, new_flags)
+                    .map_err(StateTransitionError::Ssz)?;
+            }
+        }
+    }
+
+    Ok(proposer_reward_numerator)
 }
 
 // ── Altair-local accessors ─────────────────────────────────────────────────────

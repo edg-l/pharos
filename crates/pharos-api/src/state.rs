@@ -789,6 +789,46 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
     /// and pattern-matches on the concrete fork-enum variant to build the DTOs.
     fn block_by_root_for_api(&self, root: Root) -> Result<Option<SignedBlockForApi>, ApiError>;
 
+    // ── Rewards (M15 Phase 6) ──────────────────────────────────────────────────
+
+    /// Compute per-validator attestation rewards for `epoch` (the deltas read
+    /// the previous epoch's participation; the state is regenerated at the first
+    /// slot of `epoch + 1`). `ids` optionally filters `total_rewards` to a set of
+    /// validator indices / `0x`-pubkeys.
+    ///
+    /// Default `NotFound` (rewards math requires the per-fork dispatch bounds
+    /// carried by `NodeChainState`); mock impls override to exercise the path.
+    fn attestation_rewards_data(
+        &self,
+        _epoch: u64,
+        _ids: Option<Vec<String>>,
+    ) -> Result<pharos_stf::rewards_api::AttestationRewardsData, ApiError> {
+        Err(ApiError::NotFound(
+            "attestation rewards not available".into(),
+        ))
+    }
+
+    /// Compute the four proposer-reward components for the block at `block_root`,
+    /// recomputed against the block's pre-state (NOT balance-diffed).
+    fn block_rewards_data(
+        &self,
+        _block_root: Root,
+    ) -> Result<pharos_stf::rewards_api::BlockRewardComponents, ApiError> {
+        Err(ApiError::NotFound("block rewards not available".into()))
+    }
+
+    /// Compute per-member sync-committee rewards for the block at `block_root`.
+    /// Pre-altair → `BadRequest`. `ids` optionally filters the member set.
+    fn sync_committee_rewards_data(
+        &self,
+        _block_root: Root,
+        _ids: Option<Vec<String>>,
+    ) -> Result<Vec<pharos_stf::rewards_api::SyncCommitteeReward>, ApiError> {
+        Err(ApiError::NotFound(
+            "sync committee rewards not available".into(),
+        ))
+    }
+
     /// Return the `(BeaconBlockHeader, BLSSignature)` for `root`, sourcing the REAL
     /// signature from the stored `SignedBeaconBlock`.
     ///
@@ -1515,6 +1555,23 @@ impl<E: BeaconSpec> NodeChainState<E> {
         self.sync_contribution_fn = Some(f);
         self
     }
+
+    /// Return the raw fork-enum `SignedBeaconBlock` for `root` (hot CF first,
+    /// then the cold CF for finalized blocks), or `None` if not found.
+    ///
+    /// Used by the rewards endpoints (`block_rewards` / `sync_committee_rewards`)
+    /// which need the TYPED block (attestations, sync_aggregate, slashings), not
+    /// the JSON DTO that `block_by_root_for_api` produces. Private — only
+    /// `NodeChainState`'s own `block_rewards_data` / `sync_committee_rewards_data`
+    /// methods call this.
+    fn signed_block_by_root(&self, root: Root) -> Option<E::SignedBeaconBlock> {
+        if let Ok(Some(b)) = <RocksStore as DbStore<E>>::get_block(&self.store, &root) {
+            return Some(b);
+        }
+        <RocksStore as DbStore<E>>::get_cold_block(&self.store, &root)
+            .ok()
+            .flatten()
+    }
 }
 
 impl<E: BeaconSpec> ChainStateApi<E> for NodeChainState<E>
@@ -1542,6 +1599,52 @@ where
     E::ElectraLightClientUpdate: LcApiSerializer,
     E::ElectraLightClientFinalityUpdate: LcApiSerializer,
     E::ElectraLightClientOptimisticUpdate: LcApiSerializer,
+    // ── M15 Phase 6 rewards dispatch bounds (blanket-impl'd in pharos-stf) ──
+    E::BeaconState: pharos_stf::phase0::BeaconStateWrite,
+    E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+        >,
+    E::Phase0SignedBeaconBlock: pharos_stf::rewards_api::BlockRewardsDispatch<E>
+        + pharos_types::views::SignedBeaconBlockView<Message = E::Phase0BeaconBlock>,
+    E::Phase0BeaconBlock: pharos_types::views::BeaconBlockView<Body = E::Phase0BeaconBlockBody>,
+    E::AltairBeaconState: pharos_stf::rewards_api::AttestationRewardDeltas<E>,
+    E::BellatrixBeaconState: pharos_stf::rewards_api::AttestationRewardDeltas<E>,
+    E::CapellaBeaconState: pharos_stf::rewards_api::AttestationRewardDeltas<E>,
+    E::DenebBeaconState: pharos_stf::rewards_api::AttestationRewardDeltas<E>,
+    E::ElectraBeaconState: pharos_stf::rewards_api::AttestationRewardDeltas<E>,
+    E::FuluBeaconState: pharos_stf::rewards_api::AttestationRewardDeltas<E>,
+    E::AltairSignedBeaconBlock: pharos_stf::rewards_api::BlockRewardsDispatch<E>
+        + pharos_stf::rewards_api::SyncCommitteeRewardsDispatch<E>,
+    E::BellatrixSignedBeaconBlock: pharos_stf::rewards_api::BlockRewardsDispatch<E>
+        + pharos_stf::rewards_api::SyncCommitteeRewardsDispatch<E>,
+    E::CapellaSignedBeaconBlock: pharos_stf::rewards_api::BlockRewardsDispatch<E>
+        + pharos_stf::rewards_api::SyncCommitteeRewardsDispatch<E>,
+    E::DenebSignedBeaconBlock: pharos_stf::rewards_api::BlockRewardsDispatch<E>
+        + pharos_stf::rewards_api::SyncCommitteeRewardsDispatch<E>,
+    E::ElectraSignedBeaconBlock: pharos_stf::rewards_api::BlockRewardsDispatch<E>
+        + pharos_stf::rewards_api::SyncCommitteeRewardsDispatch<E>,
+    E::FuluSignedBeaconBlock: pharos_stf::rewards_api::BlockRewardsDispatch<E>
+        + pharos_stf::rewards_api::SyncCommitteeRewardsDispatch<E>,
+    // `process_slots_fork` (advance the parent post-state to the block slot/fork
+    // for block / sync-committee rewards) needs the per-fork process-slots +
+    // upgrade dispatch bundle (same bounds as `pharos_stf::state_transition`).
+    E::BeaconState: pharos_ssz::TreeHash,
+    E::AltairBeaconState:
+        pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::DenebBeaconState: pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluProcessSlotsDispatch<E> + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
 {
     fn head_root(&self) -> Root {
         let fc = self.fork_choice.read();
@@ -1894,6 +1997,61 @@ where
         // All seven forks (phase0/altair/bellatrix/capella/deneb/electra/fulu) are
         // exhaustive. Reaching here indicates a new unknown fork variant.
         unreachable!("unknown fork variant in SignedBeaconBlock — update block_by_root_for_api")
+    }
+
+    fn attestation_rewards_data(
+        &self,
+        epoch: u64,
+        ids: Option<Vec<String>>,
+    ) -> Result<pharos_stf::rewards_api::AttestationRewardsData, ApiError> {
+        use pharos_stf::phase0::accessors::compute_start_slot_at_epoch;
+        let target_slot = compute_start_slot_at_epoch(Epoch(epoch + 1), E::SLOTS_PER_EPOCH);
+        let regen_state = self
+            .regenerate_state(RegenTarget::Slot(target_slot))
+            .map_err(|_| {
+                ApiError::NotFound(format!(
+                    "epoch {epoch} not known or required data not available"
+                ))
+            })?;
+        let filter = resolve_validator_ids::<E>(&regen_state, ids)?;
+        pharos_stf::rewards_api::attestation_rewards::<E>(&regen_state, filter.as_deref())
+            .map_err(map_rewards_error)
+    }
+
+    fn block_rewards_data(
+        &self,
+        block_root: Root,
+    ) -> Result<pharos_stf::rewards_api::BlockRewardComponents, ApiError> {
+        let signed_block = self
+            .signed_block_by_root(block_root)
+            .ok_or_else(|| ApiError::NotFound("block not found".into()))?;
+        let pre_state = rewards_pre_state_for_block::<E>(self, block_root, &signed_block)?;
+        pharos_stf::rewards_api::block_rewards::<E>(&signed_block, &pre_state)
+            .map_err(map_rewards_error)
+    }
+
+    fn sync_committee_rewards_data(
+        &self,
+        block_root: Root,
+        ids: Option<Vec<String>>,
+    ) -> Result<Vec<pharos_stf::rewards_api::SyncCommitteeReward>, ApiError> {
+        use pharos_types::views::BeaconStateView;
+        let signed_block = self
+            .signed_block_by_root(block_root)
+            .ok_or_else(|| ApiError::NotFound("block not found".into()))?;
+        let pre_state = rewards_pre_state_for_block::<E>(self, block_root, &signed_block)?;
+        if pre_state.fork_variant() == pharos_types::views::ForkVariant::Phase0 {
+            return Err(ApiError::BadRequest(
+                "sync committee rewards are not available before altair".into(),
+            ));
+        }
+        let filter = resolve_validator_ids::<E>(&pre_state, ids)?;
+        pharos_stf::rewards_api::sync_committee_rewards::<E>(
+            &signed_block,
+            &pre_state,
+            filter.as_deref(),
+        )
+        .map_err(map_rewards_error)
     }
 
     fn fork_choice_dump(&self) -> Result<JsonValue, ApiError> {
@@ -2604,6 +2762,109 @@ pub struct ApiState<E: BeaconSpec> {
     /// SSE broadcast bus.  `None` when built without an event bus (e.g. tests
     /// that only exercise non-SSE endpoints).
     pub event_bus: Option<Arc<EventBus>>,
+}
+
+// ── Rewards helpers (M15 Phase 6) ──────────────────────────────────────────────
+
+/// Map a `pharos_stf::rewards_api::RewardsError` to an HTTP `ApiError`.
+pub(crate) fn map_rewards_error(e: pharos_stf::rewards_api::RewardsError) -> ApiError {
+    use pharos_stf::rewards_api::RewardsError;
+    match e {
+        RewardsError::UnsupportedFork(_) => ApiError::BadRequest(format!("{e}")),
+        RewardsError::VariantMismatch | RewardsError::Stf(_) | RewardsError::Epoch(_) => {
+            ApiError::Internal(format!("{e}"))
+        }
+    }
+}
+
+/// Resolve an optional list of validator identifiers (decimal index or
+/// `0x`-prefixed 48-byte pubkey) against `state` into validator indices.
+/// `None`/empty → `None` ("all validators").
+pub(crate) fn resolve_validator_ids<E: BeaconSpec>(
+    state: &E::BeaconState,
+    ids: Option<Vec<String>>,
+) -> Result<Option<Vec<u64>>, ApiError>
+where
+    E::BeaconState: pharos_types::views::BeaconStateView,
+{
+    use pharos_types::views::BeaconStateView;
+    let Some(ids) = ids else {
+        return Ok(None);
+    };
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let mut out = Vec::with_capacity(ids.len());
+    for s in ids {
+        if let Some(hexstr) = s.strip_prefix("0x") {
+            let bytes = hex::decode(hexstr)
+                .map_err(|e| ApiError::BadRequest(format!("invalid pubkey hex: {e}")))?;
+            let arr: [u8; 48] = bytes
+                .try_into()
+                .map_err(|_| ApiError::BadRequest("pubkey must be 48 bytes".into()))?;
+            let idx = state
+                .validators_iter()
+                .position(|v| v.pubkey.into_inner() == arr)
+                .ok_or_else(|| ApiError::BadRequest(format!("unknown pubkey {s}")))?;
+            out.push(idx as u64);
+        } else {
+            let idx = s
+                .parse::<u64>()
+                .map_err(|_| ApiError::BadRequest(format!("invalid validator id '{s}'")))?;
+            out.push(idx);
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Regenerate a block's pre-state: the parent post-state advanced (via
+/// `process_slots_fork`) to the block's slot/fork — the exact state the block
+/// was applied to (NOT a balance-diff). Used by the block / sync-committee
+/// rewards endpoints.
+///
+/// `block_root` identifies the block (its header provides `parent_root`); the
+/// block's slot comes from the `E`-only `signed_block_slot` accessor.
+pub(crate) fn rewards_pre_state_for_block<E: BeaconSpec>(
+    chain: &dyn ChainStateApi<E>,
+    block_root: Root,
+    signed_block: &E::SignedBeaconBlock,
+) -> Result<E::BeaconState, ApiError>
+where
+    E::BeaconState: pharos_stf::phase0::BeaconStateWrite + pharos_ssz::TreeHash,
+    E::AltairBeaconState:
+        pharos_stf::AltairProcessSlotsDispatch<E> + pharos_stf::AltairUpgradeDispatch<E>,
+    E::BellatrixBeaconState: pharos_stf::BellatrixProcessSlotsDispatch<E>
+        + pharos_stf::BellatrixUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::CapellaBeaconState: pharos_stf::CapellaProcessSlotsDispatch<E>
+        + pharos_stf::CapellaUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::DenebBeaconState: pharos_stf::DenebProcessSlotsDispatch<E>
+        + pharos_stf::DenebUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::ElectraBeaconState: pharos_stf::ElectraProcessSlotsDispatch<E>
+        + pharos_stf::ElectraUpgradeDispatch<E>
+        + pharos_ssz::TreeHash,
+    E::FuluBeaconState: pharos_stf::FuluProcessSlotsDispatch<E> + pharos_ssz::TreeHash,
+    E::Phase0BeaconState: pharos_stf::Phase0UpgradeDispatch<E>,
+    E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
+            Attestation = pharos_types::phase0::Attestation<2048>,
+        >,
+{
+    let parent_root = chain
+        .block_header_at(block_root)
+        .ok_or_else(|| ApiError::NotFound("block header not found".into()))?
+        .parent_root;
+    let block_slot = E::signed_block_slot(signed_block);
+
+    let mut parent_post = chain
+        .regenerate_state(RegenTarget::BlockRoot(parent_root))
+        .map_err(|_| ApiError::NotFound("required parent state not found".into()))?;
+    let runtime_cfg = chain.runtime_cfg();
+    let fork_epochs = pharos_stf::ForkEpochs::from_runtime_cfg(&runtime_cfg);
+    pharos_stf::process_slots_fork::<E>(&mut parent_post, block_slot, fork_epochs, &runtime_cfg)
+        .map_err(|e| ApiError::Internal(format!("process_slots: {e}")))?;
+    Ok(parent_post)
 }
 
 impl<E: BeaconSpec> ApiState<E> {

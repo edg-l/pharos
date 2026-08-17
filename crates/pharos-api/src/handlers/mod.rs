@@ -11,6 +11,7 @@ pub mod debug;
 pub mod events;
 pub mod light_client;
 pub mod node;
+pub mod rewards;
 pub mod states;
 pub mod sync_committee;
 pub mod validator_duties;

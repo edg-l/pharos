@@ -23,10 +23,11 @@ use pharos_types::{
 use pharos_utils::Gwei;
 
 use crate::altair::helpers::{
-    PROPOSER_WEIGHT, add_flag, get_attestation_participation_flag_indices,
-    get_base_reward_per_increment, has_flag,
+    PROPOSER_WEIGHT, get_attestation_participation_flag_indices, get_base_reward_per_increment,
 };
-use crate::altair::operations::attestation::get_committee_count_per_slot_altair;
+use crate::altair::operations::attestation::{
+    accumulate_attestation_participation_altair, get_committee_count_per_slot_altair,
+};
 use crate::electra::helpers::{
     electra_state_to_altair, get_attesting_indices_electra, get_beacon_proposer_index_electra,
     get_committee_indices, increase_balance_electra, slash_validator_electra,
@@ -254,13 +255,8 @@ where
         E,
     >(&enum_state, attestation);
 
-    let is_current = data.target.epoch == current_epoch;
-    let mut proposer_reward_numerator: u64 = 0;
-
-    // `base_reward_per_increment` is loop-invariant across the attester loop
-    // (the altair projection's effective balances / total active balance are not
-    // mutated here, only participation flags), so compute it once instead of
-    // having `get_base_reward` rescan all validators per attester.
+    // Hoist BRPI outside the per-attester loop (active-balance total is
+    // loop-invariant within a single attestation).
     let brpi = get_base_reward_per_increment::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
@@ -272,55 +268,24 @@ where
         SYNC_COMMITTEE_SIZE,
         E,
     >(&altair);
-
-    for validator_index in &attesting_indices {
-        let ep_flags: u8 = if is_current {
-            altair
-                .current_epoch_participation
-                .as_slice()
-                .get(validator_index.0 as usize)
-                .copied()
-                .unwrap_or(0)
-        } else {
-            altair
-                .previous_epoch_participation
-                .as_slice()
-                .get(validator_index.0 as usize)
-                .copied()
-                .unwrap_or(0)
-        };
-
-        // Inline `get_base_reward` using the hoisted `brpi`: identical to
-        // `Gwei((effective_balance / EFFECTIVE_BALANCE_INCREMENT) * brpi.0)`.
-        let effective_balance_increments = altair
-            .validators
-            .get(validator_index.0 as usize)
-            .map(|v| v.effective_balance.0 / E::EFFECTIVE_BALANCE_INCREMENT)
-            .unwrap_or(0);
-        let base_reward = Gwei(effective_balance_increments * brpi.0);
-
-        let mut new_flags = ep_flags;
-        for (flag_index, weight) in E::PARTICIPATION_FLAG_WEIGHTS.iter().enumerate() {
-            if participation_flag_indices.contains(&flag_index) && !has_flag(new_flags, flag_index)
-            {
-                new_flags = add_flag(new_flags, flag_index);
-                proposer_reward_numerator += base_reward.0 * weight;
-            }
-        }
-        if new_flags != ep_flags {
-            if is_current {
-                altair.current_epoch_participation = altair
-                    .current_epoch_participation
-                    .with_set(validator_index.0 as usize, new_flags)
-                    .map_err(StateTransitionError::Ssz)?;
-            } else {
-                altair.previous_epoch_participation = altair
-                    .previous_epoch_participation
-                    .with_set(validator_index.0 as usize, new_flags)
-                    .map_err(StateTransitionError::Ssz)?;
-            }
-        }
-    }
+    let is_current = data.target.epoch == current_epoch;
+    let proposer_reward_numerator = accumulate_attestation_participation_altair::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        E,
+    >(
+        &mut altair,
+        &attesting_indices,
+        &participation_flag_indices,
+        is_current,
+        brpi,
+    )?;
 
     // Sync participation changes back into electra state.
     state.previous_epoch_participation = altair.previous_epoch_participation;

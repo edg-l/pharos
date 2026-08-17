@@ -18,6 +18,7 @@ use crate::handlers::debug as debug_handlers;
 use crate::handlers::events as events_handlers;
 use crate::handlers::light_client as lc_handlers;
 use crate::handlers::node;
+use crate::handlers::rewards as rewards_handlers;
 use crate::handlers::states;
 use crate::handlers::sync_committee as sync_committee_handlers;
 use crate::handlers::validator_duties;
@@ -401,6 +402,19 @@ pub fn build_router_with_auth<E: BeaconSpec>(
         .route(
             "/eth/v1/beacon/blobs/{block_id}",
             get(blob_sidecars::get_blobs::<E>),
+        )
+        // M15 Phase 6 — rewards (public, beacon namespace)
+        .route(
+            "/eth/v1/beacon/rewards/attestations/{epoch}",
+            post(rewards_handlers::post_attestation_rewards::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/rewards/blocks/{block_id}",
+            get(rewards_handlers::get_block_rewards::<E>),
+        )
+        .route(
+            "/eth/v1/beacon/rewards/sync_committee/{block_id}",
+            post(rewards_handlers::post_sync_committee_rewards::<E>),
         )
         .with_state(Arc::clone(&state))
         // Merge validator sub-router (has its own auth layer + state)

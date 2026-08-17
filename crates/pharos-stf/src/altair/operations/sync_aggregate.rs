@@ -157,20 +157,7 @@ where
     // ── Compute rewards ───────────────────────────────────────────────────────
     // spec: lines 611-635
 
-    let total_active_increments = get_total_active_balance_altair::<
-        SLOTS_PER_HISTORICAL_ROOT,
-        HISTORICAL_ROOTS_LIMIT,
-        ETH1_DATA_VOTES_LIMIT,
-        VALIDATOR_REGISTRY_LIMIT,
-        EPOCHS_PER_HISTORICAL_VECTOR,
-        EPOCHS_PER_SLASHINGS_VECTOR,
-        JUSTIFICATION_BITS_LENGTH,
-        SYNC_COMMITTEE_SIZE,
-        E,
-    >(state)
-    .0 / E::EFFECTIVE_BALANCE_INCREMENT;
-
-    let base_reward_per_increment = get_base_reward_per_increment::<
+    let (participant_reward, proposer_reward) = sync_aggregate_rewards_altair::<
         SLOTS_PER_HISTORICAL_ROOT,
         HISTORICAL_ROOTS_LIMIT,
         ETH1_DATA_VOTES_LIMIT,
@@ -181,17 +168,6 @@ where
         SYNC_COMMITTEE_SIZE,
         E,
     >(state);
-
-    let total_base_rewards = Gwei(base_reward_per_increment.0 * total_active_increments);
-
-    let max_participant_rewards = Gwei(
-        total_base_rewards.0 * SYNC_REWARD_WEIGHT / E::WEIGHT_DENOMINATOR / E::SLOTS_PER_EPOCH,
-    );
-
-    let participant_reward = Gwei(max_participant_rewards.0 / E::SYNC_COMMITTEE_SIZE);
-
-    let proposer_reward =
-        Gwei(participant_reward.0 * PROPOSER_WEIGHT / (E::WEIGHT_DENOMINATOR - PROPOSER_WEIGHT));
 
     // Build pubkey -> validator index map once (O(N)) to avoid O(N) per committee member.
     // Per spec invariant every sync committee pubkey MUST appear in state.validators.
@@ -265,6 +241,93 @@ where
     }
 
     Ok(())
+}
+
+/// Compute `(participant_reward, proposer_reward)` for `process_sync_aggregate`
+/// per `specs/altair/beacon-chain.md:611-635`, without mutating balances.
+///
+/// Factored out of `process_sync_aggregate` so the Beacon API
+/// `sync_committee_rewards` and `block_rewards` endpoints can reuse the exact
+/// reward magnitudes (computed against a parent state) without duplicating the
+/// math. `participant_reward` is the per-member reward (added when the member's
+/// sync bit is set, subtracted when it is not); `proposer_reward` is the
+/// proposer's share added once per participating member.
+///
+/// `altair/rewards` / `*/sanity` conformance gate that this factoring is
+/// behaviour-preserving.
+pub fn sync_aggregate_rewards_altair<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    E,
+>(
+    state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+) -> (Gwei, Gwei)
+where
+    E: BeaconSpec<
+        AltairBeaconState = BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+        >,
+    >,
+{
+    let total_active_increments = get_total_active_balance_altair::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        E,
+    >(state)
+    .0 / E::EFFECTIVE_BALANCE_INCREMENT;
+
+    let base_reward_per_increment = get_base_reward_per_increment::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        E,
+    >(state);
+
+    let total_base_rewards = Gwei(base_reward_per_increment.0 * total_active_increments);
+
+    let max_participant_rewards = Gwei(
+        total_base_rewards.0 * SYNC_REWARD_WEIGHT / E::WEIGHT_DENOMINATOR / E::SLOTS_PER_EPOCH,
+    );
+
+    let participant_reward = Gwei(max_participant_rewards.0 / E::SYNC_COMMITTEE_SIZE);
+
+    let proposer_reward =
+        Gwei(participant_reward.0 * PROPOSER_WEIGHT / (E::WEIGHT_DENOMINATOR - PROPOSER_WEIGHT));
+
+    (participant_reward, proposer_reward)
 }
 
 // ── Domain helper ─────────────────────────────────────────────────────────────
