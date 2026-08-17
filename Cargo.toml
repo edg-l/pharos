@@ -45,16 +45,18 @@ blst = "0.3"
 c-kzg = "2"
 sha2 = "0.11"
 hex = "0.4"
-rand_core = "0.9"
+# OS entropy for the auto-generated Engine API JWT secret (rand_core 0.10
+# dropped OsRng; getrandom is the canonical OS RNG source).
+getrandom = "0.4"
 # Constant-time byte comparison (token / checksum equality, no timing side-channel).
 subtle = "2"
 # Zeroize secret key material on drop (JWT secret).
 zeroize = "1"
 
 # EIP-2335 keystore crypto (workspace-managed so version conflicts stay impossible)
-aes = "0.8"
-ctr = "0.9"
-cbc = "0.1"
+aes = "0.9"
+ctr = "0.10"
+cbc = "0.2"
 hmac = "0.13"
 pbkdf2 = "0.13"
 scrypt = "0.12"
@@ -67,7 +69,7 @@ rayon = "1"
 
 # Networking
 libp2p = "0.56"
-discv5 = "0.10"
+discv5 = "0.11"
 snap = "1"
 futures = "0.3"
 # EIP-1459 DNS bootnode resolution (in-house enrtree resolver, M11 Phase 15).
@@ -75,9 +77,9 @@ futures = "0.3"
 # k256: secp256k1 ECDSA recovery for the enrtree-root signature.
 # sha3: keccak256 for the signed-root content hash + subtree-hash check.
 # data-encoding: base32 (RFC4648 no-pad) pubkey/hashes + url-safe base64 sig.
-hickory-resolver = "0.25"
+hickory-resolver = "0.26"
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic", "std"] }
-sha3 = "0.10"
+sha3 = "0.12"
 data-encoding = "2"
 
 # HTTP
@@ -88,7 +90,7 @@ jsonwebtoken = { version = "10", default-features = false, features = ["rust_cry
 
 # Storage
 rocksdb = "0.24"
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Serde
 serde = { version = "1", features = ["derive"] }
@@ -103,7 +105,7 @@ metrics-exporter-prometheus = "0.18"
 
 # Concurrency
 parking_lot = "0.12"
-lru = "0.16"
+lru = "0.18"
 arc-swap = "1"
 
 # Errors

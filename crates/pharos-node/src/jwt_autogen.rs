@@ -9,7 +9,6 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, anyhow};
-use rand_core::{OsRng, TryRngCore as _};
 use tracing::info;
 #[cfg(not(unix))]
 use tracing::warn;
@@ -43,9 +42,7 @@ pub fn ensure_jwt_secret(data_dir: &Path, explicit: Option<&Path>) -> anyhow::Re
         .with_context(|| format!("creating data dir {}", data_dir.display()))?;
 
     let mut buf = [0u8; 32];
-    OsRng
-        .try_fill_bytes(&mut buf)
-        .map_err(|e| anyhow!("OsRng failed: {e}"))?;
+    getrandom::fill(&mut buf).map_err(|e| anyhow!("OS RNG failed: {e}"))?;
 
     let hex_secret = hex::encode(buf);
 

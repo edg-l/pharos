@@ -28,7 +28,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use data_encoding::{BASE32_NOPAD, BASE64URL_NOPAD};
-use hickory_resolver::{Resolver, name_server::TokioConnectionProvider};
+use hickory_resolver::proto::rr::RData;
+use hickory_resolver::{Resolver, TokioResolver};
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use sha3::{Digest, Keccak256};
 use tracing::{debug, warn};
@@ -258,7 +259,7 @@ pub trait TxtResolver: Send + Sync {
 
 /// Production [`TxtResolver`] backed by `hickory-resolver`.
 pub struct HickoryTxtResolver {
-    resolver: Resolver<TokioConnectionProvider>,
+    resolver: TokioResolver,
 }
 
 impl HickoryTxtResolver {
@@ -270,7 +271,11 @@ impl HickoryTxtResolver {
                 domain: "<system-config>".to_string(),
                 reason: e.to_string(),
             })?
-            .build();
+            .build()
+            .map_err(|e| DnsError::Lookup {
+                domain: "<system-config>".to_string(),
+                reason: e.to_string(),
+            })?;
         Ok(Self { resolver })
     }
 }
@@ -287,16 +292,22 @@ impl TxtResolver for HickoryTxtResolver {
                 reason: e.to_string(),
             })?;
 
+        // hickory 0.26: `txt_lookup` yields a `Lookup`; iterate its answer
+        // records and keep the TXT rdata (CNAME chases may appear in answers).
         let records = lookup
+            .answers()
             .iter()
-            .map(|txt| {
-                // A single TXT record may be split into multiple <=255-byte
-                // strings; EIP-1459 entries are reassembled by concatenation.
-                let mut buf = Vec::new();
-                for chunk in txt.txt_data() {
-                    buf.extend_from_slice(chunk);
+            .filter_map(|record| match &record.data {
+                RData::TXT(txt) => {
+                    // A single TXT record may be split into multiple <=255-byte
+                    // strings; EIP-1459 entries are reassembled by concatenation.
+                    let mut buf = Vec::new();
+                    for chunk in txt.txt_data.iter() {
+                        buf.extend_from_slice(chunk);
+                    }
+                    Some(String::from_utf8_lossy(&buf).into_owned())
                 }
-                String::from_utf8_lossy(&buf).into_owned()
+                _ => None,
             })
             .collect();
         Ok(records)

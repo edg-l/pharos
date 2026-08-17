@@ -30,7 +30,7 @@ metrics-exporter-prometheus.workspace = true
 anyhow.workspace = true
 hex.workspace = true
 serde_json.workspace = true
-rand_core = { workspace = true }
+getrandom = { workspace = true }
 libp2p.workspace = true
 reqwest.workspace = true
 clap = { version = "4", features = ["derive"] }
