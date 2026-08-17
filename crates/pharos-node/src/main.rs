@@ -1118,10 +1118,19 @@ async fn main() -> anyhow::Result<()> {
         let enr = handle.wait_for_local_enr().await;
         let listen_addr = handle.wait_for_listen_addr().await;
 
-        // Derive discovery addrs from the ENR (IP + UDP port).
-        let discovery_addrs = pharos_network::discovery::enr::enr_to_dial_multiaddr(&enr)
-            .into_iter()
-            .collect::<Vec<_>>();
+        // Derive discovery addrs from the ENR. enr_to_dial_addrs returns bare addrs
+        // (no /p2p suffix) in QUIC-first order; we re-append /p2p/<peer_id> so the
+        // Beacon API identity endpoint keeps the same with-/p2p format it always had.
+        let local_peer_id = handle.local_peer_id();
+        let discovery_addrs =
+            pharos_network::discovery::enr::enr_to_dial_addrs(&enr)
+                .map(|(_pid, addrs)| {
+                    addrs
+                        .into_iter()
+                        .filter_map(|a| a.with_p2p(local_peer_id).ok())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
 
         let identity = pharos_api::NodeIdentityCache {
             peer_id: handle.local_peer_id(),

@@ -307,19 +307,30 @@ pub fn matches_local_fork(local: &ENRForkID, peer: &ENRForkID) -> bool {
     local.fork_digest == peer.fork_digest
 }
 
-// ── ENR → dial multiaddr ──────────────────────────────────────────────────────
+// ── ENR → ordered dial addrs (QUIC-first) ────────────────────────────────────
 
-/// Convert a discv5 ENR into a libp2p dial multiaddr.
+/// Convert a discv5 ENR into an ordered list of libp2p dial multiaddrs.
 ///
-/// Returns `/ip4/<ip4>/tcp/<tcp4>/p2p/<peer_id>` when the ENR carries ip4 and
-/// tcp4 fields; falls back to `/ip6/<ip6>/tcp/<tcp6>/p2p/<peer_id>` otherwise.
-/// Returns `None` when neither ip4+tcp4 nor ip6+tcp6 are present, or when the
-/// ENR's public key cannot be decoded as a secp256k1 key.
-pub fn enr_to_dial_multiaddr(enr: &Enr) -> Option<Multiaddr> {
+/// Returns `Some((peer_id, addrs))` where `addrs` is a list of BARE multiaddrs
+/// (no `/p2p/<peer_id>` suffix — peer_id is the tuple's first element).
+/// The caller is responsible for constructing a `DialOpts` with `peer_id` +
+/// `addresses` separately, and MUST set `override_dial_concurrency_factor(1)`
+/// to honour QUIC-first ordering.
+///
+/// Address order (QUIC-first, TCP fallback):
+///   1. QUIC4  (`/ip4/{ip}/udp/{quic_port}/quic-v1`)
+///   2. QUIC6  (`/ip6/{ip}/udp/{quic6_port}/quic-v1`)
+///   3. TCP4   (`/ip4/{ip}/tcp/{tcp4}`)
+///   4. TCP6   (`/ip6/{ip}/tcp/{tcp6}`)
+///
+/// Returns `None` when:
+///   - the ENR carries no dialable address (empty vec), or
+///   - the ENR's public key is not secp256k1 (Ed25519 → None).
+pub fn enr_to_dial_addrs(enr: &Enr) -> Option<(libp2p::PeerId, Vec<Multiaddr>)> {
     // Derive the libp2p PeerId from the ENR's secp256k1 public key.
+    // Only secp256k1 ENRs are valid on the Ethereum CL p2p network.
     let peer_id = {
         let combined_pk = enr.public_key();
-        // Only secp256k1 ENRs are valid on the Ethereum CL p2p network.
         let compressed = match &combined_pk {
             CombinedPublicKey::Secp256k1(_) => combined_pk.encode(), // 33 bytes compressed
             CombinedPublicKey::Ed25519(_) => return None,
@@ -329,19 +340,37 @@ pub fn enr_to_dial_multiaddr(enr: &Enr) -> Option<Multiaddr> {
         libp2p::PeerId::from_public_key(&identity_pk)
     };
 
-    // Prefer IPv4 + TCP4.
-    if let (Some(ip4), Some(tcp4)) = (enr.ip4(), enr.tcp4()) {
-        let base: Multiaddr = format!("/ip4/{ip4}/tcp/{tcp4}").parse().ok()?;
-        return base.with_p2p(peer_id).ok();
+    let mut addrs: Vec<Multiaddr> = Vec::new();
+
+    // 1. QUIC4
+    if let (Some(ip4), Some(quic)) = (enr.ip4(), read_quic_port(enr))
+        && let Ok(addr) = format!("/ip4/{ip4}/udp/{quic}/quic-v1").parse()
+    {
+        addrs.push(addr);
+    }
+    // 2. QUIC6
+    if let (Some(ip6), Some(quic6)) = (enr.ip6(), read_quic6_port(enr))
+        && let Ok(addr) = format!("/ip6/{ip6}/udp/{quic6}/quic-v1").parse()
+    {
+        addrs.push(addr);
+    }
+    // 3. TCP4
+    if let (Some(ip4), Some(tcp4)) = (enr.ip4(), enr.tcp4())
+        && let Ok(addr) = format!("/ip4/{ip4}/tcp/{tcp4}").parse()
+    {
+        addrs.push(addr);
+    }
+    // 4. TCP6
+    if let (Some(ip6), Some(tcp6)) = (enr.ip6(), enr.tcp6())
+        && let Ok(addr) = format!("/ip6/{ip6}/tcp/{tcp6}").parse()
+    {
+        addrs.push(addr);
     }
 
-    // Fall back to IPv6 + TCP6.
-    if let (Some(ip6), Some(tcp6)) = (enr.ip6(), enr.tcp6()) {
-        let base: Multiaddr = format!("/ip6/{ip6}/tcp/{tcp6}").parse().ok()?;
-        return base.with_p2p(peer_id).ok();
+    if addrs.is_empty() {
+        return None;
     }
-
-    None
+    Some((peer_id, addrs))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -531,14 +560,71 @@ mod tests {
         assert_eq!(read_quic_port(&enr), None);
     }
 
-    // ── enr_to_dial_multiaddr ─────────────────────────────────────────────────
+    // ── enr_to_dial_addrs ─────────────────────────────────────────────────────
 
+    /// QUIC4 + TCP4 → two addrs, QUIC first, no /p2p suffix.
     #[test]
-    fn enr_to_dial_multiaddr_ip4() {
+    fn enr_to_dial_addrs_quic4_and_tcp4() {
         let key = CombinedKey::generate_secp256k1();
-        let fork_id = test_fork_id();
-        let attnets = test_attnets();
+        let enr = build_local_enr(
+            &key,
+            Some(Ipv4Addr::new(127, 0, 0, 1)),
+            Some(9000),
+            Some(9000),
+            Some(9001),
+            None,
+            None,
+            None,
+            None,
+            test_fork_id(),
+            test_attnets(),
+            None,
+            1,
+        )
+        .expect("build_local_enr failed");
 
+        let (_peer_id, addrs) = enr_to_dial_addrs(&enr).expect("expected Some");
+        assert_eq!(addrs.len(), 2, "expected 2 addrs, got {addrs:?}");
+        assert_eq!(addrs[0].to_string(), "/ip4/127.0.0.1/udp/9001/quic-v1");
+        assert_eq!(addrs[1].to_string(), "/ip4/127.0.0.1/tcp/9000");
+        for a in &addrs {
+            assert!(
+                !a.to_string().contains("/p2p/"),
+                "bare addr must not contain /p2p/: {a}"
+            );
+        }
+    }
+
+    /// QUIC4 only (no tcp4) → one addr.
+    #[test]
+    fn enr_to_dial_addrs_quic4_only() {
+        let key = CombinedKey::generate_secp256k1();
+        let enr = build_local_enr(
+            &key,
+            Some(Ipv4Addr::new(127, 0, 0, 1)),
+            Some(9000),
+            None,
+            Some(9001),
+            None,
+            None,
+            None,
+            None,
+            test_fork_id(),
+            test_attnets(),
+            None,
+            1,
+        )
+        .expect("build_local_enr failed");
+
+        let (_peer_id, addrs) = enr_to_dial_addrs(&enr).expect("expected Some");
+        assert_eq!(addrs.len(), 1, "expected 1 addr, got {addrs:?}");
+        assert_eq!(addrs[0].to_string(), "/ip4/127.0.0.1/udp/9001/quic-v1");
+    }
+
+    /// TCP4 only (no quic) → one addr.
+    #[test]
+    fn enr_to_dial_addrs_tcp4_only() {
+        let key = CombinedKey::generate_secp256k1();
         let enr = build_local_enr(
             &key,
             Some(Ipv4Addr::new(127, 0, 0, 1)),
@@ -549,29 +635,66 @@ mod tests {
             None,
             None,
             None,
-            fork_id,
-            attnets,
+            test_fork_id(),
+            test_attnets(),
             None,
             1,
         )
         .expect("build_local_enr failed");
 
-        let addr = enr_to_dial_multiaddr(&enr).expect("enr_to_dial_multiaddr returned None");
-        let s = addr.to_string();
-        assert!(
-            s.contains("/ip4/127.0.0.1/tcp/9000/p2p/"),
-            "unexpected multiaddr: {s}"
-        );
+        let (_peer_id, addrs) = enr_to_dial_addrs(&enr).expect("expected Some");
+        assert_eq!(addrs.len(), 1, "expected 1 addr, got {addrs:?}");
+        assert_eq!(addrs[0].to_string(), "/ip4/127.0.0.1/tcp/9000");
     }
 
+    /// IPv6: QUIC6 + TCP6 → two addrs, QUIC6 first.
+    /// build_local_enr param order: (key, ip4, udp4, tcp4, quic_port, quic6_port, ip6, udp6, tcp6, ...)
     #[test]
-    fn enr_to_dial_multiaddr_no_tcp_returns_none() {
-        // An ENR without any ip/tcp fields should yield None.
+    fn enr_to_dial_addrs_ipv6_quic6_and_tcp6() {
+        use std::net::Ipv6Addr;
+        let ip6 = Ipv6Addr::new(0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 1);
+        let key = CombinedKey::generate_secp256k1();
+        let enr = build_local_enr(
+            &key,
+            None,       // ip4
+            None,       // udp4
+            None,       // tcp4
+            None,       // quic_port (IPv4 QUIC)
+            Some(9101), // quic6_port (position 6)
+            Some(ip6),  // ip6 (position 7)
+            None,       // udp6
+            Some(9100), // tcp6
+            test_fork_id(),
+            test_attnets(),
+            None,
+            1,
+        )
+        .expect("build_local_enr failed");
+
+        let (_peer_id, addrs) = enr_to_dial_addrs(&enr).expect("expected Some");
+        assert_eq!(addrs.len(), 2, "expected 2 addrs, got {addrs:?}");
+        assert_eq!(
+            addrs[0].to_string(),
+            format!("/ip6/{ip6}/udp/9101/quic-v1"),
+            "QUIC6 must be first"
+        );
+        assert_eq!(addrs[1].to_string(), format!("/ip6/{ip6}/tcp/9100"),);
+        for a in &addrs {
+            assert!(
+                !a.to_string().contains("/p2p/"),
+                "bare addr must not contain /p2p/: {a}"
+            );
+        }
+    }
+
+    /// Empty ENR (no ip/port fields) → None.
+    #[test]
+    fn enr_to_dial_addrs_empty_enr_returns_none() {
         let key = CombinedKey::generate_secp256k1();
         let enr = discv5::enr::Enr::builder()
             .build(&key)
             .expect("empty ENR build failed");
-        assert!(enr_to_dial_multiaddr(&enr).is_none());
+        assert!(enr_to_dial_addrs(&enr).is_none());
     }
 
     /// `read_quic6_port` returns `None` for an ENR without the `quic6` key.

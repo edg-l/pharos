@@ -13,6 +13,7 @@ pub mod transport;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,7 @@ use libp2p::identity::Keypair;
 use libp2p::noise;
 use libp2p::request_response::{self, OutboundRequestId, ProtocolSupport};
 use libp2p::swarm::ConnectionError;
+use libp2p::swarm::dial_opts::DialOpts;
 use libp2p::{PeerId, Swarm, SwarmBuilder};
 use pharos_ssz::Bitvector;
 use pharos_types::BeaconSpec;
@@ -40,7 +42,7 @@ use discv5::enr::EnrKey as _;
 use zeroize::Zeroize as _;
 
 use crate::codec::snappy_block::{decode_snappy_block, encode_snappy_block};
-use crate::discovery::enr::{Enr, enr_to_dial_multiaddr};
+use crate::discovery::enr::{Enr, enr_to_dial_addrs};
 use crate::discovery::handle::{DiscoveryCommand, DiscoveryHandle, discovery_channel};
 use crate::discovery::service::{
     DiscoveryConfig, DiscoveryListenConfig, DiscoveryService, query_interval,
@@ -504,7 +506,8 @@ impl<
     S: PeerScorer,
 > Network<E, H, S>
 {
-    /// Attempt an outbound dial to `peer_id` at `addr`, deduplicating concurrent dials.
+    /// Attempt an outbound dial to `peer_id` at `addrs` (tried QUIC-first in listed order,
+    /// sequential), deduplicating concurrent dials.
     ///
     /// Returns `true` if a new dial was initiated, `false` if the dial was
     /// suppressed because one of the following is true:
@@ -513,9 +516,12 @@ impl<
     ///   - the peer manager already tracks `peer_id` in `Connecting`,
     ///     `Handshaking`, or `Connected` state.
     ///
+    /// `override_dial_concurrency_factor(1)` enforces strict in-order dialing so that
+    /// QUIC-first ordering is honoured (the libp2p default factor of 8 races all addresses).
+    ///
     /// On a synchronous dial error the entry is immediately removed from
     /// `pending_dials` so the peer is not permanently blocked.
-    pub fn dial_peer(&mut self, peer_id: PeerId, addr: libp2p::Multiaddr) -> bool {
+    pub fn dial_peer(&mut self, peer_id: PeerId, addrs: Vec<libp2p::Multiaddr>) -> bool {
         if self.pending_dials.contains_key(&peer_id) {
             tracing::debug!(%peer_id, "dial suppressed: already in pending_dials");
             return false;
@@ -539,7 +545,11 @@ impl<
             return false;
         }
         self.pending_dials.insert(peer_id, Instant::now());
-        match self.swarm.dial(addr.clone()) {
+        let opts = DialOpts::peer_id(peer_id)
+            .addresses(addrs)
+            .override_dial_concurrency_factor(NonZeroU8::new(1).expect("1 > 0"))
+            .build();
+        match self.swarm.dial(opts) {
             Ok(()) => true,
             Err(e) => {
                 self.pending_dials.remove(&peer_id);
@@ -562,43 +572,26 @@ impl<
     /// pending peers and honours dial backoff, so this is safe to call on every
     /// deficit tick.
     fn dial_bootnodes(&mut self) -> u32 {
-        // Pre-extract (PeerId, Multiaddr) pairs from &self.bootnodes before
+        // Pre-extract (PeerId, Vec<Multiaddr>) pairs from &self.bootnodes before
         // entering the loop so dial_peer can take &mut self without a
         // per-tick whole-Vec clone.
-        let targets: Vec<(PeerId, libp2p::Multiaddr)> = self
+        let targets: Vec<(PeerId, Vec<libp2p::Multiaddr>)> = self
             .bootnodes
             .iter()
-            .filter_map(|enr| {
-                let addr = match enr_to_dial_multiaddr(enr) {
-                    Some(a) => a,
-                    None => {
-                        tracing::debug!(enr = %enr, "bootnode ENR has no dialable address; skipping");
-                        return None;
-                    }
-                };
-                // Extract the PeerId embedded by enr_to_dial_multiaddr (/p2p/<pid>).
-                let peer_id = match addr.iter().find_map(|p| {
-                    if let libp2p::multiaddr::Protocol::P2p(pid) = p {
-                        Some(pid)
-                    } else {
-                        None
-                    }
-                }) {
-                    Some(pid) => pid,
-                    None => {
-                        tracing::debug!(addr = %addr, "bootnode multiaddr has no /p2p component; skipping");
-                        return None;
-                    }
-                };
-                Some((peer_id, addr))
+            .filter_map(|enr| match enr_to_dial_addrs(enr) {
+                Some(target) => Some(target),
+                None => {
+                    tracing::debug!(enr = %enr, "bootnode ENR has no dialable address; skipping");
+                    None
+                }
             })
             .collect();
 
         let mut booted = 0u32;
-        for (peer_id, addr) in targets {
-            if self.dial_peer(peer_id, addr.clone()) {
+        for (peer_id, addrs) in targets {
+            if self.dial_peer(peer_id, addrs) {
                 booted += 1;
-                tracing::debug!(addr = %addr, "dialing bootnode");
+                tracing::debug!(%peer_id, "dialing bootnode");
             }
         }
         booted
@@ -708,8 +701,8 @@ impl<
                     let discovered = peers.len();
                     let mut dialed = 0u32;
                     for enr in peers {
-                        let addr = match enr_to_dial_multiaddr(&enr) {
-                            Some(a) => a,
+                        let (peer_id, addrs) = match enr_to_dial_addrs(&enr) {
+                            Some(v) => v,
                             None => {
                                 tracing::debug!(
                                     enr = %enr,
@@ -718,24 +711,9 @@ impl<
                                 continue;
                             }
                         };
-                        // Extract the PeerId from the /p2p/<pid> component appended
-                        // by enr_to_dial_multiaddr.  If absent, skip (no key to dedup on).
-                        let peer_id = match addr.iter().find_map(|p| {
-                            if let libp2p::multiaddr::Protocol::P2p(pid) = p {
-                                Some(pid)
-                            } else {
-                                None
-                            }
-                        }) {
-                            Some(pid) => pid,
-                            None => {
-                                tracing::debug!(addr = %addr, "discovered peer addr has no /p2p component; skipping dial");
-                                continue;
-                            }
-                        };
-                        if self.dial_peer(peer_id, addr.clone()) {
+                        if self.dial_peer(peer_id, addrs) {
                             dialed += 1;
-                            tracing::debug!(addr = %addr, "dialing discovered peer");
+                            tracing::debug!(%peer_id, "dialing discovered peer");
                         }
                     }
 
@@ -1410,7 +1388,16 @@ impl<
                 error,
                 ..
             } => {
-                tracing::warn!(%peer, ?error, "outbound RPC failure");
+                // StatusV2 → UnsupportedProtocols is the expected v2→v1 fallback path
+                // (handled below, already logged at debug); don't WARN on it.
+                if !(method == RpcMethod::StatusV2
+                    && matches!(
+                        error,
+                        request_response::OutboundFailure::UnsupportedProtocols
+                    ))
+                {
+                    tracing::warn!(%peer, ?error, "outbound RPC failure");
+                }
                 // Route by `method` (see the Response handler): `request_id` is only
                 // unique within a per-method behaviour.
                 //

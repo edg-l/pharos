@@ -10,9 +10,9 @@
 //!
 //! ## What this test proves
 //!
-//! 1. The first `dial_peer(pid, addr)` call returns `true` and registers the
+//! 1. The first `dial_peer(pid, addrs)` call returns `true` and registers the
 //!    peer in `pending_dials`.
-//! 2. A second `dial_peer(pid, addr)` call for the **same** peer while the
+//! 2. A second `dial_peer(pid, addrs)` call for the **same** peer while the
 //!    first dial is still in flight returns `false` and leaves `pending_dials`
 //!    unchanged.
 //! 3. After `on_swarm_connection_established(pid, n=1)` the entry is removed
@@ -24,7 +24,7 @@
 //!
 //! We build a `Network` via `NetworkBuilder::build()` (no spawn) and call
 //! `dial_peer` directly.  The first dial goes to a syntactically-valid but
-//! unreachable loopback address (127.0.0.2:19999) with a `/p2p/<pid>` suffix
+//! unreachable loopback address (127.0.0.2:19999) as a bare TCP addr
 //! so `swarm.dial` accepts it (no synchronous transport error).  This mirrors
 //! `redundant_connection.rs`.
 //!
@@ -51,11 +51,12 @@ fn fd() -> ForkDigest {
     ForkDigest::from_array(FORK_DIGEST)
 }
 
-/// Build a syntactically-valid multiaddr to an unreachable address with the
-/// given `/p2p/<pid>` suffix so `swarm.dial` accepts it synchronously.
-fn unreachable_addr(peer_id: PeerId) -> libp2p::Multiaddr {
-    let base: libp2p::Multiaddr = "/ip4/127.0.0.2/tcp/19999".parse().unwrap();
-    base.with_p2p(peer_id).unwrap()
+/// Build a syntactically-valid bare multiaddr to an unreachable address.
+///
+/// Returns a bare addr (no `/p2p` suffix) matching the new `dial_peer` API:
+/// peer_id is passed separately and addresses must be bare.
+fn unreachable_addr() -> libp2p::Multiaddr {
+    "/ip4/127.0.0.2/tcp/19999".parse().unwrap()
 }
 
 /// Inbound endpoint for direct `on_swarm_connection_established` calls.
@@ -88,10 +89,10 @@ async fn dial_dedup_suppresses_second_concurrent_dial() {
             .expect("NetworkBuilder::build failed");
 
     let remote_peer: PeerId = Keypair::generate_secp256k1().public().to_peer_id();
-    let addr = unreachable_addr(remote_peer);
+    let addr = unreachable_addr();
 
     // ── First dial: should be accepted ───────────────────────────────────────
-    let first = network.dial_peer(remote_peer, addr.clone());
+    let first = network.dial_peer(remote_peer, vec![addr.clone()]);
     assert!(first, "first dial_peer call must return true");
     assert_eq!(
         network.test_pending_dials_len(),
@@ -105,7 +106,7 @@ async fn dial_dedup_suppresses_second_concurrent_dial() {
 
     // ── Second dial (same peer, in-flight): must be suppressed ───────────────
     // Pre-fix: this would also return true (no dedup) — the bug.
-    let second = network.dial_peer(remote_peer, addr.clone());
+    let second = network.dial_peer(remote_peer, vec![addr.clone()]);
     assert!(
         !second,
         "second dial_peer call to same peer must return false"
@@ -151,10 +152,10 @@ async fn dial_dedup_cleared_on_mutual_dial_second_connection() {
             .expect("NetworkBuilder::build failed");
 
     let remote_peer: PeerId = Keypair::generate_secp256k1().public().to_peer_id();
-    let addr = unreachable_addr(remote_peer);
+    let addr = unreachable_addr();
 
     // Initiate a dial to put the peer in pending_dials.
-    assert!(network.dial_peer(remote_peer, addr));
+    assert!(network.dial_peer(remote_peer, vec![addr]));
     assert!(network.test_pending_dials_contains(&remote_peer));
 
     // Simulate the mutual-dial case: ConnectionEstablished fires with n=2
@@ -192,22 +193,22 @@ async fn dial_dedup_distinct_peers_are_independent() {
     let peer_a: PeerId = Keypair::generate_secp256k1().public().to_peer_id();
     let peer_b: PeerId = Keypair::generate_secp256k1().public().to_peer_id();
 
-    let addr_a = unreachable_addr(peer_a);
-    let addr_b = unreachable_addr(peer_b);
+    let addr_a = unreachable_addr();
+    let addr_b = unreachable_addr();
 
     assert!(
-        network.dial_peer(peer_a, addr_a.clone()),
+        network.dial_peer(peer_a, vec![addr_a.clone()]),
         "dial to peer_a must succeed"
     );
     assert!(
-        network.dial_peer(peer_b, addr_b.clone()),
+        network.dial_peer(peer_b, vec![addr_b.clone()]),
         "dial to peer_b must succeed (distinct peer)"
     );
     assert_eq!(network.test_pending_dials_len(), 2);
 
     // Second dial to peer_a is suppressed; peer_b is unaffected.
     assert!(
-        !network.dial_peer(peer_a, addr_a),
+        !network.dial_peer(peer_a, vec![addr_a]),
         "second dial to peer_a must be suppressed"
     );
     assert_eq!(
