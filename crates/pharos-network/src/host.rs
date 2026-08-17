@@ -296,16 +296,14 @@ pub trait GossipValidator<E: BeaconSpec>: Send + Sync + 'static {
     /// `subnet` is the subnet id extracted from the topic string. All 13
     /// validation rules per `specs/fulu/p2p-interface.md`.
     ///
-    /// The default body returns `Ignore`; concrete fulu hosts override it. This
-    /// lets non-fulu test mocks compile unchanged.
+    /// Required (no default): a host that forgets to implement this would
+    /// otherwise silently `Ignore` every data column, breaking Fulu DA gossip.
+    /// Non-fulu test mocks return `Ignore` explicitly.
     fn validate_data_column_sidecar(
         &self,
         subnet: SubnetId,
         sidecar: &DataColumnSidecar<4096, 4>,
-    ) -> GossipVerdict {
-        let _ = (subnet, sidecar);
-        GossipVerdict::Ignore("data column sidecar validator not implemented".to_string())
-    }
+    ) -> GossipVerdict;
 
     // ── Electra gossip topics (EIP-7549) ──────────────────────────────────────
     //

@@ -236,6 +236,14 @@ impl GossipValidator<E> for BenchHost {
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
+
+    fn validate_data_column_sidecar(
+        &self,
+        _subnet: pharos_network::types::SubnetId,
+        _sidecar: &pharos_types::fulu::DataColumnSidecar<4096, 4>,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
 }
 
 impl BlobProvider<E> for BenchHost {

@@ -512,6 +512,14 @@ impl GossipValidator<MainnetBeaconSpec> for TestHost {
     ) -> GossipVerdict {
         GossipVerdict::Accept
     }
+
+    fn validate_data_column_sidecar(
+        &self,
+        _subnet: SubnetId,
+        _sidecar: &pharos_types::fulu::DataColumnSidecar<4096, 4>,
+    ) -> GossipVerdict {
+        GossipVerdict::Accept
+    }
 }
 
 impl BlobProvider<MainnetBeaconSpec> for TestHost {
