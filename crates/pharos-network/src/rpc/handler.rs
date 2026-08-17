@@ -372,11 +372,21 @@ where
         RpcResponse::MetaData(MetaDataResponse::V1(v1))
     } else if negotiated_protocol_id == crate::scoring::RpcMethod::MetaDataV3.protocol_id() {
         // v3 peer (Fulu): serve full metadata + custody_group_count.
+        // EIP-7594 requires cgc in 1..=128; lighthouse sends Goodbye(Fault) and
+        // bans a peer that advertises cgc=0 (see D-fulu-metadata-cgc-nonzero in
+        // docs/decisions.md). The ENR build path already filters 0; floor the RPC
+        // response too so an unwired/pre-Fulu custody source can't re-trigger the ban.
+        let raw_cgc = host.custody_group_count();
+        if raw_cgc == 0 {
+            tracing::warn!(
+                "custody_group_count is 0 when serving MetaDataV3; flooring to 1 — check custody wiring"
+            );
+        }
         let v3 = MetaDataV3 {
             seq_number: md.seq_number,
             attnets: md.attnets,
             syncnets: md.syncnets,
-            custody_group_count: host.custody_group_count(),
+            custody_group_count: raw_cgc.max(1),
         };
         RpcResponse::MetaData(MetaDataResponse::V3(v3))
     } else {
@@ -784,6 +794,38 @@ mod tests {
         match resp {
             RpcResponse::MetaData(MetaDataResponse::V1(m)) => assert_eq!(m.seq_number, 5),
             other => panic!("expected RpcResponse::MetaData(V1), got: {other:?}"),
+        }
+    }
+
+    /// A `MetaData` (v3/Fulu) request floors `custody_group_count` to 1 when the
+    /// host reports 0 (EIP-7594 requires cgc in 1..=128; cgc=0 triggers a
+    /// lighthouse Goodbye(Fault) ban — D-fulu-metadata-cgc-nonzero). MockHost
+    /// uses the ForkContext default cgc=0, so the served value must be 1.
+    #[tokio::test]
+    async fn metadata_v3_floors_cgc_to_one() {
+        let host = MockHost::new(Bytes4::from_array([0u8; 4]), 0);
+        assert_eq!(host.custody_group_count(), 0, "mock host reports cgc=0");
+        let md = make_md(9);
+        let mut pm = make_peer_manager();
+        let peer = PeerId::random();
+
+        let v3_protocol = RpcMethod::MetaDataV3.protocol_id();
+        let resp = handle_request::<MainnetBeaconSpec, _, _>(
+            &host,
+            &md,
+            peer,
+            RpcRequest::MetaData,
+            &mut pm,
+            v3_protocol,
+        )
+        .await;
+
+        match resp {
+            RpcResponse::MetaData(MetaDataResponse::V3(m)) => {
+                assert_eq!(m.seq_number, 9);
+                assert_eq!(m.custody_group_count, 1, "cgc=0 must be floored to 1");
+            }
+            other => panic!("expected RpcResponse::MetaData(V3), got: {other:?}"),
         }
     }
 
