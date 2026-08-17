@@ -89,8 +89,12 @@ use crate::state::ApiState;
 /// - `POST /eth/v2/beacon/blocks`                    (public)
 /// - `GET  /eth/v1/beacon/pool/attestations`         (public)
 /// - `POST /eth/v1/beacon/pool/attestations`         (public)
+/// - `GET  /eth/v2/beacon/pool/attestations`         (public, M15 Phase 3)
+/// - `POST /eth/v2/beacon/pool/attestations`         (public, M15 Phase 3)
 /// - `GET  /eth/v1/beacon/pool/attester_slashings`   (public)
 /// - `POST /eth/v1/beacon/pool/attester_slashings`   (public)
+/// - `GET  /eth/v2/beacon/pool/attester_slashings`   (public, M15 Phase 3)
+/// - `POST /eth/v2/beacon/pool/attester_slashings`   (public, M15 Phase 3)
 /// - `GET  /eth/v1/beacon/pool/proposer_slashings`   (public)
 /// - `POST /eth/v1/beacon/pool/proposer_slashings`   (public)
 /// - `GET  /eth/v1/beacon/pool/voluntary_exits`      (public)
@@ -349,10 +353,21 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             get(beacon_pool::get_pool_attestations::<E>)
                 .post(beacon_pool::post_pool_attestations::<E>),
         )
+        // M15 Phase 3 — EIP-7549 versioned pool (public)
+        .route(
+            "/eth/v2/beacon/pool/attestations",
+            get(beacon_pool::get_pool_attestations_v2::<E>)
+                .post(beacon_pool::post_pool_attestations_v2::<E>),
+        )
         .route(
             "/eth/v1/beacon/pool/attester_slashings",
             get(beacon_pool::get_pool_attester_slashings::<E>)
                 .post(beacon_pool::post_pool_attester_slashings::<E>),
+        )
+        .route(
+            "/eth/v2/beacon/pool/attester_slashings",
+            get(beacon_pool::get_pool_attester_slashings_v2::<E>)
+                .post(beacon_pool::post_pool_attester_slashings_v2::<E>),
         )
         .route(
             "/eth/v1/beacon/pool/proposer_slashings",

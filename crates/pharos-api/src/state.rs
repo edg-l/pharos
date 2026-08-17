@@ -13,15 +13,16 @@ use libp2p::{Multiaddr, PeerId};
 use parking_lot::RwLock;
 use pharos_fork_choice::Store as FcStore;
 use pharos_network::discovery::enr::Enr;
-use pharos_ssz::Encode as _;
+use pharos_ssz::{Bitlist, Encode as _, SszList};
 use pharos_storage::{RocksStore, Store as DbStore};
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::bellatrix::execution_payload::ExecutionAddress;
 use pharos_types::{
     BeaconSpec, OperationPools, SyncCommitteePubkeys,
     config::RuntimeConfig,
-    phase0::misc::AttestationData,
-    phase0::operations::Attestation,
+    electra::attestation::SingleAttestation,
+    phase0::misc::{AttestationData, IndexedAttestation as Phase0IndexedAttestation},
+    phase0::operations::{Attestation, AttesterSlashing as Phase0AttesterSlashing},
     phase0::primitives::{CommitteeIndex, Epoch, ValidatorIndex},
     phase0::{BeaconBlockHeader, Checkpoint, Root, Slot},
     views::SignedBeaconBlockView as _,
@@ -501,6 +502,122 @@ fn attestation_to_json<const N: u64>(att: &Attestation<N>) -> JsonValue {
     })
 }
 
+/// Parse a JSON-encoded `IndexedAttestation` (either phase0 or electra shape)
+/// into `Phase0IndexedAttestation<2048>`.
+///
+/// The two shapes share the same JSON fields (`attesting_indices`, `data`,
+/// `signature`); only the `MAX_AGGREGATION_BITS` limit differs. Indices beyond
+/// 2048 are truncated (silently dropped) so electra slashings with large
+/// committee sizes can still be stored in the phase0 pool.
+fn parse_indexed_attestation_json_as_phase0(
+    v: &JsonValue,
+) -> Result<Phase0IndexedAttestation<2048>, ApiError> {
+    // attesting_indices: array of Uint64 strings or numbers.
+    let indices_arr = v["attesting_indices"]
+        .as_array()
+        .ok_or_else(|| ApiError::BadRequest("attesting_indices missing".into()))?;
+    let mut parsed: Vec<ValidatorIndex> = Vec::with_capacity(indices_arr.len().min(2048));
+    for (i, idx_val) in indices_arr.iter().enumerate() {
+        let raw = match idx_val {
+            JsonValue::String(s) => s
+                .parse::<u64>()
+                .map_err(|_| ApiError::BadRequest(format!("attesting_indices[{i}]: invalid u64")))?,
+            JsonValue::Number(n) => n
+                .as_u64()
+                .ok_or_else(|| ApiError::BadRequest(format!("attesting_indices[{i}]: invalid u64")))?,
+            _ => {
+                return Err(ApiError::BadRequest(format!(
+                    "attesting_indices[{i}]: expected string or number"
+                )));
+            }
+        };
+        if parsed.len() < 2048 {
+            parsed.push(ValidatorIndex(raw));
+        }
+    }
+    let indices = SszList::<ValidatorIndex, 2048>::from_items(parsed)
+        .map_err(|_| ApiError::BadRequest("attesting_indices: too many entries".into()))?;
+
+    // data: full AttestationData JSON object.
+    let data_v = &v["data"];
+    let slot = match &data_v["slot"] {
+        JsonValue::String(s) => s
+            .parse::<u64>()
+            .map_err(|_| ApiError::BadRequest("data.slot: invalid u64".into()))?,
+        JsonValue::Number(n) => n
+            .as_u64()
+            .ok_or_else(|| ApiError::BadRequest("data.slot: invalid u64".into()))?,
+        _ => return Err(ApiError::BadRequest("data.slot missing".into())),
+    };
+    let index = match &data_v["index"] {
+        JsonValue::String(s) => s
+            .parse::<u64>()
+            .map_err(|_| ApiError::BadRequest("data.index: invalid u64".into()))?,
+        JsonValue::Number(n) => n
+            .as_u64()
+            .ok_or_else(|| ApiError::BadRequest("data.index: invalid u64".into()))?,
+        _ => return Err(ApiError::BadRequest("data.index missing".into())),
+    };
+    let bbr_hex = data_v["beacon_block_root"]
+        .as_str()
+        .ok_or_else(|| ApiError::BadRequest("data.beacon_block_root missing".into()))?;
+    let bbr_bytes =
+        hex::decode(bbr_hex.strip_prefix("0x").unwrap_or(bbr_hex))
+            .map_err(|e| ApiError::BadRequest(format!("data.beacon_block_root: {e}")))?;
+    let bbr_arr: [u8; 32] = bbr_bytes
+        .try_into()
+        .map_err(|_| ApiError::BadRequest("data.beacon_block_root: must be 32 bytes".into()))?;
+
+    let parse_checkpoint_inline = |cv: &JsonValue| -> Result<Checkpoint, ApiError> {
+        let epoch = match &cv["epoch"] {
+            JsonValue::String(s) => s
+                .parse::<u64>()
+                .map_err(|_| ApiError::BadRequest("checkpoint epoch: invalid u64".into()))?,
+            JsonValue::Number(n) => n
+                .as_u64()
+                .ok_or_else(|| ApiError::BadRequest("checkpoint epoch: invalid u64".into()))?,
+            _ => return Err(ApiError::BadRequest("checkpoint epoch missing".into())),
+        };
+        let root_hex = cv["root"]
+            .as_str()
+            .ok_or_else(|| ApiError::BadRequest("checkpoint root missing".into()))?;
+        let root_bytes =
+            hex::decode(root_hex.strip_prefix("0x").unwrap_or(root_hex))
+                .map_err(|e| ApiError::BadRequest(format!("checkpoint root: {e}")))?;
+        let root_arr: [u8; 32] = root_bytes
+            .try_into()
+            .map_err(|_| ApiError::BadRequest("checkpoint root: must be 32 bytes".into()))?;
+        Ok(Checkpoint {
+            epoch: Epoch(epoch),
+            root: Root::from(root_arr),
+        })
+    };
+
+    let source = parse_checkpoint_inline(&data_v["source"])?;
+    let target = parse_checkpoint_inline(&data_v["target"])?;
+
+    let sig_hex = v["signature"]
+        .as_str()
+        .ok_or_else(|| ApiError::BadRequest("signature missing".into()))?;
+    let sig_bytes = hex::decode(sig_hex.strip_prefix("0x").unwrap_or(sig_hex))
+        .map_err(|e| ApiError::BadRequest(format!("signature: {e}")))?;
+    let sig_arr: [u8; 96] = sig_bytes
+        .try_into()
+        .map_err(|_| ApiError::BadRequest("signature: must be 96 bytes".into()))?;
+
+    Ok(Phase0IndexedAttestation {
+        attesting_indices: indices,
+        data: AttestationData {
+            slot: Slot(slot),
+            index: CommitteeIndex(index),
+            beacon_block_root: Root::from(bbr_arr),
+            source,
+            target,
+        },
+        signature: BLSSignature::from(sig_arr),
+    })
+}
+
 fn pending_att_raw_to_json(pa: pharos_types::PendingAttestationRaw) -> JsonValue {
     serde_json::json!({
         "aggregation_bits": hex(&pa.aggregation_bits_ssz),
@@ -779,6 +896,42 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
     /// Validates basic structure and calls pool insert + gossip publish for each.
     /// Default is a no-op returning `Ok(())`.
     fn submit_attestations(&self, _attestations: Vec<Attestation<2048>>) -> Result<(), ApiError> {
+        Ok(())
+    }
+
+    /// Submit `SingleAttestation` objects (electra+) to the gossip pool.
+    ///
+    /// Routes `POST /eth/v2/beacon/pool/attestations` with `electra|fulu` header.
+    /// Default accepts without pool insert (`D-pool-v2-submit-default-broadcast`):
+    /// the node-side gossip-accept path handles pool insertion with BLS context.
+    fn submit_single_attestations(
+        &self,
+        _attestations: Vec<SingleAttestation>,
+    ) -> Result<(), ApiError> {
+        Ok(())
+    }
+
+    /// Submit a `Phase0.AttesterSlashing` to the pool.
+    ///
+    /// Routes `POST /eth/v2/beacon/pool/attester_slashings` with pre-electra header.
+    /// Default accepts without pool insert (`D-pool-v2-submit-default-broadcast`).
+    fn submit_phase0_attester_slashing(
+        &self,
+        _slashing: Phase0AttesterSlashing<2048>,
+    ) -> Result<(), ApiError> {
+        Ok(())
+    }
+
+    /// Submit an `Electra.AttesterSlashing` (as JSON) to the pool.
+    ///
+    /// Routes `POST /eth/v2/beacon/pool/attester_slashings` with `electra|fulu` header.
+    /// Takes JSON because the electra `AttesterSlashing` type has a const-generic
+    /// `MAX_AGGREGATION_BITS` that differs between presets (131072 vs 8192), making
+    /// a single typed trait method impossible. The handler validates field structure
+    /// before calling this.
+    /// Default accepts without pool insert (`D-pool-v2-submit-default-broadcast`):
+    /// the pool stores phase0 type only; electra slashings are accepted but not pooled.
+    fn submit_electra_attester_slashing(&self, _slashing: JsonValue) -> Result<(), ApiError> {
         Ok(())
     }
 
@@ -1808,6 +1961,63 @@ where
         Ok(())
     }
 
+    fn submit_single_attestations(
+        &self,
+        attestations: Vec<SingleAttestation>,
+    ) -> Result<(), ApiError> {
+        let Some(pools) = &self.pools else {
+            return Ok(());
+        };
+        for att in attestations {
+            // Convert SingleAttestation → Attestation<2048> for pool storage.
+            // The API layer does not have the committee length from duty data, so
+            // we produce a minimal 1-bit Bitlist with bit 0 set (one aggregation
+            // slot). This preserves the attestation data and signature in the pool
+            // while satisfying the pool's Attestation<2048> type requirement.
+            let mut agg_bits = Bitlist::<2048>::new();
+            // push one `true` bit (attester at committee position 0).
+            let _ = agg_bits.push(true);
+            let phase0_att = Attestation::<2048> {
+                aggregation_bits: agg_bits,
+                data: att.data,
+                signature: att.signature,
+            };
+            pools.insert_attestation(phase0_att);
+        }
+        Ok(())
+    }
+
+    fn submit_phase0_attester_slashing(
+        &self,
+        slashing: Phase0AttesterSlashing<2048>,
+    ) -> Result<(), ApiError> {
+        if let Some(pools) = &self.pools {
+            pools.insert_attester_slashing(slashing);
+        }
+        Ok(())
+    }
+
+    fn submit_electra_attester_slashing(&self, slashing: JsonValue) -> Result<(), ApiError> {
+        let Some(pools) = &self.pools else {
+            return Ok(());
+        };
+        // The electra AttesterSlashing outer shape ({attestation_1, attestation_2}
+        // with {attesting_indices, data, signature}) is identical to phase0.
+        // Parse it as Phase0.AttesterSlashing<2048>, truncating any indices
+        // beyond the pool's 2048 limit, and insert into the shared pool.
+        let phase0_slashing =
+            parse_indexed_attestation_json_as_phase0(&slashing["attestation_1"])
+                .and_then(|att1| {
+                    parse_indexed_attestation_json_as_phase0(&slashing["attestation_2"])
+                        .map(|att2| Phase0AttesterSlashing {
+                            attestation_1: att1,
+                            attestation_2: att2,
+                        })
+                })?;
+        pools.insert_attester_slashing(phase0_slashing);
+        Ok(())
+    }
+
     fn submit_aggregate_and_proofs(&self, _aggregates: Vec<JsonValue>) -> Result<(), ApiError> {
         // Aggregate-and-proof objects are JSON; full BLS verification and pool
         // insertion is a gossip-validator concern. Accept without re-inserting.
@@ -1868,17 +2078,29 @@ where
             .attester_slashings_snapshot()
             .into_iter()
             .map(|s| {
+                let ia_to_json =
+                    |ia: &Phase0IndexedAttestation<2048>| -> JsonValue {
+                        serde_json::json!({
+                            "attesting_indices": ia.attesting_indices.as_slice().iter().map(|i| i.0.to_string()).collect::<Vec<_>>(),
+                            "data": {
+                                "slot": ia.data.slot.0.to_string(),
+                                "index": ia.data.index.0.to_string(),
+                                "beacon_block_root": format!("0x{}", hex::encode(ia.data.beacon_block_root.as_slice())),
+                                "source": {
+                                    "epoch": ia.data.source.epoch.0.to_string(),
+                                    "root": format!("0x{}", hex::encode(ia.data.source.root.as_slice())),
+                                },
+                                "target": {
+                                    "epoch": ia.data.target.epoch.0.to_string(),
+                                    "root": format!("0x{}", hex::encode(ia.data.target.root.as_slice())),
+                                },
+                            },
+                            "signature": format!("0x{}", hex::encode(ia.signature.as_slice())),
+                        })
+                    };
                 serde_json::json!({
-                    "attestation_1": {
-                        "attesting_indices": s.attestation_1.attesting_indices.as_slice().iter().map(|i| i.0.to_string()).collect::<Vec<_>>(),
-                        "data": {},
-                        "signature": format!("0x{}", hex::encode(s.attestation_1.signature.as_slice())),
-                    },
-                    "attestation_2": {
-                        "attesting_indices": s.attestation_2.attesting_indices.as_slice().iter().map(|i| i.0.to_string()).collect::<Vec<_>>(),
-                        "data": {},
-                        "signature": format!("0x{}", hex::encode(s.attestation_2.signature.as_slice())),
-                    },
+                    "attestation_1": ia_to_json(&s.attestation_1),
+                    "attestation_2": ia_to_json(&s.attestation_2),
                 })
             })
             .collect()
