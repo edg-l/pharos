@@ -2182,6 +2182,46 @@ async fn main() -> anyhow::Result<()> {
         }
         info!("backfill loop started");
 
+        // Spawn Fulu data-column backfill loop (default-on, Fulu-gated).
+        //
+        // After checkpoint sync a freshly-synced Fulu node holds no historical
+        // custody columns, so it cannot serve `DataColumnSidecarsByRange`. This
+        // one-shot catch-up walks the `data_column_serve_range` window once,
+        // KZG-verifies each custody column, and persists it. Gated on Fulu being
+        // scheduled (`fulu_fork_epoch != u64::MAX`); mirrors how the prune loop
+        // detects an active fork (W4 — no `FAR_FUTURE_EPOCH` import in the binary).
+        if runtime_cfg.fulu_fork_epoch != u64::MAX {
+            use pharos_node::column_backfill::run_column_backfill_loop;
+            use pharos_node::network_column_backfill_provider::NetworkColumnBackfillProvider;
+
+            let column_peer_picker =
+                Arc::new(NetworkHandlePeerPicker::new(handle.command_sender()));
+            let column_provider =
+                NetworkColumnBackfillProvider::new(handle.command_sender(), column_peer_picker);
+            let store_clone = Arc::clone(&store_arc);
+            let fork_choice_clone = Arc::clone(&fork_choice);
+            let custody_state_clone = Arc::clone(&custody_state);
+            let runtime_cfg_clone = runtime_cfg.clone();
+            let node_id_raw = node_id.raw();
+            let shutdown_rx_clone = pharos_node_shutdown_rx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = run_column_backfill_loop::<MainnetBeaconSpec, _>(
+                    column_provider,
+                    store_clone,
+                    fork_choice_clone,
+                    node_id_raw,
+                    custody_state_clone,
+                    runtime_cfg_clone,
+                    shutdown_rx_clone,
+                )
+                .await
+                {
+                    tracing::error!(error = %e, "data-column backfill loop exited with error");
+                }
+            });
+            info!("data-column backfill loop started");
+        }
+
         // Spawn backward state-backfill loop (Phase 2) — opt-in via --backward-backfill.
         // Long-running BACKGROUND process; never blocks startup. Reconstructs
         // genesis-ward restore-point states by replaying stored blocks backward,

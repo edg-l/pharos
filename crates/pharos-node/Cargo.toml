@@ -53,7 +53,7 @@ serde_json.workspace = true
 serial_test.workspace = true
 snap.workspace = true
 tempfile.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "test-util"] }
 
 [[bench]]
 name = "gossip_validation"
