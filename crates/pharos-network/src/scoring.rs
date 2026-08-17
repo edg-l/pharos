@@ -22,8 +22,8 @@
 //!
 //! ## Decay model (M11 Phase 10 task 1 decision)
 //!
-//! **Lazy decay on `score()`** (plan option (a), preferred per
-//! `docs/m11-phase0-findings.md`). Each peer stores a `last_decay: Instant`.
+//! **Lazy decay on `score()`** (plan option (a), per `D-scorer-decay-lazy`
+//! in `docs/decisions.md`). Each peer stores a `last_decay: Instant`.
 //! On every `score()` / `record()` we apply exponential decay
 //! `component *= DECAY_PER_SECOND.powf(elapsed_secs)` before using or mutating
 //! the value, then reset `last_decay` to now. No `tick` method is added to the
@@ -44,7 +44,7 @@
 //! else is treated as corrupt and silently ignored.
 //!
 //! The ADR for the format decision is `D-peer-score-persist-format`
-//! (see `docs/m11-phase0-findings.md` Task 0.6).
+//! (see `docs/decisions.md`).
 //!
 //! File path: `<data-dir>/network/peer_scores.ssz`.
 

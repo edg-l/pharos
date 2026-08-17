@@ -17,7 +17,6 @@ use std::sync::{Arc, Mutex};
 use arc_swap::ArcSwap;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use hex;
 use libp2p::PeerId;
 use pharos_api::{ApiState, ChainStateApi, NodeIdentityCache, RegenTarget, build_router_with_auth};
 use pharos_network::discovery::enr::Enr;

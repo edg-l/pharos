@@ -13,14 +13,11 @@ LMD-GHOST + Casper FFG fork choice, the libp2p/discv5 networking stack, the
 Beacon API, the Engine API client, storage, and the validator. It is not a
 wrapper around existing client crates.
 
-The consensus forks from Phase 0 through **Electra** are implemented:
-Phase 0, Altair, Bellatrix, Capella, Deneb, and Electra, on both the
-`mainnet` and `minimal` presets.
-
-> **Status: pre-alpha.** Pharos follows a live cross-client devnet (peering,
-> gossip, sync, block import, and block production against Lighthouse +
-> ethrex) but is not production-ready. It is a solo project under active
-> development.
+Every consensus fork through **Fulu** (Fusaka) is implemented: Phase 0,
+Altair, Bellatrix, Capella, Deneb, Electra, and Fulu, on both the `mainnet`
+and `minimal` presets. Pharos tracks the live network: it peers, syncs,
+imports, and produces blocks across cross-client devnets, and passes the
+full consensus-specs conformance suite.
 
 ## Philosophy
 
