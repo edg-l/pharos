@@ -20,12 +20,12 @@ use pharos_utils::metrics::METRIC_ENGINE_CALL_LATENCY_SECONDS;
 use crate::error::EngineError;
 use crate::jwt::{JwtSecret, sign_token};
 use crate::types::{
-    BlobAndProofV1, BlobAndProofV2, BlobCellsAndProofs, BlockHeader, ExecutionPayloadBodyV1,
-    ExecutionPayloadBodyV2, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
-    ForkchoiceStateV1, ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response,
-    GetPayloadV4Response, GetPayloadV5Response, GetPayloadV6Response, PayloadAttributesV1,
-    PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, PayloadStatusV1, SyncingStatus,
-    TransitionConfigurationV1,
+    BlobAndProofV1, BlobAndProofV2, BlobCellsAndProofs, BlockHeader, ClientVersionV1,
+    ExecutionPayloadBodyV1, ExecutionPayloadBodyV2, ExecutionPayloadV1, ExecutionPayloadV2,
+    ExecutionPayloadV3, ForkchoiceStateV1, ForkchoiceUpdatedV1Response, GetPayloadV2Response,
+    GetPayloadV3Response, GetPayloadV4Response, GetPayloadV5Response, GetPayloadV6Response,
+    PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3, PayloadIdV1, PayloadStatusV1,
+    SyncingStatus, TransitionConfigurationV1,
 };
 
 const ENGINE_RPC_TIMEOUT: Duration = Duration::from_secs(8);
@@ -49,6 +49,7 @@ pub const DEFAULT_ENGINE_CAPABILITIES: &[&str] = &[
     "engine_getBlobsV1",
     "engine_exchangeCapabilities",
     "engine_exchangeTransitionConfigurationV1",
+    "engine_getClientVersionV1",
 ];
 
 // ── Version enums ────────────────────────────────────────────────────────────
@@ -772,6 +773,19 @@ impl EngineClient {
         let set: HashSet<String> = theirs.into_iter().collect();
         *self.capabilities.write() = Some(set.clone());
         Ok(set)
+    }
+
+    /// `engine_getClientVersionV1` — exchange client-identity metadata with the
+    /// EL for client-diversity statistics.
+    ///
+    /// Per `execution-apis/src/engine/identification.md`: `ours` is the CL's own
+    /// [`ClientVersionV1`] (sent as the single request param); the reply is an
+    /// array of EL identities (one entry directly, several behind a multiplexer).
+    pub async fn get_client_version_v1(
+        &self,
+        ours: ClientVersionV1,
+    ) -> Result<Vec<ClientVersionV1>, EngineError> {
+        self.rpc_call("engine_getClientVersionV1", [ours]).await
     }
 
     // ── eth_* methods ────────────────────────────────────────────────────────

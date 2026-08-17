@@ -751,6 +751,17 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
         false
     }
 
+    /// Identity of the connected execution client, as reported by
+    /// `engine_getClientVersionV1` at startup.
+    ///
+    /// Backs the optional `execution_client` field of the Beacon API
+    /// `/eth/v1/node/version` (v2) response. Default `None` (no EL wired, or the
+    /// startup exchange failed / the EL predates the method); `NodeChainState`
+    /// overrides with the cached EL identity.
+    fn execution_client_version(&self) -> Option<ExecutionClientVersion> {
+        None
+    }
+
     /// Read-only reference to the node identity snapshot.
     fn node_identity(&self) -> &NodeIdentityCache;
 
@@ -1314,6 +1325,27 @@ pub type PeersFn = dyn Fn() -> Vec<JsonValue> + Send + Sync + 'static;
 /// maintained by the engine handle from its blocking round-trips.
 pub type ElOfflineFn = dyn Fn() -> bool + Send + Sync + 'static;
 
+/// Identity of the connected execution client (`engine_getClientVersionV1`).
+///
+/// Kept as a small owned struct so `pharos-api` need not depend on
+/// `pharos-engine`. `pharos-node` converts the engine wire type into this when
+/// wiring the callback. Fields mirror `ClientVersionV1`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionClientVersion {
+    pub code: String,
+    pub name: String,
+    pub version: String,
+    pub commit: String,
+}
+
+/// Type alias for the EL client-version callback.
+///
+/// Returns the connected execution client's identity, cached from the
+/// `engine_getClientVersionV1` exchange performed at node startup. `None` when
+/// no EL is wired or the exchange did not succeed.
+pub type ExecutionClientVersionFn =
+    dyn Fn() -> Option<ExecutionClientVersion> + Send + Sync + 'static;
+
 /// Type alias for the sync-committee-contribution callback.
 ///
 /// Args: `(slot, beacon_block_root, subcommittee_index)`. Returns the
@@ -1395,6 +1427,11 @@ pub struct NodeChainState<E: BeaconSpec> {
     /// `/eth/v1/validator/sync_committee_contribution`. `None` when no pool /
     /// production path is wired (endpoint returns 404).
     sync_contribution_fn: Option<Arc<SyncContributionFn>>,
+
+    /// EL client-version callback for `/eth/v1/node/version` (v2)'s optional
+    /// `execution_client`. `None` when no EL is wired or the startup
+    /// `engine_getClientVersionV1` exchange did not succeed.
+    el_client_version_fn: Option<Arc<ExecutionClientVersionFn>>,
 }
 
 /// Parse a 0x-prefixed 48-byte hex string into a fixed `[u8; 48]`.
@@ -1435,6 +1472,7 @@ impl<E: BeaconSpec> NodeChainState<E> {
             syncnets_fn: None,
             el_offline_fn: None,
             sync_contribution_fn: None,
+            el_client_version_fn: None,
         }
     }
 
@@ -1465,6 +1503,7 @@ impl<E: BeaconSpec> NodeChainState<E> {
             syncnets_fn: None,
             el_offline_fn: None,
             sync_contribution_fn: None,
+            el_client_version_fn: None,
         }
     }
 
@@ -1527,6 +1566,7 @@ impl<E: BeaconSpec> NodeChainState<E> {
             syncnets_fn: None,
             el_offline_fn: None,
             sync_contribution_fn: None,
+            el_client_version_fn: None,
         }
     }
 
@@ -1553,6 +1593,16 @@ impl<E: BeaconSpec> NodeChainState<E> {
     /// Attach the sync-committee-contribution callback (builder pattern).
     pub fn with_sync_contribution_fn(mut self, f: Arc<SyncContributionFn>) -> Self {
         self.sync_contribution_fn = Some(f);
+        self
+    }
+
+    /// Attach the EL client-version callback (builder pattern).
+    ///
+    /// Called from `pharos-node/src/main.rs` with the identity returned by the
+    /// startup `engine_getClientVersionV1` exchange. Enables the optional
+    /// `execution_client` field of `/eth/v1/node/version` (v2).
+    pub fn with_el_client_version_fn(mut self, f: Arc<ExecutionClientVersionFn>) -> Self {
+        self.el_client_version_fn = Some(f);
         self
     }
 
@@ -1749,6 +1799,10 @@ where
         // Real EL-liveness from the engine handle's last blocking round-trip.
         // No callback wired (no EL) is reported as online (false).
         self.el_offline_fn.as_ref().is_some_and(|f| f())
+    }
+
+    fn execution_client_version(&self) -> Option<ExecutionClientVersion> {
+        self.el_client_version_fn.as_ref().and_then(|f| f())
     }
 
     fn node_identity(&self) -> &NodeIdentityCache {

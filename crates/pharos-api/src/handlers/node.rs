@@ -71,18 +71,20 @@ pub struct ClientVersionV1 {
     pub name: String,
     /// Version string (e.g. "v0.21.0").
     pub version: String,
-    /// First 4 bytes of the latest commit hash, `0x`-prefixed.
-    /// Pharos does not bake the git commit at build time, so this is
-    /// `"0x00000000"`. See ADR `D-node-version-v2-commit-placeholder`.
+    /// First 4 bytes of the latest commit hash, `0x`-prefixed (e.g.
+    /// `"0xfa4ff922"`). Baked at build time via `pharos_utils::version`;
+    /// `"0x00000000"` when not built inside a git repo.
     pub commit: String,
 }
 
 #[derive(Serialize)]
 pub struct VersionV2Data {
     pub beacon_node: ClientVersionV1,
-    // `execution_client` is optional per the spec; omitted because pharos
-    // does not call `engine_getClientVersionV1` today (see
-    // `Q-node-version-v2-execution-client` in the plan).
+    /// Connected execution client's identity, from the startup
+    /// `engine_getClientVersionV1` exchange. Optional per the spec; omitted
+    /// when no EL is wired or the exchange did not succeed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_client: Option<ClientVersionV1>,
 }
 
 #[derive(Serialize)]
@@ -200,16 +202,27 @@ pub async fn get_version<E: BeaconSpec>(
 ///
 /// Per `~/dev/beacon-APIs/apis/node/version.v2.yaml`.
 pub async fn get_version_v2<E: BeaconSpec>(
-    State(_state): State<Arc<ApiState<E>>>,
+    State(state): State<Arc<ApiState<E>>>,
 ) -> Json<VersionV2Response> {
+    use pharos_utils::version;
+    let execution_client = state
+        .chain
+        .execution_client_version()
+        .map(|el| ClientVersionV1 {
+            code: el.code,
+            name: el.name,
+            version: el.version,
+            commit: el.commit,
+        });
     Json(VersionV2Response {
         data: VersionV2Data {
             beacon_node: ClientVersionV1 {
-                code: "PH".to_string(),
-                name: "Pharos".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                commit: "0x00000000".to_string(),
+                code: version::CLIENT_CODE.to_string(),
+                name: version::CLIENT_NAME.to_string(),
+                version: version::CLIENT_VERSION.to_string(),
+                commit: version::COMMIT_4BYTE_HEX.to_string(),
             },
+            execution_client,
         },
     })
 }

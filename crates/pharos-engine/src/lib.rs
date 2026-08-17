@@ -21,10 +21,10 @@ pub use handle::{EngineHandle, EngineRequest, run_engine_actor, spawn_engine_act
 pub use jwt::{JwtSecret, load_jwt_secret};
 pub use types::{
     BlobAndProofV1, BlobAndProofV2, BlobCellsAndProofs, BlobsBundleV1, BlobsBundleV2, BlockHeader,
-    ExecutionPayloadBodyV1, ExecutionPayloadBodyV2, ExecutionPayloadV1, ExecutionPayloadV2,
-    ExecutionPayloadV3, ExecutionPayloadV4, ForkchoiceStateV1, ForkchoiceUpdatedV1Response,
-    GetPayloadV2Response, GetPayloadV3Response, GetPayloadV4Response, GetPayloadV5Response,
-    GetPayloadV6Response, PayloadAttributesV1, PayloadAttributesV2, PayloadAttributesV3,
-    PayloadIdV1, PayloadStatusStatus, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
-    WithdrawalV1,
+    ClientVersionV1, ExecutionPayloadBodyV1, ExecutionPayloadBodyV2, ExecutionPayloadV1,
+    ExecutionPayloadV2, ExecutionPayloadV3, ExecutionPayloadV4, ForkchoiceStateV1,
+    ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response, GetPayloadV4Response,
+    GetPayloadV5Response, GetPayloadV6Response, PayloadAttributesV1, PayloadAttributesV2,
+    PayloadAttributesV3, PayloadIdV1, PayloadStatusStatus, PayloadStatusV1, SyncingStatus,
+    TransitionConfigurationV1, WithdrawalV1,
 };

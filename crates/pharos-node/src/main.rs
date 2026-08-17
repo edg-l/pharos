@@ -869,6 +869,12 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Step 4b: Cold-start TTD check + keepalive ─────────────────────────
 
+    // Identity of the connected execution client, from `engine_getClientVersionV1`.
+    // Cached once at startup and surfaced via the Beacon API `/eth/v1/node/version`
+    // (v2) `execution_client` field. `None` when no EL is wired or the EL predates
+    // the method / the exchange failed.
+    let mut el_client_version: Option<pharos_api::ExecutionClientVersion> = None;
+
     if let Some(ref engine_handle) = engine_handle_opt {
         let cl_cfg = pharos_engine::TransitionConfigurationV1 {
             terminal_total_difficulty: u256_to_hex(runtime_cfg.terminal_total_difficulty),
@@ -915,6 +921,40 @@ async fn main() -> anyhow::Result<()> {
             run_transition_config_keepalive(eng, ttd, shutdown_rx).await;
         });
         info!("transition_config keepalive task started");
+
+        // Exchange client-version identities with the EL for client-diversity
+        // stats (execution-apis/src/engine/identification.md). One-shot at
+        // startup; on failure (EL down, or an EL that predates the method) we
+        // simply leave `execution_client` unset in /eth/v1/node/version.
+        let ours = pharos_engine::ClientVersionV1 {
+            code: pharos_utils::version::CLIENT_CODE.to_string(),
+            name: pharos_utils::version::CLIENT_NAME.to_string(),
+            version: pharos_utils::version::CLIENT_VERSION.to_string(),
+            commit: pharos_utils::version::COMMIT_4BYTE_HEX.to_string(),
+        };
+        match engine_handle.get_client_version_async(ours).await {
+            Ok(mut els) if !els.is_empty() => {
+                let el = els.remove(0);
+                info!(
+                    el_code = %el.code,
+                    el_name = %el.name,
+                    el_version = %el.version,
+                    "engine_getClientVersionV1: connected to execution client"
+                );
+                el_client_version = Some(pharos_api::ExecutionClientVersion {
+                    code: el.code,
+                    name: el.name,
+                    version: el.version,
+                    commit: el.commit,
+                });
+            }
+            Ok(_) => {
+                tracing::warn!("engine_getClientVersionV1 returned an empty array");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "engine_getClientVersionV1 failed");
+            }
+        }
     }
 
     // ── Step 5: Construct host + network ──────────────────────────────────
@@ -1226,6 +1266,14 @@ async fn main() -> anyhow::Result<()> {
             // handle's liveness flag (updated on every blocking engine call).
             let el_engine = engine_h.clone();
             chain_state = chain_state.with_el_offline_fn(Arc::new(move || el_engine.el_offline()));
+
+            // `execution_client` for `/eth/v1/node/version` (v2): serve the
+            // identity captured from the startup `engine_getClientVersionV1`
+            // exchange (static after startup).
+            if let Some(el_cv) = el_client_version.clone() {
+                chain_state =
+                    chain_state.with_el_client_version_fn(Arc::new(move || Some(el_cv.clone())));
+            }
 
             use pharos_api::ApiError;
             use pharos_network::host::ForkContext as _;

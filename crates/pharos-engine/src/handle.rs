@@ -33,7 +33,7 @@ use crate::client::{
 };
 use crate::error::EngineError;
 use crate::types::{
-    BlobAndProofV1, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
+    BlobAndProofV1, ClientVersionV1, ExecutionPayloadV1, ExecutionPayloadV2, ForkchoiceStateV1,
     ForkchoiceUpdatedV1Response, GetPayloadV2Response, GetPayloadV3Response, GetPayloadV4Response,
     GetPayloadV5Response, GetPayloadV6Response, PayloadAttributesV1, PayloadAttributesV2,
     PayloadAttributesV3, PayloadIdV1, PayloadStatusV1, SyncingStatus, TransitionConfigurationV1,
@@ -144,6 +144,11 @@ pub enum EngineRequest {
     ExchangeTransitionConfiguration {
         config: TransitionConfigurationV1,
         reply: oneshot::Sender<Result<TransitionConfigurationV1, EngineError>>,
+    },
+    /// `engine_getClientVersionV1` — exchange client-identity metadata.
+    GetClientVersion {
+        ours: ClientVersionV1,
+        reply: oneshot::Sender<Result<Vec<ClientVersionV1>, EngineError>>,
     },
 }
 
@@ -412,6 +417,22 @@ impl EngineHandle {
         rx.await
             .map_err(|_| EngineError::UnexpectedResponse("engine actor dropped reply".into()))?
     }
+
+    /// Async `engine_getClientVersionV1`. Sends the CL's own identity and
+    /// returns the EL's advertised identities (per
+    /// `execution-apis/src/engine/identification.md`).
+    pub async fn get_client_version_async(
+        &self,
+        ours: ClientVersionV1,
+    ) -> Result<Vec<ClientVersionV1>, EngineError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(EngineRequest::GetClientVersion { ours, reply })
+            .await
+            .map_err(|_| EngineError::UnexpectedResponse("engine actor dropped".into()))?;
+        rx.await
+            .map_err(|_| EngineError::UnexpectedResponse("engine actor dropped reply".into()))?
+    }
 }
 
 // ── Actor loop + failover ────────────────────────────────────────────────────
@@ -594,6 +615,9 @@ async fn dispatch(client: &EngineClient, req: EngineRequest) {
         }
         EngineRequest::ExchangeTransitionConfiguration { config, reply } => {
             let _ = reply.send(client.exchange_transition_configuration(config).await);
+        }
+        EngineRequest::GetClientVersion { ours, reply } => {
+            let _ = reply.send(client.get_client_version_v1(ours).await);
         }
     }
 }

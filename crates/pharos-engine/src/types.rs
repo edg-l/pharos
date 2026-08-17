@@ -1168,6 +1168,29 @@ pub struct TransitionConfigurationV1 {
     pub terminal_block_number: String,
 }
 
+// ── ClientVersionV1 ───────────────────────────────────────────────────────────
+
+/// `ClientVersionV1` per `execution-apis/src/engine/identification.md`.
+///
+/// Exchanged by `engine_getClientVersionV1`: the CL sends its own identity as
+/// the single request param and the EL replies with an array of its identities
+/// (one entry, or several behind a multiplexer). The same struct is reused for
+/// both directions.
+///
+/// Field encoding per the spec:
+/// - `code`:    2-letter [`ClientCode`], e.g. `"PH"` (Pharos) or `"GE"` (geth).
+/// - `name`:    human-readable client name, e.g. `"Pharos"`.
+/// - `version`: version string, e.g. `"v0.21.0"`.
+/// - `commit`:  `DATA`, first 4 bytes of the build commit hash, `0x`-prefixed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientVersionV1 {
+    pub code: String,
+    pub name: String,
+    pub version: String,
+    pub commit: String,
+}
+
 /// `eth_syncing` response. Either `false` (not syncing) or an object with
 /// progress fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -21,7 +21,7 @@ pub use events::{ApiEvent, EventBus, KnownTopic};
 pub use router::{build_router, build_router_with_auth};
 pub use server::{serve, serve_with_auth};
 pub use state::{
-    ApiState, ChainStateApi, ElOfflineFn, NodeChainState, NodeIdentityCache, PeersFn,
-    ProduceAttDataFn, ProduceFn, PublishFn, RegenFn, RegenTarget, SyncContributionFn, SyncnetsFn,
-    beacon_state_to_json_full,
+    ApiState, ChainStateApi, ElOfflineFn, ExecutionClientVersion, ExecutionClientVersionFn,
+    NodeChainState, NodeIdentityCache, PeersFn, ProduceAttDataFn, ProduceFn, PublishFn, RegenFn,
+    RegenTarget, SyncContributionFn, SyncnetsFn, beacon_state_to_json_full,
 };
