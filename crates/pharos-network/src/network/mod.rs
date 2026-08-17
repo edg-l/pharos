@@ -74,6 +74,12 @@ use behaviour::{PharosBehaviour, PharosBehaviourEvent};
 /// from reconnecting. Mirrors the gossipsub-v1.1 graylist-recovery horizon.
 const SCORE_BAN_DURATION: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Maximum time allowed for a peer to complete the Status handshake.
+///
+/// Peers still in `Connecting` or `Handshaking` state after this window are
+/// disconnected with `Goodbye` and penalised with `HandshakeFail{Timeout}`.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Backpressure cap on concurrent in-flight gossip-validation tasks. Each task
 /// holds a cloned `Arc<host>` plus the (up to `MAX_PAYLOAD_SIZE`) message bytes
 /// and may run a blocking BLS verify, so an unbounded `JoinSet` lets a peer-flood
@@ -1657,13 +1663,29 @@ impl<
             // to dial them and they count against the same limit; `tick_score_prune`
             // handles any steady-state excess via `should_prune`.
             if !endpoint.is_dialer()
-                && self.peer_manager.peer_count() >= self.peer_manager.max_peers()
+                && self.peer_manager.connected_count() >= self.peer_manager.max_peers()
             {
                 tracing::debug!(
                     %peer_id,
-                    peer_count = self.peer_manager.peer_count(),
+                    connected_count = self.peer_manager.connected_count(),
                     max_peers = self.peer_manager.max_peers(),
                     "rejecting inbound connection: at max_peers limit"
+                );
+                self.swarm.disconnect_peer_id(peer_id).ok();
+                return;
+            }
+
+            // Reject inbound when the in-flight handshake table is full.
+            // This prevents a burst of slow or malicious peers from exhausting the
+            // handshake table and blocking legitimate inbound connections.
+            if !endpoint.is_dialer()
+                && self.peer_manager.connecting_count() >= self.peer_manager.max_connecting()
+            {
+                tracing::debug!(
+                    %peer_id,
+                    connecting_count = self.peer_manager.connecting_count(),
+                    max_connecting = self.peer_manager.max_connecting(),
+                    "rejecting inbound connection: at max_connecting limit"
                 );
                 self.swarm.disconnect_peer_id(peer_id).ok();
                 return;
@@ -1802,6 +1824,27 @@ impl<
     /// `should_prune()` is empty, so this stays a no-op.
     pub fn tick_score_prune(&mut self) {
         self.peer_manager.sweep_expired_bans();
+
+        // Sweep peers stuck in Connecting/Handshaking past the handshake timeout.
+        // This uses its own iterator over Connecting/Handshaking peers (NOT the
+        // `connected` snapshot below, which excludes those states).
+        let timed_out = self
+            .peer_manager
+            .handshake_timed_out_peers(HANDSHAKE_TIMEOUT);
+        for peer_id in timed_out {
+            tracing::debug!(
+                %peer_id,
+                timeout_secs = HANDSHAKE_TIMEOUT.as_secs(),
+                "disconnecting peer: handshake timed out"
+            );
+            self.peer_manager.record_event(
+                peer_id,
+                ScoreEvent::HandshakeFail {
+                    kind: HandshakeFailKind::Timeout,
+                },
+            );
+            self.disconnect_with_goodbye(peer_id, GOODBYE_FAULT_ERROR);
+        }
 
         // Snapshot connected peers so we can consult the scorer thresholds
         // without holding an iterator borrow across the mutating actions.
@@ -2132,6 +2175,11 @@ pub struct NetworkBuilder<E, H, S> {
     max_peers: usize,
     /// Desired steady-state connected peer count (M11 Phase 12). Default: 50.
     target_peers: usize,
+    /// Maximum peers simultaneously in `Connecting` or `Handshaking` state.
+    ///
+    /// Default: `max_peers / 4`, minimum 8 (applied in `PeerManager::new` when
+    /// the stored value is 0). Pass `0` here to use the default.
+    max_connecting: usize,
     /// Directory for ENR seq persistence (`D-enr-seq-persistence`). `None`
     /// disables persistence (tests, ephemeral nodes).
     network_dir: Option<std::path::PathBuf>,
@@ -2159,6 +2207,7 @@ impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E> + Data
             event_channel_capacity: 1024,
             max_peers: 50,
             target_peers: 50,
+            max_connecting: 0,
             network_dir: None,
             _phantom: PhantomData,
         }
@@ -2240,6 +2289,7 @@ impl<
             event_channel_capacity: self.event_channel_capacity,
             max_peers: self.max_peers,
             target_peers: self.target_peers,
+            max_connecting: self.max_connecting,
             network_dir: self.network_dir,
             _phantom: PhantomData,
         }
@@ -2260,6 +2310,21 @@ impl<
     /// (per M11 Phase 12); `tick_score_prune` prunes to this level.
     pub fn target_peers(mut self, target_peers: usize) -> Self {
         self.target_peers = target_peers;
+        self
+    }
+
+    /// Set the maximum number of peers allowed in `Connecting` or `Handshaking`
+    /// state simultaneously.
+    ///
+    /// When `connecting_count() >= max_connecting`, new inbound connections are
+    /// rejected before entering the peer table. This prevents a burst of slow or
+    /// malicious peers from exhausting the handshake table and blocking legitimate
+    /// inbound connections.
+    ///
+    /// **Default**: `max_peers / 4`, minimum 8 (applied by `PeerManager::new`
+    /// when `max_connecting` is 0).
+    pub fn max_connecting(mut self, n: usize) -> Self {
+        self.max_connecting = n;
         self
     }
 
@@ -2587,7 +2652,12 @@ impl<
         // `Network::run` loop polls and dispatches them to `DiscoveryService`.
         let (discovery_handle, discovery_cmd_rx) = discovery_channel();
 
-        let peer_manager = PeerManager::new(self.scorer, self.max_peers, self.target_peers);
+        let peer_manager = PeerManager::new(
+            self.scorer,
+            self.max_peers,
+            self.target_peers,
+            self.max_connecting,
+        );
 
         // Discovery poll interval: 30 seconds.
         let discovery_tick = interval(std::time::Duration::from_secs(30));
@@ -2787,6 +2857,24 @@ impl<
         self.peer_manager.peer_count()
     }
 
+    /// Count of peers in `Connected` state only (Phase 1 eclipse-hardening seam).
+    #[doc(hidden)]
+    pub fn test_connected_count(&self) -> usize {
+        self.peer_manager.connected_count()
+    }
+
+    /// Count of peers in `Connecting` or `Handshaking` state (Phase 1 seam).
+    #[doc(hidden)]
+    pub fn test_connecting_count(&self) -> usize {
+        self.peer_manager.connecting_count()
+    }
+
+    /// `max_connecting` configured on this network (Phase 1 seam).
+    #[doc(hidden)]
+    pub fn test_max_connecting(&self) -> usize {
+        self.peer_manager.max_connecting()
+    }
+
     /// `max_peers` configured on this network (M11 Phase 12 test seam).
     #[doc(hidden)]
     pub fn test_max_peers(&self) -> usize {
@@ -2797,6 +2885,17 @@ impl<
     #[doc(hidden)]
     pub fn test_target_peers(&self) -> usize {
         self.peer_manager.target_peers()
+    }
+
+    /// Register a peer in `Connecting` state only (does NOT advance to Connected).
+    ///
+    /// Used by the eclipse-inbound-cap integration test to populate the
+    /// handshake table without completing handshakes.
+    #[doc(hidden)]
+    pub fn test_register_connecting_peer(&mut self, peer_id: PeerId) {
+        self.peer_manager
+            .on_connected(peer_id, ConnectionDirection::Inbound, Vec::new());
+        // State remains Connecting — do not call on_handshake_complete.
     }
 }
 

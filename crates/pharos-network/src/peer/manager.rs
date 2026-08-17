@@ -27,6 +27,14 @@ pub struct PeerManager<S: PeerScorer> {
     max_peers: usize,
     /// Desired steady-state connected peer count.
     target_peers: usize,
+    /// Maximum number of peers that may be simultaneously in the
+    /// `Connecting` or `Handshaking` state.
+    ///
+    /// Default: `max_peers / 4`, minimum 8. Inbound connections are rejected
+    /// when `connecting_count() >= max_connecting` so that a burst of slow or
+    /// malicious peers cannot exhaust the connection table before completing
+    /// their handshakes.
+    max_connecting: usize,
     /// Disconnect reasons to attach to the next `ConnectionClosed` event for a
     /// peer. Set before issuing the swarm-level disconnect so the reason is
     /// available when libp2p delivers `ConnectionClosed` asynchronously.
@@ -42,13 +50,24 @@ pub struct PeerManager<S: PeerScorer> {
 
 impl<S: PeerScorer> PeerManager<S> {
     /// Create a new `PeerManager` with the given scorer and peer limits.
-    pub fn new(scorer: S, max_peers: usize, target_peers: usize) -> Self {
+    ///
+    /// `max_connecting` caps the number of peers simultaneously in
+    /// `Connecting` or `Handshaking` state. Pass `0` to use the default
+    /// (`max_peers / 4`, minimum 8).
+    pub fn new(scorer: S, max_peers: usize, target_peers: usize, max_connecting: usize) -> Self {
+        // Default: max_peers/4 rounded down, floor of 8.
+        let max_connecting = if max_connecting == 0 {
+            (max_peers / 4).max(8)
+        } else {
+            max_connecting
+        };
         Self {
             peers: HashMap::new(),
             banned: HashMap::new(),
             scorer,
             max_peers,
             target_peers,
+            max_connecting,
             pending_disconnect_reasons: HashMap::new(),
             recently_failed_dials: LruCache::new(NonZero::new(256).expect("256 is non-zero")),
         }
@@ -297,11 +316,35 @@ impl<S: PeerScorer> PeerManager<S> {
 
     /// Return the `PeerId`s that should be pruned to reach `target_peers`.
     ///
-    /// Delegates to `scorer.worst_peers(excess)` where
-    /// `excess = peers.len().saturating_sub(target_peers)`.
+    /// Computes `excess = connected_count().saturating_sub(target_peers)` and
+    /// delegates to `scorer.worst_peers(excess)`, filtered to `Connected`-state
+    /// peers only. Peers in `Connecting` or `Handshaking` are not evicted here;
+    /// they are handled by the handshake-timeout sweep.
     pub fn should_prune(&self) -> Vec<PeerId> {
-        let excess = self.peers.len().saturating_sub(self.target_peers);
-        self.scorer.worst_peers(excess)
+        let excess = self.connected_count().saturating_sub(self.target_peers);
+        if excess == 0 {
+            return Vec::new();
+        }
+        // Build the connected-peer id set so we can filter scorer candidates.
+        let connected_ids: std::collections::HashSet<PeerId> = self
+            .peers
+            .values()
+            .filter(|info| info.state == PeerState::Connected)
+            .map(|info| info.peer_id)
+            .collect();
+        // worst_peers iterates the full score map (incl. non-connected peers).
+        // Filter to connected only so excess and candidate population agree.
+        // Over-request by connected_ids.len() so that after dropping non-connected
+        // candidates we still surface at least `excess` connected ones. This holds
+        // as long as scorer.record(PeerConnected) runs for every peer entering the
+        // table (it does, in on_connected); if the scorer map ever lags, the worst
+        // case is a benign under-prune (never an over-prune — `take(excess)` caps it).
+        self.scorer
+            .worst_peers(excess + connected_ids.len())
+            .into_iter()
+            .filter(|p| connected_ids.contains(p))
+            .take(excess)
+            .collect()
     }
 
     /// The `n` lowest-scoring peers per the scorer, independent of the
@@ -337,6 +380,27 @@ impl<S: PeerScorer> PeerManager<S> {
         self.banned.retain(|_, expires_at| *expires_at > now);
     }
 
+    /// Returns `PeerId`s of peers in `Connecting` or `Handshaking` state whose
+    /// `connected_since` elapsed time is at least `timeout`.
+    ///
+    /// Used by `tick_score_prune` to sweep peers that never completed the
+    /// handshake within the allowed window, regardless of which state they are
+    /// currently in (the `connected` snapshot excludes `Connecting`/`Handshaking`,
+    /// so this method has its own iterator over the full peer map).
+    pub fn handshake_timed_out_peers(&self, timeout: Duration) -> Vec<PeerId> {
+        self.peers
+            .values()
+            .filter(|info| {
+                matches!(info.state, PeerState::Connecting | PeerState::Handshaking)
+                    && info
+                        .connected_since
+                        .map(|t| t.elapsed() >= timeout)
+                        .unwrap_or(false)
+            })
+            .map(|info| info.peer_id)
+            .collect()
+    }
+
     // ── Accessors ─────────────────────────────────────────────────────────────
 
     /// Record a failed outbound dial attempt in the bounded LRU cache.
@@ -354,9 +418,45 @@ impl<S: PeerScorer> PeerManager<S> {
         }
     }
 
-    /// Returns the number of currently connected peers.
+    /// Returns the total number of tracked peers across **all** lifecycle states
+    /// (`Connecting`, `Handshaking`, `Connected`, `Disconnecting`, `Banned`).
+    ///
+    /// Use `connected_count()` for the inbound-gate / prune-excess calculation
+    /// that should count only fully-handshaked peers.
     pub fn peer_count(&self) -> usize {
         self.peers.len()
+    }
+
+    /// Returns the number of peers in `Connected` state (handshake complete).
+    ///
+    /// This is the value used for the max-peers inbound gate and for the
+    /// prune-excess calculation in `should_prune`. Peers still in `Connecting`
+    /// or `Handshaking` are NOT counted here.
+    pub fn connected_count(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|info| info.state == PeerState::Connected)
+            .count()
+    }
+
+    /// Returns the number of peers in `Connecting` or `Handshaking` state.
+    ///
+    /// Used by the inbound gate in `on_swarm_connection_established` to reject
+    /// new inbound connections when the in-flight handshake table is full.
+    pub fn connecting_count(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|info| matches!(info.state, PeerState::Connecting | PeerState::Handshaking))
+            .count()
+    }
+
+    /// Returns the maximum number of peers that may be simultaneously in
+    /// `Connecting` or `Handshaking` state.
+    ///
+    /// Default when constructed via `PeerManager::new` with `max_connecting=0`:
+    /// `max_peers / 4`, minimum 8.
+    pub fn max_connecting(&self) -> usize {
+        self.max_connecting
     }
 
     /// Returns the maximum peer cap.
@@ -381,12 +481,24 @@ impl<S: PeerScorer> PeerManager<S> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+impl<S: PeerScorer> PeerManager<S> {
+    /// Back-date `connected_since` for a peer to simulate an elapsed handshake
+    /// window. Only available in test builds.
+    pub fn test_set_connected_since(&mut self, peer_id: &PeerId, instant: Instant) {
+        if let Some(info) = self.peers.get_mut(peer_id) {
+            info.connected_since = Some(instant);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::scoring::NoopScorer;
 
     fn make_manager() -> PeerManager<NoopScorer> {
-        PeerManager::new(NoopScorer, 10, 2)
+        // max_connecting=0 → default (max_peers/4 min 8 → max(10/4,8) = 8)
+        PeerManager::new(NoopScorer, 10, 2, 0)
     }
 
     /// Register 5 peers, ban one, then verify:
@@ -429,8 +541,10 @@ mod tests {
             );
         }
 
-        // should_prune: peers.len()=4, target_peers=2, so excess=2.
-        // NoopScorer::worst_peers always returns Vec::new(), so should_prune is empty.
+        // should_prune (post task 1.3): excess = connected_count()=0 (no peer
+        // reached Connected — only on_connected was called), target_peers=2, so
+        // excess=max(0-2,0)=0 → early return. NoopScorer also never produces
+        // prune candidates; wiring test only.
         let prune = mgr.should_prune();
         assert!(
             prune.is_empty(),
@@ -521,6 +635,116 @@ mod tests {
             mgr.peers[&peer].state,
             PeerState::Disconnecting,
             "fork-digest mismatch must transition peer to Disconnecting"
+        );
+    }
+
+    /// `connected_count()` counts only `Connected` peers; `Connecting` and
+    /// `Handshaking` peers are excluded.
+    #[test]
+    fn connected_count_excludes_connecting_and_handshaking() {
+        let mut mgr = make_manager();
+
+        let connecting = PeerId::random();
+        let handshaking = PeerId::random();
+        let connected = PeerId::random();
+
+        // connecting: stays in Connecting state.
+        mgr.on_connected(connecting, ConnectionDirection::Inbound, Vec::new());
+
+        // handshaking: advance to Handshaking.
+        mgr.on_connected(handshaking, ConnectionDirection::Inbound, Vec::new());
+        mgr.on_handshaking(handshaking);
+
+        // connected: full handshake complete.
+        mgr.on_connected(connected, ConnectionDirection::Outbound, Vec::new());
+        mgr.on_handshake_complete(connected);
+
+        assert_eq!(mgr.peer_count(), 3, "peer_count must count all three peers");
+        assert_eq!(
+            mgr.connected_count(),
+            1,
+            "connected_count must count only the Connected peer"
+        );
+        assert_eq!(
+            mgr.connecting_count(),
+            2,
+            "connecting_count must count Connecting + Handshaking"
+        );
+    }
+
+    /// `should_prune()` computes excess from `connected_count()`, not
+    /// `peer_count()`. Peers in `Connecting` or `Handshaking` do not
+    /// contribute to the excess calculation.
+    #[test]
+    fn should_prune_excess_based_on_connected_count() {
+        // max_peers=10, target_peers=2, max_connecting=0 (default)
+        let mut mgr = make_manager();
+
+        let connecting = PeerId::random();
+        let handshaking = PeerId::random();
+        let connected = PeerId::random();
+
+        mgr.on_connected(connecting, ConnectionDirection::Inbound, Vec::new());
+
+        mgr.on_connected(handshaking, ConnectionDirection::Inbound, Vec::new());
+        mgr.on_handshaking(handshaking);
+
+        mgr.on_connected(connected, ConnectionDirection::Outbound, Vec::new());
+        mgr.on_handshake_complete(connected);
+
+        // peer_count() = 3, but connected_count() = 1.
+        // target_peers = 2, so excess = max(1 - 2, 0) = 0 → nothing to prune.
+        // If we erroneously used peer_count() (3), excess would be 1.
+        let prune = mgr.should_prune();
+        assert!(
+            prune.is_empty(),
+            "should_prune must return empty when connected_count <= target_peers \
+             (connecting/handshaking must not inflate the excess)"
+        );
+    }
+
+    /// `handshake_timed_out_peers` returns peers in `Connecting` or
+    /// `Handshaking` whose `connected_since` is older than the timeout,
+    /// but excludes `Connected` peers and peers within the timeout.
+    #[test]
+    fn handshake_timed_out_peers_back_dated() {
+        let mut mgr = make_manager();
+
+        let timed_out_connecting = PeerId::random();
+        let timed_out_handshaking = PeerId::random();
+        let fresh_connecting = PeerId::random();
+        let connected_peer = PeerId::random();
+
+        mgr.on_connected(
+            timed_out_connecting,
+            ConnectionDirection::Inbound,
+            Vec::new(),
+        );
+        mgr.on_connected(
+            timed_out_handshaking,
+            ConnectionDirection::Inbound,
+            Vec::new(),
+        );
+        mgr.on_handshaking(timed_out_handshaking);
+        mgr.on_connected(fresh_connecting, ConnectionDirection::Inbound, Vec::new());
+        mgr.on_connected(connected_peer, ConnectionDirection::Outbound, Vec::new());
+        mgr.on_handshake_complete(connected_peer);
+
+        let long_ago = Instant::now() - Duration::from_secs(60);
+        mgr.test_set_connected_since(&timed_out_connecting, long_ago);
+        mgr.test_set_connected_since(&timed_out_handshaking, long_ago);
+        // fresh_connecting keeps its real Instant::now() — within any timeout.
+
+        let timeout = Duration::from_secs(30);
+        let mut timed_out = mgr.handshake_timed_out_peers(timeout);
+        timed_out.sort();
+
+        let mut expected = vec![timed_out_connecting, timed_out_handshaking];
+        expected.sort();
+
+        assert_eq!(
+            timed_out, expected,
+            "handshake_timed_out_peers must return the two back-dated peers only"
         );
     }
 }

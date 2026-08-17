@@ -696,7 +696,7 @@ mod tests {
     }
 
     fn make_peer_manager() -> PeerManager<NoopScorer> {
-        PeerManager::new(NoopScorer, 10, 5)
+        PeerManager::new(NoopScorer, 10, 5, 0)
     }
 
     // Convenience: build a MetaData v2 protocol ID string for test calls.
