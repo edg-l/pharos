@@ -91,6 +91,14 @@ impl LookupBlockProvider<MinimalBeaconSpec> for ChainLookupProvider {
         // Irrelevant, so this is never reached.
         Ok(Vec::new())
     }
+
+    async fn data_columns_by_root(
+        &self,
+        _ids: Vec<pharos_types::fulu::DataColumnsByRootIdentifier<128>>,
+    ) -> Result<Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>>, LookupError> {
+        // Pre-Fulu fixtures: the column co-fetch path is never exercised.
+        Ok(Vec::new())
+    }
 }
 
 // ── Test ──────────────────────────────────────────────────────────────────────
@@ -211,6 +219,8 @@ async fn lookup_depth_exhaustion_fires_notify_backfill() {
         notify_backfill,
         reinject_tx,
         shutdown_rx,
+        [0u8; 32],
+        MinimalBeaconSpec::CUSTODY_REQUIREMENT,
     ));
 
     // Send the tip block (index n_blocks-1) as an orphan.

@@ -80,6 +80,14 @@ impl LookupBlockProvider<MinimalBeaconSpec> for MapLookupProvider {
         // list and treats availability as Irrelevant, so this is never reached.
         Ok(Vec::new())
     }
+
+    async fn data_columns_by_root(
+        &self,
+        _ids: Vec<pharos_types::fulu::DataColumnsByRootIdentifier<128>>,
+    ) -> Result<Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>>, LookupError> {
+        // Pre-Fulu fixtures: the column co-fetch path is never exercised.
+        Ok(Vec::new())
+    }
 }
 
 // ── Test ──────────────────────────────────────────────────────────────────────
@@ -225,6 +233,8 @@ async fn lookup_replay_fetches_and_replays_chain() {
         Arc::clone(&notify_backfill),
         reinject_tx,
         shutdown_rx,
+        [0u8; 32],
+        MinimalBeaconSpec::CUSTODY_REQUIREMENT,
     ));
 
     // Build the gossip topic for block3 (raw inner Bellatrix SSZ).
@@ -428,6 +438,8 @@ async fn lookup_direct_import_holds_future_block() {
         Arc::clone(&notify_backfill),
         reinject_tx,
         shutdown_rx,
+        [0u8; 32],
+        MinimalBeaconSpec::CUSTODY_REQUIREMENT,
     ));
 
     let topic = GossipTopic {

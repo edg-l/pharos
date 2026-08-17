@@ -1122,15 +1122,14 @@ async fn main() -> anyhow::Result<()> {
         // (no /p2p suffix) in QUIC-first order; we re-append /p2p/<peer_id> so the
         // Beacon API identity endpoint keeps the same with-/p2p format it always had.
         let local_peer_id = handle.local_peer_id();
-        let discovery_addrs =
-            pharos_network::discovery::enr::enr_to_dial_addrs(&enr)
-                .map(|(_pid, addrs)| {
-                    addrs
-                        .into_iter()
-                        .filter_map(|a| a.with_p2p(local_peer_id).ok())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+        let discovery_addrs = pharos_network::discovery::enr::enr_to_dial_addrs(&enr)
+            .map(|(_pid, addrs)| {
+                addrs
+                    .into_iter()
+                    .filter_map(|a| a.with_p2p(local_peer_id).ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         let identity = pharos_api::NodeIdentityCache {
             peer_id: handle.local_peer_id(),
@@ -2210,6 +2209,7 @@ async fn main() -> anyhow::Result<()> {
             let h = Arc::clone(&host);
             let shutdown_rx = pharos_node_shutdown_rx.clone();
             let reinject_tx = reinject_tx.clone();
+            let lookup_node_id = node_id.raw();
             tokio::spawn(async move {
                 if let Err(e) = run_lookup_loop::<
                     MainnetBeaconSpec,
@@ -2229,6 +2229,8 @@ async fn main() -> anyhow::Result<()> {
                     notify_backfill,
                     reinject_tx,
                     shutdown_rx,
+                    lookup_node_id,
+                    MainnetBeaconSpec::CUSTODY_REQUIREMENT,
                 )
                 .await
                 {

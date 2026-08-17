@@ -27,8 +27,10 @@ use tracing::{debug, warn};
 use pharos_fork_choice::Store as FcStore;
 use pharos_network::host::ForkContext as _;
 use pharos_network::topics::{GossipTopic, GossipTopicKind};
+use pharos_ssz::SszList;
 use pharos_storage::Store as DbStore;
 use pharos_types::deneb::{BlobIdentifier, BlobSidecar};
+use pharos_types::fulu::{ColumnIndex, DataColumnSidecar, DataColumnsByRootIdentifier};
 use pharos_types::{
     BeaconSpec,
     phase0::primitives::{ForkDigest, Root},
@@ -38,7 +40,7 @@ use crate::block_ingestion::{
     ReinjectBlock, decode_block_by_topic, encode_signed_block_as_gossip_bytes, extract_block_root,
     extract_parent_root, hold_future_block,
 };
-use crate::data_availability::{BlobAvailabilityChecker, NoopDataAvailabilityChecker};
+use crate::data_availability::{ForkAwareDataAvailabilityChecker, NoopDataAvailabilityChecker};
 use crate::engine_driver::{HeadChange, NewPayloadRequest, PayloadToWire, PayloadToWireV2};
 use crate::host_impl::HostImpl;
 use crate::import::{ImportError, extract_blob_kzg_commitments};
@@ -151,6 +153,25 @@ pub trait LookupBlockProvider<E: BeaconSpec>: Send + Sync + 'static {
         &self,
         ids: Vec<BlobIdentifier>,
     ) -> impl std::future::Future<Output = Result<Vec<BlobSidecar>, LookupError>> + Send;
+
+    /// Co-fetch data-column sidecars for a Fulu-or-later block via
+    /// `DataColumnSidecarsByRoot` (EIP-7594 PeerDAS).
+    ///
+    /// From Fulu, blobs are replaced by data columns: the DA gate reads the
+    /// node's expected custody+sampling columns from the store, so those
+    /// columns must be fetched and persisted before the block is imported.
+    /// This mirrors `blobs_by_root` and reuses the same network handle, so no
+    /// extra plumbing is threaded into the lookup loop.
+    ///
+    /// The `ids` use the concrete `DataColumnsByRootIdentifier<128>`
+    /// (`NUMBER_OF_COLUMNS` is 128 for both presets), matching the wire request
+    /// type. Returns whatever columns the chosen peer serves; the DA gate (not
+    /// this method) decides whether the set is complete. An empty result is a
+    /// valid answer and leaves the DA gate to return `NotAvailable`.
+    fn data_columns_by_root(
+        &self,
+        ids: Vec<DataColumnsByRootIdentifier<128>>,
+    ) -> impl std::future::Future<Output = Result<Vec<DataColumnSidecar<4096, 4>>, LookupError>> + Send;
 }
 
 // ── run_lookup_loop ───────────────────────────────────────────────────────────
@@ -164,6 +185,11 @@ pub trait LookupBlockProvider<E: BeaconSpec>: Send + Sync + 'static {
 ///
 /// On depth exhaustion or peer failure, fires `notify_backfill` so the
 /// range-backfill driver heals the gap.
+///
+/// DA for co-fetched blocks is gated by a `ForkAwareDataAvailabilityChecker`,
+/// which spans the Deneb/Electra (blob sidecars) → Fulu (data-column sidecars)
+/// boundary. The column sub-checker's expected custody+sampling set is derived
+/// from `node_id` + `custody_group_count`.
 ///
 /// Returns `Ok(())` on clean shutdown, never on error from a single block.
 #[allow(clippy::too_many_arguments)]
@@ -180,6 +206,8 @@ pub async fn run_lookup_loop<E, P, EE, PP>(
     notify_backfill: Arc<Notify>,
     reinject_tx: mpsc::Sender<ReinjectBlock>,
     mut shutdown_rx: watch::Receiver<bool>,
+    node_id: [u8; 32],
+    custody_group_count: u64,
 ) -> Result<(), LookupError>
 where
     E: BeaconSpec,
@@ -252,9 +280,12 @@ where
     // does. Pre-Deneb (or empty-commitment) blocks bypass it via the Noop checker
     // inside `try_import`.
     let kzg_verifier = Arc::new(pharos_kzg::KzgVerifier::mainnet());
-    let da_checker = Arc::new(BlobAvailabilityChecker::<E>::new(
+    let da_checker = Arc::new(ForkAwareDataAvailabilityChecker::<E>::new(
         host.store_arc(),
         kzg_verifier,
+        Arc::new(cfg.clone()),
+        node_id,
+        custody_group_count,
     ));
 
     loop {
@@ -397,7 +428,7 @@ where
 async fn try_import<E, P, EE, PP>(
     signed_block: &E::SignedBeaconBlock,
     provider: &P,
-    da_checker: &Arc<BlobAvailabilityChecker<E>>,
+    da_checker: &Arc<ForkAwareDataAvailabilityChecker<E>>,
     fc_store: &Arc<RwLock<FcStore<E>>>,
     execution_engine: &Arc<EE>,
     pow_provider: &Arc<PP>,
@@ -464,17 +495,38 @@ where
     E::DenebBeaconBlock: pharos_types::views::BeaconBlockView,
     <E::DenebBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
         pharos_types::views::BeaconBlockBodyView,
+    E::FuluSignedBeaconBlock:
+        pharos_types::views::SignedBeaconBlockView<Message = E::FuluBeaconBlock>,
+    E::FuluBeaconBlock: pharos_types::views::BeaconBlockView,
+    <E::FuluBeaconBlock as pharos_types::views::BeaconBlockView>::Body:
+        pharos_types::views::BeaconBlockBodyView,
     E::ExecutionPayload: PayloadToWire,
     E::CapellaExecutionPayload: PayloadToWireV2,
     E::DenebExecutionPayload: Into<pharos_engine::ExecutionPayloadV3>,
 {
     // Data-availability gate selection. A Deneb-or-later block that carries blob
-    // commitments must clear the REAL DA gate (the same `BlobAvailabilityChecker`
-    // the gossip/ingestion path uses) — fork-choice must not accept and advance
-    // head on a block whose blobs are unavailable. Unlike the gossip path, the
-    // lookup path has no concurrent blob-gossip stream for these by-root blocks,
-    // so we co-fetch the sidecars over `BlobSidecarsByRoot` and persist them
-    // before importing; the checker then reads them back from the store.
+    // commitments must clear the REAL DA gate (the same
+    // `ForkAwareDataAvailabilityChecker` the gossip/ingestion path uses) —
+    // fork-choice must not accept and advance head on a block whose DA payload is
+    // unavailable. Unlike the gossip path, the lookup path has no concurrent
+    // gossip stream for these by-root blocks, so we co-fetch the DA payload and
+    // persist it before importing; the checker then reads it back from the store.
+    // The co-fetch is fork-driven (NOT topic-driven), via
+    // `E::unwrap_fulu_signed_block`:
+    //
+    //   * Deneb/Electra — blobs are carried as `BlobSidecar`s. Co-fetch them over
+    //     `BlobSidecarsByRoot` (one identifier per commitment) and persist each
+    //     (`specs/deneb/p2p-interface.md`). The fork-aware checker's blob
+    //     sub-checker reads them back.
+    //   * Fulu+ — blobs are replaced by `DataColumnSidecar`s (EIP-7594 PeerDAS,
+    //     `specs/fulu/das-core.md`). Co-fetch the node's expected
+    //     custody+sampling columns (`da_checker.expected_columns()`) over
+    //     `DataColumnSidecarsByRoot` (`specs/fulu/p2p-interface.md`) and persist
+    //     each. The fork-aware checker's column sub-checker reads them back.
+    //
+    // Both arms persist the DA payload, then converge on the SAME
+    // `ForkAwareDataAvailabilityChecker` via `run_import` so the appropriate
+    // sub-gate (blob or column) runs against the just-persisted data.
     //
     // Pre-Deneb blocks (and empty-commitment Deneb+ blocks) carry no blobs;
     // `extract_blob_kzg_commitments` returns an empty slice for them and the
@@ -484,35 +536,77 @@ where
     if !kzg_commitments.is_empty() {
         let block_root = extract_block_root::<E>(signed_block);
 
-        // Co-fetch the block's blob sidecars by root, then persist each so the
-        // `BlobAvailabilityChecker` finds them. Best-effort: a peer that serves
-        // fewer than the expected sidecars leaves the DA gate to return
-        // `NotAvailable`, which surfaces below as a (non-walking) rejection.
-        let ids: Vec<BlobIdentifier> = (0..kzg_commitments.len() as u64)
-            .map(|index| BlobIdentifier { block_root, index })
-            .collect();
-        match provider.blobs_by_root(ids).await {
-            Ok(sidecars) => {
-                let store = host.store_arc();
-                for sidecar in &sidecars {
-                    if let Err(e) = <pharos_storage::RocksStore as DbStore<E>>::put_blob_sidecar(
-                        &store,
-                        block_root,
-                        sidecar.index,
-                        sidecar,
-                    ) {
-                        warn!(%block_root, index = sidecar.index, error = %e, "lookup: blob sidecar persist failed");
+        if E::unwrap_fulu_signed_block(signed_block).is_some() {
+            // Fulu+ DA: co-fetch the node's expected custody+sampling columns by
+            // root, then persist each so the column sub-checker finds them. The
+            // column set is taken from the gate's own `expected_columns()` so the
+            // fetch and the gate agree on which columns matter. Best-effort: a
+            // peer that serves fewer than the expected columns leaves the DA gate
+            // to return `NotAvailable`, which surfaces below as a (non-walking)
+            // rejection.
+            let columns: Vec<ColumnIndex> = da_checker.expected_columns().iter().copied().collect();
+            let columns_list = match SszList::from_vec(columns) {
+                Ok(l) => l,
+                Err(_) => {
+                    warn!(%block_root, "lookup: column id list overflow; rejecting");
+                    return ImportAttempt::Rejected;
+                }
+            };
+            let ident = DataColumnsByRootIdentifier {
+                block_root,
+                columns: columns_list,
+            };
+            match provider.data_columns_by_root(vec![ident]).await {
+                Ok(sidecars) => {
+                    let store = host.store_arc();
+                    for sidecar in &sidecars {
+                        if let Err(e) =
+                            <pharos_storage::RocksStore as DbStore<E>>::put_data_column_sidecar(
+                                &store, block_root, sidecar,
+                            )
+                        {
+                            warn!(%block_root, error = %e, "lookup: data column persist failed");
+                        }
                     }
                 }
+                Err(e) => {
+                    // Column fetch failed entirely; the DA gate will see no stored
+                    // columns and return NotAvailable (block not imported).
+                    warn!(%block_root, error = %e, "lookup: DataColumnSidecarsByRoot fetch failed; Fulu DA gate will reject");
+                }
             }
-            Err(e) => {
-                // Sidecar fetch failed entirely; the DA gate will see no stored
-                // sidecars and return NotAvailable (block not imported).
-                warn!(%block_root, error = %e, "lookup: BlobSidecarsByRoot fetch failed; DA gate will reject");
+        } else {
+            // Deneb/Electra DA: co-fetch the block's blob sidecars by root, then
+            // persist each so the blob sub-checker finds them. Best-effort: a peer
+            // that serves fewer than the expected sidecars leaves the DA gate to
+            // return `NotAvailable`, which surfaces below as a (non-walking)
+            // rejection.
+            let ids: Vec<BlobIdentifier> = (0..kzg_commitments.len() as u64)
+                .map(|index| BlobIdentifier { block_root, index })
+                .collect();
+            match provider.blobs_by_root(ids).await {
+                Ok(sidecars) => {
+                    let store = host.store_arc();
+                    for sidecar in &sidecars {
+                        if let Err(e) = <pharos_storage::RocksStore as DbStore<E>>::put_blob_sidecar(
+                            &store,
+                            block_root,
+                            sidecar.index,
+                            sidecar,
+                        ) {
+                            warn!(%block_root, index = sidecar.index, error = %e, "lookup: blob sidecar persist failed");
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Sidecar fetch failed entirely; the DA gate will see no stored
+                    // sidecars and return NotAvailable (block not imported).
+                    warn!(%block_root, error = %e, "lookup: BlobSidecarsByRoot fetch failed; DA gate will reject");
+                }
             }
         }
 
-        return run_import::<E, EE, PP, BlobAvailabilityChecker<E>>(
+        return run_import::<E, EE, PP, ForkAwareDataAvailabilityChecker<E>>(
             signed_block,
             da_checker,
             fc_store,
@@ -667,6 +761,11 @@ where
         host.fork_digest_for(NetworkFork::Phase0)
     } else if E::unwrap_altair_signed_block(signed).is_some() {
         host.fork_digest_for(NetworkFork::Altair)
+    } else if E::unwrap_fulu_signed_block(signed).is_some() {
+        // Must precede Electra/Deneb/Capella/Bellatrix: a Fulu block tagged with
+        // an earlier fork's digest would be decoded with the wrong schema by
+        // peers (and on replay), mis-handling its data-column DA payload.
+        host.fork_digest_for(NetworkFork::Fulu)
     } else if E::unwrap_electra_signed_block(signed).is_some() {
         // Must precede Deneb/Capella/Bellatrix: an Electra block tagged with the
         // wrong digest would be decoded with the wrong schema by peers and earn an
@@ -703,7 +802,7 @@ where
 async fn fetch_and_walk<E, P, EE, PP>(
     target_root: Root,
     provider: &P,
-    da_checker: &Arc<BlobAvailabilityChecker<E>>,
+    da_checker: &Arc<ForkAwareDataAvailabilityChecker<E>>,
     pending: &Arc<PendingBlocks>,
     host: &Arc<HostImpl<E>>,
     fc_store: &Arc<RwLock<FcStore<E>>>,
@@ -922,7 +1021,7 @@ async fn fetch_and_walk<E, P, EE, PP>(
 async fn drain_and_replay<E, P, EE, PP>(
     root: Root,
     provider: &P,
-    da_checker: &Arc<BlobAvailabilityChecker<E>>,
+    da_checker: &Arc<ForkAwareDataAvailabilityChecker<E>>,
     pending: &Arc<PendingBlocks>,
     host: &Arc<HostImpl<E>>,
     fc_store: &Arc<RwLock<FcStore<E>>>,
@@ -1051,5 +1150,94 @@ async fn drain_and_replay<E, P, EE, PP>(
                 ImportAttempt::MissingParent | ImportAttempt::Rejected => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use pharos_network::types::Fork as NetworkFork;
+    use pharos_ssz::TreeHash;
+    use pharos_storage::{RocksStore, RocksStoreConfig};
+    use pharos_types::MainnetBeaconSpec;
+    use pharos_types::config::RuntimeConfig;
+    use pharos_types::fork::ForkSchedule;
+    use pharos_types::phase0::primitives::{Epoch, Version};
+    use pharos_types::state::{
+        BeaconBlock as ForkBeaconBlock, SignedBeaconBlock as ForkSignedBlock,
+    };
+
+    /// Build a `HostImpl<MainnetBeaconSpec>` whose fork schedule has every fork
+    /// active at epoch 0 with a distinct fork version. With `genesis_time_secs =
+    /// 0` the wall-clock epoch is 0, so each fork's digest is stable and the
+    /// Fulu digest differs from the Bellatrix digest — the precondition for
+    /// asserting that a Fulu block is tagged under Fulu (not the Bellatrix
+    /// fallback `fork_digest_of_block` used before the Fulu arm was added).
+    fn make_all_forks_host(dir: &tempfile::TempDir) -> HostImpl<MainnetBeaconSpec> {
+        let store = Arc::new(
+            RocksStore::open::<MainnetBeaconSpec>(RocksStoreConfig {
+                path: dir.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("open store"),
+        );
+        let genesis_state = <MainnetBeaconSpec as BeaconSpec>::BeaconState::default();
+        let state_root = genesis_state.tree_hash_root();
+        let anchor_block = ForkBeaconBlock::Phase0(pharos_types::phase0::MainnetBeaconBlock {
+            state_root,
+            ..pharos_types::phase0::MainnetBeaconBlock::default()
+        });
+        let fc_store = pharos_fork_choice::get_forkchoice_store::<MainnetBeaconSpec>(
+            genesis_state,
+            anchor_block,
+        );
+        let fork_choice = Arc::new(RwLock::new(fc_store));
+        let gvr = Root::default();
+        let fork_schedule = ForkSchedule {
+            genesis_fork_version: Version::from_array([0x00, 0x00, 0x00, 0x00]),
+            altair_fork_version: Version::from_array([0x01, 0x00, 0x00, 0x00]),
+            altair_fork_epoch: Epoch(0),
+            bellatrix_fork_version: Version::from_array([0x02, 0x00, 0x00, 0x00]),
+            bellatrix_fork_epoch: Epoch(0),
+            capella_fork_version: Version::from_array([0x03, 0x00, 0x00, 0x00]),
+            capella_fork_epoch: Epoch(0),
+            deneb_fork_version: Version::from_array([0x04, 0x00, 0x00, 0x00]),
+            deneb_fork_epoch: Epoch(0),
+            electra_fork_version: Version::from_array([0x05, 0x00, 0x00, 0x00]),
+            electra_fork_epoch: Epoch(0),
+            fulu_fork_version: Version::from_array([0x06, 0x00, 0x00, 0x00]),
+            fulu_fork_epoch: Epoch(0),
+            blob_schedule: Vec::new(),
+            genesis_validators_root: gvr,
+        };
+        let runtime_cfg = Arc::new(RuntimeConfig::default());
+        HostImpl::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
+    }
+
+    /// A Fulu signed block must be tagged with the Fulu fork digest — not the
+    /// Bellatrix fallback that `fork_digest_of_block` used before the Fulu arm
+    /// was added (M13-Fulu lookup-DA fix). Mis-tagging a Fulu ancestor as
+    /// Bellatrix would mis-decode it on replay across the Electra→Fulu boundary.
+    #[test]
+    fn fork_digest_of_block_tags_fulu_under_fulu() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = Arc::new(make_all_forks_host(&dir));
+
+        let fulu_signed: <MainnetBeaconSpec as BeaconSpec>::SignedBeaconBlock =
+            ForkSignedBlock::Fulu(pharos_types::fulu::MainnetSignedBeaconBlock::default());
+
+        let got = fork_digest_of_block::<MainnetBeaconSpec>(&host, &fulu_signed);
+
+        assert_eq!(
+            got,
+            host.fork_digest_for(NetworkFork::Fulu),
+            "Fulu block must be digested under the Fulu fork"
+        );
+        assert_ne!(
+            got,
+            host.fork_digest_for(NetworkFork::Bellatrix),
+            "Fulu block must NOT fall through to the Bellatrix digest"
+        );
     }
 }

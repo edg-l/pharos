@@ -758,6 +758,14 @@ impl LookupBlockProvider<MinimalBeaconSpec> for BlobRecordingProvider {
         // Serve no sidecars: the DA gate must reject (block not imported).
         Ok(Vec::new())
     }
+
+    async fn data_columns_by_root(
+        &self,
+        _ids: Vec<pharos_types::fulu::DataColumnsByRootIdentifier<128>>,
+    ) -> Result<Vec<pharos_types::fulu::DataColumnSidecar<4096, 4>>, LookupError> {
+        // Pre-Fulu fixtures: the column co-fetch path is never exercised.
+        Ok(Vec::new())
+    }
 }
 
 /// Lookup-sync must run the REAL DA gate for a Deneb block fetched by root.
@@ -886,6 +894,8 @@ async fn lookup_runs_real_da_gate_for_deneb_block() {
         Arc::clone(&notify_backfill),
         reinject_tx,
         shutdown_rx,
+        [0u8; 32],
+        MinimalBeaconSpec::CUSTODY_REQUIREMENT,
     ));
 
     // Encode the deneb block as raw inner SSZ (as gossip carries it) and send it

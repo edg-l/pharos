@@ -454,6 +454,13 @@ impl<E: BeaconSpec> ForkAwareDataAvailabilityChecker<E> {
             ),
         }
     }
+
+    /// The sorted set of column indices the node must retrieve for Fulu+ blocks
+    /// (custody + sampling union, RI-1). Exposed so the lookup co-fetch and the
+    /// column DA gate agree on the same column set.
+    pub fn expected_columns(&self) -> &std::collections::BTreeSet<ColumnIndex> {
+        self.column.expected_columns()
+    }
 }
 
 impl<E: BeaconSpec> DataAvailabilityChecker<E> for ForkAwareDataAvailabilityChecker<E> {
@@ -518,6 +525,65 @@ mod fork_aware_tests {
     fn empty_commitments_is_irrelevant() {
         // Both sub-checkers short-circuit on empty commitments.
         assert_eq!(combine_da_verdicts(Irrelevant, Irrelevant), Irrelevant);
+    }
+}
+
+#[cfg(test)]
+mod expected_columns_tests {
+    use std::sync::Arc;
+
+    use pharos_kzg::KzgVerifier;
+    use pharos_storage::{RocksStore, RocksStoreConfig};
+    use pharos_types::config::RuntimeConfig;
+    use pharos_types::{BeaconSpec, MinimalBeaconSpec};
+
+    use super::{ColumnAvailabilityChecker, ForkAwareDataAvailabilityChecker};
+
+    /// The fork-aware checker's `expected_columns()` must be byte-for-byte the
+    /// same custody+sampling set as the inner `ColumnAvailabilityChecker`'s for a
+    /// fixed `node_id` + `cgc` — the accessor just forwards to the column
+    /// sub-checker, so the lookup co-fetch and the column DA gate agree on which
+    /// columns matter (Phase 2 accessor; Task 4.1).
+    #[test]
+    fn fork_aware_expected_columns_match_inner_column_checker() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(
+            RocksStore::open::<MinimalBeaconSpec>(RocksStoreConfig {
+                path: tmp.path().join("chain_db"),
+                create_if_missing: true,
+            })
+            .expect("open store"),
+        );
+        let verifier = Arc::new(KzgVerifier::mainnet());
+        let runtime_cfg = Arc::new(RuntimeConfig::default());
+
+        let node_id = [0x11u8; 32];
+        let cgc = MinimalBeaconSpec::CUSTODY_REQUIREMENT;
+
+        let inner = ColumnAvailabilityChecker::<MinimalBeaconSpec>::new(
+            Arc::clone(&store),
+            Arc::clone(&verifier),
+            Arc::clone(&runtime_cfg),
+            node_id,
+            cgc,
+        );
+        let fork_aware = ForkAwareDataAvailabilityChecker::<MinimalBeaconSpec>::new(
+            Arc::clone(&store),
+            Arc::clone(&verifier),
+            Arc::clone(&runtime_cfg),
+            node_id,
+            cgc,
+        );
+
+        assert_eq!(
+            fork_aware.expected_columns(),
+            inner.expected_columns(),
+            "fork-aware expected_columns must forward to the inner column checker's set"
+        );
+        assert!(
+            !fork_aware.expected_columns().is_empty(),
+            "the custody+sampling union must be non-empty for a Fulu node"
+        );
     }
 }
 

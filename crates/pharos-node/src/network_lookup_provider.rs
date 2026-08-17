@@ -17,10 +17,13 @@ use std::sync::Arc;
 
 use pharos_network::{
     NetworkCommandSender,
-    rpc::types::{MAX_REQUEST_BLOB_SIDECARS, RpcRequest, RpcResponse},
+    rpc::types::{MAX_REQUEST_BLOB_SIDECARS, MAX_REQUEST_BLOCKS_DENEB, RpcRequest, RpcResponse},
 };
 use pharos_ssz::SszList;
 use pharos_types::deneb::{BlobIdentifier, BlobSidecar, BlobSidecarsByRootRequest};
+use pharos_types::fulu::{
+    DataColumnSidecar, DataColumnSidecarsByRootRequest, DataColumnsByRootIdentifier,
+};
 use pharos_types::{BeaconSpec, phase0::BeaconBlocksByRootRequest, phase0::primitives::Root};
 
 use crate::lookup::{LOOKUP_REQ_TIMEOUT, LookupBlockProvider, LookupError, MAX_LOOKUP_DEPTH};
@@ -109,6 +112,40 @@ where
 
         match self.cmd.request(peer, req, LOOKUP_REQ_TIMEOUT).await {
             Ok(RpcResponse::BlobSidecars(sidecars)) => Ok(sidecars),
+            Ok(other) => Err(LookupError::Provider(format!(
+                "unexpected response variant: {other:?}"
+            ))),
+            Err(e) => Err(LookupError::Provider(format!(
+                "request to {peer:?} failed: {e}"
+            ))),
+        }
+    }
+
+    async fn data_columns_by_root(
+        &self,
+        ids: Vec<DataColumnsByRootIdentifier<128>>,
+    ) -> Result<Vec<DataColumnSidecar<4096, 4>>, LookupError> {
+        // The by-root request carries a `List[DataColumnsByRootIdentifier,
+        // MAX_REQUEST_BLOCKS_DENEB]` (one identifier per block). Bound the number
+        // of identifiers against that wire cap so an over-long list never exceeds
+        // it and earns a peer penalty. (Callers pass a single identifier today.)
+        if ids.len() as u64 > MAX_REQUEST_BLOCKS_DENEB {
+            return Err(LookupError::TooManyRoots);
+        }
+
+        let column_ids = SszList::from_vec(ids).map_err(|_| LookupError::TooManyRoots)?;
+        let req = RpcRequest::DataColumnSidecarsByRoot(DataColumnSidecarsByRootRequest {
+            ids: column_ids,
+        });
+
+        let peer = self
+            .peer_picker
+            .pick_highest_head_peer()
+            .await
+            .ok_or(LookupError::NoUsablePeers)?;
+
+        match self.cmd.request(peer, req, LOOKUP_REQ_TIMEOUT).await {
+            Ok(RpcResponse::DataColumnSidecars(sidecars)) => Ok(sidecars),
             Ok(other) => Err(LookupError::Provider(format!(
                 "unexpected response variant: {other:?}"
             ))),
