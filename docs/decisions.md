@@ -4845,3 +4845,126 @@ the `row_table_matches_run_order` guard. The runner's fork-enum block handling w
 fixed to read `parent_root` from the inner signed block (the fork-enum
 `SignedBeaconBlock` has no `message()`), with a Fulu re-wrap of the
 electra-shaped decode.
+
+## M15-BeaconAPIGaps
+
+Implement the in-scope missing Beacon API endpoints found in an audit against
+beacon-APIs `v1.7.0-alpha.2` (12 endpoints across node, validator, pool, blob,
+column, and rewards namespaces). ePBS/Gloas + builder/blinded endpoints are out
+of scope (future forks). No Beacon API test vectors exist, so verification is
+OpenAPI schema-shape validation + per-endpoint tests, not a conformance row.
+Version `0.21.0` → `0.22.0`.
+
+### D-node-version-v2-commit-placeholder — `commit` is `0x00000000`
+
+`GET /eth/v2/node/version` returns `ClientVersionV1{code:"PH", name:"Pharos",
+version, commit}`. Pharos does not bake a git commit hash at build time, so
+`commit` is the zero 4-byte value. `execution_client` is omitted (optional;
+`engine_getClientVersionV1` is not wired).
+
+### D-proposer-dependent-root-fulu-fix — shared helper, exhaustive fork match
+
+`proposer_dependent_root` is an exhaustive `fork_variant` match: pre-Fulu uses
+`compute_start_slot_at_epoch(epoch) - 1`; Fulu (EIP-7917 deterministic
+lookahead) uses `compute_start_slot_at_epoch(epoch - 1) - 1`, underflow-guarded
+to the genesis block root. Both v1 and the new `GET /eth/v2/validator/duties/
+proposer/{epoch}` route through it, so adding the Fulu arm also corrected a
+latent v1 bug (Fulu nodes had returned the pre-Fulu formula). v2 is otherwise a
+thin alias of v1 (identical body shape) and inherits the v1 `is_syncing()` 503
+guard; no `is_optimistic_node()` 503 (duty reads stay 200 per the M8 contract).
+
+### D-pool-v2-eip7549-submit-wires-real-pool — v2 POST is not a no-op
+
+`POST /eth/v2/beacon/pool/{attestations,attester_slashings}` are header-driven
+(`Eth-Consensus-Version`, exhaustive fork map, 400 on missing/unknown). The
+electra paths submit to the REAL op-pool, not a stub: an electra
+`SingleAttestation` is converted to a single-aggregation-bit `Attestation` and
+`pools.insert_attestation`'d (proven by a POST-then-GET test); an electra
+`AttesterSlashing` (same outer shape as phase0) is downcast to the phase0 pool
+type and inserted. An empty POST array is a 200 no-op (spec-permitted), not 400.
+(An earlier pass returned 200 while silently dropping the payload — caught in
+review and wired for real.)
+
+### D-pool-v2-get-per-fork-data-type — GET v2 shapes per fork
+
+`GET /eth/v2/beacon/pool/{attestations,attester_slashings}` return `{version,
+data}` + `Eth-Consensus-Version` header. The data array is the spec `anyOf`:
+pre-electra `Phase0.Attestation` / electra+ `Electra.Attestation` (aggregated
+form with `committee_bits`), and `Phase0`/`Electra.AttesterSlashing`
+respectively. The pool stores phase0-shaped attestations; for electra+ the GET
+synthesizes `committee_bits` with a width derived from `E::MAX_COMMITTEES_PER_SLOT`
+(preset-correct). Fixed a pre-existing serializer bug where
+`pool_attester_slashings` emitted `data: {}` instead of the full
+`AttestationData`.
+
+### D-blobs-rest-expose-storage — GET blobs reads persisted sidecars
+
+`GET /eth/v1/beacon/blobs/{block_id}` resolves the block_id, reads
+`Store::get_blob_sidecars_by_root` via a `ChainStateApi` method, optional
+`versioned_hashes` filter (`kzg_commitment_to_versioned_hash`, block order
+preserved), JSON (`[Blob]` hex) + SSZ. Pre-deneb/no-blobs → 200 empty; unknown
+block → 404. The `versioned_hashes` filter uses CSV encoding (serde_urlencoded
+has no repeated-key `Vec` support); the unfiltered path (the common case) is
+unaffected.
+
+### D-data-columns-rest-expose-storage — GET data_column_sidecars reads storage
+
+`GET /eth/v1/debug/beacon/data_column_sidecars/{block_id}` mirrors the blobs
+endpoint for fulu PeerDAS columns: reads
+`Store::get_all_data_column_sidecars_by_root`, optional `indices` filter,
+all six `DataColumnSidecar` fields serialized, fork-tagged `{version,...,data}`
++ header, JSON + SSZ. Pre-fulu/no-columns → 200 empty; unknown block → 404.
+
+### D-rewards-factor-not-reimplement — expose STF reward math as pub helpers
+
+The three rewards endpoints reuse the live STF reward math rather than
+reimplementing it. `accumulate_attestation_participation_altair` (participation-
+flag + proposer-reward numerator) and `sync_aggregate_rewards_altair` were
+extracted from the live attestation/sync ops into pub helpers the ops now call;
+the phase0/altair/deneb/electra delta fns and `*_state_to_*` projections were
+re-exported. The full conformance suite is byte-identical after the factoring
+(behavior-preserving oracle: `phase0/rewards` + `altair/rewards` +
+`electra/operations`, all rows 0 fail/0 skip).
+
+### D-rewards-proposer-reward-fork-family-split — three helpers, no shared trait
+
+The block-attestation proposer reward cannot be a single generic fn (phase0
+`Attestation<2048>` vs electra `Attestation<MAX_AGGREGATION_BITS,
+MAX_COMMITTEES_PER_SLOT>` share no trait). Split into
+`block_attestation_proposer_reward_{phase0,altair,electra}<E>`; `get_block_rewards`
+dispatches by exhaustive `fork_variant`. The phase0 helper computes the real
+inclusion-proposer value (`sum base_reward / PROPOSER_REWARD_QUOTIENT`), not 0.
+
+### D-rewards-altair-state-projection — attestation rewards project per fork
+
+`get_flag_index_deltas` takes a concrete altair `BeaconState`, so attestation
+rewards project the state per fork before calling it (altair direct; bellatrix/
+capella/deneb via `*_state_to_altair` + the matching
+`get_inactivity_penalty_deltas_*` variant; electra/fulu via
+`electra_state_to_deneb` → `deneb_state_to_altair`). This mirrors the
+authoritative `pharos-conformance/src/rewards.rs` dispatch (followed over the
+plan prose, which named a shorter projection). `ideal_rewards` buckets use
+`E::MAX_EFFECTIVE_BALANCE` (EIP-7251 raises it for electra+).
+
+### D-rewards-block-recompute-not-balance-diff — block rewards vs parent state
+
+Block rewards are recomputed against the parent post-state (advanced to the
+block slot via the state-regen path), not derived by balance-diffing, matching
+how the spec attributes per-component proposer rewards.
+
+### D-rewards-brpi-hoisted — keep the live attestation path O(N)
+
+`get_base_reward_per_increment` is loop-invariant, so it is hoisted out of the
+per-attester loop and passed into `accumulate_attestation_participation_altair`
+as a `brpi` parameter at every call site (live ops + reward helpers). The
+per-attester base reward is `effective_balance_increments * brpi` (numerically
+identical to `get_base_reward`), avoiding an O(N²) full-validator scan per
+attestation on the live electra block-processing path.
+
+### D-rewards-no-test-vectors-shape-only — verification strategy
+
+No Beacon API reward test vectors exist. The endpoint tests assert response
+shape, the `BlockRewards.total == sum(components)` identity, signed/unsigned
+JSON-string encoding, and 404/400/503; the reward MATH (and the electra
+projection path) is proven by the conformance regression gate, not by
+hand-built electra states.
