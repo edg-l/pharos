@@ -105,6 +105,14 @@ pub enum ScoreEvent {
     /// The peer left the mesh for a subnet we expected it to serve
     /// (`gossipsub::Event::Unsubscribed` on an expected subnet, M11 Phase 0).
     UnsubscribedFromExpectedSubnet { topic: TopicHash },
+    /// The peer reset an inbound req-resp stream before sending a complete request.
+    ///
+    /// This event penalises only the `req_resp` component and deliberately does
+    /// NOT touch any per-method token bucket: at the time of an
+    /// `InboundFailure::ConnectionClosed` / `StreamReset` the method is unknown,
+    /// so attributing the penalty to a specific method would misattribute the
+    /// blame (previously the code pinned this to `RpcMethod::Status`).
+    InboundStreamReset,
 }
 
 /// RPC methods tracked for scoring purposes.
@@ -293,6 +301,10 @@ const W_RPC_SUCCESS: f64 = 1.0;
 const W_RPC_ERROR: f64 = -5.0;
 const W_RPC_TIMEOUT: f64 = -5.0;
 const W_RATE_LIMIT_EXCEEDED: f64 = -10.0;
+/// Penalty applied to `req_resp` when a peer resets an inbound stream before
+/// sending a complete request. Same magnitude as `W_RPC_ERROR` — misbehaving
+/// peers accumulate this quickly, but a single transient reset does not ban.
+const W_INBOUND_STREAM_RESET: f64 = W_RPC_ERROR;
 
 // --- app-component event weights ---
 const W_HANDSHAKE_FAIL: f64 = -20.0;
@@ -471,6 +483,9 @@ impl RealScorer {
             ScoreEvent::RpcError { .. } => state.req_resp += W_RPC_ERROR,
             ScoreEvent::RpcTimeout { .. } => state.req_resp += W_RPC_TIMEOUT,
             ScoreEvent::RateLimitExceeded { .. } => state.req_resp += W_RATE_LIMIT_EXCEEDED,
+            // Penalise req_resp only — no per-method bucket touch because the method
+            // is unknown at InboundFailure time.
+            ScoreEvent::InboundStreamReset => state.req_resp += W_INBOUND_STREAM_RESET,
             ScoreEvent::HandshakeFail { .. } => state.app += W_HANDSHAKE_FAIL,
             ScoreEvent::BannedPeerConnected => state.app += W_BANNED_RECONNECT,
             ScoreEvent::SubnetNonPropagation { .. } => state.app += W_SUBNET_NON_PROPAGATION,
@@ -1247,5 +1262,56 @@ mod tests {
             reloaded.peers[&p].app, expected_app,
             "app score must survive filesystem round-trip"
         );
+    }
+
+    /// `InboundStreamReset` decrements `req_resp` and leaves `app` unchanged.
+    /// Critically, it must NOT touch any per-method token bucket.
+    #[test]
+    fn inbound_stream_reset_penalises_req_resp_only() {
+        let mut scorer = RealScorer::new();
+        let t0 = Instant::now();
+        let p = peer(90);
+
+        scorer.record_at(p, ScoreEvent::InboundStreamReset, t0);
+
+        let state = &scorer.peers[&p];
+        assert!(
+            state.req_resp < 0.0,
+            "InboundStreamReset must decrement req_resp, got {}",
+            state.req_resp
+        );
+        assert_eq!(
+            state.req_resp, W_INBOUND_STREAM_RESET,
+            "req_resp penalty must equal W_INBOUND_STREAM_RESET"
+        );
+        assert_eq!(state.app, 0.0, "app component must be untouched");
+        assert_eq!(state.gossip, 0.0, "gossip component must be untouched");
+        // No per-method bucket must have been created.
+        assert!(
+            state.buckets.is_empty(),
+            "InboundStreamReset must not create any per-method token bucket"
+        );
+    }
+
+    /// Multiple `InboundStreamReset` events accumulate on `req_resp` only,
+    /// with no spillover to `app` or any method bucket.
+    #[test]
+    fn inbound_stream_reset_accumulates_req_resp() {
+        let mut scorer = RealScorer::new();
+        let t0 = Instant::now();
+        let p = peer(91);
+
+        for _ in 0..3 {
+            scorer.record_at(p, ScoreEvent::InboundStreamReset, t0);
+        }
+
+        let state = &scorer.peers[&p];
+        assert_eq!(
+            state.req_resp,
+            W_INBOUND_STREAM_RESET * 3.0,
+            "three resets must accumulate on req_resp"
+        );
+        assert_eq!(state.app, 0.0, "app must stay zero");
+        assert!(state.buckets.is_empty(), "no per-method buckets must exist");
     }
 }

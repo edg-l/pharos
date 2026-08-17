@@ -159,6 +159,49 @@ async fn misbehaving_peer_is_pruned_and_banned() {
     );
 }
 
+/// An inbound stream reset lowers the peer's req_resp score but does NOT
+/// consume any token from the Status (or any other) per-method rate-limit bucket.
+///
+/// Specifically: after one `InboundStreamReset`, the Status bucket must still
+/// hold its full capacity of 5 tokens — all 5 requests must be allowed.
+/// This verifies the fix for the pre-Phase-2 misattribution that pinned every
+/// `InboundFailure` to `RpcError{Status, StreamReset}`, which consumed Status
+/// tokens from peers that may never have sent a bad Status request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inbound_stream_reset_does_not_penalise_status_bucket() {
+    let mut network = build_network().await;
+    let peer: PeerId = Keypair::generate_secp256k1().public().to_peer_id();
+    network.test_register_connected_peer(peer);
+
+    let before_reset = network.test_peer_score(&peer);
+
+    // Record one inbound stream reset — this should lower req_resp but leave
+    // every per-method token bucket untouched.
+    network.test_record_inbound_stream_reset(peer);
+
+    let after_reset = network.test_peer_score(&peer);
+    assert!(
+        after_reset < before_reset,
+        "InboundStreamReset must lower the score: after {after_reset} < before {before_reset}"
+    );
+
+    // Status bucket must still be at full capacity (5 tokens for control-plane
+    // methods per rate_limit_for). If InboundStreamReset wrongly consumed a
+    // Status token, the 5th allow_request call here would fail.
+    for i in 0..5 {
+        assert!(
+            network.test_rate_limit_request(peer, RpcMethod::Status),
+            "Status request {i} must be allowed: InboundStreamReset must not consume Status tokens"
+        );
+    }
+    // Exactly 5 tokens: the 6th must be rejected. Pins the bucket at full
+    // capacity, so a future change that leaks even one token is caught.
+    assert!(
+        !network.test_rate_limit_request(peer, RpcMethod::Status),
+        "Status bucket must be exhausted after exactly 5 requests"
+    );
+}
+
 /// The `pharos_peer_score` gauge moves when a peer's score changes through the
 /// wired path. This integration binary owns the global Prometheus recorder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -80,6 +80,14 @@ const SCORE_BAN_DURATION: std::time::Duration = std::time::Duration::from_secs(6
 /// disconnected with `Goodbye` and penalised with `HandshakeFail{Timeout}`.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Request-response timeout for bulk-data RPC methods (BlocksByRange, BlobSidecarsByRange, etc.).
+/// Bulk methods stream large payloads so a generous 30 s window is appropriate.
+const RPC_TIMEOUT_BULK: Duration = Duration::from_secs(30);
+
+/// Request-response timeout for control-plane RPC methods (Status, Ping, MetaData, etc.).
+/// These methods carry small payloads and should respond quickly.
+const RPC_TIMEOUT_CONTROL: Duration = Duration::from_secs(15);
+
 /// Backpressure cap on concurrent in-flight gossip-validation tasks. Each task
 /// holds a cloned `Arc<host>` plus the (up to `MAX_PAYLOAD_SIZE`) message bytes
 /// and may run a blocking BLS verify, so an unbounded `JoinSet` lets a peer-flood
@@ -1271,7 +1279,13 @@ impl<
                     // cross-deliver (e.g. a BlocksByRange response consuming a Status
                     // handshake entry that happens to share id 1). The internal-tracking
                     // maps are keyed by id but only ever hold their own method's ids.
-                    if method == RpcMethod::Status
+                    //
+                    // NOTE: the outbound handshake currently sends v1 Status only; full
+                    // Fulu StatusV2 outbound is Phase 10. However, a v2-capable peer may
+                    // reply on the StatusV2 behaviour, so routing must accept both methods
+                    // against `pending_status_checks` to avoid falling through to the
+                    // "unknown request" warning and stalling the handshake.
+                    if (method == RpcMethod::Status || method == RpcMethod::StatusV2)
                         && self.pending_status_checks.contains_key(&request_id)
                     {
                         let hs_peer = self.pending_status_checks.remove(&request_id).unwrap();
@@ -1309,7 +1323,10 @@ impl<
                 tracing::warn!(%peer, ?error, "outbound RPC failure");
                 // Route by `method` (see the Response handler): `request_id` is only
                 // unique within a per-method behaviour.
-                if method == RpcMethod::Status
+                //
+                // NOTE: mirrors the Response routing — both Status and StatusV2 map to
+                // pending_status_checks so a v2-capable peer's failure is properly attributed.
+                if (method == RpcMethod::Status || method == RpcMethod::StatusV2)
                     && self.pending_status_checks.remove(&request_id).is_some()
                 {
                     // Handshake Status timed out or failed — abort and disconnect.
@@ -1359,13 +1376,14 @@ impl<
                 ..
             } => {
                 tracing::warn!(%peer, ?error, "inbound RPC failure");
-                self.peer_manager.record_event(
-                    peer,
-                    ScoreEvent::RpcError {
-                        method: RpcMethod::Status, // conservative; method unknown on failure
-                        kind: RpcErrorKind::StreamReset,
-                    },
-                );
+                // Use InboundStreamReset rather than RpcError{Status, StreamReset}:
+                // `method` is in scope, but the inbound request body was never parsed,
+                // so we cannot confirm the peer actually issued a request of that type.
+                // Attributing the reset to any per-method bucket would be arbitrary
+                // (and pinning it to Status drained the Status bucket). InboundStreamReset
+                // penalises req_resp only, without touching any per-method bucket.
+                self.peer_manager
+                    .record_event(peer, ScoreEvent::InboundStreamReset);
             }
             request_response::Event::ResponseSent {
                 peer, request_id, ..
@@ -2469,17 +2487,17 @@ impl<
         let fork_ctx_arc: Arc<dyn crate::host::ForkContext> = self.host.clone();
         let ctx_codec = RpcCodec::<E>::with_fork_context(fork_ctx_arc);
 
-        let mk_rr = |method: M| {
+        let mk_rr = |method: M, t: Duration| {
             request_response::Behaviour::new(
                 vec![(RpcProtocol(method), ProtocolSupport::Full)],
-                request_response::Config::default(),
+                request_response::Config::default().with_request_timeout(t),
             )
         };
-        let mk_rr_ctx = |method: M| {
+        let mk_rr_ctx = |method: M, t: Duration| {
             request_response::Behaviour::with_codec(
                 ctx_codec.clone(),
                 vec![(RpcProtocol(method), ProtocolSupport::Full)],
-                request_response::Config::default(),
+                request_response::Config::default().with_request_timeout(t),
             )
         };
 
@@ -2499,45 +2517,65 @@ impl<
             .with_dns()?
             .with_behaviour(|_key| PharosBehaviour::<E> {
                 gossipsub,
-                rpc_status: RpcStatusBehaviour(mk_rr(M::Status)),
-                rpc_goodbye: RpcGoodbyeBehaviour(mk_rr(M::Goodbye)),
-                rpc_ping: RpcPingBehaviour(mk_rr(M::Ping)),
-                rpc_metadata: RpcMetaDataBehaviour(mk_rr(M::MetaData)),
-                rpc_metadata_v1: RpcMetaDataV1Behaviour(mk_rr(M::MetaDataV1)),
-                rpc_blocks_by_range: RpcBlocksByRangeBehaviour(mk_rr_ctx(M::BlocksByRange)),
-                rpc_blocks_by_root: RpcBlocksByRootBehaviour(mk_rr_ctx(M::BlocksByRoot)),
+                // Control-plane methods: small payloads, fast expected response.
+                rpc_status: RpcStatusBehaviour(mk_rr(M::Status, RPC_TIMEOUT_CONTROL)),
+                rpc_goodbye: RpcGoodbyeBehaviour(mk_rr(M::Goodbye, RPC_TIMEOUT_CONTROL)),
+                rpc_ping: RpcPingBehaviour(mk_rr(M::Ping, RPC_TIMEOUT_CONTROL)),
+                rpc_metadata: RpcMetaDataBehaviour(mk_rr(M::MetaData, RPC_TIMEOUT_CONTROL)),
+                rpc_metadata_v1: RpcMetaDataV1Behaviour(mk_rr(M::MetaDataV1, RPC_TIMEOUT_CONTROL)),
+                // Bulk-data methods: stream large payloads, generous timeout.
+                rpc_blocks_by_range: RpcBlocksByRangeBehaviour(mk_rr_ctx(
+                    M::BlocksByRange,
+                    RPC_TIMEOUT_BULK,
+                )),
+                rpc_blocks_by_root: RpcBlocksByRootBehaviour(mk_rr_ctx(
+                    M::BlocksByRoot,
+                    RPC_TIMEOUT_BULK,
+                )),
                 // Light-client behaviours use context-bytes codec (fork digest prefix per chunk).
-                rpc_lc_bootstrap: RpcLcBootstrapBehaviour(mk_rr_ctx(M::LightClientBootstrap)),
+                // Bootstrap/finality/optimistic are control-plane (single response).
+                // UpdatesByRange streams multiple updates: bulk timeout.
+                rpc_lc_bootstrap: RpcLcBootstrapBehaviour(mk_rr_ctx(
+                    M::LightClientBootstrap,
+                    RPC_TIMEOUT_CONTROL,
+                )),
                 rpc_lc_updates_by_range: RpcLcUpdatesByRangeBehaviour(mk_rr_ctx(
                     M::LightClientUpdatesByRange,
+                    RPC_TIMEOUT_BULK,
                 )),
                 rpc_lc_finality_update: RpcLcFinalityUpdateBehaviour(mk_rr_ctx(
                     M::LightClientFinalityUpdate,
+                    RPC_TIMEOUT_CONTROL,
                 )),
                 rpc_lc_optimistic_update: RpcLcOptimisticUpdateBehaviour(mk_rr_ctx(
                     M::LightClientOptimisticUpdate,
+                    RPC_TIMEOUT_CONTROL,
                 )),
                 // Blob-sidecar behaviours use context-bytes codec (fork digest prefix per chunk).
                 rpc_blob_sidecars_by_range: RpcBlobSidecarsByRangeBehaviour(mk_rr_ctx(
                     M::BlobSidecarsByRange,
+                    RPC_TIMEOUT_BULK,
                 )),
                 rpc_blob_sidecars_by_root: RpcBlobSidecarsByRootBehaviour(mk_rr_ctx(
                     M::BlobSidecarsByRoot,
+                    RPC_TIMEOUT_BULK,
                 )),
                 // Fulu data-column-sidecar + by-head behaviours use the
                 // context-bytes codec (fork digest prefix per chunk).
                 rpc_data_column_sidecars_by_range: RpcDataColumnSidecarsByRangeBehaviour(
-                    mk_rr_ctx(M::DataColumnSidecarsByRange),
+                    mk_rr_ctx(M::DataColumnSidecarsByRange, RPC_TIMEOUT_BULK),
                 ),
                 rpc_data_column_sidecars_by_root: RpcDataColumnSidecarsByRootBehaviour(mk_rr_ctx(
                     M::DataColumnSidecarsByRoot,
+                    RPC_TIMEOUT_BULK,
                 )),
                 rpc_beacon_blocks_by_head: RpcBeaconBlocksByHeadBehaviour(mk_rr_ctx(
                     M::BeaconBlocksByHead,
+                    RPC_TIMEOUT_BULK,
                 )),
                 // Status v2 + MetaData v3 are control-plane (no context bytes).
-                rpc_status_v2: RpcStatusV2Behaviour(mk_rr(M::StatusV2)),
-                rpc_metadata_v3: RpcMetaDataV3Behaviour(mk_rr(M::MetaDataV3)),
+                rpc_status_v2: RpcStatusV2Behaviour(mk_rr(M::StatusV2, RPC_TIMEOUT_CONTROL)),
+                rpc_metadata_v3: RpcMetaDataV3Behaviour(mk_rr(M::MetaDataV3, RPC_TIMEOUT_CONTROL)),
                 identify,
             })
             .unwrap()
@@ -2896,6 +2934,17 @@ impl<
         self.peer_manager
             .on_connected(peer_id, ConnectionDirection::Inbound, Vec::new());
         // State remains Connecting — do not call on_handshake_complete.
+    }
+
+    /// Fire an `InboundStreamReset` score event for `peer_id` (Phase 2 test seam).
+    ///
+    /// Mirrors the `InboundFailure` arm in `handle_rpc_event` so integration
+    /// tests can assert that inbound stream resets penalise `req_resp` and do
+    /// not touch any per-method token bucket.
+    #[doc(hidden)]
+    pub fn test_record_inbound_stream_reset(&mut self, peer_id: PeerId) {
+        self.peer_manager
+            .record_event(peer_id, ScoreEvent::InboundStreamReset);
     }
 }
 
