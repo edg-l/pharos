@@ -4669,3 +4669,179 @@ electra`) for a fulu block. Fix: override `for_api.variant = ForkVariant::Fulu` 
 dispatch arm (the DTO body is structurally identical to electra, so only the tag is
 wrong). Also added the missing fulu arm to `fork_variant_at_slot` (LC envelope versioning).
 Verified live: head block at the fulu epoch reports `version=fulu`.
+
+## M14-ConformanceCompleteness
+
+Drive every `docs/conformance.md` row to `Skip = 0`, `Fail = 0` (no `-`
+placeholders), with no silently-unenumerated subcategory. Final state: 174 rows,
+~56,032 pass, 0 fail, 0 skip. The milestone also surfaced and fixed several real
+live-node correctness gaps that the skipped tests had been masking.
+
+### D-ssz-static-unknown-type-is-fail — complete the dispatch, fail on unknown
+
+The `ssz_static` runner skipped any fixture type absent from a hand-rolled
+per-`(fork,preset)` dispatch table (`_ => Ok(false)` ⇒ Skip), so core types
+(`Validator`, `Checkpoint`, `AttestationData`, `Deposit`, LC types, …) were
+implemented but never validated against their standalone vectors. Added an arm
+for every fixture type (bellatrix..fulu, both presets), refactored the 14 blocks
+into a single `dispatch_type!` macro, and replaced every trailing skip arm
+(including the outer fork router) with `Err(ConformanceError::UnknownSszStaticType)`.
+An unmapped type now fails loudly instead of vanishing.
+
+### D-ssz-generic-unknown-length-is-fail — enumerate every generic case, fail on unknown
+
+`ssz_generic` skipped uint sizes / vector-bitlist lengths / container structs not
+in dispatch, and dropped progressive/union handlers from the denominator
+entirely (early `continue`). Now every handler is enumerated (progressive/union
+cases emit Skip tasks until Phase 7 rather than being absent), and `run_uint` /
+`dispatch_vec!` / `dispatch_bv!` / `dispatch_bl!` / `run_container` fail on an
+unknown length/struct.
+
+### D-engine-yaml-full-method-coverage — all 25 engine_* methods round-trip
+
+The engine conformance runner ran ~13 of 25 `execution-apis` `engine_*` methods
+and skipped the rest behind `DEFERRED_V1`/`V4_DEFERRED`/not-in-scope lists. Removed
+the gates; added the missing `EngineClient` methods (`get_blobs_v2/v3/v4`,
+`get_payload_bodies_by_{hash,range}_v1/v2`, `forkchoice_updated_v4`,
+`get_payload_v6`, `new_payload_v5`) + DTOs + version-enum variants, and a
+`dispatch_engine_call` arm per method (full mock-server round-trip). Corrected the
+fork→version doc mapping in the process (Fulu uses FCU V3 + newPayload V4; V4-FCU /
+V5-newPayload / V6-getPayload are Amsterdam-only).
+
+### D-kzg-full-subcat-enumeration — `Skip=0` was hiding 4 unwalked subcats
+
+`deneb/kzg` reported `Skip=0` while only walking 3 of 7 fixture subcategories —
+`compute_blob_kzg_proof`, `compute_challenge`, `compute_kzg_proof`,
+`verify_kzg_proof` were simply absent from the denominator (64 cases instead of
+262). This is the canonical "zero-skip can still hide missing coverage" hazard;
+the milestone exit criterion was hardened to require every subcategory be walked,
+unknown ⇒ Fail. Added the 4 deneb runners + the fulu
+`compute_verify_cell_kzg_proof_batch_challenge` subcat.
+
+### D-kzg-challenge-in-house — Fiat-Shamir helpers over sha2, not new deps
+
+c-kzg 2.1.7's safe API lacks `compute_challenge` (EIP-4844) and
+`compute_verify_cell_kzg_proof_batch_challenge` (EIP-7594). Implemented both
+in-house in `pharos-kzg`: SHA256 transcript over the spec-defined domain +
+inputs, reduced mod `BLS_MODULUS` via a hand-rolled big-endian reduction (≤2
+subtractions, since `floor(2^256 / BLS_MODULUS) = 2`). sha2 only; c-kzg stays the
+validated-I/O primitive.
+
+### D-lc-cross-fork-sync — fork-aware sync + walk update_ranking/data_collection
+
+The light_client runner walked only `single_merkle_proof` and `sync`, and the
+`sync` runner skipped cross-fork cases (`*_store_with_legacy_data`, `*_fork`).
+Added `update_ranking` + `data_collection` sub-sweeps, made the sync runner handle
+`upgrade_store` and decode each update at its own `update_fork_digest` fork, and
+hardened in-scope decode failures to Fail.
+
+### D-lc-gloas-out-of-scope — post-fulu cases filtered at enumeration
+
+`gloas_*` light-client cases ship under `minimal/{electra,fulu}/light_client/`,
+but gloas is post-fulu and not in `rows.rs`. They are excluded by an explicit
+name filter during enumeration (no task emitted, no Skip row) — an out-of-fork-scope
+exclusion, not a silent skip; recorded here rather than dropped.
+
+### D-hostimpl-injectable-clock — additive clock override for the gossip runner
+
+The gossip validators read wall-clock time via `SystemTime::now()` directly, so
+time-gated verdicts can't be reproduced from fixtures (which carry
+`current_time_ms` + per-message `offset_ms`). Added
+`HostImpl::now_ms_override: Option<Arc<AtomicU64>>` (default `None`) funnelled
+through one `now_ms()`; the conformance runner sets it per message. Never set on
+the live node — production stays on real `SystemTime::now()`.
+
+### D-gossip-conformance-runner — drive the live validators from networking fixtures
+
+New `networking.rs` runner builds a real `HostImpl<E>` (RocksStore tempdir,
+fork-choice store seeded from the fixture state, GVR) and drives the actual gossip
+validators against the `gossip_*` fixtures for phase0..fulu, mapping
+`GossipVerdict` → `{Accept,Ignore,Reject}` and asserting against `expected`.
+Messages feed in fixture order against one `HostImpl` so the seen-cache carries
+(`ignore_already_seen_*`). Non-time-gated topics (slashing/exit/bls_change) have no
+`current_time_ms` and must not fail on its absence. Required adding a
+`pharos-node` dep to `pharos-conformance`. Head-state-missing returns `None` ⇒
+IGNORE (a conformance-only justified-checkpoint fallback that leaked into the live
+validators was caught in review and reverted — it would have caused false
+attestation REJECTs on the live node; the runner seeds `block_states` instead).
+
+### D-gossip-eip7045-time-window — live attestation window fix surfaced by fixtures
+
+The gossip fixtures exposed that `validate_attestation` / `validate_aggregate_and_proof`
+/ `validate_single_attestation` used an integer-epoch comparison instead of the
+spec's time-based window with `MAXIMUM_GOSSIP_CLOCK_DISPARITY` tolerance
+(deneb p2p-interface, EIP-7045). Fixed all sites via a shared
+`is_att_slot_in_eip7045_window` helper — a real live-node correctness fix.
+
+### D-gossip-block-timestamp-reject — add the missing payload-timestamp REJECT
+
+The block gossip validator never checked the bellatrix p2p `[REJECT]` rule that
+the execution payload timestamp equals `genesis_time + slot * seconds_per_slot`.
+Added `BeaconSpec::execution_payload_timestamp` (exhaustive fork-enum match;
+`None` for pre-merge) and moved the check before the proposer-signature BLS verify
+so a wrong-timestamp block is rejected cheaply and in spec order.
+
+### D-progressive-ssz-eip7916 — in-house ProgressiveList + progressive Merkleization
+
+Implemented `ProgressiveList<T>` and `ProgressiveBitlist` (`progressive.rs`) with
+EIP-7916 geometric progressive Merkleization behind the existing
+`Encode`/`Decode`/`TreeHash` traits. The `#[derive]` macros are UNCHANGED — the new
+scheme is reached only via the new types / manual impls, so existing containers
+(`BeaconState`, `BeaconBlock`, …) hash byte-identically (verified: ssz_static all
+forks + operations + sanity unchanged).
+
+### D-compatible-union-eip7495 — CompatibleUnion via mix_in_selector
+
+Implemented `CompatibleUnion` (`union.rs`) per EIP-7495: selector byte `1..=127`
+validated on decode, root via `mix_in_selector(hash_tree_root(data), selector)`.
+`TREE_HASH_TYPE` advertises `Container` (the only composite variant, correct for
+parent packing decisions); the root itself is not container-merkleized.
+
+### D-ssz-decoder-first-offset-exact — reject a gap before the variable region
+
+The progressive-container invalid-case fixtures exposed that the core SSZ decoder
+was lenient: it accepted encodings whose first variable-field offset is greater
+than the fixed-region size (a gap). The spec (and remerkleable/py-ssz) require the
+first offset to equal the fixed-region size exactly. Tightened `decode.rs`
+(`k == 0 && offset != fixed_len ⇒ Err`); this hardens decoding for every container
+type and was verified non-regressing across ssz_static (all forks) + operations +
+sanity.
+
+### D-fast-confirmation-rule — in-house FCR + runner
+
+Implemented the phase0 Fast Confirmation Rule (`fast_confirmation.rs`:
+`FastConfirmationStore`, the LMD-GHOST confirmation helpers, the FFG
+`will_*_be_justified` set, `on_fast_confirmation`) and a conformance runner that
+reuses the `fork_choice` step machinery and runs `on_fast_confirmation` once per
+slot start after past-slot attestations. All 6 forks altair..fulu
+`fast_confirmation/minimal` = 169/0/0; regular `fork_choice` rows unchanged.
+
+### D-fcr-block-support-exact-equality — support counts exact latest-message roots
+
+`get_block_support_between_slots` initially reused `get_ancestor(...) == block_root`
+(LMD-GHOST style), but fast-confirmation.md:348 requires exact
+`latest_messages[i].root == block_root`. The descendant form over-counted support,
+inflated the empty-slot discount, lowered `compute_safety_threshold`, and let
+`is_one_confirmed` over-advance the confirmed root (proven against the pyspec with
+the failing `fcr_previous_epoch_053` numbers). Fixed to exact equality.
+
+### D-fcr-optimistic-valid-gate — is_one_confirmed must reject non-VALID blocks
+
+Per fast-confirmation.md:619, `is_one_confirmed` MUST return false if the block's
+payload status is not `VALID` (a live-node safety requirement — never confirm an
+optimistic block). Added the `is_optimistic` gate (no-op for pre-merge blocks).
+Because the FCR conformance runner has no engine driver, it now marks `valid:true`
+step blocks as `PayloadStatus::Valid` (mirroring the pyspec) so the gate is
+satisfied and the fixtures stay 169/0/0; the regular fork_choice runner is
+untouched. Also removed an incorrect early-return in `compute_safety_threshold`
+for empty slot ranges (the full formula, incl. `proposer_score`, must apply).
+
+### D-fast-confirmation-dispatch-all-forks — rows + dispatch for altair..fulu
+
+`lib.rs` dispatched `fast_confirmation` only for fulu; altair..electra fell to
+`_ => None` (placeholder `-` rows). Added dispatch arms + real `rows.rs` rows for
+altair/bellatrix/capella/deneb (electra/fulu placeholders converted) and updated
+the `row_table_matches_run_order` guard. The runner's fork-enum block handling was
+fixed to read `parent_root` from the inner signed block (the fork-enum
+`SignedBeaconBlock` has no `message()`), with a Fulu re-wrap of the
+electra-shaped decode.

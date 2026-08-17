@@ -260,7 +260,11 @@ fn build_chain(
     use pharos_stf::process_slots_fork;
 
     let runtime_cfg = pharos_types::config::RuntimeConfig {
-        seconds_per_slot: 12,
+        // Minimal preset: the live import path reads seconds_per_slot from the
+        // fork-choice store, which get_forkchoice_store seeds from
+        // MinimalBeaconSpec::SLOT_DURATION_MS / 1000 = 6 (since f6f69c7). The
+        // fixture's payload timestamps must match or the STF rejects block 1.
+        seconds_per_slot: 6,
         bellatrix_fork_version: MinimalBeaconSpec::BELLATRIX_FORK_VERSION,
         ..Default::default()
     };
