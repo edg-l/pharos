@@ -64,6 +64,7 @@ use crate::state::ApiState;
 ///
 /// **Phase 5 — Validator-read endpoints + debug namespace**
 /// - `GET  /eth/v1/validator/duties/proposer/{epoch}`   (auth-gated)
+/// - `GET  /eth/v2/validator/duties/proposer/{epoch}`   (auth-gated)
 /// - `POST /eth/v1/validator/duties/attester/{epoch}`   (auth-gated)
 /// - `POST /eth/v1/validator/duties/sync/{epoch}`       (auth-gated)
 /// - `GET  /eth/v1/debug/fork_choice`
@@ -116,10 +117,14 @@ pub fn build_router_with_auth<E: BeaconSpec>(
 ) -> Router {
     // ── Validator sub-router (auth-gated) ─────────────────────────────────
     let validator_router = Router::new()
-        // Duties (Phase 5)
+        // Duties (Phase 5 + M15-Phase2)
         .route(
             "/eth/v1/validator/duties/proposer/{epoch}",
             get(validator_duties::get_proposer_duties::<E>),
+        )
+        .route(
+            "/eth/v2/validator/duties/proposer/{epoch}",
+            get(validator_duties::get_proposer_duties_v2::<E>),
         )
         .route(
             "/eth/v1/validator/duties/attester/{epoch}",

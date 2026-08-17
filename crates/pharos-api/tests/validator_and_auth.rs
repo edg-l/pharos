@@ -360,6 +360,87 @@ async fn proposer_duties_returns_correct_assignments() {
     );
 }
 
+/// `GET /eth/v2/validator/duties/proposer/{epoch}` — response shape matches
+/// `~/dev/beacon-APIs/apis/validator/duties/proposer.v2.yaml`:
+/// required fields `dependent_root`, `execution_optimistic`, `data`; NO `finalized`
+/// field (the v2 yaml does not include it). On a pre-Fulu (phase0) state the
+/// body must be byte-identical to the v1 response.
+///
+/// Also asserts the v2 route is auth-gated (403 on wrong token) and that the
+/// `is_syncing()` 503 guard fires on a syncing mock.
+///
+/// (ADR: `D-proposer-duties-v2-shares-v1`, `D-proposer-dependent-root-fulu-fix`)
+#[tokio::test]
+async fn proposer_duties_v2_shape() {
+    let router = make_router(None);
+
+    // Happy path: 200 with correct shape.
+    let (status, json) = get_json(&router, "/eth/v2/validator/duties/proposer/1").await;
+    assert_eq!(status, StatusCode::OK, "expected 200, got {status}: {json}");
+
+    // Required fields per proposer.v2.yaml.
+    assert!(
+        json["dependent_root"].is_string(),
+        "dependent_root must be present as a string, got: {json}"
+    );
+    assert!(
+        json["execution_optimistic"].is_boolean(),
+        "execution_optimistic must be boolean"
+    );
+    let data = json["data"].as_array().expect("data must be an array");
+    assert_eq!(
+        data.len(),
+        MainnetBeaconSpec::SLOTS_PER_EPOCH as usize,
+        "must have one proposer per slot"
+    );
+
+    // `finalized` must NOT be present (v2 yaml only requires dependent_root +
+    // execution_optimistic + data).
+    assert!(
+        json["finalized"].is_null(),
+        "finalized must not be present in v2 response, got: {json}"
+    );
+
+    // Each duty has the required ProposerDuty fields.
+    for duty in data {
+        assert!(duty["pubkey"].as_str().unwrap().starts_with("0x"));
+        assert!(duty["validator_index"].is_string());
+        assert!(duty["slot"].is_string());
+    }
+
+    // On a pre-Fulu state v1 and v2 bodies should be identical.
+    let (status_v1, json_v1) = get_json(&router, "/eth/v1/validator/duties/proposer/1").await;
+    assert_eq!(status_v1, StatusCode::OK);
+    assert_eq!(
+        json["dependent_root"], json_v1["dependent_root"],
+        "v1 and v2 dependent_root must match on pre-Fulu state"
+    );
+    assert_eq!(
+        json["data"], json_v1["data"],
+        "v1 and v2 data must be identical on pre-Fulu state"
+    );
+
+    // Auth gate: wrong token → 403.
+    let token = "secret".to_string();
+    let router_auth = make_router(Some(token.clone()));
+    let sc = get_with_bearer(
+        &router_auth,
+        "/eth/v2/validator/duties/proposer/1",
+        "wrongtoken",
+    )
+    .await;
+    assert_eq!(sc, StatusCode::FORBIDDEN, "v2 must be auth-gated");
+
+    // 503 when syncing.
+    let syncing_router = make_syncing_router();
+    let (sc_sync, _) = get_json(&syncing_router, "/eth/v2/validator/duties/proposer/1").await;
+    assert_eq!(
+        sc_sync,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "v2 must return 503 when syncing"
+    );
+}
+
 /// Auth gate: when token is configured, unauthenticated requests to
 /// `/eth/v1/validator/*` return 401; correct Bearer passes.
 #[tokio::test]

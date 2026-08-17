@@ -206,21 +206,62 @@ fn proposer_index_at_slot<E: BeaconSpec>(
 
 /// Compute the `dependent_root` for proposer duties.
 ///
-/// `get_block_root_at_slot(state, compute_start_slot_at_epoch(epoch) - 1)`.
-/// Falls back to genesis block root on epoch-0 underflow.
+/// **Pre-Fulu** (`Phase0`..`Electra`):
+///   `get_block_root_at_slot(state, compute_start_slot_at_epoch(epoch) - 1)`
+///
+/// **Post-Fulu** (`Fulu`):
+///   `get_block_root_at_slot(state, compute_start_slot_at_epoch(epoch - 1) - 1)`
+///   (spec: `proposer.v2.yaml` — `dependent_root` shifts to the *previous* epoch's
+///   start because the deterministic lookahead (EIP-7917) is computed at epoch − 1).
+///
+/// Falls back to genesis block root on underflow (epoch 0 or epoch 1 in the Fulu path).
+///
+/// ## Latent v1 bug fixed here
+///
+/// The original `proposer_dependent_root` used the pre-Fulu formula for all forks.
+/// When a Fulu node served v1 proposer duties it returned the wrong `dependent_root`.
+/// The exhaustive match below (no `_ =>` fallback) corrects this: both v1 and v2 now
+/// route through this shared function and get the fork-correct value.
+/// (ADR: `D-proposer-dependent-root-fulu-fix`)
 fn proposer_dependent_root<E: BeaconSpec>(
     state: &E::BeaconState,
     epoch: pharos_types::phase0::Epoch,
     genesis_block_root: pharos_types::phase0::Root,
 ) -> pharos_types::phase0::Root {
     use pharos_stf::phase0::accessors::{compute_start_slot_at_epoch, get_block_root_at_slot};
+    use pharos_types::views::BeaconStateView as _;
 
-    let start = compute_start_slot_at_epoch(epoch, E::SLOTS_PER_EPOCH);
-    if start.0 == 0 {
-        return genesis_block_root;
+    match state.fork_variant() {
+        ForkVariant::Phase0
+        | ForkVariant::Altair
+        | ForkVariant::Bellatrix
+        | ForkVariant::Capella
+        | ForkVariant::Deneb
+        | ForkVariant::Electra => {
+            // Pre-Fulu: dependent root is at `compute_start_slot_at_epoch(epoch) - 1`.
+            let start = compute_start_slot_at_epoch(epoch, E::SLOTS_PER_EPOCH);
+            if start.0 == 0 {
+                return genesis_block_root;
+            }
+            let dep_slot = pharos_types::phase0::Slot(start.0 - 1);
+            get_block_root_at_slot::<E>(state, dep_slot).unwrap_or(genesis_block_root)
+        }
+        ForkVariant::Fulu => {
+            // Post-Fulu (EIP-7917): dependent root is at
+            // `compute_start_slot_at_epoch(epoch - 1) - 1`.
+            // Underflow: epoch 0 → genesis block root.
+            if epoch.0 == 0 {
+                return genesis_block_root;
+            }
+            let prev_epoch = pharos_types::phase0::Epoch(epoch.0 - 1);
+            let start = compute_start_slot_at_epoch(prev_epoch, E::SLOTS_PER_EPOCH);
+            if start.0 == 0 {
+                return genesis_block_root;
+            }
+            let dep_slot = pharos_types::phase0::Slot(start.0 - 1);
+            get_block_root_at_slot::<E>(state, dep_slot).unwrap_or(genesis_block_root)
+        }
     }
-    let dep_slot = pharos_types::phase0::Slot(start.0 - 1);
-    get_block_root_at_slot::<E>(state, dep_slot).unwrap_or(genesis_block_root)
 }
 
 /// Compute the `dependent_root` for attester duties.
@@ -373,6 +414,29 @@ pub async fn get_proposer_duties<E: BeaconSpec>(
         Ok(Err(e)) => e.into_response(),
         Err(e) => e.into_response(),
     }
+}
+
+/// `GET /eth/v2/validator/duties/proposer/{epoch}`
+///
+/// Per `~/dev/beacon-APIs/apis/validator/duties/proposer.v2.yaml`.
+///
+/// The v2 response schema is byte-identical to v1 (`{dependent_root,
+/// execution_optimistic, data: [ProposerDuty]}`).  The only semantic change is
+/// the `dependent_root` formula for Fulu states (EIP-7917), which is already
+/// handled by the shared `proposer_dependent_root` helper (the same helper that
+/// v1 now uses, fixing the latent v1 Fulu `dependent_root` bug).
+///
+/// `is_syncing()` 503 guard matches v1 exactly.  No `is_optimistic_node()` 503
+/// per the M8 duty-read contract.
+///
+/// (ADR: `D-proposer-duties-v2-shares-v1`)
+pub async fn get_proposer_duties_v2<E: BeaconSpec>(
+    state: State<Arc<ApiState<E>>>,
+    path: Path<u64>,
+) -> Response {
+    // v2 is a thin alias: the shared proposer_dependent_root already contains the
+    // fork-correct formula (pre-Fulu vs Fulu), so both v1 and v2 delegate here.
+    get_proposer_duties::<E>(state, path).await
 }
 
 /// `POST /eth/v1/validator/duties/attester/{epoch}`
