@@ -7,7 +7,7 @@
 //!      `process_slots_fork` (empty-slot advance) and `state_transition`
 //!      (block-applying), using the same STF primitives as `import_block`.
 //!
-//! Per `D-replay-on-read` (M-Storage). The service is sync; callers wrap in
+//! Per `D-replay-on-read`. The service is sync; callers wrap in
 //! `tokio::task::spawn_blocking`.
 
 use std::sync::Arc;
@@ -305,7 +305,7 @@ impl<E: BeaconSpec> StateRegenService<E> {
         let disk_best: Option<(Root, E::BeaconState, Slot)> =
             self.nearest_epoch_boundary_state_on_disk(target_slot);
 
-        // ── 3. Cold restore-points (Phase 3, empty until then) ───────────────
+        // ── 3. Cold restore-points (empty until then) ───────────────
         let cold_best: Option<(Root, E::BeaconState, Slot)> =
             self.nearest_cold_restore_point(target_slot);
 
@@ -443,7 +443,7 @@ impl<E: BeaconSpec> StateRegenService<E> {
             if let Some(block_root) = block_root_opt {
                 // A block exists at this slot: load it from the hot CF, falling
                 // through to the cold CF when the block has been migrated by the
-                // Phase-3 freezer (Task 3.6).
+                // Phase-3 freezer.
                 let hot = <RocksStore as DbStore<E>>::get_block(&self.store, &block_root)
                     .map_err(RegenError::Storage)?;
                 let signed_block = if let Some(b) = hot {

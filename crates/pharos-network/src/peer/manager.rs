@@ -42,9 +42,7 @@ pub struct PeerManager<S: PeerScorer> {
     /// Bounded LRU cache of recently failed dial attempts (cap: 256).
     ///
     /// Keyed by `PeerId` when known at dial-fail time; the value is the
-    /// `Instant` the failure was recorded. M11 will replace this with richer
-    /// accounting (backoff intervals, failure counts). Added in M3a Phase 3
-    /// per D-network-event-surface.
+    /// `Instant` the failure was recorded. Per `D-network-event-surface`.
     recently_failed_dials: LruCache<PeerId, Instant>,
 }
 
@@ -274,7 +272,7 @@ impl<S: PeerScorer> PeerManager<S> {
     }
 
     /// Snapshot of every connected peer's current score, for the peer-score
-    /// gauge (M11 Phase 11 task 4).
+    /// gauge.
     pub fn connected_peer_scores(&self) -> Vec<f64> {
         self.peers
             .values()
@@ -294,15 +292,15 @@ impl<S: PeerScorer> PeerManager<S> {
         self.scorer.should_disconnect(peer_id)
     }
 
-    /// Gate an inbound req-resp request on the peer's per-method token bucket
-    /// (M11 Phase 11 task 2). Returns `false` when the bucket is exhausted; the
+    /// Gate an inbound req-resp request on the peer's per-method token bucket.
+    /// Returns `false` when the bucket is exhausted; the
     /// caller should reject the request and record a `RateLimitExceeded` event.
     pub fn allow_request(&mut self, peer_id: PeerId, method: crate::scoring::RpcMethod) -> bool {
         self.scorer.allow_request(peer_id, method)
     }
 
     /// Earliest `Instant` at which a (re)dial of `peer_id` is permitted by the
-    /// scorer's exponential dial backoff (M11 Phase 11 task 3).
+    /// scorer's exponential dial backoff.
     pub fn next_dial_allowed(&self, peer_id: &PeerId) -> Instant {
         self.scorer.next_dial_allowed(peer_id)
     }
@@ -348,7 +346,7 @@ impl<S: PeerScorer> PeerManager<S> {
     }
 
     /// The `n` lowest-scoring peers per the scorer, independent of the
-    /// `target_peers` excess calculation (M11 Phase 11 test/inspection seam).
+    /// `target_peers` excess calculation (test/inspection seam).
     pub fn should_prune_n(&self, n: usize) -> Vec<PeerId> {
         self.scorer.worst_peers(n)
     }
@@ -407,7 +405,7 @@ impl<S: PeerScorer> PeerManager<S> {
     ///
     /// When `peer` is `Some`, the failure is attributed to a known `PeerId`, the
     /// LRU cache entry is updated, and the scorer's exponential dial backoff is
-    /// advanced (M11 Phase 11 task 3). When `peer` is `None` (dial failed before
+    /// advanced. When `peer` is `None` (dial failed before
     /// identity was established), the call is a no-op — there is no key to store.
     /// The cache capacity is 256 entries; the least-recently-used entry is
     /// evicted when full.
@@ -495,7 +493,7 @@ impl<S: PeerScorer> PeerManager<S> {
         self.target_peers
     }
 
-    /// Persist the durable score table to `<dir>/peer_scores.ssz` (M11 Phase 14).
+    /// Persist the durable score table to `<dir>/peer_scores.ssz`.
     ///
     /// Delegates to the scorer's `save_to_dir`; errors are logged inside the
     /// scorer implementation.  Best-effort: shutdown must not block on disk I/O.
@@ -533,7 +531,7 @@ mod tests {
     /// - `should_prune()` with `NoopScorer` always returns an empty Vec,
     ///   because `NoopScorer::worst_peers` is a no-op stub.
     ///   This test verifies the wiring, not pruning semantics; real pruning
-    ///   semantics arrive with the real scorer in M11.
+    ///   semantics are covered by the real scorer's own tests.
     #[test]
     fn peer_manager_ban_and_prune_wiring() {
         let mut mgr = make_manager();
@@ -567,7 +565,7 @@ mod tests {
             );
         }
 
-        // should_prune (post task 1.3): excess = connected_count()=0 (no peer
+        // should_prune: excess = connected_count()=0 (no peer
         // reached Connected — only on_connected was called), target_peers=2, so
         // excess=max(0-2,0)=0 → early return. NoopScorer also never produces
         // prune candidates; wiring test only.

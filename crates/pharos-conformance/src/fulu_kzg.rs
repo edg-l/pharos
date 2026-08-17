@@ -32,7 +32,7 @@ pub struct FuluKzgResult {
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
 /// Produce one `CaseTask` per Fulu KZG test case in the same walk-order as
-/// `run_fulu_kzg`.  Called by the Phase 7 flat work-pool.
+/// `run_fulu_kzg`.  Called by the flat work-pool.
 ///
 /// KZG tests live under `<root>/general/fulu/kzg/` and are preset-independent
 /// (`("fulu", "kzg", "-")` in `rows.rs`).

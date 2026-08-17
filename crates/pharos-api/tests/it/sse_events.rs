@@ -443,7 +443,7 @@ async fn sse_empty_topics_returns_400() {
     );
 }
 
-/// `payload_attributes` is a valid spec topic but is never emitted at M7.
+/// `payload_attributes` is a valid spec topic but is never emitted.
 /// A subscriber requesting it must receive a 200 SSE stream, not a 400.
 /// Mixing it with `head` still delivers the head frame.
 #[tokio::test]

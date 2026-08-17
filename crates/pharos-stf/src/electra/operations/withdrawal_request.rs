@@ -19,7 +19,7 @@
 //! 6. active long enough (`activation_epoch + SHARD_COMMITTEE_PERIOD`),
 //! 7. then read `pending_balance_to_withdraw` and branch full vs partial.
 //!
-//! Churn/credential logic is reused from `electra::helpers` (Phase 2a).
+//! Churn/credential logic is reused from `electra::helpers`.
 
 use pharos_ssz::SszSequence;
 use pharos_types::{

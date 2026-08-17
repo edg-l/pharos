@@ -1,6 +1,6 @@
 //! Fork-enum wrappers for beacon-chain container types.
 //!
-//! `D-altair-state-shape` (docs/m3b-plan.md:66-78): the enum-of-forks shape.
+//! `D-altair-state-shape`: the enum-of-forks shape.
 //! Each variant carries the concrete inner type (phase0 or altair). View
 //! traits are implemented via match-delegation so downstream code that is
 //! generic over `<S: BeaconStateView>` continues to work unchanged.

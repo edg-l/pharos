@@ -1,4 +1,4 @@
-//! Oracle for Phase 18: `/health` probe on the metrics port.
+//! Oracle for the `/health` probe on the metrics port.
 //!
 //! Verifies that the combined metrics + health HTTP server returns:
 //! - HTTP 200 when the sync-state probe reports [`SyncState::Synced`].
@@ -8,7 +8,7 @@
 //! ephemeral port, backed by the binary-wide recorder handle from `common` but
 //! with different sync-state probes.
 //!
-//! Per `D-health-probe-on-metrics-port` (M11 Phase 18).
+//! Per `D-health-probe-on-metrics-port`.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;

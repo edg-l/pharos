@@ -206,7 +206,7 @@ macro_rules! dispatch_type {
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
 /// Produce one `CaseTask` per ssz_static case in the same walk-order as the
-/// corresponding `run_*_ssz_static_*` function. Called by the Phase 7 flat
+/// corresponding `run_*_ssz_static_*` function. Called by the flat
 /// work-pool.
 ///
 /// `fork` must be one of `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`,

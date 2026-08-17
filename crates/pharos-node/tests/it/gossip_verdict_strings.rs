@@ -1,6 +1,6 @@
 //! Spec verdict-string round-trip test.
 //!
-//! Task 4.2 (M4e Phase 4): assert that every IGNORE/REJECT verdict string in
+//! Assert that every IGNORE/REJECT verdict string in
 //! `host_impl.rs` matches a hard-coded list, and that no string with a known
 //! topic prefix exists in the source that is NOT in the list.
 //!
@@ -12,7 +12,7 @@
 //! `pharos-network/src/host.rs` (single source of truth per D-parent-unseen-sentinel).
 //! Part 1 and Part 2 therefore scan both source files.
 //!
-//! Phase 6 extension: adds strings for the 3 folded phase0 validators
+//! Also covers strings for the 3 folded phase0 validators
 //! (`exit: `, `proposer_slashing: `, `attester_slashing: `) and the new
 //! `bls_to_exec: ` validator.
 //!
@@ -24,9 +24,9 @@
 //! `block: parent EL-invalid`, `block: parent invalid with known EL result` (from the
 //! EL-result-aware step-1 branching), and `block: incorrect execution payload timestamp`.
 //!
-//! `"block: unrecognised fork variant"` was removed in M7 commit 2598fb5: the
-//! `BeaconSpec::signed_block_message` refactor made an unrecognised fork a compile
-//! error (exhaustive match), so the runtime Reject string no longer exists.
+//! There is no `"block: unrecognised fork variant"` string: an unrecognised
+//! fork is a compile error in `BeaconSpec::signed_block_message` (exhaustive
+//! match), so no runtime Reject string exists.
 //!
 //! This test is the gating mechanism for spec rule audit. Do not modify the list
 //! without also updating the corresponding spec-rule mapping in `docs/decisions.md`.
@@ -270,8 +270,8 @@ fn verdict_strings_match_known_list() {
 
     // ── Part 3: counts match expectation ─────────────────────────────────────
     // "block: parent unseen" is NOT in EXPECTED (it lives in the const); the
-    // count therefore shows 12 inline block strings, not 13. (M7 commit 2598fb5
-    // removed "block: unrecognised fork variant" — now a compile-time guarantee.)
+    // count therefore shows 12 inline block strings, not 13 ("block:
+    // unrecognised fork variant" is a compile-time guarantee instead).
     let block_count = EXPECTED.iter().filter(|s| s.starts_with("block: ")).count();
     let att_count = EXPECTED.iter().filter(|s| s.starts_with("att: ")).count();
     let agg_count = EXPECTED.iter().filter(|s| s.starts_with("agg: ")).count();

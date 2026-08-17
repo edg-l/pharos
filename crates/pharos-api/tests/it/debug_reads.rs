@@ -1,4 +1,4 @@
-//! M15 Phase 5 data column sidecar integration tests.
+//! Data column sidecar integration tests.
 //!
 //! Exercises `GET /eth/v1/debug/beacon/data_column_sidecars/{block_id}` against
 //! a mock `ChainStateApi` that can serve seeded `DataColumnSidecar`s.

@@ -543,7 +543,7 @@ mod expected_columns_tests {
     /// same custody+sampling set as the inner `ColumnAvailabilityChecker`'s for a
     /// fixed `node_id` + `cgc` — the accessor just forwards to the column
     /// sub-checker, so the lookup co-fetch and the column DA gate agree on which
-    /// columns matter (Phase 2 accessor; Task 4.1).
+    /// columns matter (accessor).
     #[test]
     fn fork_aware_expected_columns_match_inner_column_checker() {
         let tmp = tempfile::tempdir().expect("tempdir");

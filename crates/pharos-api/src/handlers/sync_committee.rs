@@ -1,4 +1,4 @@
-//! Sync-committee validator namespace handlers (Task 5.3).
+//! Sync-committee validator namespace handlers.
 //!
 //! Routes implemented:
 //! - `GET  /eth/v1/validator/sync_committee_contribution`

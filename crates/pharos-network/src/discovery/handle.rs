@@ -6,7 +6,7 @@
 //! the node crosses `ALTAIR_FORK_EPOCH`, without retaining a reference to the
 //! full `Network` or `DiscoveryService`.
 //!
-//! M3b addition: `update_enr_eth2`. See Task 7.4.
+//! Also exposes `update_enr_eth2` for cross-fork ENR migration.
 
 use tokio::sync::{mpsc, oneshot};
 

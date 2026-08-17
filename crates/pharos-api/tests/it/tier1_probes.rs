@@ -688,7 +688,7 @@ async fn test_config_spec() {
     );
 }
 
-// ── M15 Phase 1 tests ─────────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// `GET /eth/v2/node/version` must return
 /// `{ "data": { "beacon_node": { "code", "name", "version", "commit" } } }`

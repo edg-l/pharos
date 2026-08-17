@@ -1,4 +1,4 @@
-//! Phase-2 beacon state-read integration tests (Task 2.7).
+//! Phase-2 beacon state-read integration tests.
 //!
 //! Drives `build_router` over a mock `ChainStateApi` backed by a real (default
 //! phase0) `BeaconState` carrying three validators, and exercises:

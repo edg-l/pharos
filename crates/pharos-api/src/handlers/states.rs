@@ -1,4 +1,4 @@
-//! Beacon states namespace handlers (Phase 2).
+//! Beacon states namespace handlers.
 //!
 //! - `GET /eth/v1/beacon/states/{state_id}/root`
 //! - `GET /eth/v1/beacon/states/{state_id}/fork`
@@ -1424,7 +1424,7 @@ pub async fn get_proposer_lookahead<E: BeaconSpec>(
 
         // RI-6: for a Fulu state, EIP-7917 stores the proposer lookahead AS A
         // STATE FIELD (`state.proposer_lookahead`). Read it directly — never
-        // recompute on-demand (the M12 16-bit-proposer gotcha that bit three
+        // recompute on-demand (the 16-bit-proposer gotcha that bit three
         // sites). For a pre-Fulu (Electra) state there is no field, so the
         // window is computed via the electra 16-bit proposer selection.
         let lookahead: Vec<serde_json::Value> =

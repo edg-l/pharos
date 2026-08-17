@@ -11,7 +11,7 @@
 /// Read at startup by `rehydrate_fork_choice_store` to seed the in-memory
 /// `pharos_fork_choice::Store::payload_statuses` map.
 ///
-/// Per `D-payload-status-store` (M4a Phase 4).
+/// Per `D-payload-status-store`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PayloadStatus {
     /// The EL confirmed the payload is valid.

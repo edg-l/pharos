@@ -1,8 +1,8 @@
-//! M11 Phase 11 — peer-scoring signal-wiring end-to-end test.
+//! Peer-scoring signal-wiring end-to-end test.
 //!
 //! Drives synthetic misbehaviour events through the *wired* swarm-loop path
 //! (`Network` built with the real `RealScorer`, no spawn) and asserts the
-//! Phase 11 contract:
+//! Contract:
 //!
 //! 1. `gossipsub::Event::SlowPeer` is score-NEUTRAL for `RealScorer`: native
 //!    gossipsub v1.1 (`slow_peer_weight`) owns the slow-peer penalty, so the

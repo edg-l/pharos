@@ -12,7 +12,7 @@
 //!       short write lock) so RAM is bounded behind finalization.
 //!
 //! Per `D-freezer-driver-off-head-watch`, `D-freezer-in-rocksdb`,
-//! `D-prune-behind-finalized`, and WARNING-9 (Task 3.4).
+//! `D-prune-behind-finalized`, and WARNING-9.
 
 use std::sync::Arc;
 
@@ -177,13 +177,13 @@ pub async fn run_freezer_loop<E: BeaconSpec>(
             }
         }
 
-        // ── Task 4.1: Identify and prune orphan (non-canonical) hot blocks ───
+        // ── Identify and prune orphan (non-canonical) hot blocks ─────────────
         //
         // CRITICAL-4: canonicality is determined ONLY from the persisted
         // `slot_to_block_root` index — NOT from `get_ancestor`, which is
         // in-memory only and returns the queried root on a missing `store.blocks`
         // entry (get_head.rs:90-92), thus misreporting orphans as canonical after
-        // Task 3.4 eviction.
+        // eviction.
         //
         // For each hot block root at a slot in (split_slot, finalized_slot]:
         //   canonical iff slot_to_block_root[slot] == root.
@@ -268,7 +268,7 @@ pub async fn run_freezer_loop<E: BeaconSpec>(
             }
         }
 
-        // ── Evict from in-memory fork-choice maps (Task 3.4) ──────────────────
+        // ── Evict from in-memory fork-choice maps ──────────────────
         //
         // WARNING-9: evicting pre-finalized blocks requires pruning
         // `latest_messages` entries whose `.root` points at an evicted block, to
@@ -300,7 +300,7 @@ pub async fn run_freezer_loop<E: BeaconSpec>(
 /// multiples (not just the latest) keeps the cold replay-cost bound at
 /// `interval_epochs` even after a long non-finalization gap.
 ///
-/// # Granularity invariant (Phase 3 M11 verification)
+/// # Granularity invariant (verification)
 ///
 /// The cold-states CF stores ONLY restore-point-interval-multiple boundaries,
 /// never dense per-slot states. Properties confirmed by

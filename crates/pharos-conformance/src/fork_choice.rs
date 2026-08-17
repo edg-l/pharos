@@ -7,7 +7,7 @@
 //! # Why altair fixtures?
 //!
 //! Phase-0 fork-choice fixtures do not exist upstream (consensus-spec-tests
-//! ships fork-choice cases starting from altair).  Per the M1 plan Q1, the
+//! ships fork-choice cases starting from altair).  The
 //! `phase0/fork_choice/*` report rows point at the altair fixtures with a
 //! footnote recorded in `docs/decisions.md`.
 //!
@@ -24,9 +24,9 @@
 //!   `payload_data_availability_vote`, `genesis_time` (we treat it as
 //!   informational since it cannot drift mid-test).
 //! - **Anchor-state / anchor-block SSZ decode failure** (neither altair nor
-//!   phase0 succeeds) counts the case as **skip**. With altair types landed
-//!   (M3b), all altair fork-choice fixtures decode successfully and the runner
-//!   produces real pass/fail counts. Q1 is resolved as of M3b.
+//!   phase0 succeeds) counts the case as **skip**. With altair types landed,
+//!   all altair fork-choice fixtures decode successfully and the runner
+//!   produces real pass/fail counts.
 
 use std::path::{Path, PathBuf};
 
@@ -164,7 +164,7 @@ impl ElectraFcSpec for MinimalBeaconSpec {
 
 /// Produce one `CaseTask` per fork-choice test case for a single `(fork, preset)` row,
 /// in the same walk-order as the corresponding `run_fork_choice_*` function.
-/// Called by the Phase 7 flat work-pool.
+/// Called by the flat work-pool.
 ///
 /// Walk order: sorted sub-categories (from `read_dir_sorted`), then sorted cases
 /// within each sub-category. Ordinals thread across sub-sweeps.
@@ -539,8 +539,7 @@ where
 {
     // Anchor state: try altair SSZ first (altair fork-choice fixtures use altair
     // states), then fall back to phase0. Skip on both failures.
-    // Per Q1 resolution in docs/decisions.md: altair types landed in M3b so
-    // this now produces real pass/fail counts.
+    // Altair types are implemented, so this produces real pass/fail counts.
     let anchor_state: E::BeaconState =
         match load_altair_state::<E>(case_dir, "anchor_state.ssz_snappy") {
             Ok(s) => s,
@@ -811,7 +810,7 @@ where
 /// - Block decode tries bellatrix first, then altair, then phase0.
 /// - `pow_block` steps populate a `HashMapPowBlockProvider`.
 /// - `should_override_forkchoice_update` checks are asserted.
-///   When the YAML expects `true`, the assertion is skipped (M4a always returns `false`).
+///   When the YAML expects `true`, the assertion is skipped (always returns `false`).
 fn run_bellatrix_case<E>(case_dir: &Path, case_name: &str) -> CaseResult
 where
     E: BeaconSpec,
@@ -1234,7 +1233,7 @@ where
 ///
 /// Like `run_checks` but also handles `should_override_forkchoice_update`.
 /// For cases where the YAML expects `true`, the assertion is skipped
-/// (M4a always returns `false`; full re-org logic deferred to M11).
+/// (always returns `false`; re-org logic is not implemented).
 fn run_bellatrix_checks<E>(store: &Store<E>, checks: &Checks) -> Result<(), String>
 where
     E: BeaconSpec,
@@ -1245,8 +1244,8 @@ where
     if let Some(want) = checks.should_override_forkchoice_update {
         let got = should_override_forkchoice_update::<E>(store);
         if want {
-            // Expected true but M4a always returns false; skip assertion.
-            // (Full proposer-boost re-org logic deferred to M11.)
+            // Expected true, but this always returns false; skip the assertion
+            // because proposer-boost re-org logic is not implemented.
         } else if got != want {
             return Err(format!(
                 "should_override_forkchoice_update: want {want}, got {got}"

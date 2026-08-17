@@ -88,7 +88,7 @@ pub fn load_enr_seq(dir: &Path) -> u64 {
 /// Writes via a `.tmp` sibling and renames so a crash mid-write never leaves a
 /// truncated file. Creates the directory if absent.
 ///
-/// Per `D-enr-seq-persistence` (M11 Phase 13).
+/// Per `D-enr-seq-persistence`.
 pub fn save_enr_seq(dir: &Path, seq: u64) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!("{ENR_SEQ_FILENAME}.tmp"));
@@ -396,7 +396,7 @@ mod tests {
         bv
     }
 
-    // ── Task 1.3: ENR round-trip ───────────────────────────────────────────────
+    // ── ENR round-trip ─────────────────────────────────────────────────────────
 
     /// Round-trip ENR with all four port keys (udp4=9000, tcp4=9000, quic=9001,
     /// quic6=9001). Decode each field and assert equality with the input.
@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(read_quic6_port(&enr), None);
     }
 
-    // ── Task 1.4: missing-field paths ─────────────────────────────────────────
+    // ── Missing-field paths ───────────────────────────────────────────────────
 
     /// Decoding `eth2` from an ENR that has no `eth2` key returns an error.
     #[test]
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(read_quic6_port(&enr), None);
     }
 
-    // ── Task 1.5: matches_local_fork ──────────────────────────────────────────
+    // ── matches_local_fork ────────────────────────────────────────────────────
 
     #[test]
     fn matches_local_fork_same_digest() {
@@ -740,7 +740,7 @@ mod tests {
         assert!(!matches_local_fork(&a, &b));
     }
 
-    // ── Phase 13: ENR seq persistence ────────────────────────────────────────
+    // ── ENR seq persistence ──────────────────────────────────────────────────
 
     /// Write seq N to a temp dir, read it back; assert the loaded value equals N.
     #[test]
@@ -806,7 +806,7 @@ mod tests {
         );
     }
 
-    // ── Task 5.6: Fulu ENR cgc + nfd ───────────────────────────────────────────
+    // ── Fulu ENR cgc + nfd ─────────────────────────────────────────────────────
 
     /// `cgc` encodes big-endian with no leading zeros; `0` is the empty string;
     /// round-trips through `decode_cgc`.

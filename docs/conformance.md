@@ -180,4 +180,4 @@ Source: consensus-specs release `v1.7.0-alpha.8`.
 | fulu      | merkle_proof           | minimal | 4    | 0    | 0    | 4     |
 | fulu      | fast_confirmation      | minimal | 169  | 0    | 0    | 169   |
 
-[^1]: Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures. Resolved by M3b (commit `784d75b`): altair containers landed so anchor states now decode and the rows show real pass counts. The skip-unknown-step-keys policy is retained for bellatrix+ step types. Decision recorded in `docs/decisions.md` (Q1).
+[^1]: Phase-0 fork-choice fixtures do not exist upstream; the runner exercises the store against altair fork-choice fixtures. Altair containers decode, so these rows show real pass counts. The skip-unknown-step-keys policy is retained for bellatrix+ step types.

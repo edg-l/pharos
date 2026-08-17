@@ -1,4 +1,4 @@
-//! Blob DA pipeline integration test (Task 5.9 of M10-DA Phase 5).
+//! Blob DA pipeline integration test.
 //!
 //! Exercises the full park → deliver sidecars → re-inject → import → head path:
 //!

@@ -12,7 +12,6 @@
 //! (in `block_ingestion.rs`) because `pharos-stf` cannot depend on
 //! `pharos-fork-choice` (cycle: fork-choice already depends on stf).
 //!
-//! Per Phase 2 of M4c plan.
 
 use pharos_ssz::{SszVector, TreeHash};
 use pharos_types::{
@@ -2735,7 +2734,7 @@ where
 /// altair). The impl therefore projects the fulu state to electra via
 /// `fulu_state_to_electra` and delegates to `call_update_lc_snapshots_electra`,
 /// writing into the SAME electra LC column families (the fulu LC header uses the
-/// STF-verified `block.state_root`, the M4c invariant carried through electra).
+/// STF-verified `block.state_root`, an invariant carried through electra).
 ///
 /// Per `D-fulu-lc-uses-block-state-root`.
 pub trait FuluDispatchBounds<E: BeaconSpec>: Sized {

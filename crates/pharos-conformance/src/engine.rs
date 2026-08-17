@@ -8,8 +8,8 @@
 //! Scope: all 25 `engine_*` methods with ≥1 example in execution-apis.
 //! `engine_forkchoiceUpdatedV4` has no examples and contributes 0 to the count.
 //!
-//! Per `D-engine-conformance-runner` (docs/m4a-plan.md) and
-//! `D-engine-yaml-full-method-coverage` (docs/m14-conformance-completeness-plan.md).
+//! Per `D-engine-conformance-runner` and
+//! `D-engine-yaml-full-method-coverage`.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -77,7 +77,7 @@ struct YamlExample {
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
 /// Produce one `CaseTask` per Engine API YAML example in the same walk-order as
-/// `run_engine_yaml_suite`. Called by the Phase 7 flat work-pool.
+/// `run_engine_yaml_suite`. Called by the flat work-pool.
 ///
 /// Engine YAML tests are preset-independent (row 83: `("engine", "yaml", "-")`).
 ///

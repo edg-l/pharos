@@ -9,7 +9,7 @@
 //! unsubscribed; any new subnet is subscribed. The local `MetaData.attnets`
 //! bitvector is updated atomically via `NetworkCommand::UpdateMetaData`.
 //!
-//! Validator-duty-driven subnet subscriptions (M8) are separate; this driver
+//! Validator-duty-driven subnet subscriptions are separate; this driver
 //! handles only the two node-id-derived long-lived subnets per
 //! `SUBNETS_PER_NODE = 2`.
 

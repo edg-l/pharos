@@ -1,4 +1,4 @@
-//! Validator liveness endpoint (Task 5.4).
+//! Validator liveness endpoint.
 //!
 //! `POST /eth/v1/validator/liveness/{epoch}`
 //!
@@ -48,7 +48,7 @@ pub struct LivenessResponse {
 ///
 /// Body: JSON array of validator index strings, e.g. `["0","1","42"]`.
 ///
-/// Per `D-doppelganger-bn-liveness-endpoint` (M9 Phase 5.4).
+/// Per `D-doppelganger-bn-liveness-endpoint`.
 pub async fn post_validator_liveness<E: BeaconSpec>(
     State(state): State<Arc<ApiState<E>>>,
     Path(epoch): Path<u64>,

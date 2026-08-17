@@ -1,4 +1,4 @@
-//! Freezer migration integration test (Task 3.7 of M-Storage Phase 3).
+//! Freezer migration integration test.
 //!
 //! Builds a chain of `2 * SLOTS_PER_EPOCH` blocks, persists all blocks via
 //! `run_backfill_loop` (Phase-1 import path), then simulates finalization by
@@ -674,7 +674,7 @@ async fn freezer_migration_cold_presence_and_regen() {
     );
 }
 
-/// Cold-state density test (Phase 3 M11, `D-cold-granularity-restore-points-only`).
+/// Cold-state density test (`D-cold-granularity-restore-points-only`).
 ///
 /// Verifies that after migration:
 ///   (a) The `cold-states` CF contains EXACTLY one entry per interval-multiple

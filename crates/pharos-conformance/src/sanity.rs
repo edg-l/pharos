@@ -50,7 +50,7 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Produce one `CaseTask` per sanity test case for a single `(fork, preset)` row,
 /// in the same walk-order as the corresponding `run_sanity_*` function.
-/// Called by the Phase 7 flat work-pool.
+/// Called by the flat work-pool.
 ///
 /// Sub-sweep order: blocks cases fully, then slots cases (matches dispatcher order).
 ///

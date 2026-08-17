@@ -1,4 +1,4 @@
-//! Integration tests for Phase 6 back-pressure on the network event channel.
+//! Integration tests for back-pressure on the network event channel.
 //!
 //! Verifies two properties of `emit_event` (D-network-backpressure):
 //!

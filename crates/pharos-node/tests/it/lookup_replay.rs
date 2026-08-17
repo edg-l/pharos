@@ -309,7 +309,7 @@ async fn lookup_direct_import_holds_future_block() {
 
     // Anchor the chain at (near) wall-clock NOW so block1 (slot 1) lands ~one
     // slot in the future. `import_block` nudges the store clock to wall-now
-    // before on_block's future-slot guard (the M5-follow `c351622` fix), so a
+    // Before on_block's future-slot guard (the `c351622` fix), so a
     // block is only "future" when its slot is ahead of the wall clock — which
     // requires genesis ≈ now, not the far-past BACKFILL_GENESIS_TIME_SECS the
     // replay test uses.

@@ -3,8 +3,8 @@
 //! Call [`init_metrics`] once at startup (when `--metrics` is set) to install
 //! the global `metrics` recorder and start the Prometheus HTTP exporter on the
 //! configured address.  Metric-name constants and `describe_*` declarations for
-//! every metric in the roadmap list live here; Phase 6 wires the actual emission
-//! call sites.
+//! every metric live here; the call sites that emit them live with the code
+//! they measure.
 //!
 //! The HTTP server serves two routes on the same port:
 //! - `GET /metrics` — Prometheus text format.

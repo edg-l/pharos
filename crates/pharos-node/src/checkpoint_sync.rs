@@ -407,7 +407,7 @@ pub fn apply_anchor<E: BeaconSpec>(
     // Initialize `split_slot` and `anchor_slot` metadata to the anchor slot so
     // the freezer and rehydrate know where the hot window starts.  Both keys ride
     // the SAME single-BlockTransition anchor write per `D-anchor-state-on-disk`.
-    // Per Task 4.3: anchor is the initial hot/cold boundary.
+    // The anchor is the initial hot/cold boundary.
     let anchor_slot_be = state_slot.0.to_be_bytes();
 
     let mut batch = BlockTransition::<E>::new();

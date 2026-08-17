@@ -1,4 +1,4 @@
-//! Extra config namespace handlers (Phase 3).
+//! Extra config namespace handlers.
 //!
 //! - `GET /eth/v1/config/fork_schedule`
 //! - `GET /eth/v1/config/deposit_contract`

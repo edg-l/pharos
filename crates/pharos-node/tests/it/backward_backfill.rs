@@ -1,4 +1,4 @@
-//! Backward state-backfill integration test (M11 Phase 2, Task 2.7).
+//! Backward state-backfill integration test.
 //!
 //! Builds a known minimal-preset Bellatrix chain past two restore-point
 //! intervals (`SLOTS_PER_HISTORICAL_ROOT = 64` for `MinimalBeaconSpec`, so a chain
@@ -10,11 +10,11 @@
 //!       `run_backward_backfill_loop`; asserts that BOTH restore-point states
 //!       (slots 64 and 128) are persisted to the cold `restore-points` /
 //!       `cold-states` CFs and that each reconstructed state's `tree_hash_root`
-//!       equals the `state_root` field of the block at that slot (Task 2.4 —
+//!       equals the `state_root` field of the block at that slot (
 //!       root-equality against a known state, ≥ 2 distinct historical slots);
 //!   (b) asserts the loop PARKS (does not error, does not write) when the
 //!       progress signal has not yet reached the target restore-point slot
-//!       (Task 2.2 gate-on-progress behaviour).
+//!       (gate-on-progress behaviour).
 
 use std::sync::Arc;
 use std::time::Duration;

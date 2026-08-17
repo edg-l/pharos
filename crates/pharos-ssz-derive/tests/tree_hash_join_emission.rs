@@ -5,7 +5,7 @@
 //! `merkleize(&[f1.tree_hash_root(), ..., f25.tree_hash_root()])` reference.
 //!
 //! This test does NOT assert parallelism (rayon's scheduler is transparent);
-//! it asserts semantic identity between the rayon-join emission (Phase 4) and
+//! it asserts semantic identity between the rayon-join emission and
 //! the serial emission that preceded it.
 
 use pharos_ssz::{TreeHash, merkleize};

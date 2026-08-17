@@ -3,7 +3,7 @@
 //! ## Design
 //!
 //! This is a hand-built internal sanity test, NOT a fixture-based conformance
-//! test (those come in Phase 9).
+//! test.
 //!
 //! ## Approach and hacks
 //!
@@ -29,7 +29,8 @@
 //!    `store.latest_messages`, `store.checkpoint_states`, and
 //!    `store.equivocating_indices` — none of which require authentic
 //!    signatures.
-//! 2. Real fixture-based testing (including BLS verification) is Phase 9.
+//! 2. Real fixture-based testing (including BLS verification) lives in the
+//!    conformance runner.
 //!
 //! ## Topology
 //!

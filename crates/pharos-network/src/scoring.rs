@@ -1,11 +1,11 @@
 //! Peer scoring: `PeerScorer` trait, `ScoreEvent` enum, `NoopScorer`, and the
 //! real `RealScorer`.
 //!
-//! Per M2 plan D-peer-scoring: the trait + event enum lock in the API surface
+//! Per `D-peer-scoring`: the trait + event enum lock in the API surface
 //! at Phase 0 so every later phase can emit events without later renames.
-//! The real scoring algorithm lands in M11 (`RealScorer`, this file).
+//! `RealScorer` in this file implements the algorithm.
 //!
-//! ## Score model (M11 Phase 10)
+//! ## Score model
 //!
 //! Each peer carries additive score components:
 //!
@@ -13,7 +13,7 @@
 //!   rate-limit-exceeded/inbound-stream-reset penalise).
 //! - **app** — application-specific long-term component (handshake failures,
 //!   subnet non-propagation, banned reconnects). This is the durable component
-//!   the Phase 14 persistence layer saves.
+//!   the persistence layer saves.
 //! - **gossip** — retained as an always-zero field for struct/`total()` shape
 //!   stability ONLY. Gossip-quality + slow-peer scoring is owned entirely by
 //!   native gossipsub v1.1 (`gossip/config.rs`), so `RealScorer` never writes
@@ -23,17 +23,17 @@
 //! `score(peer) = req_resp + app` (the always-zero `gossip` is excluded), with
 //! each component lazily decayed toward 0 on read.
 //!
-//! ## Decay model (M11 Phase 10 task 1 decision)
+//! ## Decay model
 //!
 //! **Lazy decay on `score()`** (plan option (a), per `D-scorer-decay-lazy`
 //! in `docs/decisions.md`). Each peer stores a `last_decay: Instant`.
 //! On every `score()` / `record()` we apply exponential decay
 //! `component *= DECAY_PER_SECOND.powf(elapsed_secs)` before using or mutating
 //! the value, then reset `last_decay` to now. No `tick` method is added to the
-//! `PeerScorer` trait, so the swarm loop (Phase 11) carries no decay-driver
+//! `PeerScorer` trait, so the swarm loop carries no decay-driver
 //! dependency. The trait stays unchanged and `NoopScorer` keeps working.
 //!
-//! ## Persistence (M11 Phase 14)
+//! ## Persistence
 //!
 //! `RealScorer` can be serialized to / deserialized from a flat SSZ byte
 //! sequence so the durable `app`-component scores (long-term bans, handshake
@@ -66,9 +66,9 @@ use crate::types::DisconnectReason;
 
 /// An event that affects a peer's score.
 ///
-/// Plan reference: D-peer-scoring in `docs/m2-plan.md`, extended for the M11
-/// Phase 10/11 signals (`SlowPeer`, `RateLimitExceeded`, `SubnetNonPropagation`,
-/// `UnsubscribedFromExpectedSubnet`). Every variant carries the context a real
+/// Per `D-peer-scoring`, including the `SlowPeer`, `RateLimitExceeded`,
+/// `SubnetNonPropagation` and `UnsubscribedFromExpectedSubnet` signals. Every
+/// variant carries the context a real
 /// scoring implementation needs; do not strip fields when stubbing.
 #[derive(Debug, Clone)]
 pub enum ScoreEvent {
@@ -90,13 +90,13 @@ pub enum ScoreEvent {
     /// A connection was rejected because the peer is banned.
     BannedPeerConnected,
     /// The peer issued more req-resp requests than its per-method token bucket
-    /// allows (M11 Phase 10/11). Carries the offending method.
+    /// allows. Carries the offending method.
     RateLimitExceeded { method: RpcMethod },
     /// The peer is subscribed to an expected subnet but never propagated a
-    /// message on it within the coverage window (M11 Phase 10 task 5).
+    /// message on it within the coverage window.
     SubnetNonPropagation { topic: TopicHash },
     /// The peer left the mesh for a subnet we expected it to serve
-    /// (`gossipsub::Event::Unsubscribed` on an expected subnet, M11 Phase 0).
+    /// (`gossipsub::Event::Unsubscribed` on an expected subnet).
     UnsubscribedFromExpectedSubnet { topic: TopicHash },
     /// The peer reset an inbound req-resp stream before sending a complete request.
     ///
@@ -111,7 +111,6 @@ pub enum ScoreEvent {
 /// RPC methods tracked for scoring purposes.
 ///
 /// Light-client variants added per `specs/altair/p2p-interface.md:445-461`.
-/// Handlers land in Phase 6; variant declarations are here so Phase 5 compiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RpcMethod {
     Status,
@@ -149,7 +148,7 @@ pub enum RpcMethod {
 /// Kinds of RPC error that affect scoring.
 ///
 /// Timeout is modelled as the top-level [`ScoreEvent::RpcTimeout`] variant,
-/// not as a `Timeout` kind here, deviating from the M2 plan. Do not add a
+/// not as a `Timeout` kind here. Do not add a
 /// `Timeout` variant; emit `RpcTimeout` instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcErrorKind {
@@ -180,10 +179,9 @@ pub enum HandshakeFailKind {
 /// `score()` to rank peers for eviction.
 ///
 /// `Send + Sync + 'static` so a single scorer can be shared across the Swarm
-/// task and any peer-manager helper tasks (M11 work will likely wrap it in
-/// `Arc<RwLock<_>>`).
+/// task and any peer-manager helper tasks.
 ///
-/// Decay is lazy-on-read (M11 Phase 10 task 1 decision); the trait carries no
+/// Decay is lazy-on-read; the trait carries no
 /// `tick`/time method so consumers never have to drive a decay cadence.
 pub trait PeerScorer: Send + Sync + 'static {
     /// Records a score-affecting event for the given peer.
@@ -198,7 +196,7 @@ pub trait PeerScorer: Send + Sync + 'static {
     /// True if the peer's current score is at or below the ban threshold.
     ///
     /// The default returns `false` (a no-op scorer never bans). `RealScorer`
-    /// overrides this to compare against [`BAN_THRESHOLD`] (M11 Phase 11).
+    /// overrides this to compare against [`BAN_THRESHOLD`].
     fn is_banned(&self, _peer: &PeerId) -> bool {
         false
     }
@@ -207,12 +205,12 @@ pub trait PeerScorer: Send + Sync + 'static {
     /// (but not necessarily a ban candidate).
     ///
     /// The default returns `false`. `RealScorer` overrides this to compare
-    /// against [`DISCONNECT_THRESHOLD`] (M11 Phase 11).
+    /// against [`DISCONNECT_THRESHOLD`].
     fn should_disconnect(&self, _peer: &PeerId) -> bool {
         false
     }
 
-    /// Per-peer/per-method req-resp rate limiting (M11 Phase 11 task 2).
+    /// Per-peer/per-method req-resp rate limiting.
     ///
     /// Consumes one token from the peer's bucket for `method`; returns `false`
     /// when the bucket is empty (the caller should reject / penalise the
@@ -222,7 +220,7 @@ pub trait PeerScorer: Send + Sync + 'static {
     }
 
     /// The earliest [`Instant`] at which a (re)dial of this peer is allowed
-    /// (M11 Phase 11 task 3 dial backoff). The default returns [`Instant::now`]
+    /// (dial backoff). The default returns [`Instant::now`]
     /// (dial always allowed).
     fn next_dial_allowed(&self, _peer: &PeerId) -> Instant {
         Instant::now()
@@ -242,14 +240,14 @@ pub trait PeerScorer: Send + Sync + 'static {
     /// Clears dial-backoff state after a successful dial. Default no-op.
     fn record_dial_success(&mut self, _peer: PeerId) {}
 
-    /// Seed the scorer from a persisted score file in `dir` (M11 Phase 14).
+    /// Seed the scorer from a persisted score file in `dir`.
     ///
     /// Called at startup before the network task begins.  The default no-op is
     /// suitable for `NoopScorer` and tests; `RealScorer` overrides this to call
     /// [`load_peer_scores`] and merge the durable `app` components into self.
     fn seed_from_dir(&mut self, _dir: &Path) {}
 
-    /// Persist the durable score table to `<dir>/peer_scores.ssz` (M11 Phase 14).
+    /// Persist the durable score table to `<dir>/peer_scores.ssz`.
     ///
     /// Called during graceful shutdown.  The default no-op is suitable for
     /// `NoopScorer` and tests.  Errors are logged inside the implementation;
@@ -452,7 +450,7 @@ impl PeerState {
     }
 }
 
-/// The real peer scorer (M11 Phase 10).
+/// The real peer scorer.
 ///
 /// Maintains a per-peer additive score with lazy exponential decay on read,
 /// plus per-peer/per-method req-resp token buckets and exponential dial
@@ -535,7 +533,7 @@ impl RealScorer {
         self.score(peer) <= DISCONNECT_THRESHOLD
     }
 
-    /// Per-peer/per-method req-resp rate limiting (Phase 10 task 3). Consumes
+    /// Per-peer/per-method req-resp rate limiting. Consumes
     /// one token from the peer's bucket for `method`; returns false when the
     /// bucket is empty (request should be rejected / penalised by the caller).
     pub fn allow_request(&mut self, peer: PeerId, method: RpcMethod) -> bool {
@@ -552,8 +550,7 @@ impl RealScorer {
         bucket.try_consume(now)
     }
 
-    /// Records a failed dial attempt, advancing exponential backoff
-    /// (Phase 10 task 4).
+    /// Records a failed dial attempt, advancing exponential backoff.
     pub fn record_dial_failure(&mut self, peer: PeerId) {
         self.record_dial_failure_at(peer, Instant::now());
     }
@@ -602,8 +599,8 @@ impl RealScorer {
         state.backoff.next_allowed = now;
     }
 
-    /// The earliest `Instant` at which a (re)dial of this peer is allowed
-    /// (Phase 10 task 4). For an unknown peer this is `now` (dial allowed).
+    /// The earliest `Instant` at which a (re)dial of this peer is allowed.
+    /// For an unknown peer this is `now` (dial allowed).
     pub fn next_dial_allowed(&self, peer: &PeerId) -> Instant {
         match self.peers.get(peer) {
             Some(state) => state.backoff.next_allowed,
@@ -670,7 +667,7 @@ impl PeerScorer for RealScorer {
     /// Loads `<dir>/peer_scores.ssz` and merges the durable `app` components
     /// into this scorer.  Peers already present are overwritten; absent file
     /// is silently ignored (first start).  Corrupt file emits a WARN and is
-    /// ignored per `D-peer-score-persist-format` (M11 Phase 14).
+    /// ignored per `D-peer-score-persist-format`.
     fn seed_from_dir(&mut self, dir: &Path) {
         let loaded = load_peer_scores(dir);
         for (peer_id, state) in loaded.peers {
@@ -692,7 +689,7 @@ impl PeerScorer for RealScorer {
 }
 
 // ---------------------------------------------------------------------------
-// Persistence (M11 Phase 14)
+// Persistence
 // ---------------------------------------------------------------------------
 
 /// File name for the persisted peer score table (relative to the network dir).
@@ -873,7 +870,7 @@ impl std::error::Error for SszPersistError {}
 /// the bytes are corrupt (a `WARN` is emitted in the latter case).  Never
 /// panics.
 ///
-/// Per `D-peer-score-persist-format` (M11 Phase 14).
+/// Per `D-peer-score-persist-format`.
 pub fn load_peer_scores(dir: &Path) -> RealScorer {
     let path = dir.join(PEER_SCORES_FILENAME);
     let bytes = match std::fs::read(&path) {
@@ -902,7 +899,7 @@ pub fn load_peer_scores(dir: &Path) -> RealScorer {
 /// Writes via a `.tmp` sibling and renames so a crash mid-write never leaves a
 /// truncated file.  Creates the directory if absent.
 ///
-/// Per `D-peer-score-persist-format` (M11 Phase 14).
+/// Per `D-peer-score-persist-format`.
 pub fn save_peer_scores(dir: &Path, scorer: &RealScorer) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let bytes = scorer.serialize();
@@ -1183,7 +1180,7 @@ mod tests {
         assert_eq!(b, DIAL_BACKOFF_BASE, "success resets the failure count");
     }
 
-    // ── Phase 14: peer score persistence ──────────────────────────────────────
+    // ── Peer score persistence ────────────────────────────────────────────────
 
     /// Build a scorer with N penalised peers, serialize, reload, and assert the
     /// `app` components survive the round-trip.
@@ -1398,7 +1395,7 @@ mod tests {
         assert!(state.buckets.is_empty(), "no per-method buckets must exist");
     }
 
-    // ── Phase 5: offline-decay tests (5.8) ───────────────────────────────────
+    // ── Offline-decay tests (5.8) ────────────────────────────────────────────
 
     /// A record serialized with a timestamp of (now - 3600 s) must have its
     /// app score decayed by DECAY_PER_SECOND.powf(3600) on reload.

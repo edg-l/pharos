@@ -1,4 +1,4 @@
-//! Restart-across-split integration test (Task 4.5 of M-Storage Phase 4).
+//! Restart-across-split integration test.
 //!
 //! Builds a chain of `2 * SLOTS_PER_EPOCH` Bellatrix blocks, persists all
 //! blocks via `run_backfill_loop`, simulates finalization at epoch 1

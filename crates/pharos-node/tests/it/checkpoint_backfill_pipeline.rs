@@ -3,8 +3,8 @@
 //! Drives the full checkpoint-sync → anchor-persist → fork-choice-rehydrate
 //! → backfill-loop pipeline in-process without any out-of-process dependencies.
 //!
-//! Analogous to `engine_pipeline.rs` but for the M4b checkpoint-sync + backfill
-//! flow (Task 5.4).
+//! Analogous to `engine_pipeline.rs` but for the checkpoint-sync + backfill
+//! flow.
 //!
 //! Asserts:
 //!   (a) `fc_store.head_slot == Slot(72)` after the backfill loop processes 8 blocks.

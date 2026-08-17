@@ -1,6 +1,6 @@
 //! Sync-callable engine handle and async actor.
 //!
-//! The STF runs on a `tokio::task::spawn_blocking` worker (M3a invariant) and
+//! The STF runs on a `tokio::task::spawn_blocking` worker, and
 //! must reach the EL through an async HTTP client. We bridge the boundary
 //! with an actor: `EngineHandle` sends typed requests over an mpsc channel
 //! and blocks on a `oneshot::Receiver` via a dedicated multi-thread tokio

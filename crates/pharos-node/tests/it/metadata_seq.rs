@@ -7,8 +7,7 @@
 //!
 //! These tests exercise the real `HostImpl<MainnetBeaconSpec>` backed by a real
 //! `RocksStore` in a `tempfile::TempDir`, providing integration-level coverage
-//! of the full metadata-mutation path as added in M3a Phase 2 Task 2.6 and
-//! wired in Phase 5 Task 5.1.
+//! of the full metadata-mutation path.
 
 use std::sync::Arc;
 

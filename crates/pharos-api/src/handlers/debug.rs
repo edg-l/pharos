@@ -1,17 +1,17 @@
-//! Debug namespace handlers (Task 5.4).
+//! Debug namespace handlers.
 //!
 //! - `GET /eth/v1/debug/fork_choice`     — fork-choice node dump
 //! - `GET /eth/v2/debug/beacon/heads`    — fork-choice leaf nodes
 //! - `GET /eth/v2/debug/beacon/states/{state_id}` — full BeaconState (fork-tagged, JSON + SSZ)
-//! - `GET /eth/v1/debug/beacon/data_column_sidecars/{block_id}` — PeerDAS column sidecars (M15 Phase 5)
+//! - `GET /eth/v1/debug/beacon/data_column_sidecars/{block_id}` — PeerDAS column sidecars
 //!
 //! Spec shapes from:
 //! `~/dev/beacon-APIs/apis/debug/{fork_choice,heads.v2,state.v2,data_column_sidecars}.yaml`
 //! `~/dev/beacon-APIs/types/fork_choice.yaml`
 //! `~/dev/beacon-APIs/types/fulu/data_column_sidecar.yaml`
 //!
-//! The state endpoint reuses `resolve_state_id` + `ForkTagged<T>` from Phase 3
-//! (Tasks 2.2 / 3.1) — no new resolution path.  The JSON serialization is
+//! The state endpoint reuses `resolve_state_id` + `ForkTagged<T>` — no new
+//! resolution path.  The JSON serialization is
 //! handled by `ChainStateApi::state_to_json`, whose default implementation uses
 //! `BeaconStateView` accessors common to all forks; `NodeChainState` provides
 //! the full per-fork field access where the concrete types are available.
@@ -159,7 +159,7 @@ pub async fn get_beacon_heads<E: BeaconSpec>(State(state): State<Arc<ApiState<E>
 /// `GET /eth/v2/debug/beacon/states/{state_id}`
 ///
 /// Returns the full `BeaconState` for the resolved id, fork-tagged.
-/// Reuses `resolve_state_id` + `ForkTagged<T>` from Phase 3.
+/// Reuses `resolve_state_id` + `ForkTagged<T>`.
 ///
 /// JSON: `ChainStateApi::state_to_json` — required method, produces complete
 /// fork-tagged fields via `beacon_state_to_json_full`.

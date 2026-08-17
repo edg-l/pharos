@@ -69,8 +69,8 @@ use pharos_utils::Hash256;
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
 /// Produce one `CaseTask` per optimistic sync test case in the same walk-order
-/// as `run_optimistic_mainnet` / `run_optimistic_minimal`. Called by the Phase 7
-/// flat work-pool.
+/// as `run_optimistic_mainnet` / `run_optimistic_minimal`. Called by the flat
+/// work-pool.
 ///
 /// Walk order: bellatrix cases (0..n), capella (n..m), deneb (m..p), electra (p..q).
 pub fn enumerate_optimistic(root: &Path, preset: &'static str, row_ordinal: u32) -> Vec<CaseTask> {

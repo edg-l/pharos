@@ -155,8 +155,7 @@ async fn enrtree_root_sig_verifies() {
 
 #[tokio::test]
 async fn enrtree_walk_resolves_fixture() {
-    // Full tree walk against the hand-built fixture yields >= 1 ENR (the
-    // checkpoint condition from the Phase 15 task list / oracle).
+    // Full tree walk against the hand-built fixture yields >= 1 ENR.
     let (resolver, url) = build_fixture();
     let enrs = resolve_enrtree(&url, Arc::new(resolver))
         .await

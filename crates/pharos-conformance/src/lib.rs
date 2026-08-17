@@ -80,7 +80,7 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
     let tag = read_tag(&root);
     let fixtures_path = root.display().to_string();
 
-    // ── Phase 1: enumerate all CaseTasks across all matching rows ─────────────
+    // ── Enumerate all CaseTasks across all matching rows ──────────────────────
     //
     // For each row in row_table(), check filter + fixtures-dir presence.
     // Rows that match get their enumerate_* called; the returned CaseTasks are
@@ -106,13 +106,13 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
         }
     }
 
-    // ── Phase 2: run all tasks in ONE flat rayon pool ─────────────────────────
+    // ── Run all tasks in ONE flat rayon pool ──────────────────────────────────
     let outcomes: Vec<(u32, u32, task::CaseOutcome)> = all_tasks
         .into_par_iter()
         .map(|t| (t.row_ordinal, t.case_ordinal, (t.run)()))
         .collect();
 
-    // ── Phase 3: fold outcomes into per-row counts ────────────────────────────
+    // ── Fold outcomes into per-row counts ─────────────────────────────────────
     let fold_out = task::fold(outcomes, table);
 
     // Build a lookup: row_ordinal → RowCounts.
@@ -122,7 +122,7 @@ pub fn run(filter: &Filter, bail: bool) -> Report {
         counts_by_row.insert(rc.row_ordinal, rc);
     }
 
-    // ── Phase 4: assemble the Report ─────────────────────────────────────────
+    // ── Assemble the Report ──────────────────────────────────────────────────
     let mut report = Report {
         fixtures_path,
         tag,
@@ -204,7 +204,7 @@ fn enumerate_row(
 
         // ── ssz_static (any fork × mainnet|minimal only) ──────────────────────
         // Every fork's ssz_static is wired per-preset (mainnet|minimal) and runs
-        // here, including fulu/ssz_static (M13-Fulu Phase 1).
+        // here, including fulu/ssz_static.
         (_, "ssz_static", "mainnet" | "minimal") => Some(ssz_static::enumerate_ssz_static(
             root,
             fork,

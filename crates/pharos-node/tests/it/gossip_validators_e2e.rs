@@ -1,12 +1,12 @@
 //! End-to-end integration test for all three gossip validators.
 //!
-//! Task 4.1 (M4e Phase 4): a single test that builds a host, constructs one
+//! A single test that builds a host, constructs one
 //! valid message for each of the three gossip topics, and asserts
 //! `GossipVerdict::Accept` for each.
 //!
 //! Host construction mirrors `make_att_test_host` from the unit-test module
-//! in `host_impl.rs` but is duplicated here per the M4c integration-test
-//! precedent (unit-test helpers are `#[cfg(test)]` private).
+//! in `host_impl.rs` but is duplicated here because unit-test helpers are
+//! `#[cfg(test)]` private.
 //!
 //! Preset: `MinimalBeaconSpec`.  The plan specifies `MainnetBeaconSpec` with the
 //! intent of loading consensus-spec-tests fixtures.  However, those fixtures

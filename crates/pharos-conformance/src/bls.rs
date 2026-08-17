@@ -7,7 +7,7 @@
 //!   - `eth_fast_aggregate_verify`
 //!
 //! The following six sub-categories have **no upstream fixtures** in v1.6.1
-//! (risk R-bls from the M1 plan):
+//! (risk R-bls):
 //!   - `sign`
 //!   - `verify`
 //!   - `aggregate`
@@ -44,7 +44,7 @@ pub struct BlsResult {
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
 /// Produce one `CaseTask` per BLS test case in the same walk-order as `run_bls`.
-/// Called by the Phase 7 flat work-pool.
+/// Called by the flat work-pool.
 ///
 /// BLS tests are preset-independent (row 3: `("general", "bls", "-")`).
 pub fn enumerate_bls(root: &Path, row_ordinal: u32) -> Vec<CaseTask> {

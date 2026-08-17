@@ -1,10 +1,10 @@
-//! M15-BeaconAPIGaps Phase 6 — rewards endpoint tests (Task 6.9).
+//! Rewards endpoint tests.
 //!
 //! There are NO beacon-APIs test vectors for rewards, so these tests verify
 //! (a) the routes resolve, (b) the JSON response shape matches the cited
 //! `~/dev/beacon-APIs/types/rewards.yaml` field names exactly, and (c) the
 //! `BlockRewards.total` sum identity holds. The real reward MATH (incl. the
-//! per-fork altair / electra-projection dispatch) is proven by the Task 6.3
+//! per-fork altair / electra-projection dispatch) is proven by the
 //! conformance gate (`phase0/rewards` + `altair/rewards` + `electra/operations`
 //! all 0-fail after the STF factoring); these tests exercise the handler →
 //! `ChainStateApi::*_rewards_data` → serialization path.

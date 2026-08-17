@@ -9,14 +9,14 @@
 //! # Topic acceptance
 //!
 //! `KnownTopic::parse` recognises every topic name listed in the eventstream
-//! spec.  Topics that pharos does NOT emit at M7 (follow-only; no block
+//! spec.  Topics that pharos does NOT emit (follow-only; no block
 //! production) are nonetheless accepted as valid subscription targets so that
 //! clients can subscribe with e.g. `?topics=head,payload_attributes` and receive
 //! a valid stream delivering only the emitted subset.
 //!
-//! Topics emitted at M7: `head`, `block`, `finalized_checkpoint`, `chain_reorg`.
+//! Topics emitted: `head`, `block`, `finalized_checkpoint`, `chain_reorg`.
 //!
-//! Topics accepted but never emitted at M7 (pharos is follow-only):
+//! Topics accepted but never emitted (pharos is follow-only):
 //!   `block_gossip`, `attestation`, `single_attestation`, `voluntary_exit`,
 //!   `bls_to_execution_change`, `proposer_slashing`, `attester_slashing`,
 //!   `contribution_and_proof`, `light_client_finality_update`,
@@ -168,7 +168,7 @@ pub struct FinalizedCheckpointEventDto {
 /// An event pushed onto the broadcast bus for `/eth/v1/events` subscribers.
 ///
 /// Each variant corresponds to a Beacon API event topic and carries its spec-
-/// conformant JSON DTO.  Only the four variants emitted at M7 are listed here;
+/// conformant JSON DTO.  Only the four emitted variants are listed here;
 /// the full set of valid *topic names* is handled by `KnownTopic`.
 #[derive(Debug, Clone)]
 pub enum ApiEvent {
@@ -209,12 +209,12 @@ impl ApiEvent {
 /// actually emits, rather than returning 400 for topics it never produces.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum KnownTopic {
-    // ── Emitted at M7 ─────────────────────────────────────────────────────
+    // ── Emitted ───────────────────────────────────────────────────────────
     Head,
     Block,
     FinalizedCheckpoint,
     ChainReorg,
-    // ── Accepted but never emitted at M7 (pharos is follow-only) ──────────
+    // ── Accepted but never emitted (pharos is follow-only) ────────────────
     BlockGossip,
     Attestation,
     SingleAttestation,

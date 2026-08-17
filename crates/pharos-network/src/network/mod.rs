@@ -74,7 +74,7 @@ use pharos_utils::metrics::{
 
 use behaviour::{PharosBehaviour, PharosBehaviourEvent};
 
-// ── Scoring enforcement constants (M11 Phase 11) ──────────────────────────────
+// ── Scoring enforcement constants ──────────────────────────────
 
 /// How long a peer banned for crossing the scorer ban threshold stays blocked
 /// from reconnecting. Mirrors the gossipsub-v1.1 graylist-recovery horizon.
@@ -101,7 +101,7 @@ const RPC_TIMEOUT_CONTROL: Duration = Duration::from_secs(15);
 /// message (no peer penalty — the overload is ours, not the sender's).
 const MAX_INFLIGHT_GOSSIP_TASKS: usize = 1024;
 
-/// Upper bound of each peer-score gauge bucket (M11 Phase 11 task 4). Scores at
+/// Upper bound of each peer-score gauge bucket. Scores at
 /// or below a bound fall in that bucket; scores above the last bound fall in the
 /// overflow bucket (`ALL_SCORE_BUCKET_LABELS` last entry).
 const SCORE_BUCKETS: [f64; 4] = [
@@ -126,7 +126,7 @@ fn score_bucket_index(score: f64) -> usize {
     SCORE_BUCKETS.len()
 }
 
-/// Bucket label a `score` falls into (M11 Phase 11 task 4 gauge label).
+/// Bucket label a `score` falls into (gauge label).
 fn score_bucket_label(score: f64) -> &'static str {
     ALL_SCORE_BUCKET_LABELS[score_bucket_index(score)]
 }
@@ -160,8 +160,8 @@ pub enum NetworkCommand<E: BeaconSpec> {
     ///
     /// Swaps the cached `AltairMetaData` in `Network::host_metadata` and
     /// increments `seq_number` if the `attnets` or `syncnets` fields changed.
-    /// Used by the subnet-rotation driver (Task 7.1) and the fork-migration
-    /// loop (Task 7.3).
+    /// Used by the subnet-rotation driver and the fork-migration
+    /// loop.
     UpdateMetaData(AltairMetaData),
     /// Dial a remote peer by multiaddr.
     Dial {
@@ -203,8 +203,7 @@ pub enum NetworkCommand<E: BeaconSpec> {
 /// Note: inbound RPC requests are NOT forwarded as events. The `Host<E>` trait
 /// owns inbound RPC dispatch (see `rpc::handler::handle_request`). Forwarding
 /// inbound requests as events would couple the network task to a consumer queue
-/// and require reworking the Phase 5/6/8 architecture. Amendment recorded in
-/// `docs/m2-plan.md` (Amendment 2026-05-22).
+/// and require reworking the network-task architecture.
 pub enum NetworkEvent {
     /// A peer connected and completed the handshake.
     PeerConnected(PeerId),
@@ -231,26 +230,26 @@ pub enum NetworkEvent {
     /// The network task has shut down.
     Shutdown,
 
-    // ── M3a Phase 3 events (deferred from M2 audit, D-network-event-surface) ──
+    // ── Events (deferred audit, D-network-event-surface) ──────────────────────
     /// A remote peer subscribed to one of our known gossipsub topics.
     ///
-    /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
-    /// Phase 3. Only emitted when the topic hash resolves against the local
+    /// Per `D-network-event-surface`.
+    /// Only emitted when the topic hash resolves against the local
     /// `topic_map`; unknown-topic subscriptions are silently dropped.
     PeerSubscribed { peer: PeerId, topic: GossipTopic },
 
     /// A remote peer unsubscribed from one of our known gossipsub topics.
     ///
-    /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
-    /// Phase 3. Only emitted when the topic hash resolves against the local
+    /// Per `D-network-event-surface`.
+    /// Only emitted when the topic hash resolves against the local
     /// `topic_map`; unknown-topic unsubscriptions are silently dropped.
     PeerUnsubscribed { peer: PeerId, topic: GossipTopic },
 
     /// The identify protocol completed for a peer; `info` contains the updated
     /// peer metadata (agent version, protocol list, observed address).
     ///
-    /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
-    /// Phase 3. Only emitted when the peer is already in the connected-peer map;
+    /// Per `D-network-event-surface`.
+    /// Only emitted when the peer is already in the connected-peer map;
     /// identify events for unknown peers are dropped (D-peer-info-shape:
     /// identify-flood mitigation by per-peer overwrite).
     ///
@@ -263,15 +262,15 @@ pub enum NetworkEvent {
 
     /// An outbound dial attempt failed.
     ///
-    /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
-    /// Phase 3. `peer` is `None` when the peer identity was not yet known at
+    /// Per `D-network-event-surface`.
+    /// `peer` is `None` when the peer identity was not yet known at
     /// dial time (dial-failed-pre-identity case per D-network-event-surface).
     DialFailed { peer: Option<PeerId>, error: String },
 
     /// The swarm confirmed a new external address for the local node.
     ///
-    /// Deferred from M2 audit (D-network-event-surface); implemented in M3a
-    /// Phase 3. ENR update is deferred to M3b (cross-fork ENR migration).
+    /// Per `D-network-event-surface`.
+    /// The ENR is updated by cross-fork migration, not here.
     ExternalAddrConfirmed { address: libp2p::Multiaddr },
 
     /// A `beacon_block` gossip message was IGNOREd because its parent has not
@@ -282,7 +281,7 @@ pub enum NetworkEvent {
     /// fork variant when decoding via `decode_block_by_topic`.  `peer` is the
     /// forwarding (propagation-source) peer.
     ///
-    /// Emitted by the network dispatcher so the lookup loop (Phase 4) can fetch
+    /// Emitted by the network dispatcher so the lookup loop can fetch
     /// the missing parent by root and replay the orphaned block on import.
     UnknownParentBlock {
         topic: GossipTopic,
@@ -293,7 +292,7 @@ pub enum NetworkEvent {
     /// A validated `blob_sidecar_{subnet_id}` gossip message.
     ///
     /// Emitted after `validate_blob_sidecar` returns `Accept`.  The consumer
-    /// (Phase 5 `run_blob_ingestion_loop`) persists the sidecar and re-injects
+    /// (`run_blob_ingestion_loop`) persists the sidecar and re-injects
     /// the parent block when all sidecars for a slot are complete.
     ///
     /// `subnet` is the gossip subnet the message arrived on.
@@ -493,7 +492,7 @@ pub struct Network<
     /// Stored here so [`Self::shutdown_goodbye`] can call
     /// [`save_peer_scores`] during graceful shutdown.
     ///
-    /// Per `D-peer-score-persist-format` (M11 Phase 14).
+    /// Per `D-peer-score-persist-format`.
     network_dir: Option<std::path::PathBuf>,
     _phantom: PhantomData<E>,
 }
@@ -541,7 +540,7 @@ impl<
             tracing::debug!(%peer_id, "dial suppressed: peer_manager state precludes re-dial");
             return false;
         }
-        // Exponential dial backoff (M11 Phase 11 task 3): a peer that has
+        // Exponential dial backoff: a peer that has
         // repeatedly failed to dial is held off until its backoff window
         // elapses. `NoopScorer` returns `now`, so this never suppresses.
         if self.peer_manager.next_dial_allowed(&peer_id) > Instant::now() {
@@ -736,8 +735,8 @@ impl<
                         }
                     }
 
-                    // Reschedule discovery based on current deficit (M11 Phase 12
-                    // task 3): large deficit → short interval, at/above target → slow.
+                    // Reschedule discovery based on current deficit: large deficit
+                    // → short interval, at/above target → slow.
                     let next = query_interval(peer_count, target);
                     self.discovery_tick.reset_after(next);
                     tracing::debug!(discovered, dialed, interval_secs = next.as_secs(), "discovery tick complete");
@@ -778,7 +777,7 @@ impl<
 
                             // Increment gossip message counter for accepted messages.
                             // Label by topic kind name (e.g. "beacon_block").
-                            // ADR cite: `D-metrics-prometheus-optin` (Phase 5).
+                            // ADR cite: `D-metrics-prometheus-optin`.
                             if matches!(&verdict, GossipVerdict::Accept) {
                                 let topic_label = topic_kind_name(&topic.kind);
                                 metrics::counter!(
@@ -1021,9 +1020,9 @@ impl<
                     .await;
             }
             _ => {
-                // Remaining swarm events are deferred to M11 (peer scoring,
-                // listener errors, etc.). Debug-log for observability.
-                tracing::debug!("swarm event (M11-deferred): {:?}", event);
+                // Remaining swarm events (listener errors, etc.) are not handled.
+                // Debug-log for observability.
+                tracing::debug!("swarm event: {:?}", event);
             }
         }
     }
@@ -1054,8 +1053,8 @@ impl<
                 if let Ok(parsed) = GossipTopic::from_topic_hash(&topic, &self.topic_map) {
                     // Leaving a per-subnet mesh (attestation / sync-committee /
                     // blob) is a subnet-non-propagation signal: the peer is no
-                    // longer serving a subnet we expect coverage on (M11 Phase 0
-                    // mapping table). Penalise via the scorer before forwarding
+                    // longer serving a subnet we expect coverage on. Penalise via
+                    // the scorer before forwarding
                     // the event.
                     if is_subnet_topic(&parsed.kind) {
                         self.peer_manager.record_event(
@@ -1218,7 +1217,7 @@ impl<
                     let host_metadata = Arc::clone(&self.host_metadata);
                     // Handle synchronously to avoid lifetime complexity with &mut self.
                     // Time the request handler to record req-resp method latency.
-                    // ADR cite: `D-metrics-prometheus-optin` (Phase 5).
+                    // ADR cite: `D-metrics-prometheus-optin`.
                     let _rpc_t0 = std::time::Instant::now();
                     let response = handle_request::<E, H, S>(
                         host.as_ref(),
@@ -1350,7 +1349,7 @@ impl<
                     // handshake entry that happens to share id 1). The internal-tracking
                     // maps are keyed by id but only ever hold their own method's ids.
                     //
-                    // Phase 10 (D-fulu-statusv2-handshake): Fulu nodes send StatusV2
+                    // Per `D-fulu-statusv2-handshake`: Fulu nodes send StatusV2
                     // outbound; pre-Fulu nodes send v1 Status. Both methods route against
                     // `pending_status_checks` so `on_status_response` handles either.
                     if (method == RpcMethod::Status || method == RpcMethod::StatusV2)
@@ -1375,7 +1374,7 @@ impl<
                     } else if let Some((_method, tx)) =
                         self.pending_rpc.remove(&(method, request_id))
                     {
-                        // User-initiated outbound RPC (Phase 7 surface).
+                        // User-initiated outbound RPC (surface).
                         let _ = tx.send(Ok(response));
                     } else {
                         tracing::warn!(
@@ -1824,7 +1823,7 @@ impl<
                 return;
             }
 
-            // Enforce max_peers on inbound connections (M11 Phase 12 task 2).
+            // Enforce max_peers on inbound connections.
             // Outbound connections (we dialled) are never refused here — we chose
             // to dial them and they count against the same limit; `tick_score_prune`
             // handles any steady-state excess via `should_prune`.
@@ -1866,8 +1865,7 @@ impl<
             let addrs = vec![endpoint.get_remote_address().clone()];
             self.peer_manager.on_connected(peer_id, dir, addrs);
             // A successful connection clears any accumulated dial backoff so a
-            // peer that recovers is dialled at the base interval next time
-            // (M11 Phase 11 task 3).
+            // peer that recovers is dialled at the base interval next time.
             self.peer_manager.record_dial_success(peer_id);
 
             if endpoint.is_dialer() {
@@ -2013,7 +2011,7 @@ impl<
     }
 
     /// Prune peers that the scorer considers lowest-quality, and enforce the
-    /// scorer's ban/disconnect threshold decisions (M11 Phase 11 task 3).
+    /// scorer's ban/disconnect threshold decisions.
     ///
     /// Three enforcement sources, in order:
     /// 1. Peers at or below the **ban threshold** are banned (removed +
@@ -2091,8 +2089,8 @@ impl<
         self.swarm.disconnect_peer_id(peer_id).ok();
     }
 
-    /// Update the peer-score gauge for a single peer's current bucket
-    /// (M11 Phase 11 task 4). The gauge is labelled by score bucket so the
+    /// Update the peer-score gauge for a single peer's current bucket. The
+    /// gauge is labelled by score bucket so the
     /// Prometheus surface shows the distribution of peer quality.
     fn emit_peer_score_gauge(&self, peer_id: &PeerId) {
         let score = self.peer_manager.score(peer_id);
@@ -2118,9 +2116,9 @@ impl<
     /// Implements the D-shutdown-protocol ADR: best-effort Goodbye with a 500 ms
     /// bounded drain so a slow peer cannot hold up the shutdown indefinitely.
     ///
-    /// Steps per `D-graceful-shutdown-order` (M11 Phase 17):
+    /// Steps per `D-graceful-shutdown-order`:
     /// 0. Drain in-flight gossip-validation tasks (bounded 1 s timeout).
-    /// 1. Save peer scores to disk (M11 Phase 14 hook, `D-peer-score-persist-format`).
+    /// 1. Save peer scores to disk (hook, `D-peer-score-persist-format`).
     /// 2. Collect connected peers.
     /// 3. Pre-register `DisconnectReason::Goodbye(GOODBYE_CLIENT_SHUTDOWN)` for each,
     ///    then send `RpcRequest::Goodbye(1)` fire-and-forget.
@@ -2139,7 +2137,7 @@ impl<
         .await
         .ok();
 
-        // M11 Phase 14: persist the durable peer score table before disconnecting
+        // Persist the durable peer score table before disconnecting
         // so bad-actor penalties survive restarts.  Errors are logged inside
         // `save_to_dir`; the call is best-effort and never blocks shutdown.
         if let Some(ref dir) = self.network_dir {
@@ -2528,7 +2526,7 @@ pub struct NetworkBuilder<E, H, S> {
     /// IPv4-only.
     discv5_addr6: Option<SocketAddr>,
     /// When `true`, the TCP listener is NOT started. Used for QUIC-only test
-    /// nodes (Task 8.2) where only the QUIC transport should be reachable.
+    /// nodes where only the QUIC transport should be reachable.
     no_tcp: bool,
     discv5_addr: SocketAddr,
     bootnodes: Vec<Enr>,
@@ -2538,9 +2536,9 @@ pub struct NetworkBuilder<E, H, S> {
     ///
     /// Default: 1024. See `event_channel_capacity` for the trade-off.
     event_channel_capacity: usize,
-    /// Hard cap on connected peers (M11 Phase 12). Default: 50.
+    /// Hard cap on connected peers. Default: 50.
     max_peers: usize,
-    /// Desired steady-state connected peer count (M11 Phase 12). Default: 50.
+    /// Desired steady-state connected peer count. Default: 50.
     target_peers: usize,
     /// Maximum peers simultaneously in `Connecting` or `Handshaking` state.
     ///
@@ -2689,7 +2687,7 @@ impl<
     /// Set the hard cap on connected peers (default: 50).
     ///
     /// Inbound connections beyond this limit are rejected immediately at the
-    /// swarm level (per M11 Phase 12 `D-connection-limit-prefer-high-score`).
+    /// swarm level (`D-connection-limit-prefer-high-score`).
     pub fn max_peers(mut self, max_peers: usize) -> Self {
         self.max_peers = max_peers;
         self
@@ -2697,8 +2695,8 @@ impl<
 
     /// Set the desired steady-state peer count (default: 50).
     ///
-    /// The discv5 discovery cadence scales with `target_peers - connected_peers`
-    /// (per M11 Phase 12); `tick_score_prune` prunes to this level.
+    /// The discv5 discovery cadence scales with `target_peers - connected_peers`;
+    /// `tick_score_prune` prunes to this level.
     pub fn target_peers(mut self, target_peers: usize) -> Self {
         self.target_peers = target_peers;
         self
@@ -2720,7 +2718,7 @@ impl<
     }
 
     /// Set the directory for ENR sequence-number persistence across restarts
-    /// (`D-enr-seq-persistence`, M11 Phase 13).
+    /// (`D-enr-seq-persistence`).
     ///
     /// When set, the ENR seq is loaded from `<dir>/enr_seq` on startup and
     /// written back after every ENR mutation so restarts yield monotonically
@@ -2795,9 +2793,9 @@ impl<
         let bootnodes_for_network = self.bootnodes.clone();
         // Clone the network_dir so both DiscoveryService and Network can store
         // their own copy. The Network copy is used by shutdown_goodbye to save
-        // peer scores (`D-peer-score-persist-format`, M11 Phase 14).
+        // peer scores (`D-peer-score-persist-format`).
         let network_dir_for_network = self.network_dir.clone();
-        // M11 Phase 14: seed the scorer with durable app-component scores from
+        // Seed the scorer with durable app-component scores from
         // the persisted file so bad-actor peers stay penalised across restarts.
         if let Some(ref dir) = network_dir_for_network {
             self.scorer.seed_from_dir(dir);
@@ -3187,7 +3185,7 @@ impl<
             bootnodes: bootnodes_for_network,
             pending_dials: HashMap::new(),
             gossip_tasks: tokio::task::JoinSet::new(),
-            // M11 Phase 14: store the network dir so shutdown_goodbye can save
+            // Store the network dir so shutdown_goodbye can save
             // peer scores before the task exits.
             network_dir: network_dir_for_network,
             _phantom: PhantomData,
@@ -3210,7 +3208,7 @@ impl<
     ///
     /// The spawned task owns the `Network` and drives its `run()` loop.
     /// The returned `NetworkHandle` is the single owner of the event-receiver side.
-    /// The returned `DiscoveryHandle` allows cross-fork ENR updates (Task 7.4).
+    /// The returned `DiscoveryHandle` allows cross-fork ENR updates.
     pub async fn spawn(self) -> Result<(NetworkHandle<E>, DiscoveryHandle), NetworkError>
     where
         H: 'static,
@@ -3283,8 +3281,8 @@ impl<
         self.pending_dials.contains_key(p)
     }
 
-    /// Register a peer as `Connected` in the peer manager (M11 Phase 11 e2e
-    /// test seam). Mirrors what `on_swarm_connection_established` does for the
+    /// Register a peer as `Connected` in the peer manager (e2e test seam).
+    /// Mirrors what `on_swarm_connection_established` does for the
     /// peer-table side so score-driven prune/gauge logic has a live peer set.
     #[doc(hidden)]
     pub fn test_register_connected_peer(&mut self, peer_id: PeerId) {
@@ -3294,26 +3292,26 @@ impl<
     }
 
     /// Drive the real `on_gossip_event` mapping for a synthetic gossipsub event
-    /// (M11 Phase 11 e2e test seam). Used to feed `SlowPeer` / `Unsubscribed`.
+    /// (e2e test seam). Used to feed `SlowPeer` / `Unsubscribed`.
     #[doc(hidden)]
     pub async fn test_on_gossip_event(&mut self, event: gossipsub::Event) {
         self.on_gossip_event(event).await;
     }
 
-    /// Current scorer score for `peer_id` (M11 Phase 11 e2e test seam).
+    /// Current scorer score for `peer_id` (e2e test seam).
     #[doc(hidden)]
     pub fn test_peer_score(&self, peer_id: &PeerId) -> f64 {
         self.peer_manager.score(peer_id)
     }
 
-    /// Lowest-scoring peers per the scorer (M11 Phase 11 e2e test seam).
+    /// Lowest-scoring peers per the scorer (e2e test seam).
     #[doc(hidden)]
     pub fn test_worst_peers(&self, count: usize) -> Vec<PeerId> {
         self.peer_manager.should_prune_n(count)
     }
 
     /// Drive the real per-method inbound rate-limit gate + penalty exactly as
-    /// `handle_request` does (M11 Phase 11 e2e test seam). Returns `true` when
+    /// `handle_request` does (e2e test seam). Returns `true` when
     /// the request is allowed; on rejection it records `RateLimitExceeded`,
     /// matching the wired handler path.
     #[doc(hidden)]
@@ -3328,50 +3326,50 @@ impl<
         }
     }
 
-    /// Drive the real score-prune enforcement tick (M11 Phase 11 e2e test seam).
+    /// Drive the real score-prune enforcement tick (e2e test seam).
     #[doc(hidden)]
     pub fn test_tick_score_prune(&mut self) {
         self.tick_score_prune();
     }
 
     /// `true` if the peer manager currently holds an active ban for `peer_id`
-    /// (M11 Phase 11 e2e test seam).
+    /// (e2e test seam).
     #[doc(hidden)]
     pub fn test_peer_is_banned(&self, peer_id: &PeerId) -> bool {
         self.peer_manager.is_banned(peer_id)
     }
 
-    /// Current connected peer count (M11 Phase 12 test seam).
+    /// Current connected peer count (test seam).
     #[doc(hidden)]
     pub fn test_peer_count(&self) -> usize {
         self.peer_manager.peer_count()
     }
 
-    /// Count of peers in `Connected` state only (Phase 1 eclipse-hardening seam).
+    /// Count of peers in `Connected` state only (eclipse-hardening seam).
     #[doc(hidden)]
     pub fn test_connected_count(&self) -> usize {
         self.peer_manager.connected_count()
     }
 
-    /// Count of peers in `Connecting` or `Handshaking` state (Phase 1 seam).
+    /// Count of peers in `Connecting` or `Handshaking` state (seam).
     #[doc(hidden)]
     pub fn test_connecting_count(&self) -> usize {
         self.peer_manager.connecting_count()
     }
 
-    /// `max_connecting` configured on this network (Phase 1 seam).
+    /// `max_connecting` configured on this network (seam).
     #[doc(hidden)]
     pub fn test_max_connecting(&self) -> usize {
         self.peer_manager.max_connecting()
     }
 
-    /// `max_peers` configured on this network (M11 Phase 12 test seam).
+    /// `max_peers` configured on this network (test seam).
     #[doc(hidden)]
     pub fn test_max_peers(&self) -> usize {
         self.peer_manager.max_peers()
     }
 
-    /// `target_peers` configured on this network (M11 Phase 12 test seam).
+    /// `target_peers` configured on this network (test seam).
     #[doc(hidden)]
     pub fn test_target_peers(&self) -> usize {
         self.peer_manager.target_peers()
@@ -3388,7 +3386,7 @@ impl<
         // State remains Connecting — do not call on_handshake_complete.
     }
 
-    /// Fire an `InboundStreamReset` score event for `peer_id` (Phase 2 test seam).
+    /// Fire an `InboundStreamReset` score event for `peer_id` (test seam).
     ///
     /// Mirrors the `InboundFailure` arm in `handle_rpc_event` so integration
     /// tests can assert that inbound stream resets penalise `req_resp` and do
@@ -3399,25 +3397,25 @@ impl<
             .record_event(peer_id, ScoreEvent::InboundStreamReset);
     }
 
-    /// Number of entries currently in `pending_ping_checks` (Phase 3 test seam).
+    /// Number of entries currently in `pending_ping_checks` (test seam).
     #[doc(hidden)]
     pub fn test_pending_ping_checks_len(&self) -> usize {
         self.pending_ping_checks.len()
     }
 
-    /// Whether `peer_id` is in `pending_ping_peers` (Phase 3 dedup test seam).
+    /// Whether `peer_id` is in `pending_ping_peers` (dedup test seam).
     #[doc(hidden)]
     pub fn test_pending_ping_peers_contains(&self, peer_id: &PeerId) -> bool {
         self.pending_ping_peers.contains(peer_id)
     }
 
-    /// Drive one `tick_ping` call (Phase 3 test seam).
+    /// Drive one `tick_ping` call (test seam).
     #[doc(hidden)]
     pub fn test_tick_ping(&mut self) {
         self.tick_ping();
     }
 
-    /// Manually mark `peer_id` as having an in-flight ping (Phase 3 test seam).
+    /// Manually mark `peer_id` as having an in-flight ping (test seam).
     ///
     /// Inserts into `pending_ping_peers` without actually sending a request,
     /// so `test_tick_ping` skips the peer on the next call.
@@ -3441,7 +3439,7 @@ impl<
         }
     }
 
-    /// Phase 6 test seam: invoke the real `ExternalAddrConfirmed` gate logic
+    /// Test seam: invoke the real `ExternalAddrConfirmed` gate logic
     /// (`apply_confirmed_external_addr`) without the surrounding `emit_event`
     /// (no event-tx needed for the unit test). Shares the exact code path the
     /// swarm-event arm runs, so a regression in the gate fails this test.
@@ -3450,13 +3448,13 @@ impl<
         self.apply_confirmed_external_addr(&address);
     }
 
-    /// Return the current local ENR seq via the discovery service (Phase 6 test seam).
+    /// Return the current local ENR seq via the discovery service (test seam).
     #[doc(hidden)]
     pub fn test_local_enr_seq(&self) -> u64 {
         self.discovery.local_enr().seq()
     }
 
-    /// Number of entries currently in `pending_status_checks` (Phase 10 test seam).
+    /// Number of entries currently in `pending_status_checks` (test seam).
     #[doc(hidden)]
     pub fn test_pending_status_checks_len(&self) -> usize {
         self.pending_status_checks.len()
@@ -3470,7 +3468,7 @@ impl<
     /// The libp2p `send_request` call stores the request internally but will fire
     /// `OutboundFailure::DialFailure` on the next poll since there is no real
     /// connection. The test must consume the failure event (or use the simulate
-    /// seam) before it reaches the event loop. Phase 10 test seam.
+    /// seam) before it reaches the event loop.
     #[doc(hidden)]
     pub fn test_inject_status_v2_handshake(&mut self, peer_id: PeerId) -> OutboundRequestId {
         self.peer_manager
@@ -3489,7 +3487,7 @@ impl<
 
     /// Simulate an `OutboundFailure::UnsupportedProtocols` on the StatusV2
     /// behaviour for `(peer, request_id)`. Drives the real fallback path in
-    /// `on_request_response_event` without a live connection. Phase 10 test seam.
+    /// `on_request_response_event` without a live connection. Test seam.
     #[doc(hidden)]
     pub async fn test_simulate_status_v2_unsupported_protocols(
         &mut self,
@@ -3508,7 +3506,7 @@ impl<
 
     /// Drive `on_status_response` with a synthetic response for `peer_id`,
     /// without going through the full `on_request_response_event` dispatch.
-    /// Phase 10 test seam.
+    /// Test seam.
     #[doc(hidden)]
     pub async fn test_drive_on_status_response(
         &mut self,
@@ -3812,7 +3810,7 @@ mod tests {
         assert!(result.is_ok(), "Network::run returned an error: {result:?}");
     }
 
-    /// M11 Phase 11: only per-subnet topics are scored for subnet coverage; the
+    /// Only per-subnet topics are scored for subnet coverage; the
     /// `Unsubscribed` arm penalises a peer that leaves one of them.
     #[test]
     fn subnet_topics_are_scored_for_coverage() {
@@ -3825,7 +3823,7 @@ mod tests {
         assert!(!is_subnet_topic(&GossipTopicKind::VoluntaryExit));
     }
 
-    /// M11 Phase 11 task 4: the peer-score gauge bucket label tracks the score
+    /// The peer-score gauge bucket label tracks the score
     /// region (ban / disconnect / negative / healthy / excellent).
     #[test]
     fn score_bucket_labels_partition_the_range() {
@@ -3840,7 +3838,7 @@ mod tests {
         assert_eq!(super::score_bucket_label(100.0), "excellent");
     }
 
-    // ── Phase 3: classify_dial_error unit tests ──────────────────────────────
+    // ── classify_dial_error unit tests ───────────────────────────────────────
 
     /// `classify_dial_error` maps a Transport connection-refused io::Error to
     /// `Some(Unreachable)`.
@@ -3892,7 +3890,7 @@ mod tests {
         );
     }
 
-    // ── Phase 3: tick_ping dedup test ────────────────────────────────────────
+    // ── tick_ping dedup test ─────────────────────────────────────────────────
 
     /// A peer with an in-flight ping must be skipped on the next `tick_ping`
     /// call.  `pending_ping_checks` must not grow and `pending_ping_peers`
@@ -3947,7 +3945,7 @@ mod tests {
         );
     }
 
-    // ── Phase 6: multiaddr_to_tcp_socket unit tests ──────────────────────────
+    // ── multiaddr_to_tcp_socket unit tests ───────────────────────────────────
 
     /// `/ip4/.../tcp/N` -> `Some(SocketAddrV4)`.
     #[test]
@@ -4025,7 +4023,7 @@ mod tests {
         );
     }
 
-    // ── Phase 6: last_external_addr gate test ────────────────────────────────
+    // ── last_external_addr gate test ─────────────────────────────────────────
 
     /// Two identical `ExternalAddrConfirmed` events must advance the ENR seq
     /// exactly once.
@@ -4089,7 +4087,7 @@ mod tests {
         );
     }
 
-    // ── Phase 10: v2→v1 fallback unit test ────────────────────────────────────
+    // ── V2→v1 fallback unit test ──────────────────────────────────────────────
 
     /// When a Fulu dialer sends StatusV2 and the responder returns
     /// `UnsupportedProtocols`, the fallback path re-queues a v1 Status request

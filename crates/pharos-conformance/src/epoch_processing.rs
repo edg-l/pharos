@@ -46,7 +46,7 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Produce one `CaseTask` per epoch-processing test case for a single `(fork, preset)` row,
 /// in the same walk-order as the corresponding `run_epoch_processing_*` function.
-/// Called by the Phase 7 flat work-pool.
+/// Called by the flat work-pool.
 ///
 /// Sub-step order per fork (matches dispatcher merge order):
 /// - phase0 (10): justification_and_finalization, rewards_and_penalties, registry_updates,
@@ -64,11 +64,11 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 /// - deneb (12): same as capella
 /// - electra (15, Phases 4a/4b/4c): justification_and_finalization, inactivity_updates,
 ///   rewards_and_penalties, registry_updates (electra-native), slashings
-///   (electra-native), pending_deposits (electra-native, Phase 4b), eth1_data_reset,
+///   (electra-native), pending_deposits (electra-native), eth1_data_reset,
 ///   slashings_reset, randao_mixes_reset, historical_summaries_update,
-///   participation_flag_updates, pending_consolidations (electra-native, Phase 4c),
-///   effective_balance_updates (electra-native, Phase 4c), sync_committee_updates
-///   (electra-native indices, Phase 4c).
+///   participation_flag_updates, pending_consolidations (electra-native),
+///   effective_balance_updates (electra-native), sync_committee_updates
+///   (electra-native indices).
 ///
 /// Supported forks: `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`,
 /// `"electra"`.
@@ -1676,7 +1676,7 @@ fn enumerate_deneb_ep_subs_minimal(
     }
 }
 
-// ── electra sub-step walkers (Phase 4a) ───────────────────────────────────────
+// ── electra sub-step walkers ───────────────────────────────────────
 
 fn enumerate_electra_ep_subs_mainnet(
     root: &Path,

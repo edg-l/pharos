@@ -16,7 +16,7 @@ use pharos_stf::phase0::shuffling::compute_shuffled_permutation;
 use pharos_utils::Hash256;
 
 /// Produce one `CaseTask` per shuffling test case in the same walk-order as
-/// `run_shuffling_preset`. Called by the Phase 7 flat work-pool.
+/// `run_shuffling_preset`. Called by the flat work-pool.
 ///
 /// `preset` must be `"mainnet"` (round_count=90) or `"minimal"` (round_count=10).
 pub fn enumerate_shuffling(root: &Path, preset: &'static str, row_ordinal: u32) -> Vec<CaseTask> {

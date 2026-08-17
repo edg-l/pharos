@@ -1,6 +1,6 @@
 //! Schema v7 → v8: add the `slasher-proposers` CF for the Phase B slasher.
 //!
-//! v8 introduces the `slasher-proposers` column family (M11 Phase 9, opt-in
+//! v8 introduces the `slasher-proposers` column family (opt-in
 //! `--slasher` chain-history replay). The CF itself is created by RocksDB's
 //! `create_missing_column_families(true)` when the database is opened with the
 //! full v8 CF set (`cf::all_cfs`), so this migration moves no data: the

@@ -3,7 +3,7 @@
 //! Per `specs/phase0/beacon-chain.md:1577-1735`.
 //!
 //! All five `get_*_deltas` functions are `pub` so the rewards conformance
-//! harness (Phase 7 Task 7.4) can call each individually.
+//! harness can call each individually.
 
 use rayon::prelude::*;
 
@@ -342,7 +342,7 @@ where
 
 /// `process_rewards_and_penalties` per `specs/phase0/beacon-chain.md:1737-1749`.
 ///
-/// Sequential implementation (Phase 4). Phase 5 will add rayon parallelism.
+/// Sequential implementation.
 pub fn process_rewards_and_penalties<E: BeaconSpec>(
     state: &mut E::BeaconState,
 ) -> Result<(), EpochProcessingError>

@@ -7,7 +7,7 @@
 //! Operations implemented: `Add`, `Sub`, `Eq`, `Ord`, `Display` (decimal),
 //! `Debug`, `From<u64>`, `From<u128>`, `to_le_bytes`, `from_le_bytes`.
 //!
-//! `Mul` is explicitly not implemented in M0; arithmetic needs are limited
+//! `Mul` is deliberately not implemented; arithmetic needs are limited
 //! to `Add`, `Sub`, and comparison. `Mul` can be added in a later milestone
 //! if required.
 

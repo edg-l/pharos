@@ -6,8 +6,8 @@
 //! `pharos_fork_choice::on_block`, extracts the new head, and publishes a
 //! `HeadChange` to the engine driver.
 //!
-//! Per M4a Phase 4 plan (Task 4.8b). Design note: `spawn_blocking` is required
-//! because `state_transition` is sync and CPU-bound (M3a invariant).
+//! Design note: `spawn_blocking` is required
+//! because `state_transition` is sync and CPU-bound (invariant).
 
 use std::sync::Arc;
 
@@ -367,8 +367,8 @@ where
             root: outcome.block_root,
         });
 
-        // (e2) Write LC snapshots before publishing (Task 2.2).
-        // spawn_blocking per M3a invariant (R8); .await to ensure write completes
+        // (e2) Write LC snapshots before publishing.
+        // spawn_blocking per invariant R8; .await to ensure write completes
         // before the publish step below reads from the snapshot CF.
         {
             let post_state_snap = outcome.post_state.clone();
@@ -949,7 +949,7 @@ where
 /// fork digest.
 ///
 /// Extracted from the inline match in `run_block_ingestion_loop` so it can be
-/// reused by the lookup loop (Phase 4).
+/// reused by the lookup loop.
 pub(crate) fn decode_block_by_topic<E, H>(
     host: &H,
     topic: &GossipTopic,

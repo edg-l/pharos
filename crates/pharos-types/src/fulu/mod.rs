@@ -13,7 +13,7 @@
 //!
 //! Fulu's max-blobs-per-block is entirely epoch-driven via `get_blob_parameters`
 //! walking `BLOB_SCHEDULE`. There is NO `MAX_BLOBS_PER_BLOCK_FULU` const; the
-//! fallback is `MAX_BLOBS_PER_BLOCK_ELECTRA = 9` (from M12). The SSZ list bound
+//! fallback is `MAX_BLOBS_PER_BLOCK_ELECTRA = 9`. The SSZ list bound
 //! for `blob_kzg_commitments` remains `MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096`.
 
 pub mod attestation;

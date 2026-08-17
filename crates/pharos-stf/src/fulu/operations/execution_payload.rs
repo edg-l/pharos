@@ -10,8 +10,7 @@
 //! timestamp checks, versioned hashes, `parent_beacon_block_root`,
 //! `execution_requests` threaded to the engine, header caching) is identical to
 //! electra. The import path keeps the electra/V4 engine notify
-//! (`notify_new_payload_electra`); the V5 engine surface is production-only
-//! (Phase 6).
+//! (`notify_new_payload_electra`); the V5 engine surface is production-only.
 
 use pharos_kzg::kzg_commitment_to_versioned_hash;
 use pharos_ssz::{SszSequence, TreeHash};
@@ -194,7 +193,7 @@ where
     let parent_beacon_block_root = state.latest_block_header.parent_root;
 
     // [Electra/V4 engine notify on the import path] engine verification includes
-    // execution_requests. V5 production surface is Phase 6.
+    // execution_requests. The V5 production surface is not implemented.
     let el_status = execution_engine.notify_new_payload_electra(
         payload,
         &versioned_hashes,

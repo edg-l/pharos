@@ -8,7 +8,7 @@
 //! electra block. Therefore the fulu LC helpers are the electra LC helpers:
 //! `fulu_block_to_light_client_header` re-exports
 //! `electra_block_to_light_client_header`, which builds the header from the
-//! STF-verified `block.state_root` (the M4c `D-bellatrix-lc-header-uses-state-root`
+//! STF-verified `block.state_root` (the `D-bellatrix-lc-header-uses-state-root`
 //! invariant — never a recomputed `state.tree_hash_root()` on a projected state).
 //!
 //! `get_lc_execution_root` and `is_valid_light_client_header` are likewise the

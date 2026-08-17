@@ -33,7 +33,7 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Produce one `CaseTask` per random test case for a single `(fork, preset)` row,
 /// in the same walk-order as the corresponding `run_random_*` function.
-/// Called by the Phase 7 flat work-pool.
+/// Called by the flat work-pool.
 ///
 /// Supported forks: `"phase0"`, `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`.
 pub fn enumerate_random(

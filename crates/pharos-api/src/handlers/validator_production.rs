@@ -1,4 +1,4 @@
-//! Validator production/signing namespace handlers (Task 5.2).
+//! Validator production/signing namespace handlers.
 //!
 //! Routes implemented:
 //! - `GET  /eth/v3/validator/blocks/{slot}`
@@ -419,7 +419,7 @@ pub async fn post_beacon_committee_subscriptions<E: BeaconSpec>(
 /// After accepting the subscriptions, builds the union `syncnets` bitvector
 /// from all requested subnet indices and fires `notify_sync_committee_subscriptions`
 /// so the BN drives `DiscoveryHandle::update_enr_syncnets`. This fulfils
-/// `D-syncnets-enr-on-subscription` (deferred from M3b Task 9.7).
+/// `D-syncnets-enr-on-subscription`.
 ///
 /// Per `specs/altair/p2p-interface.md:540-549`:
 /// > The `i`th bit is set in this bitfield if the validator is currently

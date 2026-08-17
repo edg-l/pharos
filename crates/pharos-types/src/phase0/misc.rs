@@ -275,7 +275,7 @@ mod tests {
     use super::*;
     use pharos_ssz::{Decode, Encode};
 
-    // ── Task 3.3 tests ────────────────────────────────────────────────────────
+    // ── Tests ─────────────────────────────────────────────────────────────────
 
     #[test]
     fn validator_root_cache_populates() {

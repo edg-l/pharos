@@ -1,4 +1,4 @@
-//! Phase-3 block-read integration tests (Task 3.7).
+//! Phase-3 block-read integration tests.
 //!
 //! Drives `build_router` over a mock `ChainStateApi` that serves two
 //! fixture `SignedBeaconBlock` values (a bellatrix and a capella), and

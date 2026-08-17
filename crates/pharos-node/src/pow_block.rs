@@ -5,7 +5,7 @@
 //! merge-transition guard. It calls `eth_getBlockByHash` on the EL to retrieve
 //! PoW-chain block data.
 //!
-//! Per `D-engine-head-driver` (M4a Task 4.6c).
+//! Per `D-engine-head-driver`.
 
 use pharos_engine::EngineHandle;
 use pharos_fork_choice::{PowBlock, PowBlockError, PowBlockProvider};

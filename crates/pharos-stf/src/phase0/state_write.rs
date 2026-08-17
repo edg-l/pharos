@@ -342,7 +342,7 @@ where
 
 // ── BeaconStateWrite for fork-enum BeaconState ────────────────────────────────
 //
-// Task 1.12: The fork-enum `pharos_types::BeaconState` must satisfy
+// The fork-enum `pharos_types::BeaconState` must satisfy
 // `BeaconStateWrite` so that phase0 STF code (which is generic over
 // `E::BeaconState: BeaconStateWrite`) compiles without changes.
 //

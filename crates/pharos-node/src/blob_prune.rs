@@ -4,7 +4,7 @@
 //! advances and, on each event, deletes blob sidecars whose epoch is older
 //! than `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` behind the current head epoch.
 //!
-//! Per W8 (M10-DA Phase 4 review correction): blob pruning is a SEPARATE
+//! Per W8: blob pruning is a SEPARATE
 //! head-watch loop, NOT coupled to finalization or the freezer migration.
 //! Sidecars are deleted when:
 //!   `head_epoch - epoch_of(blob) > MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS`

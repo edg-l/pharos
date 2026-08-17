@@ -1,4 +1,4 @@
-//! Rewards endpoints (M15-BeaconAPIGaps Phase 6).
+//! Rewards endpoints.
 //!
 //! - `POST /eth/v1/beacon/rewards/attestations/{epoch}` — per-validator
 //!   attestation rewards for a completed epoch.

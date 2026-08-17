@@ -1,7 +1,6 @@
 //! Integration test: engine driver loop marks INVALID payload blocks, and
 //! `get_head` skips them.
 //!
-//! Per Task 4.9 (M4a Phase 4).
 //!
 //! Test scenario:
 //! 1. Build a 2-block in-memory fork-choice store: anchor → block_a.

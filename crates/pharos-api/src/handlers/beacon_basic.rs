@@ -1,4 +1,4 @@
-//! Basic beacon namespace handlers (Phase 1 Tier-1 subset).
+//! Basic beacon namespace handlers (Tier-1 subset).
 //!
 //! - `GET /eth/v1/beacon/genesis`
 //!
@@ -8,7 +8,7 @@
 //!
 //! Spec shapes from `~/dev/beacon-APIs/apis/beacon/genesis.yaml`.
 //!
-//! `genesis` is JSON-only in the spec (no SSZ form). Since Phase 2 it routes
+//! `genesis` is JSON-only in the spec (no SSZ form). It routes
 //! through `ApiResponse` so the `Accept` header is validated uniformly: a
 //! missing / `*/*` / `application/json` Accept yields JSON, any other explicit
 //! Accept (including `application/octet-stream`, which the endpoint cannot

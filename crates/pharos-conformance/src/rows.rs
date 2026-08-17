@@ -1,9 +1,6 @@
 //! Declarative row table for the conformance report.
 //!
-//! `row_table()` encodes the exact emission order of `lib.rs::run()` so that
-//! Phase 3 can replace the sequential ladder with a single flat work-pool.
-//!
-//! Phase 1 scaffolding: data only, not yet wired into `run()`.
+//! `row_table()` encodes the exact emission order of `lib.rs::run()`.
 
 /// Specification for one row in the conformance report table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +20,7 @@ pub struct RowSpec {
 
 /// The exact Q1 footnote text, copied verbatim from the `report.add_footnote`
 /// call in `lib.rs::run()`.
-const FORK_CHOICE_Q1_FOOTNOTE: &str = "Phase-0 fork-choice fixtures do not exist upstream; runner exercises the M1 store against altair fork-choice fixtures. Resolved by M3b (commit `784d75b`): altair containers landed so anchor states now decode and the rows show real pass counts. The skip-unknown-step-keys policy is retained for bellatrix+ step types. Decision recorded in `docs/decisions.md` (Q1).";
+const FORK_CHOICE_Q1_FOOTNOTE: &str = "Phase-0 fork-choice fixtures do not exist upstream; the runner exercises the store against altair fork-choice fixtures. Altair containers decode, so these rows show real pass counts. The skip-unknown-step-keys policy is retained for bellatrix+ step types.";
 
 /// All 174 conformance rows in the exact order that `lib.rs::run()` emits them.
 ///
@@ -71,7 +68,7 @@ pub fn row_table() -> &'static [RowSpec] {
         // fork_choice rows carry the Q1 footnote.
         rf("phase0", "fork_choice", "mainnet"), // 19
         rf("phase0", "fork_choice", "minimal"), // 20
-        // M14-Phase6: phase0/networking gossip-validator fixtures.
+        // Phase0/networking gossip-validator fixtures.
         r("phase0", "networking", "mainnet"), // 21
         r("phase0", "networking", "minimal"), // 22
         // ── altair ──────────────────────────────────────────────────────────
@@ -95,10 +92,10 @@ pub fn row_table() -> &'static [RowSpec] {
         r("altair", "light_client", "minimal"),     // 38
         r("altair", "genesis", "mainnet"),          // 39 (shifted +2)
         r("altair", "genesis", "minimal"),          // 40 (shifted +2)
-        // M14-Phase6: altair/networking gossip-validator fixtures.
+        // Altair/networking gossip-validator fixtures.
         r("altair", "networking", "mainnet"),
         r("altair", "networking", "minimal"),
-        // M14-Phase8: altair/fast_confirmation (minimal-only; mainnet fixtures
+        // altair/fast_confirmation (minimal-only; mainnet fixtures
         // do not exist upstream).
         r("altair", "fast_confirmation", "minimal"),
         // ── bellatrix ────────────────────────────────────────────────────────
@@ -120,10 +117,10 @@ pub fn row_table() -> &'static [RowSpec] {
         r("bellatrix", "rewards", "minimal"),          // 56
         r("bellatrix", "fork_choice", "mainnet"),      // (shifted +4)
         r("bellatrix", "fork_choice", "minimal"),      // (shifted +4)
-        // M14-Phase6: bellatrix/networking gossip-validator fixtures.
+        // Bellatrix/networking gossip-validator fixtures.
         r("bellatrix", "networking", "mainnet"),
         r("bellatrix", "networking", "minimal"),
-        // M14-Phase8: bellatrix/fast_confirmation (minimal-only).
+        // bellatrix/fast_confirmation (minimal-only).
         r("bellatrix", "fast_confirmation", "minimal"),
         // ── capella (transition + ssz_static) ───────────────────────────────
         r("capella", "transition", "mainnet"), // 59
@@ -151,10 +148,10 @@ pub fn row_table() -> &'static [RowSpec] {
         r("capella", "fork_choice", "minimal"),      // 78
         r("capella", "light_client", "mainnet"),     // (shifted +6)
         r("capella", "light_client", "minimal"),     // (shifted +6)
-        // M14-Phase6: capella/networking gossip-validator fixtures.
+        // Capella/networking gossip-validator fixtures.
         r("capella", "networking", "mainnet"),
         r("capella", "networking", "minimal"),
-        // M14-Phase8: capella/fast_confirmation (minimal-only).
+        // capella/fast_confirmation (minimal-only).
         r("capella", "fast_confirmation", "minimal"),
         // ── sync/optimistic ──────────────────────────────────────────────────
         r("sync", "optimistic", "mainnet"), // 81
@@ -183,10 +180,10 @@ pub fn row_table() -> &'static [RowSpec] {
         r("deneb", "fork_choice", "minimal"),      // 102
         r("deneb", "light_client", "mainnet"),     // (shifted +8)
         r("deneb", "light_client", "minimal"),     // (shifted +8)
-        // M14-Phase6: deneb/networking gossip-validator fixtures.
+        // Deneb/networking gossip-validator fixtures.
         r("deneb", "networking", "mainnet"),
         r("deneb", "networking", "minimal"),
-        // M14-Phase8: deneb/fast_confirmation (minimal-only).
+        // deneb/fast_confirmation (minimal-only).
         r("deneb", "fast_confirmation", "minimal"),
         // ── electra ──────────────────────────────────────────────────────────
         r("electra", "ssz_static", "mainnet"),       // 105
@@ -199,7 +196,7 @@ pub fn row_table() -> &'static [RowSpec] {
         r("electra", "finality", "minimal"),         // 111
         r("electra", "epoch_processing", "mainnet"), // 112
         r("electra", "epoch_processing", "minimal"), // 113
-        // Phase 4c turns these green: process_epoch is now electra-native
+        // process_epoch is electra-native
         // (EIP-7251 registry / slashings / pending-deposits / pending-consolidations
         // / effective-balance / sync-committee), so the epoch-crossing
         // transition/sanity/random fixtures pass.
@@ -211,27 +208,27 @@ pub fn row_table() -> &'static [RowSpec] {
         r("electra", "random", "minimal"),     // 119
         r("electra", "rewards", "mainnet"),    // 120
         r("electra", "rewards", "minimal"),    // 121
-        // M12-Electra Phase 6b: EIP-7549 fork-choice (committee-bits attester
+        // EIP-7549 fork-choice (committee-bits attester
         // extraction) + the electra/fork_choice conformance runner.
         r("electra", "fork_choice", "mainnet"), // 122
         r("electra", "fork_choice", "minimal"), // 123
-        // M12-Electra Phase 6e: electra light-client merkle-proof + sync runners.
+        // Electra light-client merkle-proof + sync runners.
         r("electra", "light_client", "mainnet"), // 124
         r("electra", "light_client", "minimal"), // 125
         r("electra", "merkle_proof", "mainnet"), // 126
         r("electra", "merkle_proof", "minimal"), // 127
-        // M12-Electra Phase 7: networking + fast_confirmation placeholder rows.
-        // `electra/networking` is gossip/req-resp coverage deferred to M13.
+        // Networking + fast_confirmation placeholder rows.
+        // `electra/networking` is gossip/req-resp coverage, not yet implemented.
         // `electra/fast_confirmation` (minimal only) is a new upstream category
         // introduced in v1.7.0 with no cross-client library support yet.
         r("electra", "networking", "mainnet"),        // 128
         r("electra", "networking", "minimal"),        // 129
         r("electra", "fast_confirmation", "minimal"), // 130
-        // ── M13-Fulu ──────────────────────────────────────────────────────────
+        // ── Fulu ──────────────────────────────────────────────────────────────
         r("fulu", "ssz_static", "mainnet"), // 131
         r("fulu", "ssz_static", "minimal"), // 132
         r("fulu", "kzg", "-"),              // 133
-        // M13-Fulu Phase 3b: STF + epoch + transition + fork conformance.
+        // STF + epoch + transition + fork conformance.
         r("fulu", "operations", "mainnet"),
         r("fulu", "operations", "minimal"),
         r("fulu", "epoch_processing", "mainnet"),
@@ -248,23 +245,23 @@ pub fn row_table() -> &'static [RowSpec] {
         r("fulu", "sanity", "minimal"),
         r("fulu", "random", "mainnet"),
         r("fulu", "random", "minimal"),
-        // M13-Fulu Phase 4: EIP-7594 PeerDAS fork-choice (column-sidecar DA gate;
+        // EIP-7594 PeerDAS fork-choice (column-sidecar DA gate;
         // electra-shaped attestation extraction carries over).
         r("fulu", "fork_choice", "mainnet"),
         r("fulu", "fork_choice", "minimal"),
-        // M13-Fulu Phase 5b: networking rows. The DAS-core custody helpers
+        // Networking rows. The DAS-core custody helpers
         // (`get_custody_groups`, `compute_columns_for_custody_group`) run for
         // real via `networking::enumerate_networking`; the gossip-validator
         // condition fixtures (attester_slashing, bls_to_execution_change,
         // proposer_slashing, sync_committee_*) are enumerated as skips (they
         // need a live store + wired gossip harness, not the offline writer).
-        // The gossip validators themselves ship in Phase 5b
-        // (`validate_data_column_sidecar` + the inherited validators) and are
+        // The gossip validators themselves
+        // (`validate_data_column_sidecar` + the inherited validators) are
         // unit-tested in `pharos-node`. NO column-sidecar / partial-column
         // fixtures (OQ2 `D-partial-columns-deferred`).
         r("fulu", "networking", "mainnet"),
         r("fulu", "networking", "minimal"),
-        // M13-Fulu Phase 6b: light-client + merkle-proof + fast-confirmation rows.
+        // Light-client + merkle-proof + fast-confirmation rows.
         // Fulu LC = electra LC types + fulu fork tag; the merkle-proof row covers
         // the `blob_kzg_commitments` whole-list inclusion proof (depth 4).
         // `fast_confirmation` is minimal-only (no mainnet fixtures) and drives the
@@ -288,7 +285,7 @@ mod tests {
     /// exactly match the emission order of `lib.rs::run()`.
     ///
     /// This test transcribes the expected sequence literally — it is the
-    /// byte-order anchor for Phase 3's flat-pool rewrite.
+    /// byte-order anchor for the flat-pool runner.
     #[test]
     fn row_table_matches_run_order() {
         let expected: &[(&str, &str, &str)] = &[
@@ -458,7 +455,6 @@ mod tests {
             ("electra", "networking", "mainnet"),
             ("electra", "networking", "minimal"),
             ("electra", "fast_confirmation", "minimal"),
-            // M13-Fulu
             ("fulu", "ssz_static", "mainnet"),
             ("fulu", "ssz_static", "minimal"),
             ("fulu", "kzg", "-"),
@@ -566,10 +562,10 @@ mod tests {
         );
     }
 
-    /// Total row count is exactly 174 (170 + 4 M14-Phase8 rows:
+    /// Total row count is exactly 174 (170 + 4 fast-confirmation rows:
     /// `altair/fast_confirmation` minimal, `bellatrix/fast_confirmation` minimal,
     /// `capella/fast_confirmation` minimal, `deneb/fast_confirmation` minimal).
-    /// The 170 base is the M14-Phase6 total (160 M13-Fulu + 10 networking rows).
+    /// The 170 base is 160 fork rows + 10 networking rows.
     /// `electra/fast_confirmation` and `fulu/fast_confirmation` already existed.
     #[test]
     fn row_count_is_174() {

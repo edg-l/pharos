@@ -1,19 +1,18 @@
 //! Real `Host<E>` implementation for `pharos-node`.
 //!
-//! This module replaces the M2 stubs (`BlockStoreStub`, `ForkContextStub`,
-//! `GossipValidatorStub`, non-generic `HostImpl`) with a single generic
-//! `HostImpl<E: BeaconSpec>` backed by a real `RocksStore` and the in-memory
+//! A single generic `HostImpl<E: BeaconSpec>` backed by a real `RocksStore`
+//! and the in-memory
 //! `pharos_fork_choice::Store<E>`.
 //!
 //! # GossipValidator note
 //!
 //! The following gossip validators are fully implemented:
-//! - `beacon_block` (12-step pipeline, M4e).
-//! - `beacon_attestation_*` (13-step pipeline, M4e).
-//! - `beacon_aggregate_and_proof` (17-step pipeline, M4e).
-//! - `voluntary_exit`, `proposer_slashing`, `attester_slashing` (M4e).
-//! - `bls_to_execution_change` (M6).
-//! - `light_client_finality_update`, `light_client_optimistic_update` (M4c).
+//! - `beacon_block` (12-step pipeline).
+//! - `beacon_attestation_*` (13-step pipeline).
+//! - `beacon_aggregate_and_proof` (17-step pipeline).
+//! - `voluntary_exit`, `proposer_slashing`, `attester_slashing`.
+//! - `bls_to_execution_change`.
+//! - `light_client_finality_update`, `light_client_optimistic_update`.
 //! - `sync_committee_{subnet}` (6-step RSM pipeline).
 //! - `sync_committee_contribution_and_proof` (12-step RAC pipeline).
 //!
@@ -21,10 +20,10 @@
 //!
 //! # record_attnets_change
 //!
-//! `record_attnets_change` is the public hook for the M3b subnet-rotation
-//! driver. At startup (M3a) it is called once from `main.rs` to set the
+//! `record_attnets_change` is the public hook for the subnet-rotation
+//! driver. At startup it is called once from `main.rs` to set the
 //! initial attestation subnet bitfield and bump `seq_number` from 0 to 1.
-//! The M3b epoch driver will call it every `EPOCHS_PER_SUBNET_SUBSCRIPTION`
+//! The epoch driver calls it every `EPOCHS_PER_SUBNET_SUBSCRIPTION`
 //! epochs when the persistent subnet assignment rotates.
 
 use std::marker::PhantomData;
@@ -115,7 +114,7 @@ pub struct HostImpl<E: BeaconSpec> {
     metadata: RwLock<AltairMetaData>,
     /// Runtime configuration (seconds_per_slot, etc.) for gossip validation timing.
     runtime_cfg: Arc<RuntimeConfig>,
-    /// In-memory operation pools fed by the gossip-accept path (Task 2.4).
+    /// In-memory operation pools fed by the gossip-accept path.
     ///
     /// Accepted attestations, slashings, exits, and credential changes are
     /// inserted here for later `drain_for_block` at block-production time.
@@ -134,7 +133,7 @@ pub struct HostImpl<E: BeaconSpec> {
     /// Highest `attested_header.beacon.slot` of any forwarded capella optimistic update.
     last_forwarded_optimistic_slot_capella: AtomicU64,
     /// Broadcast channel for head-change events.  `None` before the engine
-    /// driver is wired in (cold start before Task 4.8 spawns the loop).
+    /// driver is wired in (cold start before the loop is spawned).
     pub(crate) head_tx: Option<watch::Sender<Option<HeadChange>>>,
     /// Channel for new-payload requests to the engine driver.
     pub(crate) payload_tx: Option<mpsc::Sender<NewPayloadRequest<E>>>,
@@ -271,8 +270,7 @@ impl<E: BeaconSpec> HostImpl<E> {
     /// `fork_choice` should already be hydrated (either from
     /// `pharos_fork_choice::get_forkchoice_store` on cold start, or from
     /// `rehydrate_fork_choice_store` on warm restart). This constructor does
-    /// not own rehydration; that is the binary startup path's responsibility
-    /// (Task 2.7).
+    /// not own rehydration; that is the binary startup path's responsibility.
     pub fn new(
         store: Arc<RocksStore>,
         fork_choice: Arc<RwLock<pharos_fork_choice::Store<E>>>,
@@ -355,7 +353,7 @@ impl<E: BeaconSpec> HostImpl<E> {
     /// Wire the engine-driver channels into `HostImpl`.
     ///
     /// Must be called before `Arc::new(self)` so that `on_head_change` and
-    /// `on_new_block` are live for the M4b/M4c gossip-validator path.
+    /// `on_new_block` are live for the gossip-validator path.
     ///
     /// Both senders must be clones of the same channels passed to
     /// `run_engine_driver_loop` / `run_block_ingestion_loop` in `main.rs`.
@@ -401,7 +399,7 @@ impl<E: BeaconSpec> HostImpl<E> {
 
     /// Send a new execution payload to the engine driver for validation.
     ///
-    /// Called by the gossip-block ingestion path (Task 4.8b) once a Bellatrix
+    /// Called by the gossip-block ingestion path once a Bellatrix
     /// block has been accepted by `on_block`. The engine driver calls
     /// `engine_newPayloadV1` and records the returned `PayloadStatus`.
     pub fn on_new_block(
@@ -425,7 +423,7 @@ impl<E: BeaconSpec> HostImpl<E> {
 
     /// Publish a head-change event to the engine driver watch channel.
     ///
-    /// Called by the block-ingestion loop (Task 4.8b) after each successful
+    /// Called by the block-ingestion loop after each successful
     /// `get_head` computation.
     pub fn on_head_change(&self, change: HeadChange) {
         if let Some(ref tx) = self.head_tx {
@@ -568,7 +566,7 @@ impl<E: BeaconSpec> HostImpl<E> {
     /// Return a clone of the `Arc<RocksStore>` backing this host.
     ///
     /// Used by the block-ingestion loop to pass the store into a
-    /// `spawn_blocking` closure for LC snapshot writes (Task 2.2).
+    /// `spawn_blocking` closure for LC snapshot writes.
     pub fn store_arc(&self) -> Arc<RocksStore> {
         Arc::clone(&self.store)
     }
@@ -644,7 +642,7 @@ impl<E: BeaconSpec> HostImpl<E> {
     ///
     /// Mirrors `crates/pharos-fork-choice/src/handlers.rs:194-199`. Used by
     /// `validate_attestation` (step 1) and `validate_aggregate_and_proof`
-    /// (Phase 3 step 1). Returns `None` when the head state is unavailable
+    /// (step 1). Returns `None` when the head state is unavailable
     /// (e.g., during the checkpoint-sync window before the first block).
     fn head_state_at_slot(&self, slot: pharos_types::phase0::Slot) -> Option<E::BeaconState>
     where
@@ -1665,7 +1663,7 @@ where
             .write()
             .put((participant, att.data.target.epoch), ());
         // Feed the operation pool: insert the accepted unaggregated attestation
-        // so block-production can aggregate it (Task 2.4).
+        // so block-production can aggregate it.
         self.op_pools.insert_attestation(att.clone());
         // Feed the slasher: check for double-vote / surround-vote.
         self.slasher.observe(&indexed, self.current_epoch().0);
@@ -1720,7 +1718,7 @@ where
         let agg = &saap.message.aggregate;
 
         // Step 1 — RAG1: committee index must be within range.
-        // Use compute_epoch_at_slot on agg.data.slot (not target epoch) per Phase 2 follow-up.
+        // Use compute_epoch_at_slot on agg.data.slot (not target epoch).
         let head_state = match self.head_state_at_slot(agg.data.slot) {
             Some(s) => s,
             None => return GossipVerdict::Ignore("agg: head state unavailable".into()),
@@ -1934,8 +1932,8 @@ where
                 }
             }
         }
-        // Feed the operation pool: insert the accepted aggregate attestation
-        // (Task 2.4). The aggregate is extracted from the `AggregateAndProof`.
+        // Feed the operation pool: insert the accepted aggregate attestation.
+        // The aggregate is extracted from the `AggregateAndProof`.
         self.op_pools
             .insert_attestation(saap.message.aggregate.clone());
         // Feed the slasher: check for double-vote / surround-vote on the aggregate's
@@ -2051,7 +2049,7 @@ where
         self.seen_voluntary_exit_indices
             .write()
             .put(validator_index, ());
-        // Feed the operation pool (Task 2.4).
+        // Feed the operation pool.
         self.op_pools.insert_voluntary_exit(exit.clone());
         GossipVerdict::Accept
     }
@@ -2158,7 +2156,7 @@ where
         self.seen_proposer_slashing_indices
             .write()
             .put(proposer_index, ());
-        // Feed the operation pool (Task 2.4).
+        // Feed the operation pool.
         self.op_pools.insert_proposer_slashing(slashing.clone());
         GossipVerdict::Accept
     }
@@ -2289,7 +2287,7 @@ where
                 cache.put(*idx, ());
             }
         }
-        // Feed the operation pool (Task 2.4).
+        // Feed the operation pool.
         self.op_pools.insert_attester_slashing(slashing.clone());
         GossipVerdict::Accept
     }
@@ -2650,19 +2648,18 @@ where
     /// supermajority participation and the previously forwarded one did not. We
     /// apply the strict `incoming > prev` rule and drop the supermajority-upgrade
     /// case. Tracking the previous update's supermajority bit would lift this; it
-    /// is intentionally deferred per `D-lc-gossip-validation-full-node-arm`
-    /// (docs/decisions.md). See `p2p-interface.md:60-65`.
+    /// is intentionally deferred per `D-lc-gossip-validation-full-node-arm`.
+    /// See `p2p-interface.md:60-65`.
     fn validate_light_client_finality_update(
         &self,
         msg: &<E as BeaconSpec>::AltairLightClientFinalityUpdate,
     ) -> GossipVerdict {
-        // Note (Phase 5 / D-capella-lc-header): The M4c IGNORE rules are
+        // Note (D-capella-lc-header): the IGNORE rules are
         // unchanged for Capella. The header equality check at step 4 uses
         // `tree_hash_root()`, which works correctly for any LightClientHeader
         // shape (altair: beacon-only; capella: beacon + execution + branch).
-        // Phase 6 will update the method parameter from
-        // `E::AltairLightClientFinalityUpdate` to `E::CapellaLightClientFinalityUpdate`
-        // when the network fork-digest migration for capella is implemented.
+        // The method parameter is `E::AltairLightClientFinalityUpdate` until the
+        // network fork-digest migration for capella is implemented.
 
         // Step 1 — snapshot lookup.
         let local = match self.light_client_finality_update() {
@@ -2728,14 +2725,14 @@ where
     ///
     /// All conditions map to `[IGNORE]` per the spec.
     ///
-    /// See also `D-lc-gossip-validation-full-node-arm` (docs/decisions.md).
+    /// See also `D-lc-gossip-validation-full-node-arm`.
     fn validate_light_client_optimistic_update(
         &self,
         msg: &<E as BeaconSpec>::AltairLightClientOptimisticUpdate,
     ) -> GossipVerdict {
-        // Note (Phase 5 / D-capella-lc-header): Same as finality update — the
-        // IGNORE rules are unchanged for Capella; Phase 6 will change the type
-        // parameter to `E::CapellaLightClientOptimisticUpdate`.
+        // Note (D-capella-lc-header): Same as finality update — the
+        // IGNORE rules are unchanged for Capella; the type parameter becomes
+        // `E::CapellaLightClientOptimisticUpdate` with the capella migration.
 
         // Step 1 — snapshot lookup.
         let local = match self.light_client_optimistic_update() {
@@ -3014,7 +3011,7 @@ where
         self.seen_bls_to_execution_change_indices
             .write()
             .put(validator_index, ());
-        // Feed the operation pool (Task 2.4).
+        // Feed the operation pool.
         self.op_pools
             .insert_bls_to_execution_change(signed_msg.clone());
         GossipVerdict::Accept
@@ -3945,19 +3942,19 @@ where
 
 // ── LightClientProvider ───────────────────────────────────────────────────────
 // NOTE: blob_sidecar unit tests live in the `tests` module below.
-// The test module also covers `validate_blob_sidecar` — see Task 3.7 tests
+// The test module also covers `validate_blob_sidecar`
 // (blob_rejects_*, blob_ignores_*).
 
 /// Light-client provider for `HostImpl<E>`.
 ///
 /// Per `D-light-client-server-only`: serves the four LC req-resp methods.
 /// Reads LC snapshots from the dedicated storage column families defined in
-/// Task 6.9. Snapshots are written by the STF hook in `pharos-stf`
+/// Snapshots are written by the STF hook in `pharos-stf`
 /// (`create_light_client_*`) on each finality advance or optimistic head update.
 impl<E: BeaconSpec> LightClientProvider<E> for HostImpl<E> {
     /// Look up a pre-computed `LightClientBootstrap` for the given block root.
     ///
-    /// Reads from the `light-client-bootstrap` column family (Task 6.9(b)).
+    /// Reads from the `light-client-bootstrap` column family.
     /// Returns `None` on storage error (logged at `warn`) or missing entry.
     fn light_client_bootstrap(&self, block_root: Root) -> Option<E::AltairLightClientBootstrap> {
         match <RocksStore as StoreTrait<E>>::get_light_client_bootstrap(&self.store, &block_root) {
@@ -3971,7 +3968,7 @@ impl<E: BeaconSpec> LightClientProvider<E> for HostImpl<E> {
 
     /// Retrieve a range of stored `LightClientUpdate` objects.
     ///
-    /// Reads from the `light-client-update` column family (Task 6.9(b)).
+    /// Reads from the `light-client-update` column family.
     /// Returns an empty vec on storage error.
     fn light_client_updates_by_range(
         &self,
@@ -3993,7 +3990,7 @@ impl<E: BeaconSpec> LightClientProvider<E> for HostImpl<E> {
 
     /// Return the latest stored `LightClientFinalityUpdate`, if any.
     ///
-    /// Reads from the `latest-finality-update` column family (Task 6.9(b)).
+    /// Reads from the `latest-finality-update` column family.
     fn light_client_finality_update(&self) -> Option<E::AltairLightClientFinalityUpdate> {
         match <RocksStore as StoreTrait<E>>::get_light_client_finality_update(&self.store) {
             Ok(opt) => opt,
@@ -4006,7 +4003,7 @@ impl<E: BeaconSpec> LightClientProvider<E> for HostImpl<E> {
 
     /// Return the latest stored `LightClientOptimisticUpdate`, if any.
     ///
-    /// Reads from the `latest-optimistic-update` column family (Task 6.9(b)).
+    /// Reads from the `latest-optimistic-update` column family.
     fn light_client_optimistic_update(&self) -> Option<E::AltairLightClientOptimisticUpdate> {
         match <RocksStore as StoreTrait<E>>::get_light_client_optimistic_update(&self.store) {
             Ok(opt) => opt,
@@ -4435,7 +4432,7 @@ mod tests {
         HostImpl::new(store, fork_choice, gvr, fork_schedule, 0, runtime_cfg)
     }
 
-    // ── lc_publish_wait: spec gossip-window delay for LC broadcasts (M5) ────────
+    // ── lc_publish_wait: spec gossip-window delay for LC broadcasts ────────
 
     /// An LC update whose `signature_slot` window already opened (slot far in
     /// the past relative to wall clock) needs no publish delay.
@@ -4500,7 +4497,7 @@ mod tests {
         );
     }
 
-    // ── Task 5.2: current_fork_digest / enr_fork_id on bellatrix-genesis host ──
+    // ── current_fork_digest / enr_fork_id on bellatrix-genesis host ────────────
 
     /// A `HostImpl` with bellatrix-at-genesis schedule and `genesis_time_secs=0`
     /// must report the bellatrix fork digest from `current_fork_digest()` and
@@ -4551,7 +4548,7 @@ mod tests {
         );
     }
 
-    // ── Task 5.3: fork_from_context round-trips ───────────────────────────────
+    // ── fork_from_context round-trips ─────────────────────────────────────────
 
     /// `fork_from_context` correctly reverse-maps each of the three fork digests
     /// and returns `None` for an unknown 4-byte value.
@@ -4686,7 +4683,7 @@ mod tests {
         }
     }
 
-    // ── Task 1.5(a): validator_accepts_exact_match_finality ───────────────────
+    // ── (a): validator_accepts_exact_match_finality ───────────────────────────
 
     #[test]
     fn validator_accepts_exact_match_finality() {
@@ -4705,7 +4702,7 @@ mod tests {
         );
     }
 
-    // ── Task 1.5(b): validator_ignores_when_snapshot_absent_finality ──────────
+    // ── (b): validator_ignores_when_snapshot_absent_finality ──────────────────
 
     #[test]
     fn validator_ignores_when_snapshot_absent_finality() {
@@ -4719,7 +4716,7 @@ mod tests {
         ));
     }
 
-    // ── Task 1.5(c): validator_clock_window_just_past_finality ───────────────
+    // ── (c): validator_clock_window_just_past_finality ───────────────────────
 
     #[test]
     fn validator_clock_window_just_past_finality() {
@@ -4763,7 +4760,7 @@ mod tests {
         );
     }
 
-    // ── Task 1.5(d): validator_accepts_exact_match_optimistic ────────────────
+    // ── (d): validator_accepts_exact_match_optimistic ────────────────────────
 
     #[test]
     fn validator_accepts_exact_match_optimistic() {
@@ -4781,7 +4778,7 @@ mod tests {
         );
     }
 
-    // ── Task 1.5(e): validator_clock_window_just_past_optimistic ─────────────
+    // ── (e): validator_clock_window_just_past_optimistic ─────────────────────
 
     #[test]
     fn validator_clock_window_just_past_optimistic() {
@@ -4822,7 +4819,7 @@ mod tests {
         );
     }
 
-    // ── Task 1.5(f): validator_ignores_non_monotonic_finality ────────────────
+    // ── (f): validator_ignores_non_monotonic_finality ────────────────────────
 
     #[test]
     fn validator_ignores_non_monotonic_finality() {
@@ -4866,7 +4863,7 @@ mod tests {
         );
     }
 
-    // ── Task 1.5(g): validator_ignores_non_monotonic_optimistic ──────────────
+    // ── (g): validator_ignores_non_monotonic_optimistic ──────────────────────
 
     #[test]
     fn validator_ignores_non_monotonic_optimistic() {
@@ -5532,7 +5529,7 @@ mod tests {
 
     // ── per-fork dispatch coverage ───────────────────────────────────────────
     //
-    // Regression guard for the M7 capella gossip-follow bug: `validate_beacon_block`
+    // Regression guard for the capella gossip-follow bug: `validate_beacon_block`
     // had no capella arm in its fork-unwrap chain, so every capella `beacon_block`
     // was Reject("unrecognised fork variant"). The unwrap is now the exhaustive
     // `BeaconSpec::signed_block_message`; this asserts EVERY active fork variant is
@@ -6312,7 +6309,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Aggregate-and-proof validation tests (Task 3.5 a–q, RAG1–RAG16 + happy)
+    // Aggregate-and-proof validation tests (RAG1–RAG16 + happy)
     // ─────────────────────────────────────────────────────────────────────────
 
     use pharos_stf::phase0::accessors::get_beacon_committee;
@@ -9129,7 +9126,7 @@ mod tests {
         );
     }
 
-    // ── Task 3.7: validate_blob_sidecar unit tests ────────────────────────────
+    // ── validate_blob_sidecar unit tests ──────────────────────────────────────
     //
     // Covers the rules listed in the code-review requirements:
     //   rule 1  (index >= MAX_BLOB_COMMITMENTS_PER_BLOCK → REJECT)
@@ -9609,7 +9606,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Phase 5b — Fulu (EIP-7594 PeerDAS) `validate_data_column_sidecar` tests.
+    // Fulu (EIP-7594 PeerDAS) `validate_data_column_sidecar` tests.
     //
     // The 13 rules per `specs/fulu/p2p-interface.md`. As with the blob-sidecar
     // tests, rules 12-13 (inclusion proof + KZG) cannot be exercised with a
@@ -10066,7 +10063,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Phase 6a — Electra (EIP-7549 / EIP-7691) gossip-validator tests.
+    // Electra (EIP-7549 / EIP-7691) gossip-validator tests.
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Build a signed `SingleAttestation` for `attester_index` in the slot-0,
@@ -10338,7 +10335,7 @@ mod tests {
         );
     }
 
-    /// PEER-BAN HAZARD (M5-follow lesson): the electra `SingleAttestation` and the
+    /// PEER-BAN HAZARD (lesson): the electra `SingleAttestation` and the
     /// phase0 `Attestation` have DIFFERENT SSZ wire lengths. Decoding the wrong
     /// shape on the subnet topic is an instant -100 ban. This wire-bytes test
     /// pins the round-trip AND the length difference so the dispatch can never

@@ -1,4 +1,4 @@
-//! Beacon block publish handlers (Task 5.5).
+//! Beacon block publish handlers.
 //!
 //! - `POST /eth/v1/beacon/blocks`
 //! - `POST /eth/v2/beacon/blocks`

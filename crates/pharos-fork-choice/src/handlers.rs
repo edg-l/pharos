@@ -429,7 +429,7 @@ where
     store.block_states.insert(block_root, post_state.clone());
 
     // Default-mark the EL payload as `NotValidated`; the engine driver loop
-    // (M4a Phase 4) updates this to `Valid`/`Invalid` once the EL responds
+    // updates this to `Valid`/`Invalid` once the EL responds
     // to `engine_newPayloadV1`. Pre-Bellatrix blocks also get an entry, but
     // the engine driver only emits `newPayload` for Bellatrix+ payloads, so
     // their status stays `NotValidated` for the lifetime of the entry.
@@ -910,8 +910,8 @@ where
 ///
 /// Returns `true` when the proposer should withhold the forkchoice-updated call
 /// to avoid triggering a re-org of its own proposal (proposer-boost re-org
-/// prevention). Full implementation is deferred to M11 (proposer-boost
-/// re-orgs). For M4a this always returns `false`.
+/// prevention). Proposer-boost re-org handling is not implemented, so this
+/// always returns `false`.
 ///
 /// The conformance runner gates assertions on the YAML expecting `false`.
 pub fn should_override_forkchoice_update<E: BeaconSpec>(_store: &Store<E>) -> bool {

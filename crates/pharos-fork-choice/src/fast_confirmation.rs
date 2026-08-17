@@ -888,7 +888,7 @@ where
     let current_slot = get_current_slot::<E>(store);
     let mut confirmed_root = latest_confirmed_root;
 
-    // Phase 1: try to confirm previous-epoch blocks.
+    // Try to confirm previous-epoch blocks.
     let prev_voting_source_epoch = get_voting_source::<E>(store, fcr.previous_slot_head).epoch;
 
     if get_block_epoch::<E>(store, confirmed_root).0 + 1 == current_epoch.0
@@ -930,7 +930,7 @@ where
         }
     }
 
-    // Phase 2: try to confirm current-epoch blocks.
+    // Try to confirm current-epoch blocks.
     let head_unrealized_epoch = store
         .unrealized_justifications
         .get(&head)

@@ -51,7 +51,7 @@ where
     let method = req.method_name();
     let _span = tracing::info_span!("rpc_handle", %peer, method).entered();
 
-    // Per-peer/per-method inbound rate limiting (M11 Phase 11 task 2). Goodbye
+    // Per-peer/per-method inbound rate limiting. Goodbye
     // is a teardown control message and is never gated. Over-limit requests are
     // rejected with a ResourceUnavailable error and the peer is penalised via
     // `ScoreEvent::RateLimitExceeded`, so a flooding peer scores itself down

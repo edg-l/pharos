@@ -7,7 +7,7 @@
 //! (b) watches for `NewPayloadRequest<E>` events and calls `engine_newPayloadV1`;
 //!     maps the response to `PayloadStatus` and updates the in-memory store.
 //!
-//! Per `D-engine-head-driver` (M4a Phase 4).
+//! Per `D-engine-head-driver`.
 //! Cite: `specs/bellatrix/fork-choice.md:93-100`.
 
 use std::sync::Arc;
@@ -51,7 +51,7 @@ use pharos_utils::Hash256;
 /// `EngineHandle::new_payload_blocking` (which submits a request to the engine
 /// actor and blocks on the reply via the dedicated engine `Runtime`).
 ///
-/// The STF call site is always inside `tokio::task::spawn_blocking` (M3a
+/// The STF call site is always inside `tokio::task::spawn_blocking` (an
 /// invariant), so blocking here does not block a tokio worker thread.
 #[derive(Clone)]
 pub struct ExecutionEngineHandle {
@@ -87,7 +87,7 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
     /// Override the default: call `engine_newPayloadV2` with the full capella payload
     /// (including withdrawals) instead of stripping and falling back to V1.
     ///
-    /// Per `D-engine-v2-dispatch` (docs/decisions.md M6-Capella section): capella
+    /// Per `D-engine-v2-dispatch`: capella
     /// blocks MUST use V2; this is the Phase-2 carry-in fix (capella STF previously
     /// forwarded a Bellatrix-shaped payload with withdrawals stripped).
     fn notify_new_payload_capella<
@@ -205,7 +205,7 @@ impl pharos_stf::ExecutionEngine for ExecutionEngineHandle {
     /// means the EL does not have that blob (not yet in mempool or already pruned).
     /// Any engine transport/JSON-RPC error results in an empty vec (no fallback).
     ///
-    /// Per `D-getblobsv1-da-fallback` (M10-Deneb Phase 3).
+    /// Per `D-getblobsv1-da-fallback`.
     fn get_blobs_v1(&self, versioned_hashes: &[[u8; 32]]) -> Vec<Option<(Vec<u8>, Vec<u8>)>> {
         let vh_hex: Vec<String> = versioned_hashes
             .iter()
@@ -281,7 +281,7 @@ impl ExecutionEngineHandle {
     /// `pharos-stf`) is intentionally NOT changed — `execution_valid: false`
     /// fixtures must still drive STF rejection on the conformance path.
     ///
-    /// Per `D-engine-edge-stf-relaxation` (M8 Phase 1), `D-payload-verification-status` (M8 Phase 3b).
+    /// Per `D-engine-edge-stf-relaxation`, `D-payload-verification-status`.
     fn new_payload_wire(&self, wire: NewPayloadWire) -> pharos_stf::PayloadVerificationStatus {
         use pharos_stf::PayloadVerificationStatus;
         let version = match &wire {
@@ -377,7 +377,7 @@ pub trait PayloadToWire {
 /// Implemented for the concrete Capella `ExecutionPayload` with mainnet/minimal const params.
 /// Used by `import.rs` to push `engine_newPayloadV2` for capella blocks.
 ///
-/// Per `D-engine-v2-dispatch` (docs/decisions.md M6-Capella section).
+/// Per `D-engine-v2-dispatch`.
 pub trait PayloadToWireV2 {
     /// Convert `&self` to an `ExecutionPayloadV2`.
     fn to_execution_payload_v2(&self) -> ExecutionPayloadV2;
@@ -995,7 +995,7 @@ fn maybe_emit_head_change<E: BeaconSpec>(
 ///     if the head has changed.
 ///
 /// Per `consensus-specs/sync/optimistic.md:219-222` and `263-267`.
-/// Per `D-engine-head-driver` (M4a Phase 4) and `D-latest-valid-hash-resolution` (M8 Phase 3).
+/// Per `D-engine-head-driver` and `D-latest-valid-hash-resolution`.
 ///
 /// The loop exits when both `head_rx` and `payload_rx` are dropped.
 pub async fn run_engine_driver_loop<E: BeaconSpec, P: PowBlockProvider + Send + Sync + 'static>(
@@ -1265,8 +1265,7 @@ pub async fn run_engine_driver_loop<E: BeaconSpec, P: PowBlockProvider + Send + 
                                     // path is only reachable if Pharos syncs from genesis
                                     // through the merge-transition itself (not the normal
                                     // operational mode).  The hook is implemented for
-                                    // spec-correctness; see Task 4.2 finding in the phase
-                                    // completion report.
+                                    // spec-correctness.
                                     use pharos_stf::phase0::accessors::compute_epoch_at_slot;
                                     let (payload_parent_hash, tbh, tbh_epoch, ttd, block_slot) = {
                                         let s = store.read();

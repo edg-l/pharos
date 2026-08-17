@@ -1,4 +1,4 @@
-//! Slasher Phase B — chain-history replay integration test (M11 Phase 9 oracle).
+//! Slasher Phase B — chain-history replay integration test (oracle).
 //!
 //! Seeds a RocksDB chain store with a handful of phase0 blocks, seeds the
 //! fork-choice `block_states` map so the replay's committee resolution

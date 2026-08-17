@@ -5,7 +5,7 @@
 //! `minimal_genesis()`.
 //!
 //! The genesis state is deterministic: `eth1_block_hash = Hash256::zero()`,
-//! `eth1_timestamp = 0`, `deposits = []`. This matches the M1 conformance
+//! `eth1_timestamp = 0`, `deposits = []`. This matches the conformance
 //! harness pattern and avoids both fixture maintenance debt and the
 //! production binary's `--genesis-state-path` flow (which is exercised
 //! separately in a future `tests/binary_smoke.rs`).

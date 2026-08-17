@@ -1,6 +1,4 @@
 //! Per-case task types and outcome aggregation for the flat work-pool runner.
-//!
-//! Phase 1 scaffolding: types only, not yet wired into `run()`.
 
 use crate::rows::RowSpec;
 

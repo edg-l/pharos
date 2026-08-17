@@ -11,7 +11,7 @@
 //! `pharos_fork_choice::Store<E>` by walking persisted blocks from
 //! `finalized_checkpoint.root` forward to `head_root`, loading each block and
 //! its post-state from `blocks` / `states` CFs. The walk is implemented in
-//! `pharos-node::startup::rehydrate_fork_choice_store` (Phase 1+).
+//! `pharos-node::startup::rehydrate_fork_choice_store`.
 //!
 //! After rehydration, the binary must call `on_tick` with the current
 //! wall-clock time to advance the store's time cursor from

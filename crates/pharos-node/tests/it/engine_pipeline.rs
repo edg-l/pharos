@@ -4,7 +4,7 @@
 //!   block_ingestion_loop → STF → pharos_fork_choice::on_block
 //!     → HeadChange watch → engine driver → axum mock
 //!
-//! Asserts per Task 4.9b (M4a Phase 4):
+//! Asserts:
 //!   (a) `engine_newPayloadV1` called at least once per fixture block.
 //!   (b) `engine_forkchoiceUpdatedV1` called at least once.
 //!   (c) Head advances to slot 4 (4 blocks in the store + anchor = 5 blocks total).

@@ -1,7 +1,7 @@
 //! Storage error type.
 //!
 //! Follows the `D-storage-error-strategy` ADR: one `StorageError` enum with
-//! `#[from]` from upstream error types, mirroring M1 `D2`.
+//! `#[from]` from upstream error types, mirroring `D2`.
 
 /// Errors returned by all `pharos-storage` operations.
 #[derive(Debug, thiserror::Error)]

@@ -1,7 +1,7 @@
 //! Node startup helpers — warm-restart rehydration of the in-memory fork-choice
 //! store from persisted RocksDB data.
 //!
-//! # Warm-restart contract (`D-rocksdb` snapshot-rehydration) — Phase 4 update
+//! # Warm-restart contract (`D-rocksdb` snapshot-rehydration)
 //!
 //! After the Phase-3 freezer migrates finalized blocks/states to cold CFs, the
 //! hot region only holds epoch-boundary states in `[split_slot, head_slot]`.
@@ -172,7 +172,7 @@ where
 /// Threads the caller-supplied `runtime_cfg` (the real fork schedule loaded from
 /// `--config-dir`) through `state_transition` / `process_slots_fork` so a replay
 /// that crosses a fork boundary (e.g. electra→fulu) upgrades live rather than
-/// freezing on `UnsupportedFork` (the M6 `D-runtime-cfg-threading-live-loops`
+/// Freezing on `UnsupportedFork` (the `D-runtime-cfg-threading-live-loops`
 /// lesson).  `validate_result = false` — stored blocks are trusted.
 fn inline_replay_to<E: BeaconSpec>(
     store: &RocksStore,

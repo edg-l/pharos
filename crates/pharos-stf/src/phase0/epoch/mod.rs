@@ -12,7 +12,7 @@ pub mod registry_updates;
 pub mod rewards_and_penalties;
 pub mod slashings;
 
-// Re-export each sub-routine for individual conformance dispatch (Task 4.8).
+// Re-export each sub-routine for individual conformance dispatch.
 pub use final_updates::{
     process_effective_balance_updates, process_eth1_data_reset, process_historical_roots_update,
     process_participation_record_updates, process_randao_mixes_reset, process_slashings_reset,

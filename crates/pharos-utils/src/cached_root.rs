@@ -1,6 +1,6 @@
 //! `CachedRoot` — lazily-populated `Hash256` cache with transparent derives.
 //!
-//! Custom `Clone` resets the cache (mirrors the Phase 3 `Validator::clone`
+//! Custom `Clone` resets the cache (mirrors `Validator::clone`
 //! reset semantic that prevents stale roots after clone-mutate patterns).
 //! Custom `PartialEq` always returns `true` so the field is invisible to
 //! struct-wide `#[derive(PartialEq, Eq)]` comparisons. Combined with
@@ -38,7 +38,7 @@ impl Clone for CachedRoot {
     /// s2.field = X;` the cache on `s2` is correctly empty and the next
     /// `cached_tree_hash_root()` call computes a fresh root from the mutated
     /// state. Without this, the clone would carry the pre-mutation root and
-    /// silently report stale data (the Phase 3 `validator_clone_carries_cache`
+    /// silently report stale data (the `validator_clone_carries_cache`
     /// bug that introduced 215 conformance failures).
     fn clone(&self) -> Self {
         Self(OnceLock::new())

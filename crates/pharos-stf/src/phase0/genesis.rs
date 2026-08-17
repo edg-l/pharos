@@ -293,7 +293,7 @@ where
 
 // ── BeaconStateMut for fork-enum BeaconState ─────────────────────────────────
 //
-// Task 1.12: Implements genesis construction on the fork-enum `BeaconState`.
+// Implements genesis construction on the fork-enum `BeaconState`.
 // Genesis always starts in Phase0, so `genesis_state()` returns `Phase0(...)`.
 // All other methods delegate to the inner Phase0 state; the Altair variant is
 // guarded by `unreachable!()` per project conventions.

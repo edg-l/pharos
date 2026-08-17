@@ -1,4 +1,4 @@
-// Integration tests for Phase 5 additions:
+// Integration tests for:
 //
 // (a) `context_bytes_codec`: two nodes exchange `BlocksByRange/v2` carrying
 //     mixed phase-0 + altair blocks; both decode correctly with the right fork

@@ -1,10 +1,10 @@
-//! Integration tests for M3a Phase 3 `NetworkEvent` expansion.
+//! Integration tests for the `NetworkEvent` surface.
 //!
 //! Covers the five new variants added per D-network-event-surface:
 //! `PeerSubscribed`, `PeerUnsubscribed`, `PeerIdentified`, `DialFailed`,
 //! `ExternalAddrConfirmed`.
 //!
-//! Test isolation: `#[serial]` is used per the M2 gossip-flake mitigation
+//! Test isolation: `#[serial]` is used as a gossip-flake mitigation
 //! pattern (`95785a5`) — gossipsub mesh formation is timing-sensitive and
 //! concurrent tests on the same loopback interface can cause flakes.
 

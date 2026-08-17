@@ -398,7 +398,7 @@ pub fn signed_block_header<E: BeaconSpec>(
 /// `SignedBeaconBlockView`/`BeaconBlockView`, and delegates to
 /// `FuluBodyFieldHashes::body_field_hashes` — the same helper `block_production.rs`
 /// uses when building a Fulu block's data-column sidecars. Shared here so the
-/// EL column-DA reconstruction path (Phase 4) computes byte-identical field
+/// EL column-DA reconstruction path computes byte-identical field
 /// hashes without re-deriving the 13-field list.
 #[allow(dead_code)]
 pub(crate) fn fulu_body_field_hashes<E: BeaconSpec>(
@@ -683,7 +683,7 @@ where
     // - `NotValidated` + block_slot > current_slot → bypass (future-block hold path).
     // - `Invalid` → already rejected by the STF (InvalidExecutionPayload).
     //
-    // Per `D-optimistic-candidate-gates-import` (M8 Phase 3b).
+    // Per `D-optimistic-candidate-gates-import`.
     if payload_status == Some(PayloadVerificationStatus::NotValidated) {
         let block_slot: u64 = signed_block_slot::<E>(signed_block).0;
 
@@ -717,7 +717,7 @@ where
     // (d) block_root was already computed above for the DA gate; reuse it.
     let block_root: Root = block_root_for_da;
 
-    // (e) Call on_block in spawn_blocking (may do blocking PoW lookup; M3a invariant).
+    // (e) Call on_block in spawn_blocking (may do blocking PoW lookup).
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -758,7 +758,7 @@ where
     // Electra blocks use engine_newPayloadV4 (EIP-7685 executionRequests);
     // Deneb blocks use engine_newPayloadV3 (blob gas + versioned hashes);
     // Capella blocks use engine_newPayloadV2 (withdrawals); Bellatrix uses V1.
-    // Per `D-engine-v2-dispatch` (docs/decisions.md M6-Capella section).
+    // Per `D-engine-v2-dispatch`.
     // NOTE: Electra MUST be checked before Deneb — both return `DenebExecutionPayload`
     // (Electra reuses the same payload type); the electra arm short-circuits the chain.
     if let (Some(electra_payload), Some(req_encoded)) = (
@@ -919,7 +919,7 @@ where
 
         // Determine whether this block carries a live execution payload so the
         // persist worker can pre-seed `payload_statuses[block_root] = NotValidated`.
-        // Per `D-preseed-notvalidated-on-import` (M8 Phase 1): every execution-
+        // Per `D-preseed-notvalidated-on-import`: every execution-
         // carrying block must have an entry from import time; the async engine
         // driver later overwrites with Valid / Invalid.
         //
@@ -959,7 +959,7 @@ where
             // ahead of this worker on a fast EL).
             //
             // The write lock is acquired and released BEFORE all I/O so it is never
-            // held across a disk write. Per `D-preseed-notvalidated-on-import` (M8).
+            // held across a disk write. Per `D-preseed-notvalidated-on-import`.
             if is_execution_block {
                 fc_snap
                     .write()
@@ -1005,7 +1005,7 @@ where
 
             // Persist the pre-seeded NotValidated status to the `payload-status` CF
             // so a restart rehydrates NotValidated for blocks whose EL verdict has
-            // not yet been received. Per `D-preseed-notvalidated-on-import` (M8 Phase 1).
+            // not yet been received. Per `D-preseed-notvalidated-on-import`.
             //
             // Guarded: skip the write if the engine driver has already persisted a
             // Valid or Invalid verdict in the in-memory map. The driver can race
@@ -1087,7 +1087,7 @@ mod tests {
     //! Test (b): EE returns `Valid` → gate does not fire (status ≠ NotValidated) →
     //!   import succeeds with `Ok(ImportOutcome)`.
     //!
-    //! Per `D-optimistic-candidate-gates-import` (M8 Phase 3b).
+    //! Per `D-optimistic-candidate-gates-import`.
 
     use std::sync::Arc;
 
@@ -1518,7 +1518,7 @@ mod tests {
     /// optimistic candidate (parent not execution-enabled + block within 128
     /// slots of current), `import_block` rejects it without importing.
     ///
-    /// Per `D-optimistic-candidate-gates-import` (M8 Phase 3b).
+    /// Per `D-optimistic-candidate-gates-import`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn non_candidate_syncing_el_rejects_with_not_optimistic_candidate() {
         let tmpdir = tempfile::tempdir().unwrap();
@@ -1582,7 +1582,7 @@ mod tests {
     /// NotValidated`.  A `Valid` verdict from the EL bypasses the candidate
     /// check entirely, so even a non-candidate block imports successfully.
     ///
-    /// Per `D-optimistic-candidate-gates-import` (M8 Phase 3b).
+    /// Per `D-optimistic-candidate-gates-import`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn non_candidate_valid_el_imports_successfully() {
         let tmpdir = tempfile::tempdir().unwrap();
@@ -1713,7 +1713,7 @@ mod tests {
     /// (a) `import_block` returns `Ok` (optimistic import succeeded).
     /// (b) `fc_store.read().payload_statuses[block_root] == NotValidated`.
     ///
-    /// Per `D-preseed-notvalidated-on-import` (M8 Phase 1).
+    /// Per `D-preseed-notvalidated-on-import`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn preseed_not_validated_survives_full_payload_channel() {
         let tmpdir = tempfile::tempdir().unwrap();
@@ -1833,8 +1833,8 @@ mod tests {
     /// (f) `payload_statuses[B_root] == Valid`.
     /// (g) Anchor still `Valid` (walk stops at the first already-Valid entry).
     ///
-    /// Per `D-optimistic-candidate-gates-import` (M8 Phase 3b) and
-    /// `D-preseed-notvalidated-on-import` (M8 Phase 1).
+    /// Per `D-optimistic-candidate-gates-import` and
+    /// `D-preseed-notvalidated-on-import`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn optimistic_import_then_valid_promotion() {
         use pharos_fork_choice::{is_optimistic, promote_valid_ancestors};

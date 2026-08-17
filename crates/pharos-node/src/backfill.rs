@@ -109,7 +109,7 @@ pub trait BackfillBlockProvider<E: BeaconSpec>: Send + Sync + 'static {
 /// backstop.  The loop never exits while caught up — only when `shutdown_rx`
 /// fires.
 ///
-/// Per Task 3.3 design (D-backfill-driver):
+/// Per `D-backfill-driver`:
 /// - Head slot computed via `get_head` + `store.blocks` lookup (no `head_slot()`
 ///   method on `Store<E>`).
 /// - `on_block` is idempotent on re-insertion (HashMap::insert semantics,
@@ -121,7 +121,7 @@ pub trait BackfillBlockProvider<E: BeaconSpec>: Send + Sync + 'static {
 /// lookup loop can drain any queued descendants of the imported block.  Pass
 /// `None` in test contexts that do not instantiate a lookup loop.
 ///
-/// `lowest_block_tx`: progress signal (Phase 2, Task 2.1).  Publishes the
+/// `lowest_block_tx`: progress signal.  Publishes the
 /// **lowest imported block slot** the node holds after each chunk.  Forward
 /// backfill walks UP from the anchor toward the wall clock and exits at
 /// `BACKFILL_TAIL_LAG_SLOTS` from wall on the tip side; it does NOT walk below
@@ -211,7 +211,7 @@ where
     // Throttle for the gossip-follow-lag warning (see NEAR_TIP_BACKFILL_SLOTS).
     let mut last_followlag_warn: Option<tokio::time::Instant> = None;
 
-    // Phase 2 (Task 2.1): publish the lowest imported block slot. Computed from
+    // Publish the lowest imported block slot. Computed from
     // the fork-choice `blocks` map (the slot of the lowest-slot block we hold).
     // Forward backfill only adds blocks at-or-above the anchor, so this stays at
     // the anchor; the backward state-backfill loop reads it to gate its
@@ -237,7 +237,7 @@ where
             return Ok(());
         }
 
-        // Task 3.2(b): no Store::head_slot() method; compute inline via get_head.
+        // No Store::head_slot() method; compute inline via get_head.
         let (_head_root, head_slot) = {
             let s = fc_store.read();
             let root = pharos_fork_choice::get_head::<E>(&s);
@@ -461,7 +461,7 @@ where
             }
         }
 
-        // Phase 2 (Task 2.1): republish the lowest-block slot after each chunk so
+        // Republish the lowest-block slot after each chunk so
         // the backward state-backfill loop is woken when block coverage extends.
         publish_lowest_block_slot(&fc_store.read());
     }

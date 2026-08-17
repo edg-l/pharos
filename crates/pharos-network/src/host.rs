@@ -357,7 +357,7 @@ pub trait GossipValidator<E: BeaconSpec>: Send + Sync + 'static {
 /// trait boundary.
 ///
 /// Per `D-light-client-server-only`: only the server (responder) side is
-/// implemented; the consumer side is M5/M7 work.
+/// implemented; the consumer side is not.
 pub trait LightClientProvider<E: BeaconSpec>: Send + Sync + 'static {
     /// Look up a `LightClientBootstrap` by trusted block root.
     ///
@@ -596,7 +596,7 @@ where
 //
 // These allow `Arc<HostImpl<E>>` (and any other `Arc<T>` where `T` implements
 // the sub-traits) to be used directly with `NetworkBuilder` and the `Host<E>`
-// blanket. Resolves `Q-host-arc-vs-arclike` (M3a plan): single `Arc<HostImpl>`
+// blanket. Resolves `Q-host-arc-vs-arclike`: single `Arc<HostImpl>`
 // shared between the node binary and the network task.
 
 impl<T> ForkContext for Arc<T>

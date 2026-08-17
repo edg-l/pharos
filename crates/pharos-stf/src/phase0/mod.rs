@@ -7,7 +7,7 @@ pub mod predicates;
 pub mod shuffling;
 pub mod state_write;
 
-// Phase 4-6+ content
+// Block / epoch / slot processing
 pub mod block;
 pub mod epoch;
 pub mod slot;

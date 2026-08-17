@@ -10,7 +10,7 @@
 //! `PendingBlocks` wraps a `parking_lot::Mutex`.  Every public method acquires
 //! the guard, does its work, and releases it **before returning**.  No method
 //! returns a guard or a reference derived from one.  This means the lookup
-//! loop (Phase 4) can call any method from an `async` context without risking
+//! loop can call any method from an `async` context without risking
 //! a guard held across an `.await` point.
 
 use std::collections::{HashMap, VecDeque};

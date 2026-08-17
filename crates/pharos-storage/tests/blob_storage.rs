@@ -1,4 +1,4 @@
-//! Integration tests for blob sidecar storage (M10-DA Phase 4, Task 4.6).
+//! Integration tests for blob sidecar storage.
 //!
 //! Tests:
 //! - `put_get_blob_sidecar`: put/get roundtrip for a single sidecar.

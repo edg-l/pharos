@@ -35,8 +35,7 @@ impl RpcMethod {
     /// - BlocksByRoot:  line 1579 (v2 — v1 deprecated)
     ///
     /// Light-client protocol IDs per `specs/altair/light-client/p2p-interface.md`.
-    /// Handlers are wired in Phase 6 (Task 6.5); IDs are declared here so the
-    /// codec can match on them in Phase 5.
+    /// IDs are declared here so the codec can match on them.
     pub fn protocol_id(&self) -> &'static str {
         match self {
             RpcMethod::Status => "/eth2/beacon_chain/req/status/1/ssz_snappy",

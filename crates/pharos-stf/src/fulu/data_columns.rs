@@ -768,7 +768,7 @@ mod tests {
     /// 16-leaf body field tree (field 11 = the `blob_kzg_commitments` list root),
     /// derives the depth-4 inclusion proof, assembles 128 sidecars from 2 blobs'
     /// worth of cells/proofs, and confirms each sidecar's inclusion proof passes
-    /// `verify_data_column_sidecar_inclusion_proof` (reusing Phase 4.1 verify).
+    /// `verify_data_column_sidecar_inclusion_proof` (reusing the inclusion-proof verifier).
     #[test]
     fn get_data_column_sidecars_yields_128_with_verifying_inclusion_proofs() {
         // Two blobs → two commitments → two cells/proofs tuples.
@@ -822,7 +822,7 @@ mod tests {
             assert_eq!(sidecar.column.as_slice().len(), n_blobs);
             assert_eq!(sidecar.kzg_proofs.as_slice().len(), n_blobs);
             assert_eq!(sidecar.kzg_commitments.as_slice().len(), n_blobs);
-            // The inclusion proof verifies (reuse Phase 4.1 verifier).
+            // The inclusion proof verifies.
             assert!(
                 verify_data_column_sidecar_inclusion_proof::<4096, 4>(sidecar).is_ok(),
                 "column {c} inclusion proof must verify"

@@ -4,7 +4,7 @@
 //! host (closing the DB), reopen at the same path, and confirm the block
 //! and a fresh `MetaData.seq_number = 0` survive the round-trip.
 //!
-//! Spec cite: `D-rocksdb` (warm-restart correctness, M3a Edge Cases).
+//! Spec cite: `D-rocksdb` (warm-restart correctness).
 
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ use crate::common::node::build_host;
 /// from a second `HostImpl` (via `build_host`) opened at the same path.
 ///
 /// Additionally asserts `MetaData.seq_number == 0` on the second instance
-/// (metadata is in-memory; persisted metadata is M11).
+/// (metadata is in-memory).
 ///
 /// Per `D-rocksdb` warm-restart correctness requirement.
 #[test]
@@ -67,8 +67,8 @@ fn block_survives_host_restart() {
         "block must survive RocksStore close+reopen"
     );
 
-    // MetaData.seq_number starts at 0 on every cold-open (in-memory; M11 will
-    // persist it to the `metadata` CF if desired).
+    // MetaData.seq_number starts at 0 on every cold-open (in-memory; it is not
+    // persisted to the `metadata` CF).
     assert_eq!(
         host2.local_metadata().seq_number,
         0,

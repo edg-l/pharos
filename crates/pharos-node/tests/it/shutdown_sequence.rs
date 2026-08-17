@@ -1,4 +1,4 @@
-//! Oracle for M11 Phase 17 — graceful shutdown sequence order.
+//! Oracle for graceful shutdown sequence order.
 //!
 //! Per the plan: "Test `shutdown_sequence_order`: instrument each step with an
 //! ordered marker and assert the sequence runs in order on a simulated SIGTERM

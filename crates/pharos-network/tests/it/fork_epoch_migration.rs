@@ -1,10 +1,10 @@
 //! Integration test: cross-fork ENR migration and gossip topic rotation.
 //!
-//! Verifies Task 7.2 (UpdateMetaData + Unsubscribe commands) and Task 7.4
-//! (DiscoveryHandle::update_enr_eth2) by exercising the network APIs that the
+//! Verifies the UpdateMetaData + Unsubscribe commands and
+//! `DiscoveryHandle::update_enr_eth2` by exercising the network APIs that the
 //! fork-migration loop in `pharos-node` drives.
 //!
-//! Test scenario (per Task 7.6 spec):
+//! Test scenario (spec):
 //! - Spawn two nodes starting with phase-0 topics and fork digest.
 //! - Simulate crossing `ALTAIR_FORK_EPOCH = 1` by driving the migrate sequence
 //!   directly (subscribe altair topics, unsubscribe phase-0 topics, update ENR).
@@ -153,7 +153,7 @@ async fn run_migration_once() {
         .await
         .expect("update_metadata failed");
 
-    // Step 4: update the ENR `eth2` field via DiscoveryHandle (Task 7.4).
+    // Step 4: update the ENR `eth2` field via DiscoveryHandle.
     // (In the real node, `DiscoveryHandle` is returned by `NetworkBuilder::spawn`
     // and passed to the fork_migration_loop. Here we build a node directly to
     // obtain the discovery handle.)
@@ -222,7 +222,7 @@ async fn run_migration_once() {
 
 /// Verify that `DiscoveryHandle::update_enr_eth2` updates the ENR `eth2` field.
 ///
-/// Verifies (Task 7.6 acceptance criterion: "ENR `eth2` field changed"):
+/// Verifies (acceptance criterion: "ENR `eth2` field changed"):
 /// 1. The initial ENR carries the phase-0 fork digest.
 /// 2. After `update_enr_eth2`, reading the ENR back via `DiscoveryHandle::local_enr`
 ///    shows the new altair fork digest.
@@ -300,7 +300,7 @@ async fn verify_enr_update_once() {
 /// - ENR `eth2` update via `DiscoveryHandle` returns Ok(()).
 #[tokio::test(flavor = "multi_thread")]
 async fn fork_epoch_migration() {
-    // Verify ENR update once (covers Task 7.4 acceptance criteria).
+    // Verify ENR update once.
     verify_enr_update_once().await;
 
     // Run the migration scenario 10 consecutive times.

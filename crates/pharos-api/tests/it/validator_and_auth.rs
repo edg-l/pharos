@@ -1,4 +1,4 @@
-//! Phase-5 integration tests (Task 5.6).
+//! Phase-5 integration tests.
 //!
 //! Verifies:
 //! 1. Proposer duties match the state shuffling (each slot in the epoch has a

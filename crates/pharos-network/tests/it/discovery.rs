@@ -20,7 +20,7 @@ fn fd() -> ForkDigest {
 /// using A's TCP listen_addr to simulate the connectivity that discovery would
 /// provide, then assert that both sides see PeerConnected.
 ///
-/// Note: the discv5 discovery tick runs every 30 seconds (hard-coded in Phase 3
+/// Note: the discv5 discovery tick runs every 30 seconds (hard-coded in
 /// `NetworkBuilder::build`). For a deterministic test within 10 s we dial
 /// A's TCP address directly from B after spawning — this exercises the same
 /// connection path that discovery would take. The ENR bootnode wiring ensures

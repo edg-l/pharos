@@ -1,6 +1,6 @@
 //! Integration test: orphan deferral fires Notify + backfill heals the gap.
 //!
-//! Verifies the two behaviors introduced in Phase 3 (RC3):
+//! Verifies two behaviors (RC3):
 //!
 //! **Part A — IngestionEgress Notify fires on missing parent**
 //!

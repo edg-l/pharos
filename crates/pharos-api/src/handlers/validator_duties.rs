@@ -1,4 +1,4 @@
-//! Validator-duties namespace handlers (Task 5.3).
+//! Validator-duties namespace handlers.
 //!
 //! - `GET  /eth/v1/validator/duties/proposer/{epoch}`
 //! - `POST /eth/v1/validator/duties/attester/{epoch}`  (body: JSON array of validator indices)
@@ -19,8 +19,8 @@
 //! - Production/signing endpoints (produce_block, produce_attestation_data,
 //!   aggregate selection, sync_committee_contribution) MUST return HTTP 503
 //!   when `chain.is_optimistic_node()` is true.  Those endpoints are not yet
-//!   implemented (deferred past M7); the 503 contract is documented in
-//!   `Task 5.4` below and is wired at the point of implementation.
+//!   implemented; the 503 contract is documented below and is wired at the
+//!   point of implementation.
 //!
 //! The `execution_optimistic` field is sourced from `chain.is_optimistic_node()`
 //! (node-level flag, not just head-level) so it correctly reflects the case
@@ -163,7 +163,7 @@ fn proposer_index_at_slot<E: BeaconSpec>(
     use pharos_utils::{Bytes4, hash};
 
     // RI-6: a Fulu state carries the EIP-7917 precomputed `proposer_lookahead`.
-    // Read it directly rather than recomputing on-demand (the M12 16-bit-proposer
+    // Read it directly rather than recomputing on-demand (the 16-bit-proposer
     // gotcha that bit production, lookahead, and duties). The lookahead covers
     // `(MIN_SEED_LOOKAHEAD + 1) * SLOTS_PER_EPOCH` slots starting at the current
     // epoch's first slot; `slot - current_epoch_start` indexes into it. Slots
@@ -427,7 +427,7 @@ pub async fn get_proposer_duties<E: BeaconSpec>(
 /// v1 now uses, fixing the latent v1 Fulu `dependent_root` bug).
 ///
 /// `is_syncing()` 503 guard matches v1 exactly.  No `is_optimistic_node()` 503
-/// per the M8 duty-read contract.
+/// per the duty-read contract.
 ///
 /// (ADR: `D-proposer-duties-v2-shares-v1`)
 pub async fn get_proposer_duties_v2<E: BeaconSpec>(

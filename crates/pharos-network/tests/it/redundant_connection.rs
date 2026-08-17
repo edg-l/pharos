@@ -1,4 +1,4 @@
-//! Integration test for Phase 2 (RC2): num_established gate on peer
+//! Integration test for RC2: num_established gate on peer
 //! (de)registration.
 //!
 //! ## Approach: fallback — direct handler test with synthetic num_established

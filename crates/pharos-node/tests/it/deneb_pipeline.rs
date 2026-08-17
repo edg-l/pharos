@@ -1,4 +1,4 @@
-//! Deneb pipeline integration test (Task 5.2 of M10-Deneb Phase 5).
+//! Deneb pipeline integration test.
 //!
 //! Exercises three paths end-to-end:
 //!

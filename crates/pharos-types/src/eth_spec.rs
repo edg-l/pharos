@@ -627,7 +627,7 @@ pub trait BeaconSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + D
     /// Returns a `RuntimeConfig` snapshot populated from this preset's consts.
     ///
     /// Used as the `Default` impl for `RuntimeConfig` (mainnet) and as the
-    /// starting point for runtime YAML overrides (Phase 8).
+    /// starting point for runtime YAML overrides.
     fn default_runtime_config() -> crate::config::RuntimeConfig;
 
     /// Wrap a concrete phase0 `BeaconState` into the fork-enum `BeaconState`.
@@ -805,7 +805,7 @@ pub trait BeaconSpec: 'static + Send + Sync + Clone + Debug + PartialEq + Eq + D
     ///
     /// Used by the block-ingestion loop to push the wire-format Capella payload
     /// (with withdrawals) to the engine driver via `engine_newPayloadV2`.
-    /// Wired in Phase 4 (`D-engine-v2-dispatch`).
+    /// Wired per `D-engine-v2-dispatch`.
     fn get_capella_execution_payload(
         signed: &Self::SignedBeaconBlock,
     ) -> Option<Self::CapellaExecutionPayload>;
@@ -2879,7 +2879,7 @@ impl BeaconSpec for MainnetBeaconSpec {
         MainnetExecutionPayload
     );
 
-    // Fork-enum types (D7 / Task 1.9)
+    // Fork-enum types (D7)
     type BeaconState = crate::state::MainnetBeaconState;
     type Phase0BeaconState = crate::phase0::MainnetBeaconState;
     type AltairBeaconState = crate::altair::MainnetBeaconState;
@@ -3149,7 +3149,7 @@ impl BeaconSpec for MinimalBeaconSpec {
     // -- Altair fork schedule --
     /// `ALTAIR_FORK_VERSION` from `configs/minimal.yaml:37`.
     const ALTAIR_FORK_VERSION: [u8; 4] = [0x01, 0x00, 0x00, 0x01];
-    /// `ALTAIR_FORK_EPOCH` from plan Task 0.3 (minimal preset activates altair at genesis).
+    /// `ALTAIR_FORK_EPOCH` (minimal preset activates altair at genesis).
     ///
     /// NOTE: `configs/minimal.yaml:38` sets this to FAR_FUTURE_EPOCH (2^64-1) for generic
     /// spec-test runs. The plan specifies `0` for the minimal preset to reflect a test
@@ -3346,7 +3346,7 @@ impl BeaconSpec for MinimalBeaconSpec {
         MinimalExecutionPayload
     );
 
-    // Fork-enum types (D7 / Task 1.9)
+    // Fork-enum types (D7)
     type BeaconState = crate::state::MinimalBeaconState;
     type Phase0BeaconState = crate::phase0::MinimalBeaconState;
     type AltairBeaconState = crate::altair::MinimalBeaconState;

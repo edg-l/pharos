@@ -2,11 +2,11 @@
 //!
 //! Per `specs/bellatrix/beacon-chain.md:288-358`.
 //!
-//! The trait is sync-callable. The real impl (`ExecutionEngineHandle`, Phase 3)
+//! The trait is sync-callable. The real impl (`ExecutionEngineHandle`)
 //! wraps the async `EngineClient` by submitting the request onto the engine
 //! actor's dedicated `Arc<tokio::runtime::Runtime>` via
 //! `runtime.block_on(oneshot_rx)` on the caller thread. The STF caller MUST
-//! itself run inside `tokio::task::spawn_blocking` (M3a invariant) so the call
+//! itself run inside `tokio::task::spawn_blocking` (invariant) so the call
 //! thread is not a tokio worker.
 
 use pharos_types::bellatrix::ExecutionPayload;
@@ -136,7 +136,7 @@ pub trait ExecutionEngine: Send + Sync + 'static {
     /// `parent_beacon_block_root`. The default strips the Deneb-only fields and
     /// forwards to `notify_new_payload_capella`, which in turn strips withdrawals.
     /// The default is only safe for test/null engines. The production
-    /// `ExecutionEngineHandle` in `pharos-node` overrides this (Phase 3).
+    /// `ExecutionEngineHandle` in `pharos-node` overrides this.
     ///
     /// `versioned_hashes` is derived from `body.blob_kzg_commitments` via
     /// `kzg_commitment_to_versioned_hash`. `parent_beacon_block_root` is
@@ -187,7 +187,7 @@ pub trait ExecutionEngine: Send + Sync + 'static {
     /// with the full Electra payload INCLUDING `execution_requests`. The default
     /// ignores `execution_requests` and delegates to `notify_new_payload_deneb`.
     /// The default is only safe for test/null engines. The production
-    /// `ExecutionEngineHandle` in `pharos-node` overrides this for Electra (M12-Engine).
+    /// `ExecutionEngineHandle` in `pharos-node` overrides this for Electra.
     fn notify_new_payload_electra<
         const MAX_BYTES_PER_TRANSACTION: u64,
         const MAX_TRANSACTIONS_PER_PAYLOAD: u64,

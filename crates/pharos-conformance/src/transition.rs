@@ -10,7 +10,7 @@
 //! calls `upgrade_to_bellatrix`, applies post-fork bellatrix blocks, and
 //! compares the final state to `post.ssz_snappy`.
 //!
-//! Per `D-altair-transition-test-strategy` (docs/m3b-plan.md).
+//! Per `D-altair-transition-test-strategy`.
 //!
 //! # Fixture format (altair)
 //!
@@ -27,7 +27,7 @@
 //! - `meta.yaml` — `fork_epoch: u64`, `blocks_count: u64`, `post_fork: bellatrix`.
 //! - `post.ssz_snappy` — raw bellatrix `BeaconState` SSZ (no fork discriminant).
 //!
-//! Hard constraint: no YAML loader (plan Phase 4 constraint 1). We use
+//! Hard constraint: no YAML loader (constraint 1). We use
 //! compile-time `MainnetBeaconSpec` / `MinimalBeaconSpec` preset constants for
 //! fork versions and override fork_epoch from `meta.yaml`.
 
@@ -63,7 +63,7 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Produce one `CaseTask` per transition test case for a single `(fork, preset)` row,
 /// in the same walk-order as the corresponding `run_transition_*` function.
-/// Called by the Phase 7 flat work-pool.
+/// Called by the flat work-pool.
 ///
 /// Supported forks: `"altair"`, `"bellatrix"`, `"capella"`, `"deneb"`.
 pub fn enumerate_transition(

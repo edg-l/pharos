@@ -1,7 +1,6 @@
 //! Smoke test for the SSZ derive macros using a variable-size struct.
 //!
-//! Per S3 / Task 3.9: this test was deferred from Phase 2 because `SszList`
-//! is only available after Phase 3.
+//! Per S3: the variable-size case requires `SszList`.
 //!
 //! # `VarTestStruct`
 //!

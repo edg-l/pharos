@@ -108,7 +108,7 @@ pub struct Store<E: BeaconSpec> {
     ///
     /// Phase0/Altair blocks never populate this map; Bellatrix blocks land
     /// here as `NotValidated` and are updated to `Valid`/`Invalid` by the
-    /// engine driver loop (M4a Phase 4). `filter_block_tree` skips any
+    /// engine driver loop. `filter_block_tree` skips any
     /// `Invalid` entry per `specs/bellatrix/fork-choice.md:74-79`.
     pub payload_statuses: HashMap<Root, PayloadStatus>,
 
@@ -173,7 +173,7 @@ impl<E: BeaconSpec> Store<E> {
     /// written for a block that raced through the newPayload path before the
     /// persist worker ran.
     ///
-    /// Invariant (per `D-preseed-notvalidated-on-import`, M8 Phase 1): every
+    /// Invariant (per `D-preseed-notvalidated-on-import`): every
     /// execution-carrying block has a `payload_statuses` entry from import time.
     /// The async engine driver later overwrites with `Valid` or `Invalid`.
     pub fn mark_payload_status_if_absent(&mut self, root: Root, status: PayloadStatus) {

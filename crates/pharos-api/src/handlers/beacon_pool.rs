@@ -1,14 +1,14 @@
-//! Beacon pool namespace handlers (Task 5.6 + M15 Phase 3).
+//! Beacon pool namespace handlers.
 //!
 //! GET reads + POST mutations for:
 //! - `GET  /eth/v1/beacon/pool/attestations`
 //! - `POST /eth/v1/beacon/pool/attestations`
-//! - `GET  /eth/v2/beacon/pool/attestations`   (EIP-7549, M15 Phase 3)
-//! - `POST /eth/v2/beacon/pool/attestations`   (EIP-7549, M15 Phase 3)
+//! - `GET  /eth/v2/beacon/pool/attestations`   (EIP-7549)
+//! - `POST /eth/v2/beacon/pool/attestations`   (EIP-7549)
 //! - `GET  /eth/v1/beacon/pool/attester_slashings`
 //! - `POST /eth/v1/beacon/pool/attester_slashings`
-//! - `GET  /eth/v2/beacon/pool/attester_slashings`  (M15 Phase 3)
-//! - `POST /eth/v2/beacon/pool/attester_slashings`  (M15 Phase 3)
+//! - `GET  /eth/v2/beacon/pool/attester_slashings`
+//! - `POST /eth/v2/beacon/pool/attester_slashings`
 //! - `GET  /eth/v1/beacon/pool/proposer_slashings`
 //! - `POST /eth/v1/beacon/pool/proposer_slashings`
 //! - `GET  /eth/v1/beacon/pool/voluntary_exits`

@@ -3,10 +3,10 @@
 //!
 //! Unlike `debug das` (a pure offline calculator), this tool drives the live
 //! Engine API: it spins up an [`EngineClient`] + [`spawn_engine_actor`] exactly
-//! like the node does, then calls the Phase-1 [`EngineHandle`] blocking
+//! like the node does, then calls the [`EngineHandle`] blocking
 //! payload-bodies methods from inside `tokio::task::spawn_blocking` (calling a
-//! blocking method directly on the async runtime thread panics — M3a
-//! invariant). It exists as the reference call site for
+//! blocking method directly on the async runtime thread panics —
+//! an invariant). It exists as the reference call site for
 //! `engine_getPayloadBodiesByHashV1`/`ByRangeV1` so `DEFAULT_ENGINE_CAPABILITIES`
 //! advertises methods pharos actually calls, not merely implements.
 

@@ -42,7 +42,7 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Produce one `CaseTask` per rewards test case for a single `(fork, preset)` row,
 /// in the same walk-order as the corresponding `run_rewards_*` function.
-/// Called by the Phase 7 flat work-pool.
+/// Called by the flat work-pool.
 ///
 /// Sub-sweep order: basic cases fully, then leak, then random (matches dispatcher order).
 ///

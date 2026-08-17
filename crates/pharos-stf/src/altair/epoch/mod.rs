@@ -2,7 +2,7 @@
 //!
 //! `process_epoch` calls sub-routines in the order specified by
 //! `specs/altair/beacon-chain.md:640-659`. Each sub-routine lives in its
-//! own file and is re-exported so the conformance harness (Phase 4) can
+//! own file and is re-exported so the conformance harness can
 //! drive them individually.
 
 mod helpers;

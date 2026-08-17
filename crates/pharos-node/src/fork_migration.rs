@@ -7,12 +7,12 @@
 //!
 //! Per `specs/altair/p2p-interface.md`, `specs/bellatrix/p2p-interface.md`,
 //! and `specs/capella/p2p-interface.md` cross-fork ENR migration requirements
-//! and `D-fork-schedule-source` (M3b).
+//! and `D-fork-schedule-source`.
 //!
 //! **Startup no-op** (`D-bellatrix-migration-startup-no-op`): on the first
 //! tick, if the active fork version is already past the genesis fork version,
 //! the loop records `prior = current` WITHOUT migrating. The startup gossip
-//! subscription (Phase 4) already subscribes under the active fork digest;
+//! subscription already subscribes under the active fork digest;
 //! re-migrating would produce duplicate subscribes and spurious unsubscribes.
 //! For configs where ALTAIR_FORK_EPOCH == BELLATRIX_FORK_EPOCH == 0, this
 //! means the first tick sees `current = bellatrix_fork_version`, records it,
@@ -113,7 +113,7 @@ pub async fn run_fork_migration_loop<E: BeaconSpec>(
                 // First tick. Record the active fork version without migrating.
                 // `D-bellatrix-migration-startup-no-op`: if we are already past
                 // genesis_fork_version at startup, the startup subscription
-                // (Phase 4) is already on the correct digest; migrating here
+                // is already on the correct digest; migrating here
                 // would produce spurious unsubscribes.
                 prior = Some(current);
                 // Do not migrate even if current != genesis_fork_version.
@@ -407,7 +407,7 @@ async fn do_bpo_migration<E: BeaconSpec>(
     // Step 1: Update the ENR `eth2` field with the new (rotated) digest, and the
     // `nfd` (next fork digest) field with the digest of the NEXT BPO boundary
     // (forward-looking, additive). `cgc` is owned by the custody-adjustment loop
-    // (Phase 6a) and is left untouched here (`None`). Per `specs/fulu/p2p-interface.md`.
+    // and is left untouched here (`None`). Per `specs/fulu/p2p-interface.md`.
     let enr_fork_id = ENRForkID {
         fork_digest: new_digest,
         next_fork_version: fork_schedule.next_fork_version(epoch),
@@ -487,7 +487,7 @@ fn topics_for_version<E: BeaconSpec>(
         // Unreachable: every `fork_schedule` version is matched above. A future
         // fork MUST add an explicit arm here so a missing case is a compile-time
         // gap surfaced in review, not a silent regression to a stale digest.
-        // (No `_ =>` fallthrough to a wrong topic set — M12 lesson.)
+        // (No `_ =>` fallthrough to a wrong topic set.)
         unreachable!("topics_for_version: unknown fork version {version:?}")
     }
 }
@@ -965,7 +965,7 @@ mod tests {
     /// Build a fulu-active fork schedule with the mainnet BLOB_SCHEDULE
     /// (two BPO entries) for the BPO-migration test.
     ///
-    /// Versions + epochs mirror the Phase 1.5 digest-rotation test
+    /// Versions + epochs mirror the digest-rotation test
     /// (`crates/pharos-types/src/fork.rs::fulu_fork_digest_rotates_per_bpo_entry`):
     /// FULU_FORK_VERSION 0x06000000, FULU_FORK_EPOCH 411392,
     /// ELECTRA_FORK_EPOCH 364032, BLOB_SCHEDULE [412672->15, 419072->21].

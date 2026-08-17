@@ -2,7 +2,7 @@
 //! `specs/phase0/beacon-chain.md:1493-1537`.
 //!
 //! Called by `process_epoch` and externally by `pharos-fork-choice`'s
-//! `compute_pulled_up_tip` (Phase 8); hence `pub`.
+//! `compute_pulled_up_tip`; hence `pub`.
 
 use pharos_types::{
     BeaconSpec, BeaconStateView,
@@ -25,7 +25,7 @@ use super::helpers::{get_attesting_balance, get_matching_target_attestations};
 /// Skip in the first two epochs (genesis and epoch 1) to avoid modifying the
 /// `0x00` stub root in the initial checkpoints.
 ///
-/// **Must be `pub`**: Phase 8 (`compute_pulled_up_tip`) calls this directly
+/// **Must be `pub`**: `compute_pulled_up_tip` calls this directly
 /// from `pharos-fork-choice` to compute unrealized justification.
 pub fn process_justification_and_finalization<E: BeaconSpec>(
     state: &mut E::BeaconState,

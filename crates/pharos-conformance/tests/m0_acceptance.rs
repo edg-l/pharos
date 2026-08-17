@@ -1,4 +1,4 @@
-//! M0 acceptance test.
+//! Conformance-suite acceptance test.
 //!
 //! Runs the full conformance suite with no filter. If fixtures are absent the
 //! test passes with a printed skip message. If fixtures are present and any

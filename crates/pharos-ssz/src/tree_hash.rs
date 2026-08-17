@@ -64,7 +64,7 @@ pub enum TreeHashType {
 ///
 /// The signature `fn tree_hash_root(&self) -> Hash256` is forward-compatible
 /// with both interior-mutable per-node caching (planned for the persistent
-/// tree) and external cache maps. M0 does not cache; each call recomputes.
+/// tree) and external cache maps. Nothing is cached here; each call recomputes.
 pub trait TreeHash {
     /// Identifies the Merkleization strategy for this type.
     const TREE_HASH_TYPE: TreeHashType;

@@ -18,8 +18,8 @@
 //! short-circuit in exact order — a wrong order passes some fixtures and fails
 //! others — so they are kept 1:1 with the spec.
 //!
-//! Churn / credential / compounding logic is reused from `electra::helpers`
-//! (Phase 2a); none of it is reimplemented here.
+//! Churn / credential / compounding logic is reused from `electra::helpers`;
+//! none of it is reimplemented here.
 
 use std::collections::HashMap;
 

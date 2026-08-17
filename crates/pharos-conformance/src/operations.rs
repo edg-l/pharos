@@ -5325,7 +5325,7 @@ fn electra_ops_walk_opts() -> WalkOpts {
 
 /// Descriptor table for electra operations — mainnet preset.
 ///
-/// Phase 2b+2c+3a+3b+3c+3d+3e: `block_header`, `proposer_slashing`, `deposit`,
+/// `block_header`, `proposer_slashing`, `deposit`,
 /// `voluntary_exit`, `sync_aggregate`, `attestation`, `attester_slashing`,
 /// `deposit_request`, `withdrawal_request`, `consolidation_request`,
 /// `withdrawals`, `execution_payload` sub-ops registered.
@@ -6099,7 +6099,7 @@ fn electra_op_table_mainnet() -> Vec<(
 
 /// Descriptor table for electra operations — minimal preset.
 ///
-/// Phase 2b+2c+3a+3b+3c+3d+3e: same sub-op set as mainnet (block_header,
+/// Same sub-op set as mainnet (block_header,
 /// proposer_slashing, deposit, voluntary_exit, sync_aggregate, attestation,
 /// attester_slashing, deposit_request, withdrawal_request, consolidation_request,
 /// withdrawals, execution_payload).

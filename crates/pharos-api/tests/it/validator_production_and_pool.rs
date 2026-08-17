@@ -1,6 +1,6 @@
-//! M9 Phase 5 integration tests (Task 5.8).
+//! Validator production, signing and pool route tests.
 //!
-//! Tests every new route introduced in Phase 5:
+//! Covers every production, signing and pool route:
 //! - Each production/signing route returns 200 (or 404 for aggregate) on a
 //!   healthy non-optimistic node.
 //! - Each production/signing route returns 503 when `is_optimistic_node()=true`.
@@ -144,7 +144,7 @@ impl ChainStateApi<MainnetBeaconSpec> for HealthyMock {
         Ok(serde_json::json!({ "data": [] }))
     }
 
-    // M9 Phase 5 overrides — return sensible test data.
+    // Overrides — return sensible test data.
 
     fn produce_block(
         &self,
@@ -1060,7 +1060,7 @@ async fn get_node_peer_count_returns_200() {
     assert_eq!(data["connecting"].as_str().unwrap(), "0");
 }
 
-// ── M15 Phase 3 helpers ───────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// POST JSON with an explicit extra header (used by v2 pool endpoints that
 /// require `Eth-Consensus-Version`).
@@ -1088,7 +1088,7 @@ async fn post_json_with_header(
     (status, json)
 }
 
-// ── M15 Phase 3 tests ─────────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// `POST /eth/v2/beacon/pool/attestations` with `electra` header and a valid
 /// `SingleAttestation` body returns 200.

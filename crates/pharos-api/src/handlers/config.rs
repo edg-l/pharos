@@ -182,7 +182,7 @@ pub async fn get_spec<E: BeaconSpec>(
         // --config-dir), so they MUST come from the loaded runtime config, not
         // the compile-time `E::` preset constants — otherwise /config/spec
         // misreports the active network's fork versions (which silently masked
-        // the real digest behaviour during M13 devnet bring-up).
+        // the real digest behaviour on devnets).
         data.insert(
             "GENESIS_FORK_VERSION".into(),
             hex4(cfg.genesis_fork_version),

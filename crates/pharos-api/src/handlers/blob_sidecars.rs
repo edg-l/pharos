@@ -1,4 +1,4 @@
-//! Blob sidecar retrieval handler (M15 Phase 4).
+//! Blob sidecar retrieval handler.
 //!
 //! - `GET /eth/v1/beacon/blobs/{block_id}` — retrieve blobs for a given block.
 //!

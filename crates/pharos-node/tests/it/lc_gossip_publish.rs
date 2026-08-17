@@ -1,6 +1,6 @@
 //! Light-client gossip publish integration tests.
 //!
-//! Task 2.7 (M4c Phase 2): verify that the block-ingestion loop correctly
+//! Verify that the block-ingestion loop correctly
 //! writes LC snapshots and publishes LC gossip updates after each head change.
 //!
 //! Tests:

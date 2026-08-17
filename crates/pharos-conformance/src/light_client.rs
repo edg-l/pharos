@@ -76,7 +76,7 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Produce one `CaseTask` per light-client test case for a single `(fork, preset)` row,
 /// in the same walk-order as the corresponding `run_light_client_*` function.
-/// Called by the Phase 7 flat work-pool.
+/// Called by the flat work-pool.
 ///
 /// Walk order: `single_merkle_proof` cases first, then `sync` cases (mirrors
 /// `run_light_client_altair/capella/deneb/electra_*`).
@@ -330,7 +330,7 @@ pub fn enumerate_light_client(
 
     for (case_dir, _meta) in sync_cases {
         // Filter out gloas and post-fulu cross-fork cases; they reference fork
-        // version 0x07 (gloas) which is outside the M14 scope.
+        // version 0x07 (gloas), which is not implemented.
         let case_dirname = dir_name(&case_dir);
         if case_dirname.contains("gloas") {
             continue;

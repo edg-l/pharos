@@ -3,7 +3,7 @@
 //! One client per EL endpoint. Each call mints a fresh JWT (`iat = now`)
 //! and POSTs a single JSON-RPC envelope. Method version dispatch is via the
 //! `*Version` enums so callers can pin a Bellatrix-only V1 today and add
-//! V2/V3 variants per fork later (Capella V2 lands in M5).
+//! V2/V3 variants per fork later.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -211,7 +211,7 @@ impl EngineClient {
         let _rpc_start = std::time::Instant::now();
         let result = self.rpc_call_inner(method, params).await;
         // Record latency regardless of success/error (label by Engine API method).
-        // ADR cite: `D-metrics-prometheus-optin` (Phase 5).
+        // ADR cite: `D-metrics-prometheus-optin`.
         metrics::histogram!(METRIC_ENGINE_CALL_LATENCY_SECONDS, "method" => method.to_owned())
             .record(_rpc_start.elapsed().as_secs_f64());
         result

@@ -1,6 +1,6 @@
 //! Integration test for `validate_bls_to_execution_change`.
 //!
-//! Phase 6 (M6 task 6.11): happy path (Accept) + a reject path for the
+//! Happy path (Accept) + a reject path for the
 //! BLS-to-execution-change gossip validator.
 //!
 //! Uses `MinimalBeaconSpec` with capella_fork_epoch=0 so the validator runs.

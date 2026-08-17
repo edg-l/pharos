@@ -1,4 +1,4 @@
-//! Live block-persistence integration test (Task 1.8 of M-Storage Phase 1).
+//! Live block-persistence integration test.
 //!
 //! Drives `run_backfill_loop` over a chain of N blocks against a temp
 //! `RocksStore`, then asserts:

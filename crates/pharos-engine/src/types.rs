@@ -101,7 +101,7 @@ pub struct PayloadAttributesV2 {
 /// `pharos-engine` because `pharos-engine` already depends on `pharos-types`
 /// and the conversion is pure wire-type mapping.
 ///
-/// Per `D-engine-v2-dispatch` (docs/decisions.md M6-Capella section).
+/// Per `D-engine-v2-dispatch`.
 impl<
     const MAX_BYTES_PER_TRANSACTION: u64,
     const MAX_TRANSACTIONS_PER_PAYLOAD: u64,

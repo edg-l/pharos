@@ -1,4 +1,4 @@
-//! Beacon API router: wires all Phase-1 through M9-Phase-5 routes.
+//! Beacon API router: wires every implemented route.
 
 use std::sync::Arc;
 
@@ -27,10 +27,10 @@ use crate::handlers::validator_liveness;
 use crate::handlers::validator_production;
 use crate::state::ApiState;
 
-/// Build the Beacon API router (Phase 1 through M9-Phase-5).
+/// Build the Beacon API router.
 ///
 /// Routes wired:
-/// **Phase 1 — Tier-1 probes**
+/// **Tier-1 probes**
 /// - `GET /eth/v1/node/identity`
 /// - `GET /eth/v1/node/version`
 /// - `GET /eth/v2/node/version`
@@ -42,7 +42,7 @@ use crate::state::ApiState;
 /// - `GET /eth/v1/beacon/genesis`
 /// - `GET /eth/v1/config/spec`
 ///
-/// **Phase 2 — State reads**
+/// **State reads**
 /// - `GET /eth/v1/beacon/states/{state_id}/root`
 /// - `GET /eth/v1/beacon/states/{state_id}/fork`
 /// - `GET /eth/v1/beacon/states/{state_id}/finality_checkpoints`
@@ -53,7 +53,7 @@ use crate::state::ApiState;
 /// - `GET /eth/v1/beacon/states/{state_id}/randao`
 /// - `GET /eth/v1/beacon/states/{state_id}/sync_committees`
 ///
-/// **Phase 3 — Blocks, headers, fork-tagging, config extras**
+/// **Blocks, headers, fork-tagging, config extras**
 /// - `GET /eth/v1/beacon/blocks/{block_id}/root`
 /// - `GET /eth/v1/beacon/headers`
 /// - `GET /eth/v1/beacon/headers/{block_id}`
@@ -62,10 +62,10 @@ use crate::state::ApiState;
 /// - `GET /eth/v1/config/fork_schedule`
 /// - `GET /eth/v1/config/deposit_contract`
 ///
-/// **Phase 4 — SSE event stream**
+/// **SSE event stream**
 /// - `GET /eth/v1/events`
 ///
-/// **Phase 5 — Validator-read endpoints + debug namespace**
+/// **Validator-read endpoints + debug namespace**
 /// - `GET  /eth/v1/validator/duties/proposer/{epoch}`   (auth-gated)
 /// - `GET  /eth/v2/validator/duties/proposer/{epoch}`   (auth-gated)
 /// - `POST /eth/v1/validator/duties/attester/{epoch}`   (auth-gated)
@@ -73,9 +73,9 @@ use crate::state::ApiState;
 /// - `GET  /eth/v1/debug/fork_choice`
 /// - `GET  /eth/v2/debug/beacon/heads`
 /// - `GET  /eth/v2/debug/beacon/states/{state_id}`
-/// - `GET  /eth/v1/debug/beacon/data_column_sidecars/{block_id}` (public, M15 Phase 5)
+/// - `GET  /eth/v1/debug/beacon/data_column_sidecars/{block_id}` (public)
 ///
-/// **M9 Phase 5 — Validator production + beacon pool + publish**
+/// **Validator production + beacon pool + publish**
 /// - `GET  /eth/v3/validator/blocks/{slot}`             (auth-gated)
 /// - `GET  /eth/v1/validator/attestation_data`          (auth-gated)
 /// - `GET  /eth/v2/validator/aggregate_attestation`     (auth-gated)
@@ -93,12 +93,12 @@ use crate::state::ApiState;
 /// - `POST /eth/v2/beacon/blocks`                    (public)
 /// - `GET  /eth/v1/beacon/pool/attestations`         (public)
 /// - `POST /eth/v1/beacon/pool/attestations`         (public)
-/// - `GET  /eth/v2/beacon/pool/attestations`         (public, M15 Phase 3)
-/// - `POST /eth/v2/beacon/pool/attestations`         (public, M15 Phase 3)
+/// - `GET  /eth/v2/beacon/pool/attestations`         (public)
+/// - `POST /eth/v2/beacon/pool/attestations`         (public)
 /// - `GET  /eth/v1/beacon/pool/attester_slashings`   (public)
 /// - `POST /eth/v1/beacon/pool/attester_slashings`   (public)
-/// - `GET  /eth/v2/beacon/pool/attester_slashings`   (public, M15 Phase 3)
-/// - `POST /eth/v2/beacon/pool/attester_slashings`   (public, M15 Phase 3)
+/// - `GET  /eth/v2/beacon/pool/attester_slashings`   (public)
+/// - `POST /eth/v2/beacon/pool/attester_slashings`   (public)
 /// - `GET  /eth/v1/beacon/pool/proposer_slashings`   (public)
 /// - `POST /eth/v1/beacon/pool/proposer_slashings`   (public)
 /// - `GET  /eth/v1/beacon/pool/voluntary_exits`      (public)
@@ -107,7 +107,7 @@ use crate::state::ApiState;
 /// - `POST /eth/v1/beacon/pool/bls_to_execution_changes`  (public)
 /// - `GET  /eth/v1/beacon/pool/sync_committees`      (public)
 /// - `POST /eth/v1/beacon/pool/sync_committees`      (public)
-/// - `GET  /eth/v1/beacon/blobs/{block_id}`          (public, M15 Phase 4)
+/// - `GET  /eth/v1/beacon/blobs/{block_id}`          (public)
 ///
 /// The validator sub-router has `validator_auth_layer` applied; `None` means
 /// no auth (default).  The debug and pool routes are unauthenticated.
@@ -129,7 +129,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
 ) -> Router {
     // ── Validator sub-router (auth-gated) ─────────────────────────────────
     let validator_router = Router::new()
-        // Duties (Phase 5 + M15-Phase2)
+        // Duties
         .route(
             "/eth/v1/validator/duties/proposer/{epoch}",
             get(validator_duties::get_proposer_duties::<E>),
@@ -146,7 +146,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v1/validator/duties/sync/{epoch}",
             post(validator_duties::post_sync_duties::<E>),
         )
-        // M9 Phase 5 — production + signing (Task 5.2)
+        // Production + signing
         .route(
             "/eth/v3/validator/blocks/{slot}",
             get(validator_production::get_produce_block_v3::<E>),
@@ -179,7 +179,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v1/validator/sync_committee_subscriptions",
             post(validator_production::post_sync_committee_subscriptions::<E>),
         )
-        // M9 Phase 5 — sync-committee (Task 5.3)
+        // Sync-committee
         .route(
             "/eth/v1/validator/sync_committee_contribution",
             get(sync_committee_handlers::get_sync_committee_contribution::<E>),
@@ -196,7 +196,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v1/validator/sync_committee_selections",
             post(sync_committee_handlers::post_sync_committee_selections::<E>),
         )
-        // M9 Phase 5 — liveness (Task 5.4)
+        // Liveness
         .route(
             "/eth/v1/validator/liveness/{epoch}",
             post(validator_liveness::post_validator_liveness::<E>),
@@ -207,7 +207,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
         .with_state(Arc::clone(&state));
 
     Router::new()
-        // Node namespace (Phase 1 + M9 Phase 5 peers + M15 Phase 1)
+        // Node namespace (peers)
         .route("/eth/v1/node/identity", get(node::get_identity::<E>))
         .route("/eth/v1/node/version", get(node::get_version::<E>))
         .route("/eth/v2/node/version", get(node::get_version_v2::<E>))
@@ -216,7 +216,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
         .route("/eth/v1/node/peers", get(node::get_peers::<E>))
         .route("/eth/v1/node/peer_count", get(node::get_peer_count::<E>))
         .route("/eth/v1/node/peers/{peer_id}", get(node::get_peer::<E>))
-        // Beacon basic namespace (Phase 1; migrated to ApiResponse in Phase 2)
+        // Beacon basic namespace
         .route(
             "/eth/v1/beacon/genesis",
             get(beacon_basic::get_genesis::<E>),
@@ -226,9 +226,9 @@ pub fn build_router_with_auth<E: BeaconSpec>(
         // which returns a single header object per the beacon-API spec. A
         // dedicated head-header route returned a `data` ARRAY and shadowed the
         // {block_id} route for "head", so it was removed.
-        // Config namespace (Phase 1)
+        // Config namespace
         .route("/eth/v1/config/spec", get(config_handlers::get_spec::<E>))
-        // States namespace (Phase 2)
+        // States namespace
         .route(
             "/eth/v1/beacon/states/{state_id}/root",
             get(states::get_state_root::<E>),
@@ -265,7 +265,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v1/beacon/states/{state_id}/sync_committees",
             get(states::get_sync_committees::<E>),
         )
-        // Electra-only state endpoints (Phase 6e)
+        // Electra-only state endpoints
         .route(
             "/eth/v1/beacon/states/{state_id}/pending_deposits",
             get(states::get_pending_deposits::<E>),
@@ -286,7 +286,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v1/beacon/states/{state_id}/proposer_lookahead",
             get(states::get_proposer_lookahead::<E>),
         )
-        // Blocks namespace (Phase 3)
+        // Blocks namespace
         .route(
             "/eth/v1/beacon/blocks/{block_id}/root",
             get(blocks_handlers::get_block_root::<E>),
@@ -307,7 +307,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v2/beacon/blocks/{block_id}/attestations",
             get(blocks_handlers::get_block_attestations_v2::<E>),
         )
-        // Config extras (Phase 3)
+        // Config extras
         .route(
             "/eth/v1/config/fork_schedule",
             get(config_extra::get_fork_schedule::<E>),
@@ -316,9 +316,9 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v1/config/deposit_contract",
             get(config_extra::get_deposit_contract::<E>),
         )
-        // SSE event stream (Phase 4)
+        // SSE event stream
         .route("/eth/v1/events", get(events_handlers::get_events::<E>))
-        // Debug namespace (Phase 5 + M15 Phase 5)
+        // Debug namespace
         .route(
             "/eth/v1/debug/fork_choice",
             get(debug_handlers::get_fork_choice::<E>),
@@ -331,12 +331,12 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v2/debug/beacon/states/{state_id}",
             get(debug_handlers::get_debug_state::<E>),
         )
-        // M15 Phase 5 — PeerDAS data column sidecars (public)
+        // PeerDAS data column sidecars (public)
         .route(
             "/eth/v1/debug/beacon/data_column_sidecars/{block_id}",
             get(debug_handlers::get_data_column_sidecars::<E>),
         )
-        // Light-client namespace (M7-followup)
+        // Light-client namespace
         .route(
             "/eth/v1/beacon/light_client/bootstrap/{block_root}",
             get(lc_handlers::get_bootstrap::<E>),
@@ -353,7 +353,7 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v1/beacon/light_client/optimistic_update",
             get(lc_handlers::get_optimistic_update::<E>),
         )
-        // M9 Phase 5 — beacon block publish (Task 5.5, public)
+        // Beacon block publish (public)
         .route(
             "/eth/v1/beacon/blocks",
             post(beacon_blocks_publish::post_beacon_block_v1::<E>),
@@ -362,13 +362,13 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             "/eth/v2/beacon/blocks",
             post(beacon_blocks_publish::post_beacon_block_v2::<E>),
         )
-        // M9 Phase 5 — beacon pool (Task 5.6, public)
+        // Beacon pool (public)
         .route(
             "/eth/v1/beacon/pool/attestations",
             get(beacon_pool::get_pool_attestations::<E>)
                 .post(beacon_pool::post_pool_attestations::<E>),
         )
-        // M15 Phase 3 — EIP-7549 versioned pool (public)
+        // EIP-7549 versioned pool (public)
         .route(
             "/eth/v2/beacon/pool/attestations",
             get(beacon_pool::get_pool_attestations_v2::<E>)
@@ -404,12 +404,12 @@ pub fn build_router_with_auth<E: BeaconSpec>(
             get(beacon_pool::get_pool_sync_committees::<E>)
                 .post(beacon_pool::post_pool_sync_committees::<E>),
         )
-        // M15 Phase 4 — blob retrieval (public)
+        // Blob retrieval (public)
         .route(
             "/eth/v1/beacon/blobs/{block_id}",
             get(blob_sidecars::get_blobs::<E>),
         )
-        // M15 Phase 6 — rewards (public, beacon namespace)
+        // Rewards (public, beacon namespace)
         .route(
             "/eth/v1/beacon/rewards/attestations/{epoch}",
             post(rewards_handlers::post_attestation_rewards::<E>),

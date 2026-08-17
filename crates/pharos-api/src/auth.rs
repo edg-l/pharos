@@ -1,4 +1,4 @@
-//! Validator-namespace Bearer-token auth middleware (Task 5.1).
+//! Validator-namespace Bearer-token auth middleware.
 //!
 //! `validator_auth_layer(token)` returns a `tower::Layer` that, when a token is
 //! configured (`Some`), requires `Authorization: Bearer <token>` on every request.

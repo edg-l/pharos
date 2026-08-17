@@ -62,17 +62,17 @@ fn make_snapshot(head_slot: u64) -> ForkChoiceSnapshot {
 /// Opening a fresh DB writes schema_version=9; reopening reads it back.
 ///
 /// Version history:
-/// - v1 (M3a): initial schema.
-/// - v2 (M4a): added `payload-status` CF.
-/// - v3 (M-Storage Phase 1): added `state-summary`, `cold-blocks`, `cold-states`,
+/// - v1: initial schema.
+/// - v2: added `payload-status` CF.
+/// - v3: added `state-summary`, `cold-blocks`, `cold-states`,
 ///   `restore-points` CFs per `D-schema-v3-migration`.
-/// - v4 (M10-DA Phase 4): added `blob-sidecars` CF per `D-schema-v4-migration`.
-/// - v5 (M10-Deneb Phase 1): added deneb LC CFs per `D-schema-v5-migration`.
-/// - v6 (M12-Electra Phase 6e): added electra LC CFs per `D-schema-v6-electra-lc-cfs`.
-/// - v7 (M11 Phase 4): seed of the forward-only migration framework (identity
+/// - v4: added `blob-sidecars` CF per `D-schema-v4-migration`.
+/// - v5: added deneb LC CFs per `D-schema-v5-migration`.
+/// - v6: added electra LC CFs per `D-schema-v6-electra-lc-cfs`.
+/// - v7: seed of the forward-only migration framework (identity
 ///   migration, no new CFs).
-/// - v8 (M11 Phase 9): added `slasher-proposers` CF for the chain-replay slasher.
-/// - v9 (M13-Fulu Phase 4): added `data-column-sidecars` CF for EIP-7594 PeerDAS.
+/// - v8: added `slasher-proposers` CF for the chain-replay slasher.
+/// - v9: added `data-column-sidecars` CF for EIP-7594 PeerDAS.
 #[test]
 fn open_empty_db_writes_schema_version_9() {
     let dir = tempfile::tempdir().expect("tempdir");

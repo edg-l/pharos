@@ -4,7 +4,7 @@
 //! end-to-end "fetched columns get KZG-verified + persisted" — the available
 //! fixture column-sidecar builders set EMPTY `kzg_commitments`, so
 //! `verify_and_filter` would drop them. KZG-verify + persist correctness is
-//! covered by the Phase 2 `verify_and_filter` unit test plus the existing
+//! covered by the `verify_and_filter` unit test plus the existing
 //! `fulu_pipeline` / conformance KZG coverage.
 //!
 //! Instead we test the loop's ORCHESTRATION: which slot ranges it requests over

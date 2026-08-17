@@ -1,4 +1,4 @@
-//! Metrics emission oracle test (Task 6.8 of M11 Phase 6).
+//! Metrics emission oracle test.
 //!
 //! Verifies that `import_block` causes the `pharos_stf_process_block_seconds`
 //! histogram to accumulate at least one sample beyond the initial zero-value
@@ -38,7 +38,6 @@ use crate::common::checkpoint_helpers::{
 /// Verify that one `import_block` causes the `process_block` histogram to
 /// accumulate at least two observations (the seed zero + the real timing).
 ///
-/// Per Task 6.8 (M11 Phase 6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn import_block_records_process_block_histogram() {
     let handle = crate::common::metrics_handle();

@@ -97,7 +97,7 @@ async fn status_handshake() {
     );
 }
 
-/// Phase 10 (D-fulu-statusv2-handshake): two Fulu-capable nodes complete the
+/// Per `D-fulu-statusv2-handshake`: two Fulu-capable nodes complete the
 /// handshake using the v2 `StatusV2` outbound path.
 ///
 /// `TestHost::new(fd())` has `fulu_active = true` by default, so
@@ -147,7 +147,7 @@ async fn status_handshake_v2() {
     );
 }
 
-/// Phase 10 (D-fulu-statusv2-handshake): two PRE-Fulu nodes still complete the
+/// Per `D-fulu-statusv2-handshake`: two PRE-Fulu nodes still complete the
 /// handshake using the v1 `Status` outbound path.
 ///
 /// `with_pre_fulu()` sets `fulu_active = false`, so `is_fulu_active()` returns

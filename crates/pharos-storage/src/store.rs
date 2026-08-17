@@ -46,7 +46,7 @@ pub struct ColdMigrationBatch<E: BeaconSpec> {
     /// Orphan block roots to delete from `CF_BLOCKS` AND `CF_BLOCK_ROOT_TO_SLOT`.
     ///
     /// Orphans are non-canonical blocks (competing forks below the finalized slot)
-    /// identified in Task 4.1 by comparing hot block roots against the authoritative
+    /// identified by comparing hot block roots against the authoritative
     /// `slot_to_block_root` canonical index. Per `D-prune-behind-finalized`:
     /// orphan's `blocks` CF entry and its reverse-index `block_root_to_slot` entry
     /// are deleted; the canonical `slot_to_block_root[slot]` entry is NOT deleted
@@ -131,7 +131,7 @@ pub trait Store<E: BeaconSpec>: Send + Sync + 'static {
     /// Retrieve the stored `PayloadStatus` for `root`, if any.
     ///
     /// Returns `None` when the block is not present in the `payload-status` CF.
-    /// Per `D-payload-status-store` (M4a Phase 4): the discriminant byte maps
+    /// Per `D-payload-status-store`: the discriminant byte maps
     /// `0 = Valid, 1 = Invalid, 2 = NotValidated`.
     fn payload_status(&self, root: Root) -> Result<Option<PayloadStatus>, StorageError>;
 
@@ -141,7 +141,7 @@ pub trait Store<E: BeaconSpec>: Send + Sync + 'static {
     /// `pharos_fork_choice::Store::payload_statuses` map.
     fn payload_statuses_iter(&self) -> Result<Vec<(Root, PayloadStatus)>, StorageError>;
 
-    // ── Cold-CF accessors (Phase 3 freezer) ──────────────────────────────────
+    // ── Cold-CF accessors (freezer) ──────────────────────────────────
 
     /// Write an SSZ-encoded `SignedBeaconBlock` to the `cold-blocks` CF, keyed
     /// by block root.
@@ -221,7 +221,7 @@ pub trait Store<E: BeaconSpec>: Send + Sync + 'static {
     // ── Light-client snapshot store ───────────────────────────────────────────
     //
     // Four typed put/get pairs for the four light-client column families defined
-    // in `cf.rs`. Per `D-light-client-server-only` (Task 6.9).
+    // in `cf.rs`. Per `D-light-client-server-only`.
 
     /// Store an SSZ-encoded `LightClientBootstrap`, keyed by `block_root`.
     ///
@@ -492,7 +492,7 @@ pub trait Store<E: BeaconSpec>: Send + Sync + 'static {
     /// must persist indefinitely per `D-blob-store-cf-keyed-by-root-index`).
     fn prune_blob_sidecars_below_slot(&self, prune_slot: Slot) -> Result<(), StorageError>;
 
-    // ── Data-column sidecar store (schema v9, M13-Fulu Phase 4 — PeerDAS) ──────
+    // ── Data-column sidecar store (schema v9, PeerDAS) ──────
 
     /// Store an SSZ-encoded `DataColumnSidecar` keyed by `(block_root, index)`.
     ///

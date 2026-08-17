@@ -10,7 +10,7 @@
 //! `get_beacon_proposer_index` READS the precomputed
 //! `state.proposer_lookahead[state.slot % SLOTS_PER_EPOCH]` rather than
 //! re-electing on demand. This is the single source of truth for proposer
-//! selection in Fulu (RI-6 — the M12 16-bit-proposer gotcha generalized; every
+//! selection in Fulu (RI-6 — the 16-bit-proposer gotcha generalized; every
 //! proposer-selection caller must route through `get_beacon_proposer_index` on
 //! fulu states).
 //!

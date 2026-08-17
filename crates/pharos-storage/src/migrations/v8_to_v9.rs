@@ -1,6 +1,6 @@
 //! Schema v8 → v9: add the `data-column-sidecars` CF for EIP-7594 PeerDAS.
 //!
-//! v9 introduces the `data-column-sidecars` column family (M13-Fulu Phase 4,
+//! v9 introduces the `data-column-sidecars` column family (
 //! data-column sidecar storage keyed `block_root || index_be`). The CF itself
 //! is created by RocksDB's `create_missing_column_families(true)` when the
 //! database is opened with the full v9 CF set (`cf::all_cfs`), so this migration

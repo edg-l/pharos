@@ -1,4 +1,4 @@
-//! M11 Phase 12 — connection limits + discv5 cadence scaling.
+//! Connection limits + discv5 cadence scaling.
 //!
 //! ## Tests
 //!
@@ -84,8 +84,8 @@ async fn max_peers_rejects_over_limit() {
         "peer table must be exactly at the limit"
     );
 
-    // The condition the swarm loop evaluates for an inbound connection (post
-    // task 1.1): connected_count() >= max_peers() → reject.
+    // The condition the swarm loop evaluates for an inbound connection:
+    // connected_count() >= max_peers() → reject.
     assert!(
         network.test_connected_count() >= network.test_max_peers(),
         "at limit: inbound must be rejected (connected_count >= max_peers)"

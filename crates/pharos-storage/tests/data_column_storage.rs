@@ -1,4 +1,4 @@
-//! Integration tests for data-column sidecar storage (M13-Fulu Phase 4, schema v9).
+//! Integration tests for data-column sidecar storage (schema v9).
 //!
 //! Tests:
 //! - `put_get_data_column_sidecar`: put/get roundtrip for a single sidecar.

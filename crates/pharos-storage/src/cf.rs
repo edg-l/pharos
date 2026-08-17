@@ -42,31 +42,31 @@ pub const CF_METADATA: &str = "metadata";
 
 /// Stores SSZ-encoded `LightClientBootstrap` objects, keyed by block root (32 bytes).
 ///
-/// Per `D-light-client-server-only` (Task 6.9): one bootstrap entry per finalized
+/// Per `D-light-client-server-only`: one bootstrap entry per finalized
 /// epoch-boundary block. Key = `Root` (32 B), value = SSZ `LightClientBootstrap`.
 pub const CF_LC_BOOTSTRAP: &str = "light-client-bootstrap";
 
 /// Stores SSZ-encoded `LightClientUpdate` objects, keyed by sync-committee period (u64 LE, 8 bytes).
 ///
-/// Per `D-light-client-server-only` (Task 6.9): one best update per sync-committee period.
+/// Per `D-light-client-server-only`: one best update per sync-committee period.
 /// Key = `u64` LE (period), value = SSZ `LightClientUpdate`.
 pub const CF_LC_UPDATE: &str = "light-client-update";
 
 /// Single-row CF storing the latest SSZ-encoded `LightClientFinalityUpdate`.
 ///
-/// Per `D-light-client-server-only` (Task 6.9): overwrites on every finality advance.
+/// Per `D-light-client-server-only`: overwrites on every finality advance.
 /// Key = `b"latest"` (static), value = SSZ `LightClientFinalityUpdate`.
 pub const CF_LC_FINALITY_UPDATE: &str = "latest-finality-update";
 
 /// Single-row CF storing the latest SSZ-encoded `LightClientOptimisticUpdate`.
 ///
-/// Per `D-light-client-server-only` (Task 6.9): overwrites on every optimistic head update.
+/// Per `D-light-client-server-only`: overwrites on every optimistic head update.
 /// Key = `b"latest"` (static), value = SSZ `LightClientOptimisticUpdate`.
 pub const CF_LC_OPTIMISTIC_UPDATE: &str = "latest-optimistic-update";
 
 /// Per-block EL payload validation status (Bellatrix+).
 ///
-/// Per `D-payload-status-store` (M4a Phase 4): key = `Root` (32 B),
+/// Per `D-payload-status-store`: key = `Root` (32 B),
 /// value = `u8` discriminant (0 = `Valid`, 1 = `Invalid`, 2 = `NotValidated`).
 /// Written by `write_block_transition` when `payload_status` is `Some`.
 /// Read at startup by `rehydrate_fork_choice_store` to seed the in-memory
@@ -97,14 +97,14 @@ pub const LC_LATEST_KEY: &[u8] = b"latest";
 // ── Schema v3 column families (D-schema-v3-migration) ─────────────────────────
 //
 // All four CFs below are declared here so `all_cfs()` (and thus `open()`) always
-// passes the complete v3 set to RocksDB. `state-summary` is written from Phase 1
-// (every block import). The three cold CFs are written only from Phase 3 (freezer
-// migration), but RocksDB requires every CF to be present at `open()` time even
+// passes the complete v3 set to RocksDB. `state-summary` is written on every
+// block import. The three cold CFs are written only by the freezer migration,
+// but RocksDB requires every CF to be present at `open()` time even
 // if writes happen later.
 
 /// Per-block state summary for the replay walk.
 ///
-/// Per schema v3 (`D-schema-v3-migration`, Task 1.5):
+/// Per schema v3 (`D-schema-v3-migration`):
 /// key = `Root` (32 B block-root),
 /// value = SSZ `StateSummary { slot: u64 LE, state_root: Root 32B, parent_root: Root 32B }`.
 /// Written every import; read by Phase-2 `StateRegenService` to walk the persisted
@@ -113,35 +113,35 @@ pub const CF_STATE_SUMMARY: &str = "state-summary";
 
 /// Cold (post-finalization) block store.
 ///
-/// Per schema v3 (`D-schema-v3-migration`, Task 1.5):
+/// Per schema v3 (`D-schema-v3-migration`):
 /// key = `Root` (32 B block-root), value = SSZ `SignedBeaconBlock`.
 /// Written by Phase-3 freezer migration; read by Phase-2 regen + Phase-4 restart.
 pub const CF_COLD_BLOCKS: &str = "cold-blocks";
 
 /// Cold (post-finalization) state snapshots at restore-point slots.
 ///
-/// Per schema v3 (`D-schema-v3-migration`, Task 1.5):
+/// Per schema v3 (`D-schema-v3-migration`):
 /// key = `u64` BE (restore-point slot), value = SSZ `BeaconState`.
 /// Written by Phase-3 freezer; read by Phase-2 regen + Phase-4 restart.
 pub const CF_COLD_STATES: &str = "cold-states";
 
 /// Restore-point index: maps a restore-point slot to its state-root.
 ///
-/// Per schema v3 (`D-schema-v3-migration`, Task 1.5):
+/// Per schema v3 (`D-schema-v3-migration`):
 /// key = `u64` BE (restore-point slot), value = `Root` (32 B state-root).
 /// Written by Phase-3 freezer; read by Phase-2 regen for nearest-restore-point lookup.
 pub const CF_RESTORE_POINTS: &str = "restore-points";
 
 // ── Schema v4 column families (D-schema-v4-migration) ─────────────────────────
 //
-// One new CF added in M10-DA Phase 4:
+// One new CF:
 //   `blob-sidecars` — per-block blob sidecar storage keyed by
 //   `block_root (32 B) || index_be (8 B)`.
 // Opening a v3 DB returns `SchemaMismatch` → operator must resync.
 
 /// Per-block blob sidecar store.
 ///
-/// Per schema v4 (`D-blob-store-cf-keyed-by-root-index`, M10-DA Phase 4):
+/// Per schema v4 (`D-blob-store-cf-keyed-by-root-index`):
 /// key = `block_root` (32 B) `||` `index` (8 B big-endian u64),
 /// value = SSZ `BlobSidecar`.
 ///
@@ -188,7 +188,7 @@ pub const CF_LC_FINALITY_UPDATE_ELECTRA: &str = "electra-latest-finality-update"
 /// Single-row CF storing the latest SSZ-encoded Electra `LightClientOptimisticUpdate`.
 pub const CF_LC_OPTIMISTIC_UPDATE_ELECTRA: &str = "electra-latest-optimistic-update";
 
-// ── Schema v8 column families (M11 Phase 9 — slasher Phase B) ─────────────────
+// ── Schema v8 column families (slasher Phase B) ─────────────────
 //
 // One new CF added for the opt-in (`--slasher`) chain-history replay slasher:
 //   `slasher-proposers` — per-`(slot, proposer)` block-header index used by the
@@ -199,7 +199,7 @@ pub const CF_LC_OPTIMISTIC_UPDATE_ELECTRA: &str = "electra-latest-optimistic-upd
 
 /// Proposer-header index for the Phase B slasher.
 ///
-/// Per schema v8 (`D-slasher-proposer-index-cf`, M11 Phase 9):
+/// Per schema v8 (`D-slasher-proposer-index-cf`):
 /// key = `slot` (8 B big-endian) `||` `proposer_index` (8 B big-endian) `||`
 /// `header_root` (32 B), value = SSZ `SignedBeaconBlockHeader`.
 ///
@@ -209,7 +209,7 @@ pub const CF_LC_OPTIMISTIC_UPDATE_ELECTRA: &str = "electra-latest-optimistic-upd
 /// suffixes are a slashable proposer double-block.
 pub const CF_SLASHER_PROPOSERS: &str = "slasher-proposers";
 
-// ── Schema v9 column families (M13-Fulu Phase 4 — PeerDAS) ────────────────────
+// ── Schema v9 column families (PeerDAS) ────────────────────
 //
 // One new CF added for EIP-7594 PeerDAS data-column sidecar storage:
 //   `data-column-sidecars` — per-block data-column sidecar storage keyed by
@@ -219,7 +219,7 @@ pub const CF_SLASHER_PROPOSERS: &str = "slasher-proposers";
 
 /// Per-block data-column sidecar store (EIP-7594 PeerDAS).
 ///
-/// Per schema v9 (M13-Fulu Phase 4):
+/// Per schema v9:
 /// key = `block_root` (32 B) `||` `index` (8 B big-endian u64),
 /// value = SSZ `DataColumnSidecar`.
 ///
@@ -240,7 +240,7 @@ pub const CF_DATA_COLUMN_SIDECARS: &str = "data-column-sidecars";
 /// Per `D-slasher-proposer-index-cf` (v8): the `slasher-proposers` CF is appended,
 /// so a fresh v8 DB opens with all thirty CFs at first boot.
 ///
-/// M13-Fulu Phase 4 (v9): the `data-column-sidecars` CF is appended, so a fresh
+/// In v9 the `data-column-sidecars` CF is appended, so a fresh
 /// v9 DB opens with all thirty-one CFs at first boot.
 pub fn all_cfs() -> [&'static str; 31] {
     [

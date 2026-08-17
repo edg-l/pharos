@@ -1,4 +1,4 @@
-//! Smoke test for the flat-const-only resolution in Task 4.4.
+//! Smoke test for flat-const-only resolution.
 //!
 //! Canary: if the const-generic approach regresses, these tests fail to compile.
 //!

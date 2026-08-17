@@ -1,4 +1,4 @@
-//! Fulu lookup-path DA gate integration test (M13-Fulu lookup-DA fix, Phase 4).
+//! Fulu lookup-path DA gate integration test (lookup-DA fix).
 //!
 //! The lookup co-fetch must branch on the block's fork: a Fulu+ block carries
 //! its data as `DataColumnSidecar`s (EIP-7594 PeerDAS), NOT blob sidecars, so

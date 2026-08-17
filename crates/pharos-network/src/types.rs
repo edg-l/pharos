@@ -1,8 +1,7 @@
 //! Shared network types.
 //!
-//! Phase 0 declares the minimum shape needed by `scoring::ScoreEvent`. Phase 1
-//! (Task 1.2) expands `DisconnectReason` and adds `PeerInfo` /
-//! `ConnectionDirection` with the full set of fields.
+//! `DisconnectReason`, `PeerInfo` and `ConnectionDirection` carry the fields
+//! `scoring::ScoreEvent` and the peer table need.
 
 use std::time::Instant;
 
@@ -91,9 +90,9 @@ pub enum PeerState {
 
 /// Aggregated state for a connected peer.
 ///
-/// Held in the peer manager's `HashMap<PeerId, PeerInfo>` (Task 2.4).
+/// Held in the peer manager's `HashMap<PeerId, PeerInfo>`.
 /// Fields `agent_string`, `protocols`, and `observed_addr` are populated from
-/// the libp2p `identify` protocol exchange per D-peer-info-shape (M3a Phase 3).
+/// the libp2p `identify` protocol exchange per D-peer-info-shape.
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
     /// The libp2p peer identifier.
@@ -148,8 +147,7 @@ pub const GOODBYE_FAULT_ERROR: u64 = 3;
 
 /// Reason a peer connection was terminated.
 ///
-/// Phase 0 carries only the variants needed by `ScoreEvent::PeerDisconnected`.
-/// Phase 1 (Task 1.2) extends this with the full per-spec set.
+/// Carries the variants needed by `ScoreEvent::PeerDisconnected`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DisconnectReason {
     /// Peer sent a `Goodbye` message with the given reason code.

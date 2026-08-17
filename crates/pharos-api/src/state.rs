@@ -36,7 +36,7 @@ use crate::error::ApiError;
 use crate::events::EventBus;
 use crate::fork_tag::fork_variant_at_slot;
 
-// ── Light-client envelope builder (Task 1.6) ──────────────────────────────────
+// ── Light-client envelope builder ──────────────────────────────────
 
 /// Build a `LcEnvelope` from a concrete LC object implementing `LcApiSerializer`.
 ///
@@ -765,7 +765,7 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
     /// Read-only reference to the node identity snapshot.
     fn node_identity(&self) -> &NodeIdentityCache;
 
-    // ── State-resolution methods (Phase 2) ────────────────────────────────────
+    // ── State-resolution methods ────────────────────────────────────
 
     /// Look up the post-state for a block root from the in-memory fork-choice
     /// store. Returns `None` when the root is not present in-memory (cold state).
@@ -800,7 +800,7 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
     /// and pattern-matches on the concrete fork-enum variant to build the DTOs.
     fn block_by_root_for_api(&self, root: Root) -> Result<Option<SignedBlockForApi>, ApiError>;
 
-    // ── Rewards (M15 Phase 6) ──────────────────────────────────────────────────
+    // ── Rewards ──────────────────────────────────────────────────
 
     /// Compute per-validator attestation rewards for `epoch` (the deltas read
     /// the previous epoch's participation; the state is regenerated at the first
@@ -843,7 +843,7 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
     /// Return the `(BeaconBlockHeader, BLSSignature)` for `root`, sourcing the REAL
     /// signature from the stored `SignedBeaconBlock`.
     ///
-    /// After Task 1.1 (live block persistence), every imported block is flushed to
+    /// Every imported block is flushed to
     /// `RocksStore` before the head is published, so this method reliably returns the
     /// real signature for any recently imported block. Falls back to `None` when the
     /// signed block is absent (e.g., pre-schema-v3 anchor blocks).
@@ -852,9 +852,9 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
         root: Root,
     ) -> Option<(BeaconBlockHeader, pharos_utils::BLSSignature)>;
 
-    // ── Replay-on-read (Phase 2) ───────────────────────────────────────────────
+    // ── Replay-on-read ───────────────────────────────────────────────
 
-    // ── Debug namespace (Phase 5) ──────────────────────────────────────────────
+    // ── Debug namespace ──────────────────────────────────────────────
 
     /// Return a fork-choice dump for `GET /eth/v1/debug/fork_choice`.
     ///
@@ -904,7 +904,7 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
     /// `Err(ApiError::NotFound("regen not available in mock".into()))`.
     fn regenerate_state(&self, target: RegenTarget) -> Result<E::BeaconState, ApiError>;
 
-    // ── Production endpoints (M9-Validator Phase 5) ───────────────────────────
+    // ── Production endpoints ───────────────────────────
 
     /// Produce an unsigned `BeaconBlock` at `slot` for the given RANDAO reveal
     /// and graffiti.
@@ -1140,7 +1140,7 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
     /// validator index.  `is_live` is `true` when the validator has an attestation
     /// in the attestation pool or in a recently imported block for `epoch`.
     ///
-    /// `D-doppelganger-bn-liveness-endpoint` (M9 Phase 5.4).
+    /// `D-doppelganger-bn-liveness-endpoint`.
     /// Default returns all-false (one entry per requested index, none live).
     fn validator_liveness(
         &self,
@@ -1177,7 +1177,7 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
             .find(|p| p.get("peer_id").and_then(|v| v.as_str()) == Some(peer_id))
     }
 
-    // ── Blob sidecar reads (M15 Phase 4) ─────────────────────────────────────
+    // ── Blob sidecar reads ─────────────────────────────────────
 
     /// Return all `BlobSidecar`s for `block_root`, ordered by ascending blob index.
     ///
@@ -1196,7 +1196,7 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
         vec![]
     }
 
-    // ── Data-column sidecar reads (M15 Phase 5) ──────────────────────────────
+    // ── Data-column sidecar reads ──────────────────────────────
 
     /// Return all `DataColumnSidecar`s for `block_root`, ordered by ascending
     /// column index.
@@ -1217,7 +1217,7 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
         vec![]
     }
 
-    // ── Light-client REST endpoints (M7-followup) ─────────────────────────────
+    // ── Light-client REST endpoints ─────────────────────────────
 
     /// Return the `LcEnvelope` for the bootstrap at `block_root`, if stored.
     ///
@@ -1278,14 +1278,14 @@ pub trait ChainStateApi<E: BeaconSpec>: Send + Sync + 'static {
 /// The callback is constructed in `pharos-node/src/main.rs` (which depends on
 /// `pharos-api`) and wraps a `StateRegenService<E>`. This avoids a
 /// `pharos-api → pharos-node` dependency while allowing `NodeChainState` to
-/// call into the replay-on-read service (per `D-replay-on-read`, Task 2.4).
+/// call into the replay-on-read service (per `D-replay-on-read`).
 pub type RegenFn<E> =
     dyn Fn(RegenTarget) -> Result<<E as BeaconSpec>::BeaconState, ApiError> + Send + Sync + 'static;
 
 /// Type alias for the block-production callback injected into `NodeChainState`.
 ///
 /// `(slot, randao_reveal, graffiti)` → `(block_json, exec_payload_value, consensus_value)`
-/// per `D-produce-empty-then-fill-stf` (M9 Phase 5).
+/// per `D-produce-empty-then-fill-stf`.
 pub type ProduceFn = dyn Fn(
         pharos_types::phase0::Slot,
         BLSSignature,
@@ -1378,14 +1378,14 @@ pub struct NodeChainState<E: BeaconSpec> {
     identity: NodeIdentityCache,
     /// Runtime configuration forwarded from `main.rs`.
     runtime_cfg: Arc<RuntimeConfig>,
-    /// Optional state-regeneration callback (Phase 2).
+    /// Optional state-regeneration callback.
     ///
     /// `None` when the HTTP server is not active (no `--http` flag) or when the
     /// replay service has not been wired in. When `None`, `regenerate_state`
     /// returns `ApiError::NotFound`.
     regen_fn: Option<Arc<RegenFn<E>>>,
 
-    // ── M9 Phase 5 fields ─────────────────────────────────────────────────────
+    // ── Fields ────────────────────────────────────────────────────────────────
     /// Shared operation pools (attestations, slashings, exits, sync messages).
     ///
     /// Wired via `with_pools()` from `pharos-node` after pool construction.
@@ -1476,7 +1476,7 @@ impl<E: BeaconSpec> NodeChainState<E> {
         }
     }
 
-    /// Construct with a state-regeneration callback (Phase 2).
+    /// Construct with a state-regeneration callback.
     ///
     /// `regen` is a closure wrapping a `StateRegenService<E>` constructed in
     /// `pharos-node/src/main.rs`. It must be `Send + Sync + 'static` and take a
@@ -1532,7 +1532,7 @@ impl<E: BeaconSpec> NodeChainState<E> {
         self
     }
 
-    /// Construct with all M9 Phase-5 production callbacks wired in.
+    /// Construct with all production callbacks wired in.
     ///
     /// Called from `pharos-node/src/main.rs` after the engine handle and
     /// op-pools are ready. The `produce_fn`, `produce_att_data_fn`, and
@@ -1649,7 +1649,7 @@ where
     E::ElectraLightClientUpdate: LcApiSerializer,
     E::ElectraLightClientFinalityUpdate: LcApiSerializer,
     E::ElectraLightClientOptimisticUpdate: LcApiSerializer,
-    // ── M15 Phase 6 rewards dispatch bounds (blanket-impl'd in pharos-stf) ──
+    // ── Rewards dispatch bounds (blanket-impl'd in pharos-stf) ──────────────
     E::BeaconState: pharos_stf::phase0::BeaconStateWrite,
     E::Phase0BeaconBlockBody: pharos_types::views::BeaconBlockBodyView<
             Attestation = pharos_types::phase0::Attestation<2048>,
@@ -1759,7 +1759,7 @@ where
     fn is_optimistic(&self) -> bool {
         // Canonical derivation: execution block AND payload_statuses[head] != Valid.
         // Per `consensus-specs/sync/optimistic.md` "Helpers" `is_optimistic` +
-        // `is_execution_block` definitions and the M8 single-source-of-truth.
+        // `is_execution_block` definitions and the single-source-of-truth.
         let fc = self.fork_choice.read();
         let head = pharos_fork_choice::get_head(&fc);
         pharos_fork_choice::is_optimistic(&fc, head)
@@ -1818,9 +1818,9 @@ where
             }
         }
         // Fall through to regen when the block root is not in-memory.
-        // `StateRegenService::state_at_slot` (Phase 2) falls through to cold
-        // restore-points via `nearest_cold_restore_point` (Phase 3 + Task 3.6),
-        // so this is correct live + cold (per Task 4.4 API audit).
+        // `StateRegenService::state_at_slot` falls through to cold
+        // restore-points via `nearest_cold_restore_point`,
+        // so this is correct live + cold (API audit).
         // `regen_fn` converts `RegenError → ApiError`; we swallow ApiError here
         // because the trait returns `Option<E::BeaconState>`.
         if let Some(regen) = &self.regen_fn {
@@ -1851,9 +1851,9 @@ where
             return Some(state);
         }
         // Fall through to regen (replay-on-read) when not found in hot storage.
-        // `StateRegenService::state_at_root` (Phase 2) walks state-summaries +
-        // falls through to cold restore-points (Phase 3 + Task 3.6), so this is
-        // correct live + cold (per Task 4.4 API audit).
+        // `StateRegenService::state_at_root` walks state-summaries +
+        // falls through to cold restore-points, so this is
+        // correct live + cold (API audit).
         if let Some(regen) = &self.regen_fn {
             regen(RegenTarget::StateRoot(state_root)).ok()
         } else {
@@ -1879,7 +1879,7 @@ where
         // Fall through to the persisted `slot_to_block_root` CF.
         // This resolves `resolve_state_id` by decimal slot for cold history
         // (finalized blocks migrated below split_slot by Phase-3 freezer).
-        // Per Task 4.4 (API audit): correct live + cold.
+        // Correct live + cold.
         self.store.block_root_at_slot(slot).ok().flatten()
     }
 
@@ -1889,7 +1889,7 @@ where
         // slot 0 in-memory, then fall through to the persisted slot-index, then
         // fall back to the finalized checkpoint root.
         //
-        // Per Task 4.4 (API audit): correct live + cold.  After Phase-3 migration
+        // Correct live + cold.  After the freezer migration
         // the genesis/anchor block is in the cold-blocks CF; the `finalized_checkpoint.root`
         // fallback covers checkpoint-sync nodes where genesis is the anchor.  For
         // genesis-from-scratch nodes, slot 0 is looked up in the persisted slot-index.
@@ -1936,7 +1936,7 @@ where
     fn signed_block_header_at(&self, root: Root) -> Option<(BeaconBlockHeader, BLSSignature)> {
         // Fetch the full SignedBeaconBlock from storage to extract the real signature.
         // Try hot CF first; fall through to cold for migrated blocks.
-        // Per Task 4.4 (API audit): correct live + cold.
+        // Correct live + cold.
         let signed = {
             let hot = <RocksStore as DbStore<E>>::get_block(&self.store, &root)
                 .ok()
@@ -1952,8 +1952,8 @@ where
 
         // Reconstruct BOTH the header fields and the real signature directly from
         // the stored `SignedBeaconBlock` — no dependency on the in-memory
-        // fork-choice maps (which may not hold the block after a reorg or, from
-        // Phase 3, after pruning). `body_root` is the block body's merkle root.
+        // fork-choice maps (which may not hold the block after a reorg or after
+        // pruning). `body_root` is the block body's merkle root.
         use pharos_ssz::TreeHash;
         use pharos_types::views::BeaconBlockView as _;
 
@@ -2001,7 +2001,7 @@ where
         // Fetch from the hot CF first; fall through to the cold CF for finalized
         // blocks migrated by the Phase-3 freezer.  A genuine DB read error is
         // surfaced as 500, distinct from a missing block (Ok(None) → 404 at the
-        // handler).  Per Task 4.4 (API audit): correct live + cold.
+        // handler).  Correct live + cold.
         let hot = <RocksStore as DbStore<E>>::get_block(&self.store, &root)
             .map_err(|e| ApiError::Internal(format!("block store read failed: {e}")))?;
         let block = if let Some(b) = hot {
@@ -2173,7 +2173,7 @@ where
         }))
     }
 
-    // ── M9 Phase 5 production method overrides ────────────────────────────────
+    // ── Production method overrides ───────────────────────────────────────────
 
     fn produce_block(
         &self,
@@ -2778,7 +2778,7 @@ where
         Ok(serde_json::json!({ "data": heads }))
     }
 
-    // ── Blob sidecar reads (M15 Phase 4) ─────────────────────────────────────
+    // ── Blob sidecar reads ─────────────────────────────────────
 
     fn blob_sidecars_by_root(
         &self,
@@ -2791,7 +2791,7 @@ where
             .unwrap_or_default()
     }
 
-    // ── Data-column sidecar reads (M15 Phase 5) ──────────────────────────────
+    // ── Data-column sidecar reads ──────────────────────────────
 
     fn data_column_sidecars_by_root(
         &self,
@@ -2822,7 +2822,7 @@ pub struct ApiState<E: BeaconSpec> {
     pub log_reload: Option<pharos_utils::tracing::LogReloadHandle>,
 }
 
-// ── Rewards helpers (M15 Phase 6) ──────────────────────────────────────────────
+// ── Rewards helpers ──────────────────────────────────────────────
 
 /// Map a `pharos_stf::rewards_api::RewardsError` to an HTTP `ApiError`.
 pub(crate) fn map_rewards_error(e: pharos_stf::rewards_api::RewardsError) -> ApiError {

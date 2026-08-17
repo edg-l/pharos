@@ -13,7 +13,7 @@
 //!
 //! Element type: a composite wrapper struct `LeafU64 { val: u64 }` so that the
 //! tree backend's `cached_root()` path is exercised (composite elements).
-//! Basic-element lists stay on `Naive` per Task 1.3 / `D-tree-leaf-packing`.
+//! Basic-element lists stay on `Naive` per `D-tree-leaf-packing`.
 
 #![cfg(test)]
 

@@ -2,7 +2,7 @@
 //!
 //! All verification paths use `blst::min_pk` (pubkeys in G1, signatures in G2)
 //! with subgroup checks enabled. Subgroup checks add a small cost but are
-//! required for security; performance optimisation is M1+.
+//! required for security.
 //!
 //! Public API accepts compressed-byte representations:
 //! - `BLSPubkey`   = 48 compressed G1 bytes

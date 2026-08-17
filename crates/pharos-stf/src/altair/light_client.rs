@@ -2,9 +2,8 @@
 //!
 //! Per `specs/altair/light-client/sync-protocol.md`.
 //!
-//! Also covers the `full-node.md` create-* functions referenced in Phase 6
-//! (Task 6.9).  The store functions are in this module because they are needed
-//! by the Phase 4 conformance runner.
+//! Also covers the `full-node.md` create-* functions. The store functions are
+//! in this module because the conformance runner needs them.
 
 use pharos_ssz::{SszVector, TreeHash, build_single_proof_from_leaves};
 use pharos_types::{
@@ -728,7 +727,7 @@ pub(crate) fn compute_state_proof<
 
 /// STF hook: build and persist light-client snapshots after each altair block.
 ///
-/// Per `D-light-client-server-only` (Task 6.9) and Q-light-client-create-frequency:
+/// Per `D-light-client-server-only` and Q-light-client-create-frequency:
 /// - `LightClientBootstrap` is stored for each block.
 /// - `LightClientOptimisticUpdate` is stored on each head update (every block).
 /// - `LightClientFinalityUpdate` is stored on finality advance (every ~32 slots).

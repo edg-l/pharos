@@ -42,30 +42,30 @@ use crate::transition::BlockTransition;
 /// Schema version written to `metadata[b"schema_version"]` at DB creation.
 ///
 /// History:
-/// - v1 (M3a): initial schema (11 column families).
-/// - v2 (M4a): added `payload-status` column family for Bellatrix EL
+/// - v1: initial schema (11 column families).
+/// - v2: added `payload-status` column family for Bellatrix EL
 ///   payload validation state. Opening a v1 database returns
 ///   `StorageError::SchemaMismatch`; the operator must delete the chain DB
 ///   and resync from a checkpoint.
-/// - v3 (M-Storage): added four schema-v3 CFs — `state-summary`,
+/// - v3: added four schema-v3 CFs — `state-summary`,
 ///   `cold-blocks`, `cold-states`, `restore-points` — per
 ///   `D-schema-v3-migration`. Opening a v2 database returns
 ///   `StorageError::SchemaMismatch`; the operator must resync from checkpoint
 ///   (no in-place migration: the live node had no post-startup block/state
 ///   persistence to preserve before this milestone).
-/// - v4 (M10-DA Phase 4): added `blob-sidecars` CF for Deneb blob sidecar
+/// - v4: added `blob-sidecars` CF for Deneb blob sidecar
 ///   storage per `D-blob-store-cf-keyed-by-root-index` and
 ///   `D-schema-v4-migration`. Opening a v3 database returns
 ///   `StorageError::SchemaMismatch`; the operator must resync from checkpoint
 ///   (no in-place migration).
-/// - v5 (M10-Deneb Phase 1): added four Deneb LC CFs —
+/// - v5: added four Deneb LC CFs —
 ///   `deneb-light-client-bootstrap`, `deneb-light-client-update`,
 ///   `deneb-latest-finality-update`, `deneb-latest-optimistic-update` — per
 ///   `D-deneb-lc-header`. Deneb LC headers include a deneb `ExecutionPayloadHeader`
 ///   (adds `blob_gas_used`/`excess_blob_gas`) so they cannot share CFs with Capella.
 ///   Opening a v4 database returns `StorageError::SchemaMismatch`; the operator
 ///   must resync from checkpoint (no in-place migration).
-/// - v6 (M12-Electra Phase 6e): added four Electra LC CFs —
+/// - v6: added four Electra LC CFs —
 ///   `electra-light-client-bootstrap`, `electra-light-client-update`,
 ///   `electra-latest-finality-update`, `electra-latest-optimistic-update`.
 ///   Electra LC branches are deeper than Deneb (EIP-7251 enlarged BeaconState),
@@ -74,18 +74,18 @@ use crate::transition::BlockTransition;
 ///   v6 is also the [`MIGRATION_BASELINE`](crate::migrations::MIGRATION_BASELINE):
 ///   versions below v6 (v1..=v5) are resync-only (no migration path); v6 and
 ///   above are migrated forward in place by the [`crate::migrations`] framework.
-/// - v7 (M11 Phase 4): seed of the forward-only migration framework. Identity /
+/// - v7: seed of the forward-only migration framework. Identity /
 ///   version-bump-only migration (no new CFs, no data move) — proves the
 ///   migration walk with a real registry entry. Opening a v6 database now
 ///   MIGRATES forward to v7 in place instead of erroring.
-/// - v8 (M11 Phase 9): added the `slasher-proposers` CF for the opt-in
+/// - v8: added the `slasher-proposers` CF for the opt-in
 ///   (`--slasher`) chain-history replay slasher's proposer double-block index,
 ///   per `D-slasher-proposer-index-cf`. Opening a v7 database MIGRATES forward
 ///   to v8 in place: the new CF is auto-created by
 ///   `create_missing_column_families` and the v7→v8 migration bumps the version
 ///   stamp (no data move). The proposer index is rebuilt from scratch on each
 ///   `--slasher` replay, so an empty CF after migration is correct.
-/// - v9 (M13-Fulu Phase 4): added the `data-column-sidecars` CF for EIP-7594
+/// - v9: added the `data-column-sidecars` CF for EIP-7594
 ///   PeerDAS data-column sidecar storage, keyed `block_root || index_be`
 ///   (mirrors `blob-sidecars`). Opening a v8 database MIGRATES forward to v9 in
 ///   place: the new CF is auto-created by `create_missing_column_families` and
@@ -209,7 +209,7 @@ impl RocksStore {
     ) -> Result<Vec<(Root, Slot)>, StorageError> {
         // Only roots still present in the hot `blocks` CF are orphan candidates;
         // roots already migrated cold are no longer in `blocks` and must be
-        // skipped (they were canonical and already cold-copied by Task 3.3).
+        // skipped (they were canonical and already cold-copied).
         let blocks_cf = self.cf_handle(CF_BLOCKS)?;
         let root_to_slot_cf = self.cf_handle(CF_BLOCK_ROOT_TO_SLOT)?;
 
@@ -248,7 +248,7 @@ impl RocksStore {
     /// Flush the WAL and all live memtables to SST files.
     ///
     /// Called as the final step of the graceful-shutdown sequence
-    /// (`D-graceful-shutdown-order`, M11 Phase 17) to ensure every
+    /// (`D-graceful-shutdown-order`) to ensure every
     /// buffered write reaches durable storage before the process exits.
     ///
     /// Steps:
@@ -268,7 +268,7 @@ impl RocksStore {
     /// Count the number of entries in the `cold-states` CF.
     ///
     /// Each entry corresponds to one restore-point state written by the freezer.
-    /// Used by Phase 3 verification (M11) to assert that cold-region density
+    /// Used to assert that cold-region density
     /// equals the restore-point count (never dense per-slot states).
     /// Per `D-cold-granularity-restore-points-only`.
     pub fn count_cold_state_entries(&self) -> Result<u64, StorageError> {
@@ -578,7 +578,7 @@ impl<E: BeaconSpec> Store<E> for RocksStore {
         Ok(out)
     }
 
-    // ── Cold-CF accessors (Phase 3 freezer) ──────────────────────────────────
+    // ── Cold-CF accessors (freezer) ──────────────────────────────────
 
     fn put_cold_block(&self, root: Root, block: &E::SignedBeaconBlock) -> Result<(), StorageError> {
         let cf = self.cf_handle(CF_COLD_BLOCKS)?;
@@ -693,7 +693,7 @@ impl<E: BeaconSpec> Store<E> for RocksStore {
 
         // ── 3b. Delete orphan blocks + their reverse-index entries ────────────
         //
-        // Orphans are non-canonical blocks identified by Task 4.1 (CRITICAL-4):
+        // Orphans are non-canonical blocks (CRITICAL-4):
         // their `blocks` CF entry AND their `block_root_to_slot` reverse-index
         // entry are deleted.  The canonical `slot_to_block_root[slot]` entries
         // are NOT deleted (they are the navigational index cold regen and network
@@ -1223,7 +1223,7 @@ impl<E: BeaconSpec> Store<E> for RocksStore {
         Ok(())
     }
 
-    // ── Data-column sidecar store (schema v9, M13-Fulu Phase 4 — PeerDAS) ──────
+    // ── Data-column sidecar store (schema v9, PeerDAS) ──────
 
     fn put_data_column_sidecar(
         &self,

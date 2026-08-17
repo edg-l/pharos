@@ -1,8 +1,7 @@
 //! Smoke test for the SSZ derive macros using a fixed-only struct.
 //!
-//! Per S3 (Phase 2 constraint): this smoke test uses only fixed-size field types.
-//! A variable-size smoke test (`VarTestStruct`) lands in Phase 3 Task 3.9
-//! once `SszList` is available.
+//! Per S3 (constraint): this smoke test uses only fixed-size field types.
+//! `derive_var_smoke.rs` covers the variable-size case.
 //!
 //! # `FixedTestStruct`
 //!

@@ -10,7 +10,7 @@
 //!
 //! - Each sidecar is persisted via `put_data_column_sidecar(block_root, sidecar)`.
 //! - After persist, `column_awaiting.notify_column_arrived(block_root)` is called
-//!   unconditionally: if the DA gate (`ColumnAvailabilityChecker`, Phase 4.2) is
+//!   unconditionally: if the DA gate (`ColumnAvailabilityChecker`) is
 //!   satisfied on re-import, the block proceeds; otherwise it is re-parked with a
 //!   fresh timer.
 //! - Decoding is done via SSZ directly (no snappy: the network task decompresses
@@ -71,7 +71,7 @@ struct PendingEntry {
 /// Mirrors `BlobAwaitingBlocks`: one `tokio::spawn` eviction timer per parked
 /// entry; dedup on re-arrival; no re-inject on eviction.
 ///
-/// Per `D-blob-hold-reuses-reinject` (re-applied for columns, M13-Fulu).
+/// Per `D-blob-hold-reuses-reinject` (re-applied for columns).
 #[derive(Default)]
 pub struct ColumnAwaitingBlocks {
     inner: Mutex<HashMap<Root, PendingEntry>>,

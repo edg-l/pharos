@@ -146,7 +146,6 @@ pub struct DiscoveryService {
     ///
     /// discv5 0.10 returns a *bounded* `mpsc::Receiver`; the plan referenced
     /// an unbounded receiver, but the actual 0.10.4 API uses a bounded channel.
-    /// See "Assumptions made" in the Phase 2 implementation report.
     events_rx: mpsc::Receiver<discv5::Event>,
     /// The fork identity we advertise and validate peers against.
     fork_id: ENRForkID,
@@ -243,7 +242,7 @@ impl DiscoveryService {
         })
     }
 
-    // ── Task 2.2: find_peers ─────────────────────────────────────────────────
+    // ── find_peers ───────────────────────────────────────────────────────────
 
     /// Run an iterative FINDNODE query towards a random `NodeId` and return
     /// ENRs whose `fork_digest` matches the local fork.
@@ -270,7 +269,7 @@ impl DiscoveryService {
             .collect()
     }
 
-    // ── Task 2.3: update_enr_attnets ────────────────────────────────────────
+    // ── update_enr_attnets ──────────────────────────────────────────────────
 
     /// Rewrite the `attnets` ENR key to reflect new subnet subscriptions.
     ///
@@ -320,7 +319,7 @@ impl DiscoveryService {
     }
 }
 
-// ── Phase 12: deficit-driven discovery cadence ───────────────────────────────
+// ── Deficit-driven discovery cadence ─────────────────────────────────────────
 
 /// Compute the FINDNODE query interval as a function of peer count vs target.
 ///
@@ -351,7 +350,7 @@ pub fn query_interval(connected_peers: usize, target_peers: usize) -> std::time:
     std::time::Duration::from_secs(secs)
 }
 
-// ── Task 2.7: start/stop smoke test ──────────────────────────────────────────
+// ── Start/stop smoke test ────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -420,7 +419,7 @@ mod tests {
         drop(service);
     }
 
-    /// Integration test for `D-enr-external-addr-update` (Finding 9, Task 6.5).
+    /// Integration test for `D-enr-external-addr-update` (Finding 9).
     ///
     /// Synthesizes `ExternalAddrConfirmed` by driving
     /// `UpdateExternalSocket(addr)` through `handle_discovery_command`, then
@@ -501,7 +500,7 @@ mod tests {
         drop(service);
     }
 
-    /// Integration test for `D-discv5-dualstack` (Finding 11, Task 8.6).
+    /// Integration test for `D-discv5-dualstack` (Finding 11).
     ///
     /// Starts a dual-stack `DiscoveryService` on loopback (`127.0.0.1` + `::1`)
     /// and asserts the local ENR carries BOTH the IPv4 (`ip4`/`tcp4`) and IPv6

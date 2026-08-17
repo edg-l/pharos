@@ -1,4 +1,4 @@
-//! Beacon API reward computation surface (M15-BeaconAPIGaps Phase 6).
+//! Beacon API reward computation surface.
 //!
 //! The reward math already exists inside the STF but is FUSED into balance
 //! mutation (epoch processing writes balances; block ops add proposer rewards

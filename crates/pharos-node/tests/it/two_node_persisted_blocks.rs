@@ -11,7 +11,7 @@
 //! flakiness from resource contention; `serial_test::serial` prevents that.
 //!
 //! Spec cites: `p2p-interface.md:1413-1417` (BlocksByRange ordering).
-//! `D-rocksdb` warm-restart correctness (M3a Edge Cases).
+//! `D-rocksdb` warm-restart correctness.
 
 use std::time::Duration;
 

@@ -22,7 +22,7 @@ use crate::task::{CaseFn, CaseOutcome, CaseTask};
 
 /// Produce one `CaseTask` per genesis test case in the same walk-order as
 /// `run_genesis_minimal` (initialization sub then validity sub). Called by the
-/// Phase 7 flat work-pool.
+/// Flat work-pool.
 ///
 /// Only `phase0/genesis/minimal` has upstream fixtures. Altair rows produce an
 /// empty Vec (mirrors `run_genesis_altair_*` returning zero counts).

@@ -6,7 +6,6 @@
 //! through the block-ingestion loop to exercise the full import round-trip and
 //! catch any lock-ordering bugs.
 //!
-//! Per Task 4.7 (M9-Validator Phase 4).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -367,8 +366,8 @@ fn build_host(
 /// signatures — the produced block is intentionally unsigned at this stage.
 /// Production-time `state_root` self-consistency is covered by assertion (b);
 /// full signed-import `state_root` re-verification (`validate_result = true`)
-/// requires the proposer + RANDAO signing path (Phase 6/7) and is exercised
-/// end-to-end by the Phase 8 devnet acceptance gate.
+/// requires the proposer + RANDAO signing path and is exercised
+/// end-to-end by the devnet acceptance gate.
 #[tokio::test]
 async fn produce_block_state_root_consistent_capella() {
     const ANCHOR_SLOT: u64 = 0;
@@ -833,10 +832,10 @@ async fn produce_block_concurrent_no_deadlock() {
         .expect("concurrent produce_block 2 must not return an error");
 }
 
-/// Task 8.6b: a produced block, signed with a real proposer + RANDAO signature,
+/// A produced block, signed with a real proposer + RANDAO signature,
 /// re-imports through the ingestion loop with `validate_result = true`.
 ///
-/// This is the end-to-end self-verification the Phase 4 `block_production` test
+/// This is the end-to-end self-verification the `block_production` test
 /// could not cover (it imports unsigned blocks with `validate_result = false`).
 /// With `validate_result = true` the node re-runs, during import:
 ///   - the proposer block-signature check (`DOMAIN_BEACON_PROPOSER`),

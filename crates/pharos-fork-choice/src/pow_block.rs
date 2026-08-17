@@ -71,8 +71,8 @@ impl PowBlockProvider for NoopPowBlockProvider {
 
 /// In-memory `PowBlockProvider` backed by a `HashMap<Hash256, PowBlock>`.
 ///
-/// Used by conformance runners for Bellatrix `on_merge_block` test fixtures
-/// (Phase 5 Task 5.5b), where the fixture YAML lists `pow_block` steps that
+/// Used by conformance runners for Bellatrix `on_merge_block` test fixtures,
+/// where the fixture YAML lists `pow_block` steps that
 /// pre-populate this map.
 pub struct HashMapPowBlockProvider {
     pub blocks: std::collections::HashMap<Hash256, PowBlock>,
@@ -228,7 +228,7 @@ where
 ///
 /// Used by the persist worker in `import.rs` to pre-seed
 /// `payload_statuses[block_root] = NotValidated` for every execution-carrying
-/// block at import time, per `D-preseed-notvalidated-on-import` (M8 Phase 1).
+/// block at import time, per `D-preseed-notvalidated-on-import`.
 ///
 /// Per `specs/sync/optimistic.md` "Helpers" — `is_execution_block` definition:
 /// a block is an execution block iff it contains an execution payload with a

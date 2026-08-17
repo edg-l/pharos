@@ -5,7 +5,7 @@
 //! than `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` (= 4096) behind the current
 //! head epoch.
 //!
-//! Mirrors `run_blob_prune_loop` (M10-DA Phase 4 / W8): column pruning is a
+//! Mirrors `run_blob_prune_loop` (W8): column pruning is a
 //! SEPARATE head-watch loop, NOT coupled to finalization or the freezer
 //! migration. Sidecars are deleted when:
 //!   `head_epoch - epoch_of(column) > MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS`

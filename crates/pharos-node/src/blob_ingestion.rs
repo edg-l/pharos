@@ -15,7 +15,7 @@
 //!   before emitting `GossipBlobSidecar`).
 //! - The loop exits when `event_rx` closes (network task shut down).
 //!
-//! Per `D-blob-hold-reuses-reinject` (M10-DA Phase 5).
+//! Per `D-blob-hold-reuses-reinject`.
 
 use std::sync::Arc;
 

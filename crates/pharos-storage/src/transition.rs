@@ -2,7 +2,7 @@
 //!
 //! Per `D-store-trait`: `write_block_transition` accepts a `BlockTransition<E>`
 //! that collects all writes for one transition. The `RocksStore` implementation
-//! (Phase 1) translates this into a single `rocksdb::WriteBatch` call so that
+//! translates this into a single `rocksdb::WriteBatch` call so that
 //! block, state, fork-choice snapshot, slot-index, state-summary, metadata,
 //! and payload-status updates are either all committed or all absent.
 
@@ -59,9 +59,9 @@ pub struct BlockTransition<E: BeaconSpec> {
     /// `metadata` CF inside the same `WriteBatch`, preserving atomicity.
     ///
     /// Required by:
-    /// - Task 1.1: `b"head_state_root"` (32 B) on every head advance.
-    /// - Task 3.3 (Phase 3): `b"split_slot"` advancement.
-    /// - Task 4.3 (Phase 4): `b"split_slot"` / `b"anchor_slot"` init in
+    /// - `b"head_state_root"` (32 B) on every head advance.
+    /// - `b"split_slot"` advancement.
+    /// - `b"split_slot"` / `b"anchor_slot"` init in
     ///   `apply_anchor`.
     ///
     /// Never bypassed with a separate `put_metadata` call on the live import
@@ -70,7 +70,7 @@ pub struct BlockTransition<E: BeaconSpec> {
 
     /// Blob sidecars to write atomically with the block.
     ///
-    /// Per `D-blob-store-cf-keyed-by-root-index` (M10-DA Phase 4, Task 4.3):
+    /// Per `D-blob-store-cf-keyed-by-root-index`:
     /// each `(block_root, index, BlobSidecar)` triple is written to the
     /// `blob-sidecars` CF in the same `WriteBatch` as the block so that
     /// block + blobs are either both present or both absent after a crash.

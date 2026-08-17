@@ -79,14 +79,14 @@ pub fn is_optimistic_candidate_block<E: BeaconSpec>(
 /// Derivation: `is_execution_block(block_at_root)` AND
 /// `payload_statuses.get(root) != Some(Valid)`.
 ///
-/// This is the single-source-of-truth derivation described in the M8
-/// architecture: Phase 1 pre-seeds every execution-carrying block with
+/// This is the single-source-of-truth derivation: block import pre-seeds every
+/// execution-carrying block with
 /// `payload_statuses[root] = NotValidated`, so a missing entry means either
 /// (a) the root is unknown (return `false`) or (b) the block is pre-merge
 /// (return `false` via `block_is_execution_enabled`).
 ///
 /// Per `consensus-specs/sync/optimistic.md` "Helpers" `is_optimistic` +
-/// `is_execution_block` definitions and the M8 architecture note that
+/// `is_execution_block` definitions, where
 /// `is_optimistic = is_execution_block && status != Valid`.
 ///
 /// Finalized blocks are never optimistic: the EL must have marked them

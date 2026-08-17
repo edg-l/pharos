@@ -669,7 +669,7 @@ where
 /// `get_proposer_head` per `specs/phase0/fork-choice.md:614-667`.
 ///
 /// Returns `parent_root` when all re-org conditions hold, otherwise `head_root`.
-/// Each predicate is a `pub fn` so Phase 9 conformance can exercise them
+/// Each predicate is a `pub fn` so conformance tests can exercise them
 /// individually.
 pub fn get_proposer_head<E: BeaconSpec>(store: &Store<E>, head_root: Root, slot: Slot) -> Root
 where

@@ -1977,7 +1977,7 @@ mod tests {
         assert_eq!(tree.tree_hash_root(), naive.tree_hash_root());
     }
 
-    // ── Task 1.10: with_set path-copy preserves shared subtrees ─────────────
+    // ── with_set path-copy preserves shared subtrees ────────────────────────
 
     #[test]
     fn with_set_path_copy_preserves_shared_subtrees() {

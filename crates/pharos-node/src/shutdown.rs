@@ -1,16 +1,16 @@
 //! Ordered graceful-shutdown sequence.
 //!
-//! Per `D-graceful-shutdown-order` (M11 Phase 17), the beacon node shuts down
+//! Per `D-graceful-shutdown-order`, the beacon node shuts down
 //! in exactly this order on SIGTERM or SIGINT:
 //!
-//! (a) `shutdown_goodbye` — M3 Goodbye(1) to every connected peer + 500 ms
+//! (a) `shutdown_goodbye` — Goodbye(1) to every connected peer + 500 ms
 //!     outbound-RPC drain (inside the network task, which also drains
-//!     in-flight gossip-validation tasks first per Phase 17 step 0).
+//!     in-flight gossip-validation tasks first).
 //! (b) Drain pending gossip publishes (gossip_tasks JoinSet inside the
 //!     network task — done as part of step (a) in `shutdown_goodbye`).
-//! (c) Save peer scores (already invoked inside `shutdown_goodbye`, Phase 14).
-//! (d) Save ENR seq (already invoked inside the network task on dir-flush,
-//!     Phase 13; ENR seq is written on every mutation, so no extra call here).
+//! (c) Save peer scores (already invoked inside `shutdown_goodbye`).
+//! (d) Save ENR seq (already invoked inside the network task on dir-flush;
+//!     ENR seq is written on every mutation, so no extra call here).
 //! (e) `RocksStore::fsync` — `flush_wal(true)` + `flush()`.
 //! (f) Exit 0.
 //!

@@ -1,7 +1,7 @@
 //! In-house EIP-1459 DNS node-list resolver (`enrtree://`).
 //!
-//! The pinned `discv5` 0.10.4 ships **no** enrtree/DNS support (confirmed in the
-//! M11 Phase 0 recon), so the Merkle-tree-over-TXT-records protocol from
+//! The pinned `discv5` 0.10.4 ships **no** enrtree/DNS support, so the
+//! Merkle-tree-over-TXT-records protocol from
 //! [EIP-1459] is implemented here from scratch:
 //!
 //! 1. Parse `enrtree://<base32-pubkey>@<domain>` into a compressed secp256k1

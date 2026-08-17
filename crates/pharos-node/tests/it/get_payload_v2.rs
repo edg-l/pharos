@@ -6,7 +6,6 @@
 //! round-trips correctly against a canned `engine_getPayloadV2` response
 //! shaped as `{executionPayload, blockValue}` per shanghai.md.
 //!
-//! Per Task 3.7 (M9-Validator Phase 3).
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -83,7 +83,7 @@ pub fn run_merkle_proof_fulu_minimal(root: &Path) -> MerkleProofResult {
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
 /// Produce one `CaseTask` per merkle_proof test case in the same walk-order as
-/// `run_merkle_proof_preset`. Called by the Phase 7 flat work-pool.
+/// `run_merkle_proof_preset`. Called by the flat work-pool.
 ///
 /// `fork` must be `"deneb"`, `"electra"`, or `"fulu"`.
 pub fn enumerate_merkle_proof(

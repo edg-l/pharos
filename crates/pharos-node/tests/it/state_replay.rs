@@ -1,4 +1,4 @@
-//! State-replay integration test (Task 2.6 of M-Storage Phase 2).
+//! State-replay integration test.
 //!
 //! Builds a known minimal-preset Bellatrix chain of `SLOTS_PER_EPOCH + 5` blocks,
 //! persists all blocks via `run_backfill_loop` (Phase-1 import path), then
@@ -500,8 +500,7 @@ async fn state_regen_replay_matches_inline() {
     // the in-memory `block_states` map, so `nearest_stored_state` would satisfy
     // every query from RAM and `replay_to` would never run. Evict all non-epoch-
     // boundary states so the regen service is forced to load the nearest stored
-    // boundary state from disk and replay forward — exactly what Task 2.6 must
-    // exercise.
+    // boundary state from disk and replay forward.
     {
         let mut fc = fc_for_assert.write();
         let evict: Vec<_> = fc

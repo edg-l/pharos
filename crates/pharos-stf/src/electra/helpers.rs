@@ -517,7 +517,7 @@ pub(crate) fn increase_balance_electra<
     Ok(())
 }
 
-// ── Task 2a.1: electra compute_proposer_index / get_beacon_proposer_index ──────
+// ── Electra compute_proposer_index / get_beacon_proposer_index ─────────────────
 
 /// `compute_proposer_index` for Electra per `specs/electra/beacon-chain.md:450-470`.
 ///
@@ -585,7 +585,7 @@ pub fn get_beacon_proposer_index_electra<E: BeaconSpec>(state: &E::BeaconState) 
     compute_proposer_index_electra::<E>(state, &indices, &seed)
 }
 
-// ── Task 2a.4: effective-balance / withdrawal-credential accessors ─────────────
+// ── Effective-balance / withdrawal-credential accessors ────────────────────────
 
 /// `is_compounding_withdrawal_credential` per `specs/electra/beacon-chain.md:493-495`.
 ///
@@ -1143,7 +1143,7 @@ pub fn switch_to_compounding_validator_electra<
     >(state, index)
 }
 
-// ── Task 2a.2: electra initiate_validator_exit / slash_validator ──────────────
+// ── Electra initiate_validator_exit / slash_validator ─────────────────────────
 
 /// `initiate_validator_exit` for Electra per `specs/electra/beacon-chain.md:717-731`.
 ///
@@ -1423,7 +1423,7 @@ where
     Ok(())
 }
 
-// ── Task 2a.3: EIP-7549 attesting-index helpers ───────────────────────────────
+// ── EIP-7549 attesting-index helpers ──────────────────────────────────────────
 
 /// `get_committee_indices` per `specs/electra/beacon-chain.md:583-588`.
 ///
@@ -1499,7 +1499,7 @@ pub fn get_indexed_attestation_electra<
     }
 }
 
-// ── Task 2a.5: modified withdrawal predicates + deposit signature ─────────────
+// ── Modified withdrawal predicates + deposit signature ────────────────────────
 
 /// `is_fully_withdrawable_validator` for Electra per
 /// `specs/electra/beacon-chain.md:528-537`.
@@ -1570,7 +1570,7 @@ pub fn is_valid_deposit_signature<E: BeaconSpec>(
     pharos_utils::bls::verify(pubkey, signing_root.as_slice(), signature).unwrap_or(false)
 }
 
-// ── Task 4c.2: electra get_next_sync_committee_indices / get_next_sync_committee ─
+// ── Electra get_next_sync_committee_indices / get_next_sync_committee ────────────
 
 /// `get_next_sync_committee_indices` for Electra per
 /// `specs/electra/beacon-chain.md:679-706`.
@@ -1979,7 +1979,7 @@ mod tests {
         S::from_ssz_bytes(&raw).unwrap_or_else(|e| panic!("ssz decode {}: {e:?}", path.display()))
     }
 
-    /// Task 2a.1 oracle: the electra `get_beacon_proposer_index` must reproduce
+    /// Oracle: the electra `get_beacon_proposer_index` must reproduce
     /// the `proposer_index` recorded in a real `operations/block_header` fixture
     /// block (the op runs at `pre.slot == block.slot`).
     #[test]
@@ -2016,7 +2016,7 @@ mod tests {
         );
     }
 
-    /// Task 2a.3 oracle: cross-committee `get_attesting_indices`. Build an
+    /// Oracle: cross-committee `get_attesting_indices`. Build an
     /// attestation over the pre-state of a block_header fixture with the first
     /// two committee bits set and every aggregation bit in those two committees
     /// set; the result must equal the deduplicated union of both beacon
@@ -2145,7 +2145,7 @@ mod tests {
         state
     }
 
-    /// Task 2a.4 oracle: churn-as-balance accessors against hand-computed minimal
+    /// Oracle: churn-as-balance accessors against hand-computed minimal
     /// preset values. total_active = 64 ETH, total_active/CHURN_LIMIT_QUOTIENT(32)
     /// = 2 ETH < MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA (64 ETH), so balance churn =
     /// 64 ETH; activation_exit = min(128 ETH, 64 ETH) = 64 ETH; consolidation = 0.
@@ -2266,7 +2266,7 @@ mod tests {
         );
     }
 
-    /// Task 2a.4/2a.5 oracle: withdrawal-credential predicates + max effective
+    /// Oracle: withdrawal-credential predicates + max effective
     /// balance, exercised with both 0x01 (eth1) and 0x02 (compounding) creds.
     #[test]
     fn withdrawal_credential_predicates() {
@@ -2311,7 +2311,7 @@ mod tests {
         );
     }
 
-    /// Task 2a.1 unit: the 16-bit random-value path must accept a max-balance
+    /// Unit: the 16-bit random-value path must accept a max-balance
     /// candidate immediately (effective_balance == MAX_EFFECTIVE_BALANCE_ELECTRA
     /// makes `eff * MAX_RANDOM_VALUE >= MAX_EB_ELECTRA * random_value` hold for
     /// every random_value <= MAX_RANDOM_VALUE).

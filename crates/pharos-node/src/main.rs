@@ -90,7 +90,7 @@ struct Args {
     /// Inbound connections beyond this limit are rejected at the swarm level.
     /// `tick_score_prune` and outbound dials may bring the count below this
     /// via the target-peers mechanism; `--max-peers` is the absolute ceiling.
-    /// Per `D-connection-limit-prefer-high-score` (M11 Phase 12).
+    /// Per `D-connection-limit-prefer-high-score`.
     #[arg(long, default_value_t = 50, value_name = "N")]
     max_peers: usize,
 
@@ -99,7 +99,7 @@ struct Args {
     /// The discv5 discovery cadence scales with `target_peers - connected_peers`:
     /// large deficit → frequent FINDNODE queries; at/above target → slow maintenance
     /// cadence. `tick_score_prune` prunes excess to this level (lowest-scoring
-    /// peers first). Per `D-connection-limit-prefer-high-score` (M11 Phase 12).
+    /// peers first). Per `D-connection-limit-prefer-high-score`.
     #[arg(long, default_value_t = 50, value_name = "N")]
     target_peers: usize,
 
@@ -690,7 +690,7 @@ async fn main() -> anyhow::Result<()> {
             .await
             .context("fetching checkpoint anchor")?;
 
-        // Task 4: if a weak-subjectivity checkpoint was supplied, assert the
+        // If a weak-subjectivity checkpoint was supplied, assert the
         // synced anchor's epoch matches it (block root already enforced via
         // `expected_block_root` → `TamperFlagMismatch`). Mismatch aborts startup.
         if let Some((ws_root, ws_epoch)) = ws_checkpoint {
@@ -761,7 +761,7 @@ async fn main() -> anyhow::Result<()> {
         });
         let fc = get_forkchoice_store::<MainnetBeaconSpec>(genesis_state, anchor_block);
 
-        // Task 4.3 (genesis path): initialize split_slot and anchor_slot to 0.
+        // Genesis path: initialize split_slot and anchor_slot to 0.
         // On a genesis cold start there is no prior data, so the hot window
         // starts at slot 0. These are two independent metadata writes (not a
         // BlockTransition): genesis has no associated block yet, and a crash
@@ -821,7 +821,7 @@ async fn main() -> anyhow::Result<()> {
     //
     // The sync-state probe is a cheap closure over the fork-choice `RwLock`; it
     // reuses the same source as `/eth/v1/node/health` (`is_syncing` +
-    // `is_optimistic`).  Per `D-health-probe-on-metrics-port` (M11 Phase 18).
+    // `is_optimistic`).  Per `D-health-probe-on-metrics-port`.
     if let Some(metrics_addr) = metrics_addr_opt {
         use pharos_utils::metrics::SyncState;
 
@@ -1073,7 +1073,7 @@ async fn main() -> anyhow::Result<()> {
     // Host<E> via the blanket impls in pharos_network::host.
     //
     // Wire the engine-driver channels before Arc::new so that HostImpl's
-    // on_head_change / on_new_block are live for the M4b/M4c gossip-validator
+    // on_head_change / on_new_block are live for the gossip-validator
     // path. Clones of head_tx / payload_tx are used here; the block-ingestion
     // loop owns the originals (passed separately in Step 5b below).
     let store_arc = Arc::clone(&store);
@@ -1124,21 +1124,21 @@ async fn main() -> anyhow::Result<()> {
         .listen_ip(listen_ip)
         .tcp_listen_port(tcp_port)
         .discv5_addr(discv5_addr)
-        // M11 Phase 8: dual-stack discv5 + IPv6 libp2p listeners + ENR
+        // Dual-stack discv5 + IPv6 libp2p listeners + ENR
         // ip6/tcp6/quic6 (`D-discv5-dualstack`). Both default to absent
         // (IPv4-only) when --listen-addr-ipv6 is not supplied.
         .listen_ip6(listen_ip6)
         .discv5_addr6(discv5_addr6)
         .bootnodes(bootnodes)
-        // M11 Phase 12: wire CLI-provided connection limits into the builder so
+        // Wire CLI-provided connection limits into the builder so
         // PeerManager enforces max_peers on inbound and target_peers drives the
         // discv5 cadence formula (`D-connection-limit-prefer-high-score`).
         .max_peers(args.max_peers)
         .target_peers(args.target_peers)
-        // M11 Phase 13: persist ENR seq across restarts so peers can re-resolve
+        // Persist ENR seq across restarts so peers can re-resolve
         // us efficiently (`D-enr-seq-persistence`).
         .network_dir(network_dir)
-        // M11 Phase 11: replace the M2 NoopScorer with the real peer scorer so
+        // Use the real peer scorer rather than `NoopScorer` so
         // the swarm loop feeds live gossip/req-resp/dial signals into scoring
         // and acts on disconnect/ban/rate-limit/backoff decisions.
         .scorer(RealScorer::new())
@@ -1961,7 +1961,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Slasher Phase B: chain-history replay (opt-in, --slasher) ──────────────
     //
-    // Gated entirely behind `--slasher` (M11 Phase 9). When off, only the
+    // Gated entirely behind `--slasher`. When off, only the
     // always-on Phase A in-memory attestation slasher (inside HostImpl, fed from
     // gossip) runs and this replay path is skipped. When on, a one-shot
     // background pass walks the stored block history (anchor_slot → head) and
@@ -2085,7 +2085,7 @@ async fn main() -> anyhow::Result<()> {
         // Build production PoW-block provider for the merge-transition guard.
         // Constructed before the engine driver so the driver can hold a clone
         // for merge-transition VALID re-validation per
-        // `consensus-specs/sync/optimistic.md:205-212` (Task 4.2).
+        // `consensus-specs/sync/optimistic.md:205-212`.
         let pow_provider = Arc::new(EnginePowBlockProvider::new(engine_handle.clone()));
 
         // Spawn engine driver: listens for HeadChange watch and NewPayloadRequest mpsc.
@@ -2235,7 +2235,7 @@ async fn main() -> anyhow::Result<()> {
         }
         info!("data-column ingestion loop started");
 
-        // Phase 2 (Task 2.1): forward-backfill progress signal. The forward loop
+        // Forward-backfill progress signal. The forward loop
         // publishes the lowest imported block slot here; the backward state-backfill
         // loop subscribes and gates restore-point regeneration on it. Seed with the
         // lowest block slot the fork-choice store currently holds (the anchor) so the
@@ -2337,7 +2337,7 @@ async fn main() -> anyhow::Result<()> {
             info!("data-column backfill loop started");
         }
 
-        // Spawn backward state-backfill loop (Phase 2) — opt-in via --backward-backfill.
+        // Spawn backward state-backfill loop — opt-in via --backward-backfill.
         // Long-running BACKGROUND process; never blocks startup. Reconstructs
         // genesis-ward restore-point states by replaying stored blocks backward,
         // gated on the forward-backfill progress signal above.
@@ -2413,7 +2413,7 @@ async fn main() -> anyhow::Result<()> {
     // ── Signal handler: SIGTERM or SIGINT triggers ordered shutdown ──────────────
     //
     // Wait for SIGTERM (systemd stop) or SIGINT (Ctrl-C) — whichever arrives
-    // first — then drive the `D-graceful-shutdown-order` sequence (M11 Phase 17).
+    // first — then drive the `D-graceful-shutdown-order` sequence.
     {
         use tokio::signal::unix::{SignalKind, signal};
 
@@ -2442,7 +2442,7 @@ async fn main() -> anyhow::Result<()> {
     // the drain happens inside the network task.
     //
     // Steps (c)+(d): peer-score and ENR-seq saves happen inside the network task
-    // during `shutdown_goodbye` (Phase 14 / Phase 13 hooks). The closures here
+    // during `shutdown_goodbye` (hooks). The closures here
     // are no-ops kept for test instrumentation (the real saves run inside the
     // network task before `handle.shutdown()` resolves).
     let store_for_fsync = Arc::clone(&store_arc);
@@ -2451,9 +2451,9 @@ async fn main() -> anyhow::Result<()> {
         async move { handle.shutdown().await },
         // (b) drain_gossip no-op: drained inside the network task.
         async {},
-        // (c) save_scores no-op: done inside shutdown_goodbye (Phase 14).
+        // (c) save_scores no-op: done inside shutdown_goodbye.
         || {},
-        // (d) save_enr no-op: ENR seq written on every mutation (Phase 13).
+        // (d) save_enr no-op: ENR seq written on every mutation.
         || {},
         // (e) fsync chain DB.
         move || store_for_fsync.fsync(),

@@ -18,8 +18,7 @@
 //! Both functions are synchronous / blocking — callers wrap in
 //! `tokio::task::spawn_blocking`.
 //!
-//! Per `D-produce-empty-then-fill-stf` and `D-process-block-verify-flag`
-//! (M9-Validator Phase 4).
+//! Per `D-produce-empty-then-fill-stf` and `D-process-block-verify-flag`.
 
 use std::sync::Arc;
 
@@ -455,7 +454,7 @@ unsafe fn transmute_attestations<const MAX: u64>(
 ///
 /// This is the correct *single-committee* on-chain aggregate (cross-aggregator
 /// consolidation across committees with equal `AttestationData` is a perf
-/// concern deferred to M-perf/M11, per the M12 plan's Out-of-Scope note).
+/// concern and is not implemented).
 /// Pooled aggregates whose `data.index` is outside `[0, MAX_COMMITTEES_PER_SLOT)`
 /// are dropped (defensive; the committee lookup already enforces validity).
 fn build_electra_on_chain_aggregates<
@@ -1845,7 +1844,7 @@ where
 /// state + root) and the brief FCU-state read (execution hashes). Both locks
 /// are released BEFORE the engine calls (`D-engine-head-driver` lock-ordering rule).
 ///
-/// # Fork dispatch (Task 4.6)
+/// # Fork dispatch
 ///
 /// - Capella head → Capella block (V2 execution payload)
 /// - Bellatrix head → Bellatrix block (V1 execution payload)

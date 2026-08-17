@@ -1,4 +1,4 @@
-//! Beacon blocks namespace handlers (Phase 3).
+//! Beacon blocks namespace handlers.
 //!
 //! - `GET /eth/v1/beacon/blocks/{block_id}/root`
 //! - `GET /eth/v1/beacon/headers`  (query: slot, parent_root)
@@ -133,8 +133,8 @@ struct SingleHeaderResponse {
 /// Sources the REAL proposer signature from `signed_block_header_at` (which
 /// reads the `SignedBeaconBlock` from `RocksStore`). Falls back to the
 /// in-memory header with a zeroed signature only when the signed block is
-/// absent from storage (e.g. pre-schema-v3 anchor blocks imported before
-/// Phase 1 was deployed).
+/// absent from storage (e.g. pre-schema-v3 anchor blocks imported before live
+/// block persistence existed).
 fn build_header_item<E: BeaconSpec>(
     chain: &dyn crate::state::ChainStateApi<E>,
     root: pharos_types::phase0::Root,
@@ -226,7 +226,6 @@ pub async fn get_headers<E: BeaconSpec>(
         }
 
         // If parent_root query: not currently indexed; return empty list.
-        // (Full ancestor-walk index is M11 scope.)
         if q.parent_root.is_some() {
             let is_optimistic = chain.is_optimistic();
             return Ok(HeadersResponse {

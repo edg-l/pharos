@@ -769,7 +769,7 @@ where
     } else if E::unwrap_electra_signed_block(signed).is_some() {
         // Must precede Deneb/Capella/Bellatrix: an Electra block tagged with the
         // wrong digest would be decoded with the wrong schema by peers and earn an
-        // instant InvalidByteLength ban (cf. M5 `D-blocksbyroot-bare-list`).
+        // Instant InvalidByteLength ban (cf. `D-blocksbyroot-bare-list`).
         host.fork_digest_for(NetworkFork::Electra)
     } else if E::unwrap_deneb_signed_block(signed).is_some() {
         // Must precede Capella and Bellatrix: a Deneb block tagged with the wrong
@@ -778,7 +778,7 @@ where
     } else if E::unwrap_capella_signed_block(signed).is_some() {
         // Must precede the Bellatrix fallback: a Capella block tagged with the
         // Bellatrix digest would be decoded with the wrong schema by peers and
-        // earn an instant InvalidByteLength ban (cf. M5 `D-blocksbyroot-bare-list`).
+        // Earn an instant InvalidByteLength ban (cf. `D-blocksbyroot-bare-list`).
         host.fork_digest_for(NetworkFork::Capella)
     } else {
         host.fork_digest_for(NetworkFork::Bellatrix)
@@ -1217,7 +1217,7 @@ mod tests {
 
     /// A Fulu signed block must be tagged with the Fulu fork digest — not the
     /// Bellatrix fallback that `fork_digest_of_block` used before the Fulu arm
-    /// was added (M13-Fulu lookup-DA fix). Mis-tagging a Fulu ancestor as
+    /// was added (lookup-DA fix). Mis-tagging a Fulu ancestor as
     /// Bellatrix would mis-decode it on replay across the Electra→Fulu boundary.
     #[test]
     fn fork_digest_of_block_tags_fulu_under_fulu() {

@@ -2,8 +2,7 @@
 //!
 //! Per `specs/fulu/partial-columns/p2p-interface.md`.
 //!
-//! **Type definitions + SSZ derive ONLY; NO gossip wiring** (deferred per OQ2
-//! in `docs/m13-fulu-plan.md` task 1.4).
+//! **Type definitions + SSZ derive ONLY; NO gossip wiring.**
 
 use pharos_ssz::{Bitlist, Decode, Encode, SszList, SszVector, TreeHash};
 

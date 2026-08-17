@@ -34,7 +34,7 @@ pub struct KzgResult {
 // ── Flat-pool enumerate ───────────────────────────────────────────────────────
 
 /// Produce one `CaseTask` per KZG test case in the same walk-order as `run_kzg`.
-/// Called by the Phase 7 flat work-pool.
+/// Called by the flat work-pool.
 ///
 /// KZG tests live under `<root>/general/deneb/kzg/` and are preset-independent
 /// (row 84 in `rows.rs`: `("deneb", "kzg", "-")`).

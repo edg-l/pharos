@@ -19,7 +19,7 @@ use crate::phase0::accessors::compute_epoch_at_slot;
 /// `process_sync_aggregate` (new in Altair) per `specs/altair/beacon-chain.md:574-635`.
 ///
 /// BLS path: `D-sync-aggregate-bls` — uses `fast_aggregate_verify` only. Batched
-/// verify is deferred to M11. Signing root is
+/// verify is not implemented. Signing root is
 /// `compute_signing_root(get_block_root_at_slot(state, state.slot - 1), domain)`.
 pub fn process_sync_aggregate<
     const SLOTS_PER_HISTORICAL_ROOT: u64,

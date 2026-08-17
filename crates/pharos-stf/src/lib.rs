@@ -52,7 +52,7 @@ pub use phase0::epoch::process_epoch;
 pub use phase0::genesis::{initialize_beacon_state_from_eth1, is_valid_genesis_state};
 pub use phase0::slot::process_slots;
 
-// ── Accessor re-exports (Task 4.2) ───────────────────────────────────────────
+// ── Accessor re-exports ───────────────────────────────────────────
 //
 // Re-exported so `pharos-node::block_production` (and other crates that depend
 // on `pharos-stf`) can import them from one location without reaching into
@@ -786,7 +786,7 @@ where
     // Time the per-fork block-processing step (not including process_slots_fork
     // above, which accounts for slot advancement rather than block processing).
     // All branches unify at the labeled block exit so the histogram is recorded
-    // on the single success path. ADR cite: `D-metrics-prometheus-optin` (Phase 5).
+    // on the single success path. ADR cite: `D-metrics-prometheus-optin`.
     let _pb_start = std::time::Instant::now();
 
     // Fork dispatch via `fork_variant()`. Cannot pattern-match on a concrete

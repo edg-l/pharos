@@ -1,7 +1,7 @@
 //! Integration test: cold-start checkpoint-sync writes anchor state + block
 //! atomically to RocksDB via `fetch_checkpoint` + `apply_anchor`.
 //!
-//! Per Task 2.6 (M4b Phase 2): uses an axum mock Beacon API and a tempdir
+//! Uses an axum mock Beacon API and a tempdir
 //! `RocksStore`. Asserts the persisted `ForkChoiceSnapshot`, block, and state
 //! are all present and consistent after the write.
 
@@ -32,7 +32,7 @@ async fn bind_random() -> (String, TcpListener) {
 
 /// Cold-start checkpoint sync writes anchor state + block to RocksDB atomically.
 ///
-/// Verifies (per plan Task 2.6):
+/// Verifies:
 ///   - `snapshot.head_root == anchor.block_root`
 ///   - `store.get_block(anchor.block_root).is_some()`
 ///   - `store.get_state(anchor.state_root).is_some()`

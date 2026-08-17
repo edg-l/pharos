@@ -1,7 +1,7 @@
-//! Fulu DA pipeline integration test (Task 6.11 of M13-Fulu Phase 6b).
+//! Fulu DA pipeline integration test.
 //!
 //! Exercises the EIP-7594 PeerDAS column data-availability pipeline that mirrors
-//! the M10-DA blob pipeline, plus the fulu-specific custody-gated DA gate:
+//! the blob pipeline, plus the fulu-specific custody-gated DA gate:
 //!
 //! 1. **Column DA park → notify → re-inject** (`column_da_pipeline_reinject`):
 //!    a block whose column set is incomplete returns `DataNotAvailable` from
