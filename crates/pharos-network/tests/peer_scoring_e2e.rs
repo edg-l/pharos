@@ -4,11 +4,14 @@
 //! (`Network` built with the real `RealScorer`, no spawn) and asserts the
 //! Phase 11 contract:
 //!
-//! 1. `gossipsub::Event::SlowPeer` lowers the offending peer's score (the real
-//!    `on_gossip_event` → `ScoreEvent::SlowPeer` mapping).
+//! 1. `gossipsub::Event::SlowPeer` is score-NEUTRAL for `RealScorer`: native
+//!    gossipsub v1.1 (`slow_peer_weight`) owns the slow-peer penalty, so the
+//!    `RealScorer` score must NOT move (ADR `D-gossipsub-peer-scoring`, §7.4 —
+//!    no double-penalty).
 //! 2. Rate-limit-exceeded requests lower the score (the real per-method token
 //!    bucket gate → `ScoreEvent::RateLimitExceeded`).
-//! 3. A peer driven below the disconnect/ban thresholds is selected by
+//! 3. A peer driven below the disconnect/ban thresholds by surviving
+//!    `RealScorer` signals (req-resp / inbound-stream-reset) is selected by
 //!    `worst_peers` (prune candidate) and banned by the enforcement tick.
 //! 4. The `pharos_peer_score` gauge moves to reflect the distribution.
 //!
@@ -75,9 +78,12 @@ fn slow_peer_event(peer: PeerId, failed: usize) -> gossipsub::Event {
     }
 }
 
-/// `SlowPeer` events lower the peer's score through the wired gossip handler.
+/// `SlowPeer` events are score-NEUTRAL for `RealScorer`: native gossipsub v1.1
+/// owns the slow-peer penalty, so the wired handler must NOT move the
+/// `RealScorer` score (ADR `D-gossipsub-peer-scoring`, §7.4 subsume decision —
+/// no double-penalty).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn slow_peer_event_lowers_score() {
+async fn slow_peer_event_does_not_move_real_scorer() {
     let mut network = build_network().await;
     let peer: PeerId = Keypair::generate_secp256k1().public().to_peer_id();
     network.test_register_connected_peer(peer);
@@ -88,9 +94,10 @@ async fn slow_peer_event_lowers_score() {
     network.test_on_gossip_event(slow_peer_event(peer, 5)).await;
 
     let after = network.test_peer_score(&peer);
-    assert!(
-        after < baseline,
-        "SlowPeer(5) must lower the score: after {after} < baseline {baseline}"
+    assert_eq!(
+        after, baseline,
+        "SlowPeer must NOT touch the RealScorer score (native gossipsub owns it): \
+         after {after} == baseline {baseline}"
     );
 }
 
@@ -130,11 +137,13 @@ async fn misbehaving_peer_is_pruned_and_banned() {
     network.test_register_connected_peer(bad);
     network.test_register_connected_peer(good);
 
-    // Hammer the bad peer with SlowPeer failures until it crosses the ban
-    // threshold (-100). Each event is -1 per failed message; 120 failures in a
-    // tight loop (decay is negligible over microseconds) clears -100.
-    for _ in 0..12 {
-        network.test_on_gossip_event(slow_peer_event(bad, 10)).await;
+    // Hammer the bad peer with inbound-stream-reset penalties (a surviving
+    // `RealScorer` req-resp signal, -5 each) until it crosses the ban threshold
+    // (-100). 21 resets in a tight loop (decay negligible over microseconds)
+    // clear -100. SlowPeer is no longer a `RealScorer` signal (native gossipsub
+    // owns it — ADR `D-gossipsub-peer-scoring`, §7.4).
+    for _ in 0..21 {
+        network.test_record_inbound_stream_reset(bad);
     }
 
     let bad_score = network.test_peer_score(&bad);
@@ -212,12 +221,11 @@ async fn peer_score_gauge_moves() {
     let peer: PeerId = Keypair::generate_secp256k1().public().to_peer_id();
     network.test_register_connected_peer(peer);
 
-    // Drive the peer below the ban threshold; the gauge bucket counts update on
+    // Drive the peer below the ban threshold via a surviving `RealScorer`
+    // signal (inbound stream reset, -5 each); the gauge bucket counts update on
     // each score change (per-event gauge emit + the enforcement tick).
-    for _ in 0..12 {
-        network
-            .test_on_gossip_event(slow_peer_event(peer, 10))
-            .await;
+    for _ in 0..21 {
+        network.test_record_inbound_stream_reset(peer);
     }
     network.test_tick_score_prune();
 

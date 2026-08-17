@@ -5046,3 +5046,208 @@ test in `discovery/service.rs` directly exercises `handle_discovery_command` +
 `update_local_enr_socket`, asserting the ENR tcp4 socket and seq. Unit tests for
 `multiaddr_to_tcp_socket` cover IPv4, IPv6, no-TCP, UDP/QUIC-only, and
 multi-IP (rejected) inputs.
+
+### D-gossipsub-peer-scoring — native gossipsub v1.1 peer scoring (Pharos-tuned)
+
+**Finding 3.** Pharos built `gossipsub::Behaviour` without ever calling
+`with_peer_score`, so libp2p's native gossipsub v1.1 peer-scoring engine was
+dormant: no mesh pruning by score, no graylist, no opportunistic grafting. The
+only scoring in play was the in-house `RealScorer` (`scoring.rs`), which records
+a `gossip` component from validator verdicts. This ADR activates native
+gossipsub v1.1 scoring with **Pharos-tuned** parameters and reconciles it with
+`RealScorer` so the same gossip event is never penalised twice.
+
+**Spec basis (what the spec does and does NOT mandate).** `specs/phase0/p2p-interface.md:439-455`
+prescribes only the gossip **topology / decay-interval** params: `D=8`,
+`D_low=6`, `D_high=12`, `D_lazy=6`, `heartbeat_interval=0.7s`, `fanout_ttl=60s`,
+`mcache_len=6`, `mcache_gossip=3`, `seen_ttl=SLOT_DURATION_MS*SLOTS_PER_EPOCH*2//1000`.
+These already live in `gossip/config.rs::gossipsub_config`. The same section
+(lines 452-455) states the v1.1 **peer-scoring** params (topic weights, decays,
+thresholds) are "currently under investigation and will be specified ... when
+they are ready" — i.e. **there is no spec-mandated numeric scoring table**. The
+spec only says clients *MAY* descore (`p2p-interface.md:519`). Therefore the
+numeric weights/decays/thresholds below are a deliberate **Pharos-tuned** choice;
+Lighthouse's `beacon_chain/src/gossipsub_scoring_parameters.rs` is used as a
+cross-check reference only, and every deviation from it is documented inline.
+
+**Decay interval (decision: 1 s, the engine minimum).** The spec heartbeat is
+0.7 s (`p2p-interface.md:443`) and the original intent was to pin `decay_interval`
+to it. The pinned gossipsub crate (libp2p-gossipsub 0.49.4) however **rejects any
+`decay_interval < 1 s`** (`PeerScoreParams::validate` → "Invalid decay_interval;
+must be at least 1s"), so `with_peer_score` would fail at construction with a
+700 ms interval. The engine therefore clamps the choice: Pharos uses **1 s**, the
+smallest interval the engine accepts and the closest it permits to the heartbeat
+tick. This is verified by the construction path (every `Network::build` calls
+`with_peer_score`, and three `network::tests` build a live `Network`) plus
+`config::tests::peer_score_params_validate`. Lighthouse uses the slot duration as
+its decay base; Pharos uses 1 s as the base and expresses all longer decays
+(epoch, 10-epoch) relative to it via `score_parameter_decay_with_base`.
+`retain_score` is `SLOTS_PER_EPOCH * SLOT_DURATION` (one epoch) so a disconnected
+peer's counters survive a brief flap but not a long absence.
+
+**`PeerScoreThresholds` (Pharos-tuned, validated ordering).** The five
+thresholds, with the engine's invariant
+`graylist <= publish <= gossip <= 0 <= accept_px, opportunistic_graft`:
+- `gossip_threshold = -4000.0` — below this we stop emitting/relaying IHAVE
+  gossip to the peer.
+- `publish_threshold = -8000.0` — below this we stop including the peer when
+  flood-publishing / picking fanout peers.
+- `graylist_threshold = -16000.0` — below this gossipsub ignores the peer's
+  RPCs entirely (effective graylist). This is the native analogue of the
+  `RealScorer` `BAN_THRESHOLD`; the two operate on different score spaces (native
+  topic-weighted vs `RealScorer` flat event weights) and are intentionally
+  independent (see §double-penalty).
+- `accept_px_threshold = 100.0` — only peers above this positive score have
+  their Peer-eXchange (PX) suggestions trusted; bootstrappers/long-lived good
+  peers clear it.
+- `opportunistic_graft_threshold = 5.0` — a small positive median-mesh score
+  that triggers opportunistic grafting to lift mesh quality.
+These magnitudes are scaled to the topic-weighted score space (topic weights of
+order 0.5-0.8 times caps/counters of order 10^2-10^3 yield per-topic
+contributions in the thousands), so the thresholds are in the thousands rather
+than the tens that `RealScorer` uses. The ordering is asserted by a unit test
+(`config::tests::thresholds_are_ordered`) in addition to the engine's own
+`PeerScoreThresholds::validate`.
+
+**`PeerScoreParams` (global, Pharos-tuned).**
+- `topic_score_cap = 3200.0` — caps the *positive* aggregate topic contribution
+  so a peer cannot farm unbounded positive score from many topics; chosen so a
+  well-behaved peer on the high-weight `beacon_block` topic plus several subnets
+  saturates near, not far above, the cap.
+- `app_specific_weight = 1.0` — the multiplier applied to the per-peer
+  application score fed via `set_application_score`. Pharos currently feeds **0**
+  here (the app-specific bridge is out of this phase's scope), so this weight is
+  inert today; it is left at unity so that if/when a future phase bridges
+  `RealScorer::score` into `set_application_score`, the contribution is 1:1.
+- `ip_colocation_factor_weight = -8.0`, `ip_colocation_factor_threshold = 10.0` —
+  penalise more than `ip_colocation_factor_threshold` peers sharing one IP
+  (sybil/colocation mitigation), quadratic in the excess. Threshold 10 tolerates
+  NAT/datacenter colocation; weight -8 makes a colocation cluster expensive.
+- `behaviour_penalty_weight = -16.0`, `behaviour_penalty_threshold = 6.0`,
+  `behaviour_penalty_decay = decay(10 epochs)` — penalise protocol misbehaviour
+  (re-GRAFT before backoff, unfulfilled IWANT) quadratically past a tolerance of
+  6 incidents, decaying slowly (10 epochs) so persistent griefers accumulate.
+- `decay_to_zero = 0.01` — a counter below 1% of its peak is treated as 0.
+- `slow_peer_weight = -2.0`, `slow_peer_threshold = 0.0`,
+  `slow_peer_decay = decay(10 epochs)` — native penalty for peers that cannot
+  keep up with delivery. **This subsumes the former `RealScorer`
+  `ScoreEvent::SlowPeer` penalty** (see §double-penalty).
+Deviations from Lighthouse: Lighthouse derives many of these from the active
+slot duration and a target validator/peer count; Pharos picks fixed,
+preset-independent magnitudes for the global params and only scales the
+per-interval *decays* via the preset (through `decay()` over epoch durations),
+because Pharos has no equivalent of Lighthouse's validator-count tuning input at
+network-construction time.
+
+**`TopicScoreParams` (per-topic, Pharos-tuned).** Built by
+`topic_score_params<E>(kind)` keyed on `GossipTopicKind`. The load-bearing
+decision is the **relative topic weights**, asserted by unit test:
+- `beacon_block`: `topic_weight = 0.8` — the highest-value topic; a peer that
+  reliably first-delivers blocks earns the most mesh-quality credit, and a peer
+  that delivers invalid blocks is penalised hardest. P2 (first-message) reward
+  cap is small (the topic is low-rate: ~1 msg/slot) so the weight, not the
+  counter, dominates.
+- `beacon_aggregate_and_proof`: `topic_weight = 0.5`.
+- `beacon_attestation_<subnet>`: `topic_weight = 0.3` — **strictly less than
+  `beacon_block`** (asserted by `config::tests::beacon_block_outweighs_attestation_subnet`).
+  Unaggregated attestation subnets are high-rate and individually low-value, so a
+  single subnet must not let a peer out-score block delivery.
+- `beacon_aggregate_and_proof`, `sync_committee_contribution_and_proof`,
+  `voluntary_exit`, `proposer_slashing`, `attester_slashing`,
+  `bls_to_execution_change`, `light_client_*`: low weights (0.05-0.5) reflecting
+  rate and value; low-rate slashing/exit/bls topics get a small weight with a
+  high `invalid_message_deliveries` penalty (any invalid here is strong evidence
+  of a bad peer).
+- `sync_committee_<subnet>`, `blob_sidecar_<subnet>`,
+  `data_column_sidecar_<subnet>`: subnet-style weights (0.05-0.3), all `<`
+  `beacon_block`.
+Each topic's P2/P3 caps and the P3 `mesh_message_deliveries` threshold/decay are
+sized to the topic's expected message rate (block: ~1/slot; aggregate/sync: low;
+attestation/blob/column subnets: higher), with the invalid-message P4 weight
+fixed strongly negative across all topics. The exact per-topic numbers are
+encoded in `topic_score_params` and pass `TopicScoreParams::validate`.
+
+**7.4 double-penalty resolution — SUBSUME gossip scoring into native gossipsub.**
+Before this ADR, every gossip message verdict was penalised **twice**:
+1. **Native (once enabled):** `Behaviour::report_message_validation_result(id,
+   source, Accept|Reject|Ignore)` already feeds gossipsub's native P2 (first
+   deliveries), P3 (mesh deliveries) and P4 (invalid-message) topic counters.
+   `Behaviour::SlowPeer` feeds the native slow-peer penalty.
+2. **`RealScorer`:** the verdict site also recorded `ScoreEvent::Gossip{Accept,
+   Ignore,Reject}` (`network/mod.rs`) adding `W_GOSSIP_ACCEPT=+1.0`,
+   `W_GOSSIP_IGNORE=-1.0`, `W_GOSSIP_REJECT=-10.0` into `PeerState.gossip`, and
+   `gossipsub::Event::SlowPeer` recorded `ScoreEvent::SlowPeer` into the same
+   component.
+
+**Decision: native gossipsub v1.1 is the sole authority for gossip-quality
+scoring (mesh deliveries, invalid messages, slow-peer behaviour); `RealScorer`
+drops its `gossip` component entirely.** Rationale: the native engine is what
+actually *acts* on gossip-quality scores — it prunes the mesh, graylists, and
+opportunistically grafts based on the topic-weighted score and the thresholds
+above. `RealScorer`'s flat per-event weights could never drive those mesh
+decisions; they only contributed to the Pharos ban/disconnect aggregate, where
+they overlapped exactly with what the native engine already measures more
+precisely (per-topic, decayed, capped). Keeping both is a literal double-count.
+`RealScorer` retains everything the native engine does NOT cover and that drives
+Pharos's own ban/disconnect/dial-backoff machinery: **req-resp** behaviour
+(`RpcSuccess`/`RpcError`/`RpcTimeout`/`RateLimitExceeded`/`InboundStreamReset`),
+**handshake** failures, **dial** backoff, banned-reconnect, and
+subnet-coverage/`Unsubscribed` app penalties. Division of authority:
+- **Native gossipsub** → mesh membership, graylist, PX, opportunistic graft,
+  and all gossip-message + slow-peer quality scoring.
+- **`RealScorer`** → Pharos ban/disconnect decisions and dial backoff, fed by
+  req-resp / handshake / dial / subnet-coverage signals only.
+
+**Concrete code retired (no double-penalty remains).** At the verdict site
+(`network/mod.rs`, the `gossip_tasks.join_next()` arm) the
+`ScoreEvent::Gossip{Accept,Ignore,Reject}` construction and the following
+`peer_manager.record_event(source, score_event)` for gossip verdicts are
+removed; `report_message_validation_result` (native feed) stays. The
+snappy-decode-failure path's `record_event(.., GossipReject{..})` is removed
+(the `report_message_validation_result(.., Reject)` native feed stays). The
+`gossipsub::Event::SlowPeer` arm no longer records `ScoreEvent::SlowPeer`
+(native `slow_peer_weight` handles it). In `scoring.rs`: the `W_GOSSIP_ACCEPT`,
+`W_GOSSIP_IGNORE`, `W_GOSSIP_REJECT`, and `W_SLOW_PEER_PER_MSG` constants and the
+`record_at` arms for `GossipAccept`/`GossipIgnore`/`GossipReject`/`SlowPeer` are
+removed; those four `ScoreEvent` variants are removed from the enum. After this,
+no gossip-message verdict or slow-peer signal touches `RealScorer` at all, so the
+event can only be scored by the native engine — double-penalty is structurally
+impossible, not merely avoided by convention.
+
+**SSZ-layout / persisted-score compatibility (decision: layout UNCHANGED).** The
+persisted record `PeerScoreRecord` (`scoring.rs`, fixed 80 bytes:
+`FixedBytes<64>` peer id + `u64 app_score_bits` + `u64 saved_at_unix_secs`)
+serialises **only the `app` component** — `serialize`/`from_bytes` never read or
+write `gossip` or `req_resp` (the doc comment and the
+`peer_scores_roundtrip` test already assert `gossip`/`req_resp` reset to 0 on
+reload). Dropping the `gossip` component therefore **does not touch the on-disk
+layout at all**: the 80-byte record is unchanged, `RECORD_SIZE` stays 80, and
+existing `peer_scores.ssz` files load byte-for-byte identically. To keep this
+guarantee robust we **retain the `gossip: f64` field in the in-memory
+`PeerState` struct** (it stays `0.0`, written by nothing) rather than deleting
+it; this keeps `PeerState`'s shape and the `total()` arithmetic stable and makes
+the "native owns gossip" intent explicit in the type. `total()` is changed to
+`req_resp + app` (excluding the always-zero `gossip`), which is numerically
+identical to the old `gossip + req_resp + app` now that `gossip` is always 0, so
+no behaviour or persisted-value change results. No `from_bytes` fallback or
+version bump is needed because the wire format is provably unchanged.
+
+**Wiring.** `gossip/config.rs` gains `peer_score_params<E>() ->
+(PeerScoreParams, PeerScoreThresholds)` and `topic_score_params<E>(kind:
+&GossipTopicKind) -> TopicScoreParams`. `Network::build` calls
+`behaviour.gossipsub.with_peer_score(params, thresholds)` immediately after the
+swarm is built and before listeners are added, then — after the startup topic
+set is subscribed and `topic_map` is populated — iterates the `topic_map` and
+calls `gossipsub.set_topic_params(IdentTopic::new(topic.topic_str()),
+topic_score_params::<E>(&topic.kind))` for each subscribed topic, so every live
+mesh topic carries its tuned weights from the first heartbeat.
+
+**Verification.** `config.rs` unit tests assert (1) `peer_score_params::<E>()`
+validates (engine `PeerScoreParams::validate` + `PeerScoreThresholds::validate`
+both pass), (2) threshold ordering `graylist <= publish <= gossip <= 0 <=
+accept_px`, and (3) `topic_score_params` for `BeaconBlock` has a strictly greater
+`topic_weight` than for a `BeaconAttestation` subnet. The full
+`pharos-network` lib test suite is re-run after the `W_GOSSIP_*`/`SlowPeer`
+removal; the `scoring.rs` tests that previously exercised gossip verdicts are
+re-pointed to surviving negative events (req-resp / handshake) that drive the
+same decay/ban/worst-peer code paths.

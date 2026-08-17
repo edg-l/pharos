@@ -44,7 +44,7 @@ use crate::discovery::handle::{DiscoveryCommand, DiscoveryHandle, discovery_chan
 use crate::discovery::service::{DiscoveryConfig, DiscoveryService, query_interval};
 use crate::discovery::subnets::compute_subscribed_subnets;
 use crate::error::NetworkError;
-use crate::gossip::config::gossipsub_behaviour;
+use crate::gossip::config::{gossipsub_behaviour, peer_score_params, topic_score_params};
 use crate::gossip::{
     dispatch_gossip_message, subscribe_altair_extra_topics, subscribe_base_topics,
     subscribe_deneb_blob_topics, subscribe_fulu_data_column_topics,
@@ -765,31 +765,20 @@ impl<
                 }
                 Some(join_result) = self.gossip_tasks.join_next() => {
                     match join_result {
-                        Ok((verdict, propagation_source, message_id, topic, ssz_bytes, message)) => {
-                            // --- same logic as current lines 770-846 ---
+                        Ok((verdict, propagation_source, message_id, topic, ssz_bytes, _message)) => {
                             // Convert verdict to gossipsub MessageAcceptance.
-                            let score_event;
+                            //
+                            // The verdict feeds NATIVE gossipsub v1.1 scoring only
+                            // (via `report_message_validation_result` below): P2/P3
+                            // deliveries on Accept, P4 invalid-message on Reject.
+                            // `RealScorer` deliberately records NO gossip event here
+                            // — native gossipsub is the sole authority for
+                            // gossip-quality scoring, so the same verdict is never
+                            // double-penalised (ADR `D-gossipsub-peer-scoring`, §7.4).
                             let acceptance = match &verdict {
-                                GossipVerdict::Accept => {
-                                    score_event = ScoreEvent::GossipAccept {
-                                        topic: message.topic.clone(),
-                                    };
-                                    MessageAcceptance::Accept
-                                }
-                                GossipVerdict::Reject(reason) => {
-                                    score_event = ScoreEvent::GossipReject {
-                                        topic: message.topic.clone(),
-                                        reason: reason.clone(),
-                                    };
-                                    MessageAcceptance::Reject
-                                }
-                                GossipVerdict::Ignore(reason) => {
-                                    score_event = ScoreEvent::GossipIgnore {
-                                        topic: message.topic.clone(),
-                                        reason: reason.clone(),
-                                    };
-                                    MessageAcceptance::Ignore
-                                }
+                                GossipVerdict::Accept => MessageAcceptance::Accept,
+                                GossipVerdict::Reject(_) => MessageAcceptance::Reject,
+                                GossipVerdict::Ignore(_) => MessageAcceptance::Ignore,
                             };
 
                             // Report validation result to gossipsub.
@@ -856,12 +845,12 @@ impl<
                                 _ => {}
                             }
 
-                            // Record score event for the peer, then update the
-                            // peer-score gauge for its new bucket (M11 Phase 11
-                            // task 4: gauge updated on each score change).
-                            self.peer_manager
-                                .record_event(propagation_source, score_event);
-                            self.emit_peer_score_gauge(&propagation_source);
+                            // No `RealScorer` event is recorded for a gossip
+                            // verdict: native gossipsub v1.1 owns gossip-quality
+                            // scoring (fed by `report_message_validation_result`
+                            // above), so the peer's `RealScorer` score is unchanged
+                            // here and the score gauge needs no update
+                            // (ADR `D-gossipsub-peer-scoring`, §7.4).
                         }
                         Err(join_err) => {
                             if join_err.is_panic() {
@@ -1109,17 +1098,11 @@ impl<
                 failed_messages,
             } => {
                 // gossipsub reports the peer cannot keep up with message
-                // delivery. Penalise proportionally to the total failed-message
-                // count (M11 Phase 0 mapping table → ScoreEvent::SlowPeer).
-                let failed = failed_messages.total();
-                tracing::debug!(%peer_id, failed, "slow peer");
-                self.peer_manager.record_event(
-                    peer_id,
-                    ScoreEvent::SlowPeer {
-                        failed_messages: failed,
-                    },
-                );
-                self.emit_peer_score_gauge(&peer_id);
+                // delivery. The NATIVE gossipsub v1.1 `slow_peer_weight` penalty
+                // (configured in `peer_score_params`) already scores this; no
+                // `RealScorer` event is recorded, so the slow-peer signal is not
+                // double-penalised (ADR `D-gossipsub-peer-scoring`, §7.4).
+                tracing::debug!(%peer_id, failed = failed_messages.total(), "slow peer");
             }
         }
     }
@@ -1170,7 +1153,10 @@ impl<
         let ssz_bytes = match decode_snappy_block(&message.data, crate::codec::MAX_PAYLOAD_SIZE) {
             Ok(b) => b,
             Err(_) => {
-                // Spec-required: report Reject to gossipsub and score the peer.
+                // Spec-required: report Reject to gossipsub. This feeds the
+                // NATIVE gossipsub P4 invalid-message penalty for the peer; no
+                // `RealScorer` gossip event is recorded (native owns
+                // gossip-quality scoring — ADR `D-gossipsub-peer-scoring`, §7.4).
                 if !self
                     .swarm
                     .behaviour_mut()
@@ -1183,13 +1169,6 @@ impl<
                 {
                     tracing::debug!(%message_id, "report_message_validation_result returned false (message not in cache)");
                 }
-                self.peer_manager.record_event(
-                    propagation_source,
-                    ScoreEvent::GossipReject {
-                        topic: message.topic,
-                        reason: "snappy decode".to_string(),
-                    },
-                );
                 return;
             }
         };
@@ -2832,6 +2811,21 @@ impl<
         // active digest so a bellatrix-at-genesis node starts on the full set.
         // (`D-bellatrix-startup-topic-set`)
         let mut swarm = swarm;
+
+        // Activate native gossipsub v1.1 peer scoring with Pharos-tuned params
+        // BEFORE subscribing topics, so `set_topic_params` (below) has an active
+        // peer-score engine to attach per-topic weights to. Native scoring is the
+        // sole authority for gossip-quality + slow-peer scoring; `RealScorer`
+        // carries no gossip component (ADR `D-gossipsub-peer-scoring`, §7.4).
+        {
+            let (score_params, score_thresholds) = peer_score_params::<E>();
+            swarm
+                .behaviour_mut()
+                .gossipsub
+                .with_peer_score(score_params, score_thresholds)
+                .map_err(|e| NetworkError::Libp2p(format!("with_peer_score: {e}")))?;
+        }
+
         let mut topic_map =
             subscribe_base_topics(&mut swarm.behaviour_mut().gossipsub, fork_digest, &attnets)?;
 
@@ -2896,6 +2890,22 @@ impl<
             // every `Fork` variant is matched explicitly so a future fork is a
             // compile error here rather than a silent topic-set regression.
             Some(crate::types::Fork::Phase0) | None => {}
+        }
+
+        // Apply the Pharos-tuned per-topic score params to every subscribed
+        // topic now that `topic_map` is complete. `set_topic_params` requires
+        // the peer-score engine activated above. A failure here is a config bug
+        // (params already passed `validate` in `peer_score_params`), so surface
+        // it. (ADR `D-gossipsub-peer-scoring`.)
+        for topic in topic_map.values() {
+            let params = topic_score_params::<E>(&topic.kind);
+            swarm
+                .behaviour_mut()
+                .gossipsub
+                .set_topic_params(IdentTopic::new(topic.topic_str()), params)
+                .map_err(|e| {
+                    NetworkError::Libp2p(format!("set_topic_params({}): {e}", topic.topic_str()))
+                })?;
         }
 
         // ── Step 6: add listeners ─────────────────────────────────────────────

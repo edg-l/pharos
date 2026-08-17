@@ -7,18 +7,21 @@
 //!
 //! ## Score model (M11 Phase 10)
 //!
-//! Each peer carries three additive score components, mirroring the gossipsub
-//! v1.1 score-decomposition (cite: libp2p gossipsub v1.1 spec, "Peer Scoring"):
+//! Each peer carries additive score components:
 //!
-//! - **gossip** — mesh behaviour (accepts reward, rejects/ignores/slow penalise).
 //! - **req_resp** — request/response behaviour (success rewards, error/timeout/
-//!   rate-limit-exceeded penalise).
+//!   rate-limit-exceeded/inbound-stream-reset penalise).
 //! - **app** — application-specific long-term component (handshake failures,
 //!   subnet non-propagation, banned reconnects). This is the durable component
-//!   the Phase 14 persistence layer will save.
+//!   the Phase 14 persistence layer saves.
+//! - **gossip** — retained as an always-zero field for struct/`total()` shape
+//!   stability ONLY. Gossip-quality + slow-peer scoring is owned entirely by
+//!   native gossipsub v1.1 (`gossip/config.rs`), so `RealScorer` never writes
+//!   this component — preventing the double-penalty that would otherwise occur
+//!   (ADR `D-gossipsub-peer-scoring`, §7.4).
 //!
-//! `score(peer) = gossip + req_resp + app`, with each component lazily decayed
-//! toward 0 on read.
+//! `score(peer) = req_resp + app` (the always-zero `gossip` is excluded), with
+//! each component lazily decayed toward 0 on read.
 //!
 //! ## Decay model (M11 Phase 10 task 1 decision)
 //!
@@ -69,12 +72,6 @@ use crate::types::DisconnectReason;
 /// scoring implementation needs; do not strip fields when stubbing.
 #[derive(Debug, Clone)]
 pub enum ScoreEvent {
-    /// A gossip message from this peer was accepted by the validator.
-    GossipAccept { topic: TopicHash },
-    /// A gossip message from this peer was rejected by the validator.
-    GossipReject { topic: TopicHash, reason: String },
-    /// A gossip message from this peer was ignored (validator returned Ignore).
-    GossipIgnore { topic: TopicHash, reason: String },
     /// A successful RPC exchange with this peer.
     RpcSuccess { method: RpcMethod },
     /// An RPC call returned an error from this peer.
@@ -92,10 +89,6 @@ pub enum ScoreEvent {
     PeerDisconnected { reason: DisconnectReason },
     /// A connection was rejected because the peer is banned.
     BannedPeerConnected,
-    /// gossipsub reported the peer cannot download messages in time
-    /// (`gossipsub::Event::SlowPeer`). `failed_messages` is the total count of
-    /// failed deliveries, used as penalty severity (M11 Phase 0 finding).
-    SlowPeer { failed_messages: usize },
     /// The peer issued more req-resp requests than its per-method token bucket
     /// allows (M11 Phase 10/11). Carries the offending method.
     RateLimitExceeded { method: RpcMethod },
@@ -300,12 +293,10 @@ pub const BAN_THRESHOLD: f64 = -100.0;
 /// (gossip/publish-threshold region in gossipsub v1.1).
 pub const DISCONNECT_THRESHOLD: f64 = -50.0;
 
-// --- gossip-component event weights ---
-const W_GOSSIP_ACCEPT: f64 = 1.0;
-const W_GOSSIP_IGNORE: f64 = -1.0;
-const W_GOSSIP_REJECT: f64 = -10.0;
-/// Per failed message reported by `SlowPeer`.
-const W_SLOW_PEER_PER_MSG: f64 = -1.0;
+// Gossip-quality + slow-peer scoring is owned entirely by native gossipsub v1.1
+// (`gossip/config.rs::peer_score_params` / `topic_score_params`), so `RealScorer`
+// has NO gossip-component weights. This avoids double-penalising a gossip verdict
+// or a slow-peer signal (ADR `D-gossipsub-peer-scoring`, §7.4).
 
 // --- req-resp-component event weights ---
 const W_RPC_SUCCESS: f64 = 1.0;
@@ -450,7 +441,14 @@ impl PeerState {
     }
 
     fn total(&self) -> f64 {
-        self.gossip + self.req_resp + self.app
+        // `gossip` is retained in the struct for layout/`total` shape stability
+        // but is always 0.0: native gossipsub v1.1 owns gossip-quality scoring,
+        // so `RealScorer` never writes it (ADR `D-gossipsub-peer-scoring`, §7.4).
+        debug_assert_eq!(
+            self.gossip, 0.0,
+            "gossip component must stay 0 (native owns it)"
+        );
+        self.req_resp + self.app
     }
 }
 
@@ -489,12 +487,6 @@ impl RealScorer {
         let state = self.entry(peer, now);
         state.decay(now);
         match event {
-            ScoreEvent::GossipAccept { .. } => state.gossip += W_GOSSIP_ACCEPT,
-            ScoreEvent::GossipIgnore { .. } => state.gossip += W_GOSSIP_IGNORE,
-            ScoreEvent::GossipReject { .. } => state.gossip += W_GOSSIP_REJECT,
-            ScoreEvent::SlowPeer { failed_messages } => {
-                state.gossip += W_SLOW_PEER_PER_MSG * failed_messages as f64;
-            }
             ScoreEvent::RpcSuccess { .. } => state.req_resp += W_RPC_SUCCESS,
             ScoreEvent::RpcError { .. } => state.req_resp += W_RPC_ERROR,
             ScoreEvent::RpcTimeout { .. } => state.req_resp += W_RPC_TIMEOUT,
@@ -942,17 +934,18 @@ mod tests {
         let mut scorer = RealScorer::new();
         let t0 = Instant::now();
         let p = peer(1);
-        // A strong negative event.
+        // A strong negative event (req-resp error; gossip events no longer touch
+        // RealScorer — native gossipsub owns them).
         scorer.record_at(
             p,
-            ScoreEvent::GossipReject {
-                topic: topic(),
-                reason: "x".into(),
+            ScoreEvent::RpcError {
+                method: RpcMethod::Status,
+                kind: RpcErrorKind::ServerError,
             },
             t0,
         );
         let immediate = scorer.score_at(&p, t0);
-        assert!(immediate < 0.0, "reject should produce a negative score");
+        assert!(immediate < 0.0, "rpc error should produce a negative score");
         // After 60 s the magnitude must have shrunk toward 0.
         let later = scorer.score_at(&p, t0 + Duration::from_secs(60));
         assert!(
@@ -977,21 +970,15 @@ mod tests {
         let t0 = Instant::now();
         let p = peer(2);
         assert!(!scorer.is_banned(&p), "fresh peer is not banned");
-        // Each reject is -10; need > 10 to cross -100. Apply at the same instant
-        // so decay does not interfere.
-        for _ in 0..11 {
-            scorer.record_at(
-                p,
-                ScoreEvent::GossipReject {
-                    topic: topic(),
-                    reason: "bad".into(),
-                },
-                t0,
-            );
+        // Each inbound stream reset is -5 (a surviving RealScorer req-resp
+        // signal); need > 20 to cross -100. Apply at the same instant so decay
+        // does not interfere. Gossip events no longer touch RealScorer.
+        for _ in 0..21 {
+            scorer.record_at(p, ScoreEvent::InboundStreamReset, t0);
         }
         assert!(
             scorer.score_at(&p, t0) <= BAN_THRESHOLD,
-            "11 rejects (-110) must cross the ban threshold"
+            "21 inbound stream resets (-105) must cross the ban threshold"
         );
     }
 
@@ -1036,21 +1023,28 @@ mod tests {
         let good = peer(10);
         let mid = peer(11);
         let bad = peer(12);
-        scorer.record_at(good, ScoreEvent::GossipAccept { topic: topic() }, t0);
-        scorer.record_at(good, ScoreEvent::GossipAccept { topic: topic() }, t0);
+        // Ordering via surviving RealScorer signals (gossip events no longer
+        // score): good = +2 (two RPC successes), mid = -5 (one inbound reset),
+        // bad = -20 (one handshake fail).
         scorer.record_at(
-            mid,
-            ScoreEvent::GossipIgnore {
-                topic: topic(),
-                reason: "m".into(),
+            good,
+            ScoreEvent::RpcSuccess {
+                method: RpcMethod::Status,
             },
             t0,
         );
         scorer.record_at(
+            good,
+            ScoreEvent::RpcSuccess {
+                method: RpcMethod::Status,
+            },
+            t0,
+        );
+        scorer.record_at(mid, ScoreEvent::InboundStreamReset, t0);
+        scorer.record_at(
             bad,
-            ScoreEvent::GossipReject {
-                topic: topic(),
-                reason: "b".into(),
+            ScoreEvent::HandshakeFail {
+                kind: HandshakeFailKind::ForkDigestMismatch,
             },
             t0,
         );
@@ -1144,15 +1138,6 @@ mod tests {
             t0,
         );
         assert_eq!(scorer.score_at(&p, t0), W_UNSUBSCRIBED_EXPECTED_SUBNET);
-    }
-
-    #[test]
-    fn slow_peer_penalty_scales_with_failed_messages() {
-        let mut scorer = RealScorer::new();
-        let t0 = Instant::now();
-        let p = peer(42);
-        scorer.record_at(p, ScoreEvent::SlowPeer { failed_messages: 5 }, t0);
-        assert_eq!(scorer.score_at(&p, t0), W_SLOW_PEER_PER_MSG * 5.0);
     }
 
     #[test]
@@ -1281,15 +1266,21 @@ mod tests {
         );
     }
 
-    /// A peer with no durable penalty (gossip-only events) does not appear in
-    /// the serialized table.
+    /// A peer with no durable penalty (only a volatile req-resp event) does not
+    /// appear in the serialized table.
     #[test]
     fn peer_scores_skips_zero_app() {
         let mut scorer = RealScorer::new();
         let t0 = Instant::now();
         let p = peer(74);
-        // GossipAccept only affects the gossip component, not app.
-        scorer.record_at(p, ScoreEvent::GossipAccept { topic: topic() }, t0);
+        // RpcSuccess only affects the volatile req_resp component, not app.
+        scorer.record_at(
+            p,
+            ScoreEvent::RpcSuccess {
+                method: RpcMethod::Status,
+            },
+            t0,
+        );
         let bytes = scorer.serialize();
         assert!(bytes.is_empty(), "zero-app peer must not be persisted");
     }
