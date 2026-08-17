@@ -5251,3 +5251,102 @@ accept_px`, and (3) `topic_score_params` for `BeaconBlock` has a strictly greate
 removal; the `scoring.rs` tests that previously exercised gossip verdicts are
 re-pointed to surviving negative events (req-resp / handshake) that drive the
 same decay/ban/worst-peer code paths.
+
+### D-discv5-dualstack — IPv6 dual-stack discv5 + ENR ip6/udp6/tcp6/quic6
+
+**Finding 11.** `DiscoveryService::start` early-returned a
+`NetworkError::Discv5("IPv6 listen address not supported ...")` for any
+`IpAddr::V6` listen address and only ever built a `ListenConfig::Ipv4`. The
+local ENR therefore never carried `ip6`/`udp6`/`tcp6`/`quic6` fields, and the
+libp2p swarm only ever listened on `/ip4`. A node could neither be discovered
+nor dialed over IPv6, and an operator on an IPv6-only or dual-stack host had no
+way to participate. This ADR adds first-class IPv4 / IPv6 / dual-stack support
+across the three layers that carry an address: the discv5 `ListenConfig`, the
+local ENR, and the libp2p swarm listeners. **IPv4-only stays the default** — no
+behaviour change for existing single-stack operators.
+
+**Family enum.** `DiscoveryConfig.listen_addr: SocketAddr` is replaced by
+`listen: DiscoveryListenConfig`, a three-variant enum that mirrors discv5
+0.10.4's `discv5::socket::ListenConfig` 1:1:
+
+```rust
+pub enum DiscoveryListenConfig {
+    Ipv4 { ip: Ipv4Addr, port: u16 },
+    Ipv6 { ip: Ipv6Addr, port: u16 },
+    DualStack { ipv4: Ipv4Addr, ipv4_port: u16, ipv6: Ipv6Addr, ipv6_port: u16 },
+}
+```
+
+`DiscoveryService::start` matches over the variant to build the corresponding
+`ListenConfig` variant directly (no `IpAddr` discrimination, no V6
+early-return). The enum is the single source of truth for which UDP
+socket(s) discv5 binds AND which `ip{4,6}`/`udp{4,6}` fields the ENR advertises:
+
+- `Ipv4`     → ENR gets `ip4`/`udp4` only.
+- `Ipv6`     → ENR gets `ip6`/`udp6` only.
+- `DualStack`→ ENR gets both `ip4`/`udp4` and `ip6`/`udp6`.
+
+Rationale for a bespoke enum rather than re-exporting `ListenConfig`: discv5's
+`ListenConfig` is a UDP-discovery concern; ours must also drive the TCP/QUIC ENR
+advertisement and the libp2p listeners, so it carries the family choice without
+coupling Pharos config to a discv5 type in every call site.
+
+**TCP/QUIC ports per family.** `DiscoveryConfig` keeps `tcp_port` / `quic_port`
+(IPv4, advertised as ENR `tcp4`/`quic`) and gains `tcp6_port: Option<u16>` /
+`quic6_port: Option<u16>` (advertised as ENR `tcp6`/`quic6`). They are
+`Option` because a node may run discv5 dual-stack while only accepting libp2p
+TCP on one family. `build_local_enr` gains `ip6: Option<Ipv6Addr>`,
+`udp6: Option<u16>`, `tcp6: Option<u16>` params (it already accepted
+`quic6_port`) and calls the confirmed discv5 0.10.4 enr-builder methods
+`builder.ip6(Ipv6Addr)`, `builder.udp6(u16)`, `builder.tcp6(u16)`
+(`enr-0.13.0/src/builder.rs:77,100,112`).
+
+**libp2p swarm listeners.** `NetworkBuilder` keeps the IPv4 `listen_ip` /
+`tcp_listen_port` / `quic_listen_port` (unchanged defaults) and gains
+`listen_ip6: Option<Ipv6Addr>`. When `listen_ip6` is `Some`, `build` adds a
+second TCP `listen_on(/ip6/<addr>/tcp/<tcp_listen_port>)` and, when QUIC is
+enabled, a second QUIC `listen_on(/ip6/<addr>/udp/<quic_listen_port>/quic-v1)`.
+The libp2p TCP and QUIC transports already support IPv6 once handed a `/ip6`
+multiaddr; no transport rebuild is needed. The IPv4 listeners are added exactly
+as before, so single-stack behaviour is unchanged.
+
+**Bind-failure asymmetry (by design).** The two v6 layers degrade differently
+and intentionally so. The discv5 v6 UDP socket is bound eagerly inside
+`Discv5::start`, so a dual-stack node on a host with a broken IPv6 stack
+**fails to start** (error propagated via `?`). The libp2p swarm v6 `listen_on`
+calls only fail synchronously on multiaddr/transport-setup errors; a real v6
+bind failure surfaces asynchronously as a `ListenerError`/`ListenerClosed`
+event and is merely debug-logged (graceful degradation). The hard discv5
+failure is deliberate: dual-stack is opt-in, so an operator who explicitly asked
+for IPv6 should hear loudly that their v6 stack is broken rather than silently
+run v4-only.
+
+**CLI surface (`pharos` binary).** Two new optional flags, both defaulting to
+absent (IPv4-only):
+
+- `--listen-addr-ipv6 <MULTIADDR>`: a `/ip6/<addr>/tcp/<port>` multiaddr for the
+  libp2p IPv6 TCP listener AND the ENR `ip6`/`tcp6` advertisement (parsed by the
+  same `parse_listen_addr` helper, which already accepts `/ip6`).
+- `--discv5-port-ipv6 <PORT>`: the discv5 UDP6 port. Required iff
+  `--listen-addr-ipv6` is supplied (clap `requires`), so the discv5 family is
+  unambiguous.
+
+The binary derives the `DiscoveryListenConfig` family from the presence of the
+IPv6 flags: IPv4-only flags → `Ipv4`; both IPv4 and IPv6 flags → `DualStack`.
+(An IPv6-only deployment is expressed by binding the IPv4 listener to a v6
+address is NOT supported through the CLI in this phase; the `Ipv6` enum variant
+exists and is exercised by the library API and tests, but the `pharos` CLI
+always keeps its IPv4 surface and only ADDS IPv6, which is the dual-stack form
+operators actually want.) The IPv6 `tcp6`/`quic6` ENR ports mirror the IPv4
+`tcp_listen_port`/`quic_listen_port` because libp2p listens on the same port
+number on both families.
+
+**Verification.** A `multi_thread` integration test (mirroring
+`external_addr_updates_enr_socket_and_bumps_seq_once`) starts a dual-stack
+`DiscoveryService` on loopback (`127.0.0.1` + `::1`) and asserts the local ENR
+carries BOTH `ip4()`/`tcp4()` and `ip6()`/`tcp6()`. discv5 spawns background
+tasks, so the test uses the `multi_thread` flavor. On a CI/sandbox host without
+a routable `::1` the v6 UDP bind can fail for an environment reason; the test
+notes this explicitly and the `build_local_enr` IPv6 round-trip is additionally
+covered by a pure unit test so the ENR-building path is validated regardless of
+socket availability.

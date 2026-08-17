@@ -9,7 +9,7 @@
 //! Q-quic-enr in `docs/decisions.md`.
 
 use std::io;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
 use discv5::enr::{CombinedKey, CombinedPublicKey, EnrPublicKey as _};
@@ -103,8 +103,8 @@ pub fn save_enr_seq(dir: &Path, seq: u64) -> io::Result<()> {
 /// Build and sign a local ENR for the Pharos node.
 ///
 /// Sets the `eth2`, `attnets`, and (if provided) `quic` / `quic6` custom ENR
-/// keys. Standard `ip`, `tcp`, and `udp` fields are set when the corresponding
-/// optional arguments are `Some`.
+/// keys. Standard `ip4`/`tcp4`/`udp4` and `ip6`/`tcp6`/`udp6` fields are set
+/// when the corresponding optional arguments are `Some` (`D-discv5-dualstack`).
 ///
 /// `eth2`  = SSZ-encoded `ENRForkID` (16 bytes).
 /// `attnets` = SSZ-encoded `Bitvector<ATTESTATION_SUBNET_COUNT>` (8 bytes).
@@ -130,6 +130,9 @@ pub fn build_local_enr(
     tcp4: Option<u16>,
     quic_port: Option<u16>,
     quic6_port: Option<u16>,
+    ip6: Option<Ipv6Addr>,
+    udp6: Option<u16>,
+    tcp6: Option<u16>,
     fork_id: ENRForkID,
     attnets: Bitvector<ATTESTATION_SUBNET_COUNT>,
     cgc: Option<u64>,
@@ -149,6 +152,18 @@ pub fn build_local_enr(
     }
     if let Some(tcp) = tcp4 {
         builder.tcp4(tcp);
+    }
+
+    // IPv6 socket fields (`D-discv5-dualstack`): only set when this node serves
+    // an IPv6 family, so a single-stack IPv4 node never advertises empty v6 keys.
+    if let Some(ip) = ip6 {
+        builder.ip6(ip);
+    }
+    if let Some(udp) = udp6 {
+        builder.udp6(udp);
+    }
+    if let Some(tcp) = tcp6 {
+        builder.tcp6(tcp);
     }
 
     // SSZ-encode the ENRForkID (16 bytes) and store as RLP byte string.
@@ -369,6 +384,9 @@ mod tests {
             Some(9000),
             Some(9001),
             Some(9001),
+            None,
+            None,
+            None,
             fork_id.clone(),
             attnets.clone(),
             None,
@@ -394,6 +412,47 @@ mod tests {
         assert_eq!(decoded_attnets.as_ssz_bytes(), attnets.as_ssz_bytes());
     }
 
+    /// Dual-stack ENR round-trip (`D-discv5-dualstack`): a single
+    /// `build_local_enr` call that populates BOTH the IPv4 and IPv6 socket
+    /// fields decodes back to both families, including `tcp6` and `quic6`.
+    #[test]
+    fn enr_roundtrip_dualstack_ipv6_fields() {
+        use std::net::Ipv6Addr;
+
+        let key = CombinedKey::generate_secp256k1();
+        let fork_id = test_fork_id();
+        let attnets = test_attnets();
+
+        let enr = build_local_enr(
+            &key,
+            Some(Ipv4Addr::new(127, 0, 0, 1)),
+            Some(9000),
+            Some(9000),
+            Some(9001),
+            Some(9101),
+            Some(Ipv6Addr::LOCALHOST),
+            Some(9100),
+            Some(9100),
+            fork_id,
+            attnets,
+            None,
+            1,
+        )
+        .expect("build_local_enr failed");
+
+        // IPv4 family present.
+        assert_eq!(enr.ip4(), Some(Ipv4Addr::new(127, 0, 0, 1)));
+        assert_eq!(enr.udp4(), Some(9000));
+        assert_eq!(enr.tcp4(), Some(9000));
+        assert_eq!(read_quic_port(&enr), Some(9001));
+
+        // IPv6 family present.
+        assert_eq!(enr.ip6(), Some(Ipv6Addr::LOCALHOST));
+        assert_eq!(enr.udp6(), Some(9100));
+        assert_eq!(enr.tcp6(), Some(9100));
+        assert_eq!(read_quic6_port(&enr), Some(9101));
+    }
+
     /// Verify the quic key round-trip on a synthesised ENR (no bootnode ENR
     /// available with a quic key in the local spec checkout).
     ///
@@ -414,6 +473,9 @@ mod tests {
             None,
             None,
             Some(9001),
+            None,
+            None,
+            None,
             None,
             fork_id,
             attnets,
@@ -482,6 +544,9 @@ mod tests {
             Some(Ipv4Addr::new(127, 0, 0, 1)),
             Some(9000),
             Some(9000),
+            None,
+            None,
+            None,
             None,
             None,
             fork_id,
@@ -591,6 +656,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
             fork_id.clone(),
             attnets.clone(),
             None,
@@ -603,7 +671,7 @@ mod tests {
         // must be >= the first ENR's seq (monotonic across restart).
         let seq2 = load_enr_seq(dir.path());
         let enr2 = build_local_enr(
-            &key, None, None, None, None, None, fork_id, attnets, None, seq2,
+            &key, None, None, None, None, None, None, None, None, fork_id, attnets, None, seq2,
         )
         .expect("build_local_enr second boot");
 
@@ -657,6 +725,9 @@ mod tests {
             Some(9000),
             None,
             None,
+            None,
+            None,
+            None,
             fork_id,
             attnets,
             None,
@@ -696,6 +767,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
             fork_id.clone(),
             attnets.clone(),
             Some(4),
@@ -708,6 +782,9 @@ mod tests {
         for cgc in [None, Some(0)] {
             let enr = build_local_enr(
                 &key,
+                None,
+                None,
+                None,
                 None,
                 None,
                 None,

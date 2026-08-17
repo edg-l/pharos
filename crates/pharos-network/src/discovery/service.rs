@@ -4,7 +4,7 @@
 //! discovery queries, and updates the local ENR when subnet subscriptions
 //! change.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 
 use discv5::socket::ListenConfig;
@@ -22,17 +22,93 @@ use crate::error::NetworkError;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+/// IP-family selection for the discv5 UDP listener and the ENR socket fields.
+///
+/// Mirrors `discv5::socket::ListenConfig` 1:1 (`D-discv5-dualstack`). The chosen
+/// variant determines both which UDP socket(s) discv5 binds AND which
+/// `ip{4,6}` / `udp{4,6}` fields the local ENR advertises:
+///
+/// - `Ipv4`      → ENR gets `ip4` / `udp4` only.
+/// - `Ipv6`      → ENR gets `ip6` / `udp6` only.
+/// - `DualStack` → ENR gets both `ip4` / `udp4` and `ip6` / `udp6`.
+#[derive(Debug, Clone, Copy)]
+pub enum DiscoveryListenConfig {
+    /// IPv4-only discovery.
+    Ipv4 { ip: Ipv4Addr, port: u16 },
+    /// IPv6-only discovery.
+    Ipv6 { ip: Ipv6Addr, port: u16 },
+    /// Dual-stack discovery (binds both an IPv4 and an IPv6 UDP socket).
+    DualStack {
+        ipv4: Ipv4Addr,
+        ipv4_port: u16,
+        ipv6: Ipv6Addr,
+        ipv6_port: u16,
+    },
+}
+
+impl DiscoveryListenConfig {
+    /// The IPv4 listen address (and ENR `ip4` / `udp4` source), if this config
+    /// includes an IPv4 socket.
+    fn ipv4(&self) -> Option<(Ipv4Addr, u16)> {
+        match *self {
+            Self::Ipv4 { ip, port } => Some((ip, port)),
+            Self::DualStack {
+                ipv4, ipv4_port, ..
+            } => Some((ipv4, ipv4_port)),
+            Self::Ipv6 { .. } => None,
+        }
+    }
+
+    /// The IPv6 listen address (and ENR `ip6` / `udp6` source), if this config
+    /// includes an IPv6 socket.
+    fn ipv6(&self) -> Option<(Ipv6Addr, u16)> {
+        match *self {
+            Self::Ipv6 { ip, port } => Some((ip, port)),
+            Self::DualStack {
+                ipv6, ipv6_port, ..
+            } => Some((ipv6, ipv6_port)),
+            Self::Ipv4 { .. } => None,
+        }
+    }
+
+    /// Build the discv5 `ListenConfig` for this family.
+    fn to_listen_config(self) -> ListenConfig {
+        match self {
+            Self::Ipv4 { ip, port } => ListenConfig::Ipv4 { ip, port },
+            Self::Ipv6 { ip, port } => ListenConfig::Ipv6 { ip, port },
+            Self::DualStack {
+                ipv4,
+                ipv4_port,
+                ipv6,
+                ipv6_port,
+            } => ListenConfig::DualStack {
+                ipv4,
+                ipv4_port,
+                ipv6,
+                ipv6_port,
+            },
+        }
+    }
+}
+
 /// Configuration for `DiscoveryService::start`.
 pub struct DiscoveryConfig {
-    /// UDP socket address for discv5 to listen on. The IP and port are also
-    /// advertised in the local ENR as the `ip` / `udp` fields.
-    pub listen_addr: SocketAddr,
-    /// TCP port advertised in the local ENR (the libp2p TCP listen port).
-    /// Peers use this to dial the node's libp2p stack.
+    /// IP family + UDP socket(s) for discv5 to listen on. The IP(s) and port(s)
+    /// are also advertised in the local ENR as the `ip{4,6}` / `udp{4,6}`
+    /// fields (`D-discv5-dualstack`).
+    pub listen: DiscoveryListenConfig,
+    /// TCP port advertised in the local ENR as `tcp4` (the libp2p IPv4 TCP
+    /// listen port). Peers use this to dial the node's libp2p stack over IPv4.
     pub tcp_port: u16,
+    /// Optional TCP port advertised in the local ENR as `tcp6` (the libp2p IPv6
+    /// TCP listen port). `None` when the node does not accept libp2p IPv6 TCP.
+    pub tcp6_port: Option<u16>,
     /// Optional QUIC UDP port advertised in the local ENR under the `quic`
-    /// key (IPv4). `None` means the node does not accept QUIC connections.
+    /// key (IPv4). `None` means the node does not accept IPv4 QUIC connections.
     pub quic_port: Option<u16>,
+    /// Optional QUIC UDP port advertised in the local ENR under the `quic6`
+    /// key (IPv6). `None` means the node does not accept IPv6 QUIC connections.
+    pub quic6_port: Option<u16>,
     /// Bootstrap ENRs added to the routing table on startup.
     pub bootnodes: Vec<Enr>,
     /// Local signing key used to build and sign the local ENR.
@@ -83,46 +159,48 @@ impl DiscoveryService {
     /// Start a discv5 service from the given `DiscoveryConfig`.
     ///
     /// Steps:
-    /// 1. Build the local ENR (no pre-set IP/TCP/UDP — discv5 derives them
-    ///    from `listen_addr` after startup).
-    /// 2. Construct `Discv5` with an `Ipv4`-mode `ListenConfig`.
+    /// 1. Build the local ENR, populating `ip{4,6}` / `udp{4,6}` / `tcp{4,6}` /
+    ///    `quic{,6}` from the selected `DiscoveryListenConfig` family
+    ///    (`D-discv5-dualstack`).
+    /// 2. Construct `Discv5` with the matching `ListenConfig` variant.
     /// 3. Populate the routing table with `cfg.bootnodes`.
     /// 4. Start the background service tasks.
     /// 5. Obtain the event stream receiver.
     pub async fn start(cfg: DiscoveryConfig) -> Result<Self, NetworkError> {
-        let ip = match cfg.listen_addr.ip() {
-            IpAddr::V4(ip4) => ip4,
-            IpAddr::V6(_) => {
-                return Err(NetworkError::Discv5(
-                    "IPv6 listen address not supported in DiscoveryService::start; use Ipv4".into(),
-                ));
-            }
-        };
-        let port = cfg.listen_addr.port();
+        // Resolve the per-family IP/UDP sockets the ENR should advertise. A
+        // dual-stack config yields both; single-stack yields one.
+        let v4 = cfg.listen.ipv4();
+        let v6 = cfg.listen.ipv6();
 
         // Load the persisted ENR sequence number so restarts continue from the
         // same seq rather than resetting to 1 (`D-enr-seq-persistence`).
         // `load_enr_seq` returns 1 when the file is absent (first start).
         let initial_seq = cfg.network_dir.as_deref().map(load_enr_seq).unwrap_or(1);
 
-        // Build the local ENR with IP, UDP (discv5), TCP (libp2p), and optional
-        // QUIC UDP port populated, so peers discovering us can dial both
-        // libp2p transports. IPv6 / quic6 are not populated in this phase.
+        // Build the local ENR with the per-family IP, UDP (discv5), TCP (libp2p),
+        // and optional QUIC UDP ports populated, so peers discovering us can dial
+        // both libp2p transports over whichever families this node serves.
         let local_enr = build_local_enr(
             &cfg.local_key,
-            Some(ip),
-            Some(port),
-            Some(cfg.tcp_port),
-            cfg.quic_port,
-            None,
+            v4.map(|(ip, _)| ip),
+            v4.map(|(_, port)| port),
+            v4.map(|_| cfg.tcp_port),
+            // Gate the v4 `quic` key on a v4 socket so an IPv6-only config never
+            // advertises a v4 QUIC port without a v4 ip/tcp (matches `tcp4`).
+            v4.and(cfg.quic_port),
+            cfg.quic6_port,
+            v6.map(|(ip, _)| ip),
+            v6.map(|(_, port)| port),
+            v6.and(cfg.tcp6_port),
             cfg.fork_id.clone(),
             cfg.attnets,
             cfg.cgc,
             initial_seq,
         )?;
 
-        // discv5 0.10 ConfigBuilder (renamed from Discv5ConfigBuilder).
-        let listen_config = ListenConfig::Ipv4 { ip, port };
+        // discv5 0.10 ConfigBuilder (renamed from Discv5ConfigBuilder). The
+        // ListenConfig variant follows the selected IP family.
+        let listen_config = cfg.listen.to_listen_config();
         let discv5_config = ConfigBuilder::new(listen_config).build();
 
         // Discv5::new returns Result<Self, &'static str>.
@@ -290,6 +368,23 @@ mod tests {
         }
     }
 
+    /// The `Ipv6`-only family variant is not reachable from the CLI (which is
+    /// IPv4-primary), so cover its accessors + discv5 `ListenConfig` mapping
+    /// here. Host-independent: builds no socket (`D-discv5-dualstack`).
+    #[test]
+    fn ipv6_only_listen_config_maps_correctly() {
+        let cfg = DiscoveryListenConfig::Ipv6 {
+            ip: Ipv6Addr::LOCALHOST,
+            port: 9000,
+        };
+        assert_eq!(cfg.ipv4(), None);
+        assert_eq!(cfg.ipv6(), Some((Ipv6Addr::LOCALHOST, 9000)));
+        assert!(matches!(
+            cfg.to_listen_config(),
+            ListenConfig::Ipv6 { ip, port } if ip == Ipv6Addr::LOCALHOST && port == 9000
+        ));
+    }
+
     /// Smoke test: start a `DiscoveryService` on an OS-assigned port with no
     /// bootnodes, then drop it cleanly. No peer discovery is attempted.
     ///
@@ -301,9 +396,14 @@ mod tests {
         let attnets = Bitvector::<ATTESTATION_SUBNET_COUNT>::new();
 
         let cfg = DiscoveryConfig {
-            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            listen: DiscoveryListenConfig::Ipv4 {
+                ip: Ipv4Addr::LOCALHOST,
+                port: 0,
+            },
             tcp_port: 9000,
+            tcp6_port: None,
             quic_port: None,
+            quic6_port: None,
             bootnodes: Vec::new(),
             local_key: key,
             fork_id,
@@ -335,9 +435,14 @@ mod tests {
         let attnets = Bitvector::<ATTESTATION_SUBNET_COUNT>::new();
 
         let cfg = DiscoveryConfig {
-            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            listen: DiscoveryListenConfig::Ipv4 {
+                ip: Ipv4Addr::LOCALHOST,
+                port: 0,
+            },
             tcp_port: 9000,
+            tcp6_port: None,
             quic_port: None,
+            quic6_port: None,
             bootnodes: Vec::new(),
             local_key: key,
             fork_id: test_fork_id(),
@@ -392,6 +497,78 @@ mod tests {
             seq_after_first,
             "identical external-socket update must NOT bump the ENR seq again"
         );
+
+        drop(service);
+    }
+
+    /// Integration test for `D-discv5-dualstack` (Finding 11, Task 8.6).
+    ///
+    /// Starts a dual-stack `DiscoveryService` on loopback (`127.0.0.1` + `::1`)
+    /// and asserts the local ENR carries BOTH the IPv4 (`ip4`/`tcp4`) and IPv6
+    /// (`ip6`/`tcp6`) socket fields.
+    ///
+    /// `multi_thread` flavor: discv5 spawns background tasks.
+    ///
+    /// Environment note: a CI/sandbox host without a routable `::1` may fail the
+    /// IPv6 UDP bind inside `DiscoveryService::start`. When that happens this
+    /// test surfaces the bind error explicitly (it does NOT fake a pass); the
+    /// ENR-building path is additionally covered by the pure unit test
+    /// `discovery::enr::tests::enr_roundtrip_dualstack_ipv6_fields`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dualstack_enr_carries_both_ip4_and_ip6() {
+        let key = CombinedKey::generate_secp256k1();
+        let attnets = Bitvector::<ATTESTATION_SUBNET_COUNT>::new();
+
+        let cfg = DiscoveryConfig {
+            listen: DiscoveryListenConfig::DualStack {
+                ipv4: Ipv4Addr::LOCALHOST,
+                ipv4_port: 0,
+                ipv6: Ipv6Addr::LOCALHOST,
+                ipv6_port: 0,
+            },
+            tcp_port: 9000,
+            tcp6_port: Some(9000),
+            quic_port: None,
+            quic6_port: None,
+            bootnodes: Vec::new(),
+            local_key: key,
+            fork_id: test_fork_id(),
+            attnets,
+            cgc: None,
+            network_dir: None,
+        };
+
+        let service = match DiscoveryService::start(cfg).await {
+            Ok(s) => s,
+            Err(e) => {
+                // A dual-stack bind needs a routable ::1; on a sandbox host that
+                // lacks IPv6 loopback the v6 UDP bind fails for an environment
+                // reason. Surface it rather than faking a pass — the ENR-build
+                // path is covered by enr_roundtrip_dualstack_ipv6_fields.
+                panic!(
+                    "dual-stack DiscoveryService::start failed (likely no routable ::1 on this \
+                     host): {e}"
+                );
+            }
+        };
+
+        let enr = service.local_enr();
+
+        // IPv4 family present.
+        assert_eq!(
+            enr.ip4(),
+            Some(Ipv4Addr::LOCALHOST),
+            "dual-stack ENR must carry ip4"
+        );
+        assert_eq!(enr.tcp4(), Some(9000), "dual-stack ENR must carry tcp4");
+
+        // IPv6 family present.
+        assert_eq!(
+            enr.ip6(),
+            Some(Ipv6Addr::LOCALHOST),
+            "dual-stack ENR must carry ip6"
+        );
+        assert_eq!(enr.tcp6(), Some(9000), "dual-stack ENR must carry tcp6");
 
         drop(service);
     }

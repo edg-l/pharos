@@ -63,6 +63,19 @@ struct Args {
     #[arg(long, default_value_t = 9000)]
     discv5_port: u16,
 
+    /// Optional IPv6 TCP listen multiaddr for libp2p (e.g.
+    /// `/ip6/::1/tcp/9000`). When set, the node listens on IPv6 in ADDITION to
+    /// the IPv4 `--listen-addr` and advertises ENR `ip6`/`tcp6`
+    /// (`D-discv5-dualstack`). Requires `--discv5-port-ipv6`.
+    #[arg(long, value_name = "MULTIADDR", requires = "discv5_port_ipv6")]
+    listen_addr_ipv6: Option<Multiaddr>,
+
+    /// UDP port for discv5 IPv6 peer discovery (`D-discv5-dualstack`). Required
+    /// when `--listen-addr-ipv6` is supplied so the discv5 IP family is
+    /// unambiguous.
+    #[arg(long, value_name = "PORT", requires = "listen_addr_ipv6")]
+    discv5_port_ipv6: Option<u16>,
+
     /// Bootstrap ENR(s) for discv5 routing table initialisation (repeatable).
     #[arg(long, value_name = "ENR")]
     bootnode: Vec<String>,
@@ -444,6 +457,22 @@ async fn main() -> anyhow::Result<()> {
     // Parse --listen-addr into IP + TCP port.
     let (listen_ip, tcp_port) = parse_listen_addr(&args.listen_addr)
         .context("--listen-addr is not a valid /ip4/<addr>/tcp/<port> multiaddr")?;
+
+    // Parse the optional --listen-addr-ipv6 into an Ipv6Addr (the TCP port is
+    // shared with the IPv4 listener; libp2p binds the same port number on both
+    // families per `D-discv5-dualstack`). clap's `requires` guarantees
+    // --discv5-port-ipv6 is present whenever --listen-addr-ipv6 is.
+    let listen_ip6: Option<std::net::Ipv6Addr> = match &args.listen_addr_ipv6 {
+        Some(addr) => {
+            let (ip, _port) = parse_listen_addr(addr)
+                .context("--listen-addr-ipv6 is not a valid /ip6/<addr>/tcp/<port> multiaddr")?;
+            match ip {
+                IpAddr::V6(v6) => Some(v6),
+                IpAddr::V4(_) => bail!("--listen-addr-ipv6 must carry an /ip6 address"),
+            }
+        }
+        None => None,
+    };
 
     // Parse --bootnode ENR strings.
     let mut bootnodes: Vec<pharos_network::discovery::enr::Enr> = args
@@ -955,6 +984,16 @@ async fn main() -> anyhow::Result<()> {
 
     let discv5_addr = SocketAddr::new(listen_ip, args.discv5_port);
 
+    // Optional IPv6 discv5 UDP socket (`D-discv5-dualstack`). Present iff
+    // --listen-addr-ipv6 was supplied; clap's `requires` guarantees
+    // --discv5-port-ipv6 is then also present.
+    let discv5_addr6: Option<SocketAddr> = listen_ip6.map(|ip6| {
+        let port = args
+            .discv5_port_ipv6
+            .expect("--discv5-port-ipv6 is required with --listen-addr-ipv6 (clap requires)");
+        SocketAddr::new(IpAddr::V6(ip6), port)
+    });
+
     // Create the per-node network directory (`<data-dir>/network/`) for ENR seq
     // persistence (`D-enr-seq-persistence`).
     let network_dir = args.data_dir.join("network");
@@ -968,6 +1007,11 @@ async fn main() -> anyhow::Result<()> {
         .listen_ip(listen_ip)
         .tcp_listen_port(tcp_port)
         .discv5_addr(discv5_addr)
+        // M11 Phase 8: dual-stack discv5 + IPv6 libp2p listeners + ENR
+        // ip6/tcp6/quic6 (`D-discv5-dualstack`). Both default to absent
+        // (IPv4-only) when --listen-addr-ipv6 is not supplied.
+        .listen_ip6(listen_ip6)
+        .discv5_addr6(discv5_addr6)
         .bootnodes(bootnodes)
         // M11 Phase 12: wire CLI-provided connection limits into the builder so
         // PeerManager enforces max_peers on inbound and target_peers drives the

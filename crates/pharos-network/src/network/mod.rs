@@ -12,7 +12,7 @@ pub mod transport;
 
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -41,7 +41,9 @@ use zeroize::Zeroize as _;
 use crate::codec::snappy_block::{decode_snappy_block, encode_snappy_block};
 use crate::discovery::enr::{Enr, enr_to_dial_multiaddr};
 use crate::discovery::handle::{DiscoveryCommand, DiscoveryHandle, discovery_channel};
-use crate::discovery::service::{DiscoveryConfig, DiscoveryService, query_interval};
+use crate::discovery::service::{
+    DiscoveryConfig, DiscoveryListenConfig, DiscoveryService, query_interval,
+};
 use crate::discovery::subnets::compute_subscribed_subnets;
 use crate::error::NetworkError;
 use crate::gossip::config::{gossipsub_behaviour, peer_score_params, topic_score_params};
@@ -2367,6 +2369,50 @@ pub(crate) fn multiaddr_to_tcp_socket(addr: &libp2p::Multiaddr) -> Option<Socket
     None
 }
 
+// ── discv5 IP-family resolution ───────────────────────────────────────────────
+
+/// Build a `DiscoveryListenConfig` from the configured discv5 UDP sockets
+/// (`D-discv5-dualstack`).
+///
+/// `v4` is the primary `discv5_addr` (it may carry a v4 OR a v6 IP, so an
+/// IPv6-only deployment is expressed by passing a v6 address here with no
+/// `v6`). `v6` is the optional secondary IPv6 socket that turns the config into
+/// dual-stack. Returns an error only for the contradictory `(v6-primary,
+/// v6-secondary)` combination, which discv5 cannot represent.
+fn discovery_listen_config(
+    v4: SocketAddr,
+    v6: Option<SocketAddr>,
+) -> Result<DiscoveryListenConfig, NetworkError> {
+    match (v4, v6) {
+        // Primary IPv4 + optional secondary IPv6 → Ipv4 or DualStack.
+        (SocketAddr::V4(a), None) => Ok(DiscoveryListenConfig::Ipv4 {
+            ip: *a.ip(),
+            port: a.port(),
+        }),
+        (SocketAddr::V4(a), Some(SocketAddr::V6(b))) => Ok(DiscoveryListenConfig::DualStack {
+            ipv4: *a.ip(),
+            ipv4_port: a.port(),
+            ipv6: *b.ip(),
+            ipv6_port: b.port(),
+        }),
+        // Primary IPv6 with no secondary → Ipv6-only.
+        (SocketAddr::V6(a), None) => Ok(DiscoveryListenConfig::Ipv6 {
+            ip: *a.ip(),
+            port: a.port(),
+        }),
+        // Contradictory: a v6 primary cannot also carry a v6 secondary, and a v4
+        // secondary against a v6 primary is not a shape discv5 supports.
+        (SocketAddr::V4(_), Some(SocketAddr::V4(_))) | (SocketAddr::V6(_), Some(_)) => {
+            Err(NetworkError::Discv5(
+                "invalid discv5 dual-stack config: expected an IPv4 primary discv5_addr plus an \
+             IPv6 secondary discv5_addr6 (a v6 primary means --listen-addr is /ip6, which \
+             conflicts with --listen-addr-ipv6; use one or the other)"
+                    .into(),
+            ))
+        }
+    }
+}
+
 // ── NetworkBuilder ────────────────────────────────────────────────────────────
 
 /// Builder for `Network<E, H, S>`.
@@ -2380,6 +2426,8 @@ pub(crate) fn multiaddr_to_tcp_socket(addr: &libp2p::Multiaddr) -> Option<Socket
 /// - `tcp_listen_port`: `9000`
 /// - `quic_listen_port`: `None` (QUIC transport is wired for dialling but
 ///   no listener is started)
+/// - `listen_ip6`: `None` (IPv4-only; no IPv6 listeners or ENR ip6/tcp6)
+/// - `discv5_addr6`: `None` (discv5 is IPv4-only by default)
 /// - `no_tcp`: `false` (TCP listener is started by default)
 /// - `discv5_addr`: `127.0.0.1:9001` (note: UDP; avoids collision with TCP 9000)
 /// - `local_key`: freshly generated secp256k1 keypair
@@ -2390,6 +2438,17 @@ pub struct NetworkBuilder<E, H, S> {
     listen_ip: IpAddr,
     tcp_listen_port: u16,
     quic_listen_port: Option<u16>,
+    /// Optional IPv6 listen address for the libp2p TCP (and, when QUIC is
+    /// enabled, QUIC) listeners AND the ENR `ip6` / `tcp6` / `quic6`
+    /// advertisement (`D-discv5-dualstack`). `None` (default) keeps the node
+    /// IPv4-only. When `Some`, the IPv6 listeners reuse `tcp_listen_port` /
+    /// `quic_listen_port` (libp2p binds the same port number on both families).
+    listen_ip6: Option<Ipv6Addr>,
+    /// Optional IPv6 UDP address for discv5 to listen on, paired with
+    /// `listen_ip6`. When both are set the discv5 `ListenConfig` is `DualStack`
+    /// (or `Ipv6` if `listen_ip` is itself a v6 address). `None` keeps discv5
+    /// IPv4-only.
+    discv5_addr6: Option<SocketAddr>,
     /// When `true`, the TCP listener is NOT started. Used for QUIC-only test
     /// nodes (Task 8.2) where only the QUIC transport should be reachable.
     no_tcp: bool,
@@ -2429,6 +2488,8 @@ impl<E: BeaconSpec, H: Host<E> + LightClientProvider<E> + BlobProvider<E> + Data
             listen_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             tcp_listen_port: 9000,
             quic_listen_port: None,
+            listen_ip6: None,
+            discv5_addr6: None,
             no_tcp: false,
             discv5_addr: "127.0.0.1:9001".parse().unwrap(),
             bootnodes: Vec::new(),
@@ -2489,6 +2550,26 @@ impl<
         self
     }
 
+    /// Set the IPv6 listen address for the libp2p TCP/QUIC listeners and the
+    /// ENR `ip6` / `tcp6` / `quic6` advertisement (`D-discv5-dualstack`).
+    ///
+    /// When `Some`, the IPv6 listeners reuse the configured `tcp_listen_port`
+    /// and `quic_listen_port`. `None` (default) keeps the node IPv4-only.
+    pub fn listen_ip6(mut self, ip: Option<Ipv6Addr>) -> Self {
+        self.listen_ip6 = ip;
+        self
+    }
+
+    /// Set the discv5 IPv6 UDP listen address (`D-discv5-dualstack`).
+    ///
+    /// When `Some` (paired with an IPv4 `discv5_addr`), discv5 binds a
+    /// dual-stack `ListenConfig` and the ENR advertises `udp6`. `None` (default)
+    /// keeps discv5 IPv4-only.
+    pub fn discv5_addr6(mut self, addr: Option<SocketAddr>) -> Self {
+        self.discv5_addr6 = addr;
+        self
+    }
+
     /// Set bootstrap ENRs for discv5 routing table population.
     pub fn bootnodes(mut self, enrs: Vec<Enr>) -> Self {
         self.bootnodes = enrs;
@@ -2511,6 +2592,8 @@ impl<
             listen_ip: self.listen_ip,
             tcp_listen_port: self.tcp_listen_port,
             quic_listen_port: self.quic_listen_port,
+            listen_ip6: self.listen_ip6,
+            discv5_addr6: self.discv5_addr6,
             no_tcp: self.no_tcp,
             discv5_addr: self.discv5_addr,
             bootnodes: self.bootnodes,
@@ -2647,10 +2730,20 @@ impl<
         // host returns 0 pre-Fulu, which `build_local_enr` omits; the custody
         // loop later bumps it via `update_enr_eth2_fulu`.
         let cgc = Some(self.host.custody_group_count()).filter(|c| *c != 0);
+        // Build the discv5 IP-family config (`D-discv5-dualstack`). The IPv4
+        // socket comes from `discv5_addr` (which may itself be a v6 address for
+        // an IPv6-only deployment); the optional `discv5_addr6` adds the v6
+        // socket for dual-stack. The ENR `tcp6` / `quic6` ports mirror the IPv4
+        // libp2p ports since libp2p binds the same port number on both families.
+        let listen = discovery_listen_config(self.discv5_addr, self.discv5_addr6)?;
+        let tcp6_port = self.listen_ip6.map(|_| self.tcp_listen_port);
+        let quic6_port = self.listen_ip6.and(self.quic_listen_port);
         let discovery = DiscoveryService::start(DiscoveryConfig {
-            listen_addr: self.discv5_addr,
+            listen,
             tcp_port: self.tcp_listen_port,
+            tcp6_port,
             quic_port: self.quic_listen_port,
+            quic6_port,
             bootnodes: self.bootnodes,
             local_key: combined_key,
             fork_id,
@@ -2927,6 +3020,37 @@ impl<
             swarm
                 .listen_on(quic_addr)
                 .map_err(|e| NetworkError::Libp2p(e.to_string()))?;
+        }
+
+        // IPv6 listeners (`D-discv5-dualstack`): added in addition to the IPv4
+        // listeners above when `listen_ip6` is set. The libp2p TCP and QUIC
+        // transports already support v6 once handed a `/ip6` multiaddr — no
+        // transport rebuild is needed. The v6 listeners reuse the same port
+        // numbers as the v4 listeners.
+        if let Some(ip6) = self.listen_ip6 {
+            if !self.no_tcp {
+                let tcp6_addr: libp2p::Multiaddr =
+                    format!("/ip6/{}/tcp/{}", ip6, self.tcp_listen_port)
+                        .parse()
+                        .map_err(|e: libp2p::multiaddr::Error| {
+                            NetworkError::Libp2p(e.to_string())
+                        })?;
+                swarm
+                    .listen_on(tcp6_addr)
+                    .map_err(|e| NetworkError::Libp2p(e.to_string()))?;
+            }
+
+            if let Some(quic_port) = self.quic_listen_port {
+                let quic6_addr: libp2p::Multiaddr =
+                    format!("/ip6/{}/udp/{}/quic-v1", ip6, quic_port)
+                        .parse()
+                        .map_err(|e: libp2p::multiaddr::Error| {
+                            NetworkError::Libp2p(e.to_string())
+                        })?;
+                swarm
+                    .listen_on(quic6_addr)
+                    .map_err(|e| NetworkError::Libp2p(e.to_string()))?;
+            }
         }
 
         // ── Step 7: wire channels ─────────────────────────────────────────────
