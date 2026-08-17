@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "libp2p + discv5 networking glue: gossip, req-resp, peer scoring."
+autotests = false
 
 [dependencies]
 pharos-types.workspace = true
@@ -54,3 +55,7 @@ tempfile.workspace = true
 [[bench]]
 name = "rpc_roundtrip"
 harness = false
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"

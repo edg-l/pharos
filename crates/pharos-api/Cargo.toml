@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Beacon API HTTP server (axum-based)."
+autotests = false
 
 [dependencies]
 pharos-types.workspace = true
@@ -43,3 +44,7 @@ serde_json.workspace = true
 pharos-kzg.workspace = true
 hex.workspace = true
 pharos-utils.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"

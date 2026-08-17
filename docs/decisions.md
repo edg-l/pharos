@@ -936,7 +936,7 @@ Enforced in: `crates/pharos-network/src/rpc/codec.rs` (`has_context_bytes` dispa
 `crates/pharos-network/src/rpc/protocol.rs` (`RpcMethod::has_context_bytes`),
 `crates/pharos-network/src/host.rs` (`ForkContext::fork_digest_for`,
 `fork_from_context`),
-unit test `context_bytes_codec` in `crates/pharos-network/tests/rpc.rs`.
+unit test `context_bytes_codec` in `crates/pharos-network/tests/it/rpc.rs`.
 
 ### D-metadata-v2-dual-handle — Serve `MetaDataV2` by default; truncate to `MetaDataV1` on negotiated v1 protocol
 
@@ -964,7 +964,7 @@ Per `specs/altair/p2p-interface.md` "Transitioning from v1 to v2" and
 Enforced in: `crates/pharos-network/src/rpc/types.rs` (`MetaDataResponse`),
 `crates/pharos-network/src/rpc/handler.rs` (`handle_metadata`, protocol-ID dispatch),
 `crates/pharos-network/src/rpc/protocol.rs` (`RpcMethod::MetaDataV1` + `MetaData`),
-integration test `metadata_v1_v2_dual_handle` in `crates/pharos-network/tests/rpc.rs`.
+integration test `metadata_v1_v2_dual_handle` in `crates/pharos-network/tests/it/rpc.rs`.
 
 ### D-light-client-server-only — M3b implements LC server-side req-resp and STF hooks; LC consumer is M11
 
@@ -1657,7 +1657,7 @@ tokio handle through it would invert that boundary). Enforced in
 `crates/pharos-node/src/block_ingestion.rs` (`run_block_ingestion_loop` post-head
 publish path, gated on `egress.has_lc_snapshots`) and verified by the
 `publish_called_after_head_change` / `no_publish_for_phase0_block` integration tests
-in `crates/pharos-node/tests/lc_gossip_publish.rs`.
+in `crates/pharos-node/tests/it/lc_gossip_publish.rs`.
 
 ### D-lc-snapshot-write-trigger — When to update the cached LC snapshot used by the validator
 
@@ -1863,7 +1863,7 @@ string is added to the source without updating the list, and also if a string
 is removed from the source while the list still references it.
 
 Enforced in: `crates/pharos-node/src/host_impl.rs:585-1131` (validator bodies,
-all 49 verdict strings), `crates/pharos-node/tests/gossip_verdict_strings.rs:21-106`
+all 49 verdict strings), `crates/pharos-node/tests/it/gossip_verdict_strings.rs:21-106`
 (hard-coded EXPECTED list and round-trip assertions).
 
 ### D-bls-on-hot-path
@@ -2186,7 +2186,7 @@ forks, so the dispatch is exhaustive.
 
 Enforced in: `crates/pharos-network/src/gossip/mod.rs:170-198` (`beacon_block` match on
 `fork_from_context`, three arms for Bellatrix / Altair / Phase0), verified by
-`crates/pharos-network/tests/bellatrix_fork_migration.rs` (`bellatrix_beacon_block_dispatch_no_ssz_reject`
+`crates/pharos-network/tests/it/bellatrix_fork_migration.rs` (`bellatrix_beacon_block_dispatch_no_ssz_reject`
 test and `bellatrix_subscription_round_trip` integration test).
 
 ### D-bellatrix-reqresp-both-paths
@@ -2256,7 +2256,7 @@ arm, `BACKFILL_FOLLOW_FALLBACK` const, `notify` parameter), `crates/pharos-node/
 `crates/pharos-node/src/main.rs` (shared `Arc<Notify>` creation and threading to
 both ingestion and backfill). Verified by `backfill_idles_when_caught_up` (in-module)
 and `orphan_defers_and_backfill_heals` (integration test in
-`crates/pharos-node/tests/orphan_backfill_recovery.rs`).
+`crates/pharos-node/tests/it/orphan_backfill_recovery.rs`).
 
 ### D-byroot-lookup-deferred — BeaconBlocksByRoot unknown-parent import is future work
 

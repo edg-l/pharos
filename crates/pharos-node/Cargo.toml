@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Pharos beacon-node binary."
+autotests = false
 
 [[bin]]
 name = "pharos"
@@ -58,3 +59,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 [[bench]]
 name = "gossip_validation"
 harness = false
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
