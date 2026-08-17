@@ -51,7 +51,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use libp2p::PeerId;
 use libp2p::gossipsub::TopicHash;
@@ -727,15 +727,20 @@ const MAX_PEER_ID_PAYLOAD: usize = 63;
 ///   (39 bytes) peer IDs without truncation.
 /// - `app_score_bits` (`u64`): raw IEEE-754 bits of the `app` score component
 ///   (`f64::to_bits` / `f64::from_bits`), since SSZ has no float type.
-/// - `ban_epoch` (`u64`): epoch of the last ban (0 = never banned).
+/// - `saved_at_unix_secs` (`u64`): Unix timestamp (seconds) at which this
+///   record was written.  Used on reload to apply offline-time exponential
+///   decay: `app *= DECAY_PER_SECOND.powf(offline_secs)`.  A value of 0
+///   indicates a legacy record written before this field was populated; in
+///   that case decay is skipped and the score is loaded as-is.
 #[derive(Debug, Clone, PartialEq, pharos_ssz::Encode, pharos_ssz::Decode)]
 pub struct PeerScoreRecord {
     /// PeerId multihash bytes: byte 0 = length, bytes 1..(1+length) = payload.
     pub peer_id_raw: FixedBytes<64>,
     /// Raw `f64` bits of the durable `app` score component.
     pub app_score_bits: u64,
-    /// Epoch of the last explicit ban (0 = never).
-    pub ban_epoch: u64,
+    /// Unix timestamp (seconds) when this record was serialized; 0 = legacy
+    /// (pre-timestamp) file, decay skipped on load.
+    pub saved_at_unix_secs: u64,
 }
 
 /// Encode a `PeerId` into the 64-byte fixed SSZ field.
@@ -779,18 +784,22 @@ impl RealScorer {
     ///
     /// Returns a `Vec<u8>` that is a multiple of [`RECORD_SIZE`] bytes.
     pub fn serialize(&self) -> Vec<u8> {
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let mut buf = Vec::new();
         for (peer_id, state) in &self.peers {
-            // Persist the raw app component without applying decay.
-            // Decay is lazy-on-read; persisting the accumulated value is correct
-            // because offline time has no semantic meaning for the score.
+            // Persist the raw app component. On reload, offline-time decay is
+            // applied using saved_at_unix_secs so the persisted value is the
+            // pre-decay (accumulated) score, not a pre-decayed snapshot.
             if state.app == 0.0 {
                 continue;
             }
             let record = PeerScoreRecord {
                 peer_id_raw: peer_id_to_fixed(*peer_id),
                 app_score_bits: state.app.to_bits(),
-                ban_epoch: 0,
+                saved_at_unix_secs: now_unix,
             };
             record.ssz_append(&mut buf);
         }
@@ -813,11 +822,15 @@ impl RealScorer {
             });
         }
         let now = Instant::now();
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let mut scorer = RealScorer::new();
         for chunk in bytes.chunks_exact(RECORD_SIZE) {
             let record = PeerScoreRecord::from_ssz_bytes(chunk)
                 .map_err(|e| SszPersistError::SszDecode(format!("{e:?}")))?;
-            let app = f64::from_bits(record.app_score_bits);
+            let mut app = f64::from_bits(record.app_score_bits);
             if !app.is_finite() {
                 continue;
             }
@@ -825,6 +838,13 @@ impl RealScorer {
                 Some(p) => p,
                 None => continue,
             };
+            // Apply offline-time decay: if saved_at_unix_secs == 0 this is a
+            // legacy record written before the timestamp field was populated;
+            // skip decay to avoid zeroing the score (now_unix - 0 ≈ 1.7e9 s).
+            if record.saved_at_unix_secs != 0 {
+                let offline_secs = now_unix.saturating_sub(record.saved_at_unix_secs);
+                app *= DECAY_PER_SECOND.powf(offline_secs as f64);
+            }
             let state = scorer.entry(peer_id, now);
             state.app = app;
         }
@@ -1223,18 +1243,36 @@ mod tests {
 
         let reloaded = RealScorer::from_bytes(&bytes).expect("from_bytes must succeed");
 
-        // App components survive; gossip + req_resp reset to 0.
-        assert_eq!(
-            reloaded.peers[&p1].app, app1,
-            "p1 app score must survive round-trip"
+        // App components survive the round-trip.  The reload path applies
+        // offline-time decay; since serialize and from_bytes run in the same
+        // second, offline_secs is 0 and the factor is 1.0 (no decay).  Allow
+        // for at most 1 s of decay in case the test straddles a clock second:
+        // scores are negative so after decay they move toward 0, meaning
+        // reloaded.app >= original.app.  The min recovered value is
+        // app * DECAY_PER_SECOND (1 s of decay).
+        let at_most_1s_decay = |original: f64, reloaded: f64| -> bool {
+            // original < 0; after up to 1 s of decay the value moves toward 0, so
+            // `original <= reloaded <= original * 0.99` (for negative `original`,
+            // `original * 0.99` is greater — closer to zero — than `original`).
+            reloaded >= original && reloaded <= original * DECAY_PER_SECOND
+        };
+        assert!(
+            at_most_1s_decay(app1, reloaded.peers[&p1].app),
+            "p1 app score must survive round-trip (got {}, expected ~{})",
+            reloaded.peers[&p1].app,
+            app1
         );
-        assert_eq!(
-            reloaded.peers[&p2].app, app2,
-            "p2 app score must survive round-trip"
+        assert!(
+            at_most_1s_decay(app2, reloaded.peers[&p2].app),
+            "p2 app score must survive round-trip (got {}, expected ~{})",
+            reloaded.peers[&p2].app,
+            app2
         );
-        assert_eq!(
-            reloaded.peers[&p3].app, app3,
-            "p3 app score must survive round-trip"
+        assert!(
+            at_most_1s_decay(app3, reloaded.peers[&p3].app),
+            "p3 app score must survive round-trip (got {}, expected ~{})",
+            reloaded.peers[&p3].app,
+            app3
         );
         assert_eq!(reloaded.peers[&p1].gossip, 0.0, "gossip must reset to 0");
         assert_eq!(
@@ -1307,9 +1345,14 @@ mod tests {
 
         save_peer_scores(dir.path(), &scorer).expect("save_peer_scores");
         let reloaded = load_peer_scores(dir.path());
-        assert_eq!(
-            reloaded.peers[&p].app, expected_app,
-            "app score must survive filesystem round-trip"
+        // Allow at most 1 s of offline decay (save and load happen within the
+        // same second in normal runs; score is negative so decay moves toward 0).
+        assert!(
+            reloaded.peers[&p].app >= expected_app
+                && reloaded.peers[&p].app <= expected_app * DECAY_PER_SECOND,
+            "app score must survive filesystem round-trip (got {}, expected ~{})",
+            reloaded.peers[&p].app,
+            expected_app
         );
     }
 
@@ -1362,5 +1405,95 @@ mod tests {
         );
         assert_eq!(state.app, 0.0, "app must stay zero");
         assert!(state.buckets.is_empty(), "no per-method buckets must exist");
+    }
+
+    // ── Phase 5: offline-decay tests (5.8) ───────────────────────────────────
+
+    /// A record serialized with a timestamp of (now - 3600 s) must have its
+    /// app score decayed by DECAY_PER_SECOND.powf(3600) on reload.
+    #[test]
+    fn offline_decay_applied_on_reload() {
+        let p = peer(95);
+        let t0 = Instant::now();
+
+        // Build a scorer with a known negative app score.
+        let mut scorer = RealScorer::new();
+        scorer.record_at(
+            p,
+            ScoreEvent::HandshakeFail {
+                kind: HandshakeFailKind::Timeout,
+            },
+            t0,
+        );
+        let original_app = scorer.peers[&p].app;
+        assert!(original_app < 0.0, "test requires a negative app score");
+
+        // Serialize to get the raw bytes, then hand-patch the saved_at_unix_secs
+        // field to simulate a record written 3600 s ago.
+        let bytes = scorer.serialize();
+        assert_eq!(bytes.len(), RECORD_SIZE, "expected exactly one record");
+
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let saved_at = now_unix.saturating_sub(3600);
+
+        // The on-disk layout is: peer_id_raw (64 bytes) | app_score_bits (8 bytes)
+        // | saved_at_unix_secs (8 bytes).  Patch bytes [72..80].
+        let mut patched = bytes.clone();
+        patched[72..80].copy_from_slice(&saved_at.to_le_bytes());
+
+        let reloaded = RealScorer::from_bytes(&patched).expect("from_bytes must succeed");
+        let reloaded_app = reloaded.peers[&p].app;
+
+        let expected = original_app * DECAY_PER_SECOND.powf(3600.0);
+        // Allow 2 s of tolerance on top of the 3600 s window in case the
+        // test system clock advances during the run.
+        let tolerance = original_app * DECAY_PER_SECOND.powf(3598.0) - expected;
+        assert!(
+            (reloaded_app - expected).abs() <= tolerance.abs(),
+            "decayed app {reloaded_app} must be within tolerance of {expected} \
+             (original {original_app}, 3600 s decay)"
+        );
+        // The decayed score must be less negative than the original.
+        assert!(
+            reloaded_app > original_app,
+            "decay must move the score toward 0 (reloaded {reloaded_app} vs original {original_app})"
+        );
+    }
+
+    /// A record with saved_at_unix_secs == 0 (legacy format) must load the
+    /// app score as-is, without any decay applied.
+    #[test]
+    fn legacy_zero_timestamp_loads_undecayed() {
+        let p = peer(96);
+        let t0 = Instant::now();
+
+        let mut scorer = RealScorer::new();
+        scorer.record_at(
+            p,
+            ScoreEvent::HandshakeFail {
+                kind: HandshakeFailKind::Timeout,
+            },
+            t0,
+        );
+        let original_app = scorer.peers[&p].app;
+        assert!(original_app < 0.0, "test requires a negative app score");
+
+        // Serialize then zero out the saved_at_unix_secs field (bytes [72..80]).
+        let bytes = scorer.serialize();
+        assert_eq!(bytes.len(), RECORD_SIZE, "expected exactly one record");
+        let mut legacy = bytes.clone();
+        legacy[72..80].copy_from_slice(&0u64.to_le_bytes());
+
+        let reloaded = RealScorer::from_bytes(&legacy).expect("from_bytes must succeed");
+        let reloaded_app = reloaded.peers[&p].app;
+
+        // saved_at == 0 -> skip decay -> exact round-trip.
+        assert_eq!(
+            reloaded_app, original_app,
+            "legacy zero-timestamp record must load undecayed (got {reloaded_app}, expected {original_app})"
+        );
     }
 }

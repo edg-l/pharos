@@ -36,6 +36,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Interval, interval, timeout};
 
 use discv5::enr::EnrKey as _;
+use zeroize::Zeroize as _;
 
 use crate::codec::snappy_block::{decode_snappy_block, encode_snappy_block};
 use crate::discovery::enr::{Enr, enr_to_dial_multiaddr};
@@ -551,29 +552,40 @@ impl<
     /// pending peers and honours dial backoff, so this is safe to call on every
     /// deficit tick.
     fn dial_bootnodes(&mut self) -> u32 {
+        // Pre-extract (PeerId, Multiaddr) pairs from &self.bootnodes before
+        // entering the loop so dial_peer can take &mut self without a
+        // per-tick whole-Vec clone.
+        let targets: Vec<(PeerId, libp2p::Multiaddr)> = self
+            .bootnodes
+            .iter()
+            .filter_map(|enr| {
+                let addr = match enr_to_dial_multiaddr(enr) {
+                    Some(a) => a,
+                    None => {
+                        tracing::debug!(enr = %enr, "bootnode ENR has no dialable address; skipping");
+                        return None;
+                    }
+                };
+                // Extract the PeerId embedded by enr_to_dial_multiaddr (/p2p/<pid>).
+                let peer_id = match addr.iter().find_map(|p| {
+                    if let libp2p::multiaddr::Protocol::P2p(pid) = p {
+                        Some(pid)
+                    } else {
+                        None
+                    }
+                }) {
+                    Some(pid) => pid,
+                    None => {
+                        tracing::debug!(addr = %addr, "bootnode multiaddr has no /p2p component; skipping");
+                        return None;
+                    }
+                };
+                Some((peer_id, addr))
+            })
+            .collect();
+
         let mut booted = 0u32;
-        for enr in &self.bootnodes.clone() {
-            let addr = match enr_to_dial_multiaddr(enr) {
-                Some(a) => a,
-                None => {
-                    tracing::debug!(enr = %enr, "bootnode ENR has no dialable address; skipping");
-                    continue;
-                }
-            };
-            // Extract the PeerId embedded by enr_to_dial_multiaddr (/p2p/<pid>).
-            let peer_id = match addr.iter().find_map(|p| {
-                if let libp2p::multiaddr::Protocol::P2p(pid) = p {
-                    Some(pid)
-                } else {
-                    None
-                }
-            }) {
-                Some(pid) => pid,
-                None => {
-                    tracing::debug!(addr = %addr, "bootnode multiaddr has no /p2p component; skipping");
-                    continue;
-                }
-            };
+        for (peer_id, addr) in targets {
             if self.dial_peer(peer_id, addr.clone()) {
                 booted += 1;
                 tracing::debug!(addr = %addr, "dialing bootnode");
@@ -2578,6 +2590,11 @@ impl<
         let mut secret_bytes = secp_kp.secret().to_bytes();
         let combined_key = discv5::enr::CombinedKey::secp256k1_from_bytes(&mut secret_bytes)
             .map_err(|e| NetworkError::Libp2p(format!("CombinedKey from secret: {e}")))?;
+        // Wipe the raw secret bytes immediately after use.  Note: secp_kp
+        // (libp2p's secp256k1::Keypair) does NOT implement ZeroizeOnDrop in
+        // libp2p 0.56, so the wipe here is partial — the clone inside
+        // try_into_secp256k1 still holds a copy until it drops.
+        secret_bytes.zeroize();
 
         // ── Step 2: compute initial subnet subscriptions ──────────────────────
         let node_id = discv5::enr::NodeId::from(combined_key.public());
@@ -2755,7 +2772,7 @@ impl<
                 rpc_metadata_v3: RpcMetaDataV3Behaviour(mk_rr(M::MetaDataV3, RPC_TIMEOUT_CONTROL)),
                 identify,
             })
-            .unwrap()
+            .expect("PharosBehaviour construction is infallible")
             .with_swarm_config(|c| c.with_idle_connection_timeout(transport::idle_timeout()))
             .build();
 

@@ -42,6 +42,7 @@ async-trait = "0.1"
 hickory-resolver.workspace = true
 k256.workspace = true
 data-encoding.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
