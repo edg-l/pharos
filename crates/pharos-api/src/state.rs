@@ -1664,7 +1664,7 @@ where
         // The genesis-validators-root is constant across every BeaconState; read
         // it from the head state. `runtime_cfg.genesis_validators_root` is NOT
         // populated on the checkpoint-sync anchor path (it stays zeroed), so a
-        // lighthouse VC reading `/eth/v1/beacon/genesis` would compute wrong
+        // reference CL VC reading `/eth/v1/beacon/genesis` would compute wrong
         // fork digests / signing domains from it. Fall back to runtime_cfg only
         // if no head state is loaded yet.
         let head_root = pharos_fork_choice::get_head(&fc);

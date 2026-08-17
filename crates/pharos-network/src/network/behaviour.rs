@@ -4,7 +4,7 @@
 //! identify into a single struct that the libp2p swarm drives.
 //!
 //! NOTE: there is deliberately NO libp2p `/ipfs/ping/1.0.0` behaviour. eth2
-//! peers (lighthouse et al.) do not implement the standard libp2p ping; they
+//! peers (CL clients) do not implement the standard libp2p ping; they
 //! use the consensus-layer RPC `Ping` method instead (see `rpc_ping` and
 //! `Network::tick_ping`). Including `ping::Behaviour` only produced a stream of
 //! `Failure::Unsupported` events against every eth2 peer.

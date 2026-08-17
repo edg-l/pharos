@@ -37,7 +37,7 @@
 //! - `pharos_stf::phase0::accessors::compute_proposer_index` — VRF-based proposer selection
 //! - `pharos_stf::phase0::helpers::uint_to_bytes` — slot → bytes for proposer seed hash
 //!
-//! `dependent_root` required field (lighthouse VC rejects missing it):
+//! `dependent_root` required field (reference CL VCs reject missing it):
 //! - proposer: `get_block_root_at_slot(state, compute_start_slot_at_epoch(epoch) - 1)`
 //! - attester: `get_block_root_at_slot(state, compute_start_slot_at_epoch(epoch - 1) - 1)`
 //! - epoch == 0 underflow: genesis block root from `ChainStateApi::genesis_block_root`.
@@ -71,7 +71,7 @@ pub struct ProposerDutyDto {
 
 /// Proposer duties response per `~/dev/beacon-APIs/apis/validator/duties/proposer.v2.yaml`.
 ///
-/// `dependent_root` is a REQUIRED top-level field; lighthouse VC rejects a response
+/// `dependent_root` is a REQUIRED top-level field; reference CL VCs reject a response
 /// missing it.  Computed as `get_block_root_at_slot(state, compute_start_slot_at_epoch(epoch) - 1)`
 /// (or genesis block root on epoch 0 underflow).
 #[derive(Serialize)]

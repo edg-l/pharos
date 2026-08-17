@@ -83,7 +83,7 @@ pub struct BlobSidecarsByRangeRequest {
 ///
 /// SSZ-encoded as the bare `List[BlobIdentifier, N]` (single-field rule).
 /// **No container offset.** Using derived SSZ would add a 4-byte offset prefix
-/// and earn a -100 Lighthouse ban (the `D-blocksbyroot-bare-list` trap).
+/// and earn a -100 ban from some CL clients (the `D-blocksbyroot-bare-list` trap).
 ///
 /// `Encode`/`Decode` are hand-written for the same reason as
 /// `BeaconBlocksByRootRequest` in `pharos_types::phase0::operations`.

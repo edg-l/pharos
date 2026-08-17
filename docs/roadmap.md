@@ -118,7 +118,7 @@ dangerous primitive. We use:
 
 ### Explicitly rejected
 `ethereum_ssz`, `tree_hash`, `ethereum_hashing`, `ethereum_serde_utils`,
-`alloy*`, `lighthouse_network`, `ssz_rs`, `milhouse`.
+`alloy*`, other-client networking crates, `ssz_rs`, `milhouse`.
 
 Costs we accept: +1–2 months on M0 to write our own SSZ + Merkleization.
 Benefit: full control of the hot path and the type system, no surprise
@@ -126,7 +126,7 @@ upstream churn, a real consensus client and not a re-skin.
 
 ### Independence guarantee
 
-Pharos competes with Lighthouse (and Prysm, Lodestar, Teku, Nimbus). It is
+Pharos competes with the major CL clients (Prysm, Lodestar, Teku, Nimbus). It is
 not a re-skin or a port. The following rules keep it that way; they apply
 to every contributor — human or agent — and the implementer agents in
 particular must read this before touching code.
@@ -143,8 +143,8 @@ particular must read this before touching code.
 4. `~/dev/beacon-APIs/` — Beacon API OpenAPI surface.
 5. `~/dev/execution-apis/src/engine/` — Engine API spec + fixtures.
 
-**Banned during implementation**: reading source from `~/dev/lighthouse/`,
-`~/dev/prysm/`, `~/dev/lodestar/`, `~/dev/teku/`, `~/dev/nimbus-eth2/`,
+**Banned during implementation**: reading source from any other CL
+client checkout (`~/dev/prysm/`, `~/dev/lodestar/`, `~/dev/teku/`, `~/dev/nimbus-eth2/`, etc.),
 or equivalent. Includes blog posts that paste code blocks. Cross-language
 ports (Prysm Go, Lodestar TS, Teku Java) are *less* risky for accidental
 copying because porting requires re-thinking, but the rule applies
@@ -162,10 +162,10 @@ uniformly so there's no judgement call.
   data on the public network, not source code. Vendoring them as test
   fixtures is fine; cite the publication source.
 - **De-facto conventions where the spec is silent** — e.g. the QUIC
-  ENR key naming (`quic`/`quic6`) that Lighthouse documented first
+  ENR key naming (`quic`/`quic6`) that a CL client documented first
   and every CL client now follows. Adopting the convention is
   necessary for interop; document it in `docs/decisions.md` with a
-  link to where the convention was published (NOT to Lighthouse's
+  link to where the convention was published (NOT to another client's
   source, but to a spec-adjacent README, ethresear.ch post, or
   EthCC talk).
 
@@ -185,18 +185,18 @@ competition surface.
 
 **Red flags during code review** (any of these triggers a hard stop):
 
-- Function signatures that match a Lighthouse type exactly when the
+- Function signatures that match another client's type exactly when the
   spec doesn't mandate that signature.
-- File or module names that mirror a Lighthouse crate's structure
+- File or module names that mirror another client's crate structure
   beyond what the spec organisation implies.
-- Comments that reference a Lighthouse type / function / line.
-- Identifier naming that follows Lighthouse-specific patterns
+- Comments that reference another client's type / function / line.
+- Identifier naming that follows another client's specific patterns
   (`NetworkGlobals`, `BeaconChainTypes`, `ChainSpec`, etc.).
-- Test fixtures vendored from `~/dev/lighthouse/`.
-- Performance heuristics copied from a Lighthouse README or issue
+- Test fixtures vendored from another client's checkout.
+- Performance heuristics copied from another client's README or issue
   thread without a spec-based or measured justification.
 
-Reviewers should treat any of these as a port-of-Lighthouse signal and
+Reviewers should treat any of these as a port-of-another-client signal and
 require the contributor to redo the work from spec + first principles.
 
 
@@ -225,7 +225,7 @@ other way around.
   invoked from async contexts.
 - **No `clone()` on `BeaconState`** in hot paths. Use copy-on-write /
   persistent data structures (e.g. tree-backed `List`/`Vector` with
-  structural sharing). Lighthouse uses `milhouse`; we should evaluate it or
+  structural sharing). Some CL clients use `milhouse`; we should evaluate it or
   build something similar.
 - **Allocation discipline.** Pre-size `Vec`s. Reuse buffers across slots.
   Profile allocations with `dhat` or `heaptrack` per milestone.
@@ -284,9 +284,9 @@ don't get dropped.
   No CI gate on perf (too noisy on shared runners); humans review the
   delta per release.
 - **Cross-client interop testing** — folded into **M4d** as the M4
-  closure slice (hand-rolled Lighthouse+ethrex+pharos devnet). The
+  closure slice (hand-rolled reference-CL+ethrex+pharos devnet). The
   M3b carry-in for a gated
-  `crates/pharos-network/tests/interop/lighthouse_pair.rs` integration
+  `crates/pharos-network/tests/interop/cl_client_pair.rs` integration
   test is deferred to **M7** once Beacon API ships and Kurtosis becomes
   the recurring cross-client harness.
 
@@ -314,8 +314,8 @@ project-wide invariants that pre-date M0.
   `Store` trait. Hot/cold split designed into the trait from day one.
 - **Slashing protection**: separate `rusqlite` DB in the VC. EIP-3076
   import/export from day one.
-- **Networking**: raw `libp2p` + `discv5`. No vendoring of
-  `lighthouse_network`.
+- **Networking**: raw `libp2p` + `discv5`. No vendoring of another
+  client's networking crate.
 - **Engine API client**: in-house. `reqwest` + `serde_json` + our own
   types + `jsonwebtoken`. No `alloy`. IPC support deferred.
 - **Sync**: checkpoint sync first-class. **Backfill is required, not
@@ -332,7 +332,7 @@ project-wide invariants that pre-date M0.
 - **Errors**: `thiserror` in libs, `anyhow` at binaries.
 - **In-house core libs**: SSZ encode/decode, Merkleization, hashing
   wrappers, serde helpers, Engine API types, Beacon API types. No
-  Lighthouse crates as runtime deps.
+  other-client crates as runtime deps.
 
 ## Deferred (reserve traits, implement later)
 
@@ -340,7 +340,7 @@ project-wide invariants that pre-date M0.
 - Builder API / MEV-Boost integration.
 - Light-client server endpoints (consumer side later still).
 - Engine API over IPC.
-- Differential fuzzing vs Lighthouse / EthereumJS.
+- Differential fuzzing vs another CL client / EthereumJS.
 - **In-house `discv5` implementation.** M2 ships against the `sigp/discv5`
   crate (the only maintained Rust impl; Reth and OP Stack tools depend on
   it too). The "we own protocols with conformance suites" philosophy
@@ -351,7 +351,7 @@ project-wide invariants that pre-date M0.
   partial in M2's ENR helpers), Kademlia-like XOR routing,
   PING/PONG/FINDNODE/NODES/TALKREQ/TALKRESP messages, ENR seq number
   management, NAT traversal. Conformance: interop pings against
-  geth/reth/lighthouse on a local devnet. Realistic milestone window:
+  geth/reth and a reference CL client on a local devnet. Realistic milestone window:
   post-M4 once the chain is talking to a real EL and the networking
   surface has settled.
 

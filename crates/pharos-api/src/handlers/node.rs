@@ -259,7 +259,7 @@ pub async fn get_syncing<E: BeaconSpec>(
     let chain = Arc::clone(&state.chain);
     let result = tokio::task::spawn_blocking(move || {
         // head_slot is the slot of the node's CURRENT HEAD BLOCK (not the wall
-        // clock); sync_distance = wall_slot - head_slot. A lighthouse VC reads
+        // clock); sync_distance = wall_slot - head_slot. A reference CL VC reads
         // all three and refuses to drive a BN whose head_slot / sync_distance
         // disagree with is_syncing, so they must derive from the same source.
         let current = u64::from(chain.current_slot());

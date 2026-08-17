@@ -319,8 +319,8 @@ Two custom ENR keys are used to advertise QUIC transport endpoints:
 u16). Values are stored via `Enr::builder().add_value(key, &port)`, which
 RLP-encodes the u16; `get_decodable::<u16>(key)` round-trips correctly.
 
-Source/precedent: the de facto Rust CL ecosystem convention (Lighthouse and
-other CL clients use these exact key names). The consensus-specs
+Source/precedent: the de facto Rust CL ecosystem convention (CL clients
+use these exact key names). The consensus-specs
 `p2p-interface.md` is silent on QUIC ENR keys for Phase 0; the key names
 follow established inter-client practice.
 
@@ -348,7 +348,7 @@ and libp2p without an adapter layer.
 
 Why TCP + QUIC at M2 baseline: TCP is mandatory per
 `specs/phase0/p2p-interface.md`; QUIC is the cross-client de-facto
-upgrade path and is already deployed by Lighthouse, Prysm, and Teku.
+upgrade path and is already deployed by Prysm and Teku.
 WebRTC and WebTransport are deferred to M11.
 
 Enforced in: `crates/pharos-network/Cargo.toml`,
@@ -627,7 +627,7 @@ follow-ups into the roadmap at M2-close prevents drift.
 
 `consensus-specs/tests/formats/` ships fixtures for SSZ, STF, fork
 choice, light client, KZG/BLS, etc. — but NOT for networking, gossipsub,
-or req-resp. This is industry-wide (Lighthouse, Prysm, Lodestar, Teku,
+or req-resp. This is industry-wide (Prysm, Lodestar, Teku,
 Nimbus all hand-roll their networking tests). Pharos spec rigor for the
 network crate is therefore enforced via:
 
@@ -639,7 +639,7 @@ network crate is therefore enforced via:
    round-trips, fork-digest goodbye).
 3. **Phase 9 Task 9.7** spec-vs-code line audit at every networking
    milestone (M2 close, M3 close).
-4. **Cross-client interop tests** against Lighthouse + ethrex planned
+4. **Cross-client interop tests** against a reference CL client + ethrex planned
    for M4 (before first merged sync), to be added in `crates/pharos-network/tests/interop/`.
 
 `#[serial_test]` is used to serialize the gossip integration tests
@@ -788,7 +788,7 @@ single `Result` type without sub-enums.
 
 `PeerInfo` (`crates/pharos-network/src/types.rs:69`) holds:
 - `agent_string: Option<String>` — agent version from the identify protocol
-  (e.g. `"Lighthouse/v4.0.0"`).
+  (e.g. `"<client>/v4.0.0"`).
 - `protocols: Vec<String>` — protocol IDs advertised by the peer via identify.
 - `observed_addr: Option<Multiaddr>` — the address the peer reports it
   observed for our local node.
@@ -1015,7 +1015,7 @@ panics at startup if any shared numeric field diverges from the compile-time
 constant, preventing silent divergence between YAML and binary.
 
 For custom networks with different dimension values, operators must recompile
-with a new `EthSpec` binding. This matches how Lighthouse and other CL clients
+with a new `EthSpec` binding. This matches how other CL clients
 handle custom presets.
 
 Enforced in: `crates/pharos-types/src/config/mod.rs`,
@@ -1305,8 +1305,8 @@ failed with `KeyNotFound` when it tried to load the finalized block, and
 root existed in `block_states`.
 
 The fix treats the anchor block as the local finalized/justified root, matching the
-weak-subjectivity sync convention used by all major CL implementations (Lighthouse,
-Teku, Prysm). Pre-anchor history is opaque and trusted via the operator's choice of
+weak-subjectivity sync convention used by all major CL implementations (Teku, Prysm,
+and others). Pre-anchor history is opaque and trusted via the operator's choice of
 checkpoint-sync URL per `D-checkpoint-sync-source`.
 
 `finalized_checkpoint` is set to `{ epoch: anchor_epoch, root: anchor.block_root }`.
@@ -1409,8 +1409,8 @@ the file is created with mode `0o600`. Rejected alternatives: in-memory ephemera
 (breaks EL pairing across process restarts because the EL node caches the secret per
 session; a fresh random key after restart requires the operator to re-provision the EL),
 and a `jwt-secret` entry in the YAML config file (adds config surface for a value that
-benefits from automatic rotation on first boot; file-based auto-gen matches what Lighthouse
-and Teku do). Enforced in `crates/pharos-node/src/jwt_autogen.rs` (`ensure_jwt_secret`
+benefits from automatic rotation on first boot; file-based auto-gen matches what Teku
+and other CL clients do). Enforced in `crates/pharos-node/src/jwt_autogen.rs` (`ensure_jwt_secret`
 at line 26, `open_for_write` at line 65).
 
 ## M4-perf decisions
@@ -1800,7 +1800,7 @@ entries.
 Rationale: proposer shuffling is computed by RANDAO from the epoch's beacon
 state. For a given `(slot, parent_root)` the proposer is deterministic; caching
 avoids re-running `process_slots_fork` on every block-gossip arrival for the
-same slot. Lighthouse uses an equivalent `ProposerCache` keyed identically.
+same slot. Some CL clients use an equivalent `ProposerCache` keyed identically.
 Rejected: keying by `(epoch, parent_root)` — proposer-shuffling changes per
 RANDAO reveal on each slot within an epoch, so per-slot is the minimal stable
 key.
@@ -2055,7 +2055,7 @@ with the same key to be silently dropped.
 Rationale: if a cache write were performed on first sight (before validation),
 an attacker could send a malformed message with a valid `(proposer, slot)` or
 `(validator, epoch)` key to preemptively block acceptance of the honest
-message. The "insert on Accept" pattern is used by Lighthouse for the same
+message. The "insert on Accept" pattern is used by other CL clients for the same
 reason. The cost is that the full validation pipeline runs twice if two
 messages with the same key arrive in rapid succession, but this is acceptable
 because (a) it is rare on a well-connected network and (b) correctness is more
@@ -2205,11 +2205,11 @@ context bytes followed by the inner SSZ.
 Both paths are required for real operation: the receive path is exercised during backfill
 (the node receives Bellatrix blocks from peers via `BeaconBlocksByRange`) and during
 sync from a peer that serves Bellatrix blocks; the send path is exercised when a
-connected peer (e.g. Lighthouse) requests blocks by range or root and the local DB
+connected peer (e.g. a reference CL client) requests blocks by range or root and the local DB
 contains Bellatrix blocks.
 
 Rejected alternative: implement receive only and stub send — would break any peer that
-requests Bellatrix blocks from Pharos, blocking interop with Lighthouse in a
+requests Bellatrix blocks from Pharos, blocking interop with other CL clients in a
 Bellatrix-genesis devnet.
 
 Enforced in: `crates/pharos-network/src/rpc/codec.rs:224` (receive path
@@ -2283,9 +2283,9 @@ returns empty; the orphan-defer site calls `notify_one()` only.
 ## M5-follow correctness decisions (cross-client follow hardening)
 
 These four fixes closed the remaining correctness gaps that surfaced once
-Pharos actually followed Lighthouse v8.1.3 + ethrex on the live Bellatrix
+Pharos actually followed a reference CL client + ethrex on the live Bellatrix
 devnet. All live-verified: pharos `head == wall` (exact, 0 lag), `peers:1`
-stable to epoch 15, 0 Lighthouse bans.
+stable to epoch 15, 0 bans from the reference CL.
 
 ### D-blocksbyroot-bare-list — BeaconBlocksByRoot request is the bare List, not a container
 
@@ -2296,7 +2296,7 @@ The req/resp `BeaconBlocksByRootRequest` is a single-field wrapper around
 (`p2p-interface.md`) it serializes as the bare `List[Root, N]` — but
 `#[derive(Encode, Decode)]` treated it as an SSZ container and prepended a
 4-byte offset for its lone variable-length field (an empty request became
-exactly the 4 offset bytes). Lighthouse decoded that as
+exactly the 4 offset bytes). The reference CL decoded that as
 `InvalidByteLength { len: 4, expected: 32 }`, classified it a fault, and
 **banned pharos to -100 on the spot** — the true "not peering" cause, latent
 until a checkpoint gap forced the lookup's by-root request onto the wire.
@@ -2319,9 +2319,9 @@ pharos published `light_client_finality_update` / `light_client_optimistic_updat
 the instant a head advanced (slot start). The altair p2p rule forwards an LC
 update only after `get_sync_message_due_ms` (one `INTERVALS_PER_SLOT` fraction =
 4 s for 12 s slots) has transpired since the start of `signature_slot`.
-Lighthouse logged `Light client optimistic update too early error: TooEarly` and
+The reference CL logged `Light client optimistic update too early error: TooEarly` and
 applied a `light_client_gossip_error` penalty (~-1.00/slot), bleeding toward a
-ban in ~15 min. The update *content* was correct (Lighthouse deduped pharos's
+ban in ~15 min. The update *content* was correct (the reference CL deduped pharos's
 bytes as identical to its own) — purely a timing defect.
 
 Fix: `HostImpl::lc_publish_wait(signature_slot)` (the publish-side mirror of the
@@ -2562,8 +2562,8 @@ not a BLS withdrawal credential; pubkey-hash mismatch; bad signature).
 
 ## M6-Capella devnet correctness decisions
 
-Two bugs surfaced ONLY on the live Bellatrix→Capella transition devnet (lighthouse
-v8.1.3 + ethrex v13, `CAPELLA_FORK_EPOCH=1`), not by any conformance category — the
+Two bugs surfaced ONLY on the live Bellatrix→Capella transition devnet (a reference
+CL client + ethrex v13, `CAPELLA_FORK_EPOCH=1`), not by any conformance category — the
 M6 analogue of the M5-follow live-only findings. Conformance is green because the
 `transition` runner drives the upgrade itself and the capella `sanity`/`operations`
 categories start from a capella anchor state; a real bellatrix→capella crossing only
@@ -2734,7 +2734,7 @@ path is provided via `--validator-api-token <path>`, the middleware requires
 on a wrong token; when no path is given (default), the middleware is a no-op
 pass-through. Auth is scoped strictly to the validator sub-router; node,
 config, beacon, debug, and events namespaces are never gated. The token file
-is read once at startup in trimmed form (lighthouse-compatible); rotation
+is read once at startup in trimmed form (the common CL client format); rotation
 requires a restart.
 
 ### D-api-node-identity-cache — `NodeIdentityCache` snapshot instead of `NetworkHandle`
@@ -2760,13 +2760,13 @@ number without a stale snapshot.
 The M7 plan (Task 6.1) specified a Kurtosis `ethereum-package` enclave as the
 cross-client gate. We kept the existing hand-rolled host-process devnet
 (`scripts/devnet/`, runtime `~/.cache/pharos-devnet/run-tmux.sh`) instead. It
-already drives the exact lighthouse v8.1.3 + ethrex v13 Bellatrix→Capella
+already drives the exact reference-CL + ethrex v13 Bellatrix→Capella
 transition chain the M5-follow and M6-Capella live acceptances used, with every
 cross-client gotcha already baked into the scripts. A Kurtosis custom-service
 definition would re-derive the same topology in a heavier runtime for no extra
 coverage on a solo devnet. The M7 additions are minimal: `run-pharos.sh` launches
-pharos with `--http --http-port 5053` (5052 is the lighthouse BN), and
-`run-vc-vs-pharos.sh` points an external lighthouse VC at pharos plus a curl
+pharos with `--http --http-port 5053` (5052 is the reference CL BN), and
+`run-vc-vs-pharos.sh` points an external reference CL VC at pharos plus a curl
 read-probe of the VC-critical endpoints. The gate is duties-READ + a stable VC
 connection over ≥2 epochs, NOT attestation submission (production/POST publish is
 M8; the VC's publish errors against pharos are expected). Upstreaming a pharos
@@ -2839,7 +2839,7 @@ An arbitrary historical state is served by loading the nearest stored
 epoch-boundary state (or cold restore point) at-or-below the target and
 replaying persisted blocks forward via `process_slots_fork` / `state_transition`
 (the existing STF primitives). Cold reads cost at most `restore-point-interval`
-block applies. This is the universal CL approach (Lighthouse/Prysm/Teku) and
+block applies. This is the universal CL approach (Prysm/Teku and others) and
 avoids storing a state per slot.
 
 ### D-freezer-in-rocksdb — cold region is a CF set in the same RocksDB instance
@@ -2892,7 +2892,7 @@ requires every CF at `open()` time.
 
 **Status**: Accepted. **Date**: 2026-06-01.
 
-On-disk state diffs (Lighthouse `hdiff`-style hierarchical layers) are
+On-disk state diffs (`hdiff`-style hierarchical layers, as some CL clients use) are
 explicitly out of scope for this milestone; each stored state is full SSZ.
 Structural sharing (the tree-backed `SszList`/`SszVector`) is exploited in RAM
 for cheap hot-state retention only. Revisit on-disk diffs as a dedicated perf
@@ -3183,7 +3183,7 @@ surface it drives: operation pools, live Engine-API V2 block production, CL
 block/attestation assembly via STF reuse, validator/beacon production REST
 endpoints, EIP-2335 keystores, rusqlite slashing protection, duty scheduling,
 doppelganger detection. Plan: `docs/m9-validator-plan.md`. Live
-bellatrix→capella devnet acceptance (lighthouse v8.1.3 + ethrex v13) is the
+bellatrix→capella devnet acceptance (a reference CL client + ethrex v13) is the
 gate; see `D-vc-proposer-slot-alignment` for the one live-only correctness bug
 the devnet surfaced.
 
@@ -3314,14 +3314,14 @@ analogue of the M5-follow / M6-Capella devnet bugs.)
 ticks relative to VC startup and therefore carries a fixed phase offset against
 true slot boundaries. The proposer path fired at that arbitrary offset (~4.3s
 into the slot on the failing run) plus health-check RTTs, pushing block
-publication past lighthouse's t=1/3 attestation cutoff. Attesters then voted the
-parent, the pharos block accrued `head_weight: 0`, and lighthouse's
+publication past the reference CL's t=1/3 attestation cutoff. Attesters then voted the
+parent, the pharos block accrued `head_weight: 0`, and the reference CL's
 proposer-boost re-org dropped it one slot later — the block was spec-valid and
 gossip-delivered, but never stuck. Fix: at the top of the loop compute the next
 slot boundary and `sleep_until_into_slot(start, 0)`, dispatching the proposer at
 t≈0; the attester/aggregate paths already self-aligned via `sleep_until_into_slot`
 and are unchanged. Verified live (commit `e77691c`): all 9 pharos-vc proposals —
-including capella slots 35/47/53/61 — were received by lighthouse over gossip and
+including capella slots 35/47/53/61 — were received by the reference CL over gossip and
 kept canonical with 0 re-orgs over 2+ epochs; every proposal fired 2–5 ms into
 its slot.
 
@@ -3334,7 +3334,7 @@ The cold-start path (`pharos-node/src/main.rs:363`) hardcodes
 for a phase0 genesis blob. A post-phase0 genesis (e.g. the bellatrix-genesis
 devnet) fails with `extra bytes: N remaining`. Live nodes use
 `--checkpoint-sync-url` instead, whose anchor decode IS fork-aware (via the
-`Eth-Consensus-Version` header); at epoch 0 lighthouse serves the genesis state
+`Eth-Consensus-Version` header); at epoch 0 the reference CL serves the genesis state
 as the finalized checkpoint, so checkpoint-sync covers the genesis case.
 Fork-aware cold-start decode (dispatch on the runtime-config fork schedule) is
 deferred to M11.
@@ -3345,7 +3345,7 @@ Data-availability substrate for Deneb: KZG crate, blob SSZ types, blob gossip
 and req-resp, blob storage, and the `is_data_available` import gate. This is the
 DA SUBSTRATE only; the full Deneb STF, Engine API V3, and EIP-7044/7045/7514
 are the M10-Deneb follow-on. Plan: `docs/m10-da-plan.md`. Live Deneb devnet
-acceptance (Lighthouse + ethrex, `DENEB_FORK_EPOCH=1`) is deferred to M10-Deneb.
+acceptance (a reference CL client + ethrex, `DENEB_FORK_EPOCH=1`) is deferred to M10-Deneb.
 
 ### D-kzg-crate — KZG lives in its own `pharos-kzg` crate over `c-kzg`
 
@@ -3424,7 +3424,7 @@ forward-compatible: the same `BlobSidecar` type is used by the M10-Deneb STF.
 
 `KzgVerifier::mainnet()` calls `c_kzg::ethereum_kzg_settings(precompute=0)`,
 which returns the canonical Ethereum mainnet trusted setup embedded in the
-`c-kzg` crate itself (same source as Lighthouse/Prysm/Teku). `precompute=0`
+`c-kzg` crate itself (same source as Prysm/Teku and other CL clients). `precompute=0`
 disables precomputed tables, which are not needed for verification workloads
 (proving is not in scope). For non-mainnet setups (devnets, tests),
 `KzgVerifier::from_trusted_setup_str` and `from_trusted_setup_file` accept the
@@ -4011,7 +4011,7 @@ both pass, and the row is no longer a placeholder.
 ### D-electra-produce-block-serialize-arm — produce_block API handler electra serialize arm (devnet-found)
 
 **Status**: Accepted. Live-only correctness bug, found on the M12-Electra transition devnet
-(lighthouse v8.1.3 + ethrex v13, `ELECTRA_FORK_EPOCH=1`).
+(a reference CL client + ethrex v13, `ELECTRA_FORK_EPOCH=1`).
 
 Phase 6d wired `ElectraBlockAssembler` and the electra `produce_block` core, but the
 `produce_block` HTTP-API handler in `crates/pharos-node/src/main.rs` has a *separate*
@@ -4612,7 +4612,7 @@ invariant carried forward). Fulu LC containers reuse the electra shape.
 
 ## M13-Fulu live-acceptance decisions
 
-Found while driving the live Electra→Fulu devnet acceptance (lighthouse v8.1.3 +
+Found while driving the live Electra→Fulu devnet acceptance (a reference CL client +
 ethrex v13, electra genesis → fulu@epoch1, 6s slots, fulu digest `0x4ce02029`). All
 Accepted, date 2026-06-25. Verified live: pharos stays peered (`connected=1`, 0 bans),
 follows head past the fulu crossing (`head==wall±1`, head `version=fulu` at slot 60),
@@ -4623,7 +4623,7 @@ follows head past the fulu crossing (`head==wall±1`, head `version=fulu` at slo
 
 `HostImpl` had no `Host::custody_group_count()` override, so the Fulu MetaDataV3 served
 on the wire carried the trait default of `0`. EIP-7594 requires `cgc` in
-`1..=NUMBER_OF_CUSTODY_GROUPS`; a `0` is out-of-range. Lighthouse rejects it
+`1..=NUMBER_OF_CUSTODY_GROUPS`; a `0` is out-of-range. The reference CL rejects it
 (`"Invalid custody group count in metadata: out of range"`), sends `Goodbye(Fault)`, and
 bans the peer at `-100`; every subsequent re-dial is then refused
 (`"Connection to peer rejected: peer has a bad score"`), which surfaced downstream as the
@@ -4632,7 +4632,7 @@ permanent `backfill: no peers available` stall. Fix: create the shared `Arc<Cust
 `HostImpl::wire_custody` (mirroring `wire_engine`); `custody_group_count()` and
 `custody_columns()` now both read the live sticky-high count through `effective_cgc()`
 (never `0`), the single source of truth shared with the custody-adjustment loop and the
-ENR `cgc`. The diagnostic key was lighthouse `--debug-level debug`.
+ENR `cgc`. The diagnostic key was the reference CL's `--debug-level debug`.
 
 ### D-no-libp2p-ping — drop the libp2p `/ipfs/ping/1.0.0` behaviour
 

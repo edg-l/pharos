@@ -43,7 +43,7 @@ pub struct DiscoveryConfig {
     pub attnets: Bitvector<ATTESTATION_SUBNET_COUNT>,
     /// EIP-7594 custody group count advertised in the `cgc` ENR key from boot.
     /// `None` (or `0`) omits the key — a Fulu node must advertise a non-zero
-    /// `cgc` from startup, else lighthouse bans it as out-of-range
+    /// `cgc` from startup, else some CL clients ban it as out-of-range
     /// (`D-fulu-metadata-cgc-nonzero`).
     pub cgc: Option<u64>,
     /// Directory for persisting the ENR sequence number across restarts

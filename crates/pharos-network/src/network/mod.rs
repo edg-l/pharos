@@ -2342,8 +2342,8 @@ impl<
             self.scorer.seed_from_dir(dir);
         }
         // Advertise the node's custody group count in the startup ENR `cgc`
-        // key. A Fulu node MUST carry a non-zero `cgc` from boot — lighthouse
-        // bans `cgc == 0` as out-of-range (`D-fulu-metadata-cgc-nonzero`). The
+        // key. A Fulu node MUST carry a non-zero `cgc` from boot — some CL clients
+        // ban `cgc == 0` as out-of-range (`D-fulu-metadata-cgc-nonzero`). The
         // host returns 0 pre-Fulu, which `build_local_enr` omits; the custody
         // loop later bumps it via `update_enr_eth2_fulu`.
         let cgc = Some(self.host.custody_group_count()).filter(|c| *c != 0);

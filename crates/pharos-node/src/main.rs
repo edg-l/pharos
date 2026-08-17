@@ -237,7 +237,7 @@ struct Args {
     ///
     /// When provided, every request to the validator-duties namespace must carry
     /// `Authorization: Bearer <token>`.  The file is read at startup; its trimmed
-    /// contents are used as the token (lighthouse-compatible format).
+    /// contents are used as the token (the common CL client format).
     /// When absent, no auth is required on the validator endpoints.
     #[arg(long, value_name = "PATH")]
     validator_api_token: Option<PathBuf>,
@@ -1666,7 +1666,7 @@ async fn main() -> anyhow::Result<()> {
             info!("SSE event adapter task started");
         }
 
-        // Load the optional validator-API token (trimmed file contents, lighthouse-compatible).
+        // Load the optional validator-API token (trimmed file contents, the common CL client format).
         let validator_token: Option<String> = if let Some(ref token_path) = args.validator_api_token
         {
             let raw = std::fs::read_to_string(token_path)

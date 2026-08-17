@@ -11,7 +11,7 @@
 //! This is the OPPOSITE of the `D-blocksbyroot-bare-list` trap
 //! (`blocks_by_root_request_is_bare_list_no_offset` in `pharos-types`), where
 //! the request is a bare `List[Root, N]` of FIXED-size elements with NO offset.
-//! Conflating the two cost a -100 Lighthouse ban in M5-follow, hence this
+//! Conflating the two cost a -100 ban from a reference CL client in M5-follow, hence this
 //! explicit assertion rather than an assumption.
 
 use pharos_ssz::{Encode, SszList};

@@ -66,7 +66,7 @@ Pre-1.0 versions bump the minor segment on each milestone close.
 
 ### M2 — Networking baseline (closed)
 
-- Raw `libp2p` 0.56 + `discv5` 0.10 (no `lighthouse_network` vendoring).
+- Raw `libp2p` 0.56 + `discv5` 0.10 (no vendored other-client networking crates).
   TCP + QUIC transports, gossipsub (SSZ-snappy, StrictNoSign), discv5
   discovery.
 - Five req-resp methods: `Status`, `Goodbye`, `Ping`, `MetaData`,

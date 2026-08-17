@@ -319,7 +319,7 @@ pub fn load_all_keystores(keystore_dir: &Path, secrets_dir: &Path) -> Vec<(Strin
         // Determine the password file. Different tools name the secret file
         // differently, so try every known convention and use the first that
         // EXISTS (not merely the first `Some`): `<uuid>`, `<pubkey-no-0x>`,
-        // `0x<pubkey>` (lighthouse layout), and the keystore filename stem.
+        // `0x<pubkey>` (the common CL client layout), and the keystore filename stem.
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())

@@ -336,7 +336,7 @@ pub struct BeaconBlocksByHeadRequest {
 /// `Encode`/`Decode` are hand-written (NOT derived) precisely because of that
 /// single-field rule: a derived container impl would prepend a 4-byte SSZ
 /// offset for the lone variable-length field, but the wire format is the *bare*
-/// `List[Root, N]` with no wrapper. Deriving caused peers (e.g. lighthouse) to
+/// `List[Root, N]` with no wrapper. Deriving caused peers (e.g. some CL clients) to
 /// reject the request as `InvalidByteLength` and ban us on the spot.
 #[derive(TreeHash, Clone, Debug, PartialEq, Eq, Default)]
 pub struct BeaconBlocksByRootRequest<const MAX_REQUEST_BLOCKS: u64> {
@@ -417,7 +417,7 @@ mod tests {
 
     /// The request must serialize as the *bare* `List[Root, N]` (single-field
     /// rule) — exactly `32 * n` bytes with NO 4-byte container offset. A derived
-    /// container impl would prepend the offset; lighthouse rejects that as
+    /// container impl would prepend the offset; some CL clients reject that as
     /// `InvalidByteLength` and bans the peer. Empty list MUST be 0 bytes, not 4.
     #[test]
     fn blocks_by_root_request_is_bare_list_no_offset() {

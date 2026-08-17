@@ -2,10 +2,10 @@
 //!
 //! ## Bug being tested
 //!
-//! Before this fix, pharos would double-dial lighthouse on startup: the
+//! Before this fix, pharos would double-dial a reference CL client on startup: the
 //! bootnode dial in `run()` and the discovery-tick dial both targeted the same
 //! `PeerId` ~2 ms apart, before either connection had established.  Both dials
-//! proceeded independently → duplicate TCP connection → lighthouse sent
+//! proceeded independently → duplicate TCP connection → the reference CL sent
 //! `Goodbye reason=250` → both connections closed → 0 peers → terminal.
 //!
 //! ## What this test proves

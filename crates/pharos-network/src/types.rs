@@ -112,7 +112,7 @@ pub struct PeerInfo {
     pub state: PeerState,
     /// The peer's last known `MetaData` (populated after GetMetaData exchange).
     pub metadata: Option<pharos_types::phase0::MetaData>,
-    /// Agent version string from the identify protocol (e.g. `"Lighthouse/v4.0.0"`).
+    /// Agent version string from the identify protocol (e.g. `"<client>/v4.0.0"`).
     ///
     /// Populated on `NetworkEvent::PeerIdentified`; `None` before identify completes.
     pub agent_string: Option<String>,

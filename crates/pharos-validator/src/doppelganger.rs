@@ -10,7 +10,7 @@
 //!
 //! A validator is "past the hold-off" after it has been observed as non-live
 //! for at least 2 consecutive epochs starting from the epoch at which the VC
-//! started. This mirrors the lighthouse approach of skipping `N = 2` epochs.
+//! started. This mirrors the common CL client approach of skipping `N = 2` epochs.
 //!
 //! # Safety invariant
 //!

@@ -988,7 +988,7 @@ pub async fn run_vc_loop(
         // starts (whatever the VC startup phase happened to be), pushing block
         // proposals past the t=1/3 attestation cutoff — attesters then vote the
         // parent, the block accrues zero weight, and a proposer-boost-aware peer
-        // (e.g. lighthouse) re-orgs it straight back out.
+        // (e.g. a reference CL client) re-orgs it straight back out.
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

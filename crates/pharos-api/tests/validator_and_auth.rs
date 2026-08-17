@@ -304,7 +304,7 @@ async fn proposer_duties_returns_correct_assignments() {
 
     assert_eq!(status, StatusCode::OK, "expected 200, got {status}: {json}");
 
-    // `dependent_root` is required per beacon-APIs spec; lighthouse VC rejects if absent.
+    // `dependent_root` is required per beacon-APIs spec; reference CL VCs reject if absent.
     assert!(
         json["dependent_root"].is_string(),
         "dependent_root must be present as a string, got: {json}"

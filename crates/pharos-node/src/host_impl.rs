@@ -143,7 +143,7 @@ pub struct HostImpl<E: BeaconSpec> {
     /// then falls back to `E::CUSTODY_REQUIREMENT` (the protocol minimum). Backs
     /// the Fulu MetaDataV3 `custody_group_count` field, the ENR `cgc`, and
     /// `custody_columns`. MUST advertise a valid count (>= CUSTODY_REQUIREMENT);
-    /// a `cgc` of 0 makes fulu peers (lighthouse) reject our MetaDataV3 as
+    /// a `cgc` of 0 makes fulu peers (some CL clients) reject our MetaDataV3 as
     /// out-of-range and ban us with Goodbye(Fault).
     custody_state: Option<Arc<crate::custody::CustodyState>>,
     /// Tracks (slot, proposer_index) pairs seen so far; gates the RB3 duplicate-
@@ -4333,7 +4333,7 @@ mod tests {
     /// An LC update for a slot whose due time is still ahead returns a positive
     /// wait of ~(signature_slot * SECONDS_PER_SLOT + SECONDS_PER_SLOT /
     /// INTERVALS_PER_SLOT) past genesis — the spec `get_sync_message_due_ms`
-    /// point. Publishing earlier is what lighthouse rejected as `TooEarly`.
+    /// point. Publishing earlier is what the reference CL rejected as `TooEarly`.
     #[test]
     fn lc_publish_wait_future_slot_delays_to_due_time() {
         let dir = tempfile::TempDir::new().unwrap();

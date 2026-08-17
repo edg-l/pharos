@@ -23,7 +23,7 @@ pub const BUILD_PROFILE: &str = env!("PHAROS_PROFILE");
 /// Canonical wire agent string: `Pharos/v<pkg>-<sha>/<target>`.
 ///
 /// Matches the convention other CL clients follow (e.g.
-/// `Lighthouse/v4.0.0-abc1234/x86_64-linux`).
+/// `<client>/v4.0.0-abc1234/x86_64-linux`).
 pub const AGENT_STRING: &str = env!("PHAROS_AGENT_STRING");
 
 /// Multi-line block used as clap `long_version` (binaries that wire this

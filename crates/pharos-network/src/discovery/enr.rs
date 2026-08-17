@@ -5,7 +5,7 @@
 //!
 //! The `quic` / `quic6` keys store a `u16` port using the same RLP encoding as
 //! the standard `udp` / `tcp` fields. This matches the convention used by
-//! Lighthouse and other CL clients. The convention is documented under
+//! CL clients. The convention is documented under
 //! Q-quic-enr in `docs/decisions.md`.
 
 use std::io;
@@ -111,7 +111,7 @@ pub fn save_enr_seq(dir: &Path, seq: u64) -> io::Result<()> {
 /// `quic`  = RLP-encoded `u16` (IPv4 QUIC UDP port).
 /// `quic6` = RLP-encoded `u16` (IPv6 QUIC UDP port).
 /// `cgc`   = EIP-7594 custody group count (big-endian, no leading zeros).
-///           Only set when `Some(c)` and `c > 0`; lighthouse rejects a `cgc`
+///           Only set when `Some(c)` and `c > 0`; some CL clients reject a `cgc`
 ///           of `0` (out of range) and bans the peer, so a Fulu node must
 ///           advertise it from boot rather than only after the custody loop
 ///           fires (`D-fulu-metadata-cgc-nonzero`).
@@ -168,7 +168,7 @@ pub fn build_local_enr(
     }
 
     // cgc (EIP-7594 custody group count): big-endian, no leading zeros. Skip
-    // when 0 — lighthouse treats `cgc == 0` as out-of-range and bans the peer
+    // when 0 — some CL clients treat `cgc == 0` as out-of-range and ban the peer
     // (`D-fulu-metadata-cgc-nonzero`), so a pre-Fulu node simply omits the key.
     if let Some(c) = cgc.filter(|c| *c != 0) {
         builder.add_value("cgc", &encode_cgc(c).as_slice());
@@ -397,11 +397,11 @@ mod tests {
     /// Verify the quic key round-trip on a synthesised ENR (no bootnode ENR
     /// available with a quic key in the local spec checkout).
     ///
-    /// A real Lighthouse mainnet bootnode ENR such as:
+    /// A real mainnet bootnode ENR such as:
     ///   enr:-Ku4QHqVeJ8PPICcWk1vSn_XcSkjOkNiTg6Fmii5j6vUQgvzMc9L1goFnLKgXqBJspz...
     /// would carry `quic` only if the bootnode runs QUIC. We synthesise an ENR
     /// with quic=9001 and verify the round-trip, which exercises the same code
-    /// path as a real Lighthouse ENR would.
+    /// path as a real CL client ENR would.
     #[test]
     fn quic_key_roundtrip_synthesised() {
         let key = CombinedKey::generate_secp256k1();
@@ -704,7 +704,7 @@ mod tests {
         .expect("build_local_enr with cgc");
         assert_eq!(read_cgc_field(&with_cgc), Some(4));
 
-        // None and Some(0) both omit the key (0 would be banned by lighthouse).
+        // None and Some(0) both omit the key (0 would be banned by some CL clients).
         for cgc in [None, Some(0)] {
             let enr = build_local_enr(
                 &key,
