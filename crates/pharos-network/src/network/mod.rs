@@ -31,6 +31,7 @@ use pharos_ssz::Bitvector;
 use pharos_types::BeaconSpec;
 use pharos_types::altair::MetaData as AltairMetaData;
 use pharos_types::phase0::Status as BeaconStatus;
+use pharos_types::phase0::StatusV2;
 use pharos_types::phase0::primitives::ATTESTATION_SUBNET_COUNT;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Interval, interval, timeout};
@@ -1367,11 +1368,9 @@ impl<
                     // handshake entry that happens to share id 1). The internal-tracking
                     // maps are keyed by id but only ever hold their own method's ids.
                     //
-                    // NOTE: the outbound handshake currently sends v1 Status only; full
-                    // Fulu StatusV2 outbound is Phase 10. However, a v2-capable peer may
-                    // reply on the StatusV2 behaviour, so routing must accept both methods
-                    // against `pending_status_checks` to avoid falling through to the
-                    // "unknown request" warning and stalling the handshake.
+                    // Phase 10 (D-fulu-statusv2-handshake): Fulu nodes send StatusV2
+                    // outbound; pre-Fulu nodes send v1 Status. Both methods route against
+                    // `pending_status_checks` so `on_status_response` handles either.
                     if (method == RpcMethod::Status || method == RpcMethod::StatusV2)
                         && self.pending_status_checks.contains_key(&request_id)
                     {
@@ -1420,6 +1419,42 @@ impl<
                 if (method == RpcMethod::Status || method == RpcMethod::StatusV2)
                     && self.pending_status_checks.remove(&request_id).is_some()
                 {
+                    // Robustness fallback (D-fulu-statusv2-handshake): a Fulu node
+                    // dialing a not-yet-upgraded peer that does not negotiate
+                    // `status/2` gets OutboundFailure::UnsupportedProtocols on the
+                    // StatusV2 behaviour. Retry the handshake ONCE with v1 Status.
+                    // Gated on method == StatusV2 so this can only go v2 -> v1,
+                    // exactly once, never the reverse (no loop).
+                    if method == RpcMethod::StatusV2
+                        && matches!(
+                            error,
+                            request_response::OutboundFailure::UnsupportedProtocols
+                        )
+                    {
+                        tracing::debug!(
+                            %peer,
+                            "StatusV2 unsupported by peer; retrying handshake with v1 Status"
+                        );
+                        let (finalized_root, finalized_epoch) = {
+                            let cp = self.host.finalized_checkpoint();
+                            (cp.root, cp.epoch)
+                        };
+                        let (head_root, head_slot) = self.host.head();
+                        let local_status = BeaconStatus {
+                            fork_digest: self.host.current_fork_digest(),
+                            finalized_root,
+                            finalized_epoch,
+                            head_root,
+                            head_slot,
+                        };
+                        let v1_request_id = self.send_rpc_request(
+                            &peer,
+                            crate::rpc::types::RpcRequest::Status(local_status),
+                        );
+                        self.pending_status_checks
+                            .insert(v1_request_id, (peer, Instant::now()));
+                        return;
+                    }
                     // Handshake Status timed out or failed — abort and disconnect.
                     self.peer_manager.record_event(
                         peer,
@@ -1483,6 +1518,16 @@ impl<
                 tracing::debug!(%peer, ?request_id, "RPC response sent");
             }
         }
+    }
+
+    /// Whether the LOCAL node has activated the Fulu fork, used to select
+    /// `StatusV2` vs v1 `Status` on the outbound handshake.
+    ///
+    /// Delegates to `host.is_fulu_active()`. On `HostImpl` this compares the
+    /// wall-clock epoch to `fork_schedule.fulu_fork_epoch`. Per
+    /// `D-fulu-statusv2-handshake`.
+    fn local_node_is_fulu(&self) -> bool {
+        self.host.is_fulu_active()
     }
 
     /// Route an outbound RPC request to the per-method `request_response::Behaviour`.
@@ -1655,6 +1700,25 @@ impl<
     async fn on_status_response(&mut self, peer_id: PeerId, response: &RpcResponse<E>) {
         let peer_status = match response {
             RpcResponse::Status(s) => s.clone(),
+            // Fulu `Status v2` response. Project to the v1 fields for the
+            // fork-digest check and peer-manager update (which tracks only the
+            // v1 fields, mirroring the inbound dual-handler); record the v2
+            // `earliest_available_slot` for observability but do not store it.
+            // Per `D-fulu-statusv2-handshake` + `specs/fulu/p2p-interface.md`.
+            RpcResponse::StatusV2(s) => {
+                tracing::debug!(
+                    %peer_id,
+                    earliest_available_slot = s.earliest_available_slot.0,
+                    "received StatusV2 handshake response"
+                );
+                BeaconStatus {
+                    fork_digest: s.fork_digest,
+                    finalized_root: s.finalized_root,
+                    finalized_epoch: s.finalized_epoch,
+                    head_root: s.head_root,
+                    head_slot: s.head_slot,
+                }
+            }
             RpcResponse::Error { code, .. } => {
                 // Peer returned an error to our Status request, likely a fork-
                 // digest mismatch or a protocol error. Treat as a handshake
@@ -1831,13 +1895,26 @@ impl<
                     head_slot,
                 };
 
-                // Send the Status request; track only via pending_status_checks.
-                // The response handler uses that map to run fork-digest validation.
-                // Do not insert into pending_rpc — there is no oneshot to resolve.
-                let request_id = self.send_rpc_request(
-                    &peer_id,
-                    crate::rpc::types::RpcRequest::Status(local_status),
-                );
+                // Select the outbound Status version by the LOCAL node's current
+                // fork: at/after Fulu send StatusV2, otherwise v1 Status.
+                // Per `D-fulu-statusv2-handshake`. Track only via
+                // pending_status_checks (version-agnostic, keyed by request id);
+                // the response handler uses that map to run fork-digest
+                // validation. Do not insert into pending_rpc — there is no
+                // oneshot to resolve.
+                let req = if self.local_node_is_fulu() {
+                    crate::rpc::types::RpcRequest::StatusV2(StatusV2 {
+                        fork_digest: local_status.fork_digest,
+                        finalized_root: local_status.finalized_root,
+                        finalized_epoch: local_status.finalized_epoch,
+                        head_root: local_status.head_root,
+                        head_slot: local_status.head_slot,
+                        earliest_available_slot: self.host.earliest_available_slot(),
+                    })
+                } else {
+                    crate::rpc::types::RpcRequest::Status(local_status)
+                };
+                let request_id = self.send_rpc_request(&peer_id, req);
                 self.pending_status_checks
                     .insert(request_id, (peer_id, Instant::now()));
             } else {
@@ -3377,6 +3454,68 @@ impl<
     pub fn test_local_enr_seq(&self) -> u64 {
         self.discovery.local_enr().seq()
     }
+
+    /// Number of entries currently in `pending_status_checks` (Phase 10 test seam).
+    #[doc(hidden)]
+    pub fn test_pending_status_checks_len(&self) -> usize {
+        self.pending_status_checks.len()
+    }
+
+    /// Register `peer_id` in Handshaking state and submit a real `StatusV2`
+    /// outbound request via `send_rpc_request`, inserting the returned
+    /// `OutboundRequestId` into `pending_status_checks`. Returns the id so the
+    /// caller can simulate a failure event.
+    ///
+    /// The libp2p `send_request` call stores the request internally but will fire
+    /// `OutboundFailure::DialFailure` on the next poll since there is no real
+    /// connection. The test must consume the failure event (or use the simulate
+    /// seam) before it reaches the event loop. Phase 10 test seam.
+    #[doc(hidden)]
+    pub fn test_inject_status_v2_handshake(&mut self, peer_id: PeerId) -> OutboundRequestId {
+        self.peer_manager
+            .on_connected(peer_id, ConnectionDirection::Outbound, Vec::new());
+        self.peer_manager.on_handshaking(peer_id);
+        let v2_req = crate::rpc::types::RpcRequest::StatusV2(StatusV2 {
+            fork_digest: self.host.current_fork_digest(),
+            earliest_available_slot: self.host.earliest_available_slot(),
+            ..StatusV2::default()
+        });
+        let rid = self.send_rpc_request(&peer_id, v2_req);
+        self.pending_status_checks
+            .insert(rid, (peer_id, Instant::now()));
+        rid
+    }
+
+    /// Simulate an `OutboundFailure::UnsupportedProtocols` on the StatusV2
+    /// behaviour for `(peer, request_id)`. Drives the real fallback path in
+    /// `on_request_response_event` without a live connection. Phase 10 test seam.
+    #[doc(hidden)]
+    pub async fn test_simulate_status_v2_unsupported_protocols(
+        &mut self,
+        peer: PeerId,
+        request_id: OutboundRequestId,
+    ) {
+        let event = request_response::Event::OutboundFailure {
+            peer,
+            connection_id: libp2p::swarm::ConnectionId::new_unchecked(0),
+            request_id,
+            error: request_response::OutboundFailure::UnsupportedProtocols,
+        };
+        self.on_request_response_event(event, RpcMethod::StatusV2)
+            .await;
+    }
+
+    /// Drive `on_status_response` with a synthetic response for `peer_id`,
+    /// without going through the full `on_request_response_event` dispatch.
+    /// Phase 10 test seam.
+    #[doc(hidden)]
+    pub async fn test_drive_on_status_response(
+        &mut self,
+        peer_id: PeerId,
+        response: RpcResponse<E>,
+    ) {
+        self.on_status_response(peer_id, &response).await;
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -3387,6 +3526,7 @@ mod tests {
     use crate::host::{
         BlockProvider, ForkContext, GossipValidator, GossipVerdict, LightClientProvider,
     };
+    use crate::rpc::types::RpcResponse;
     use crate::types::SubnetId;
     use pharos_types::MainnetBeaconSpec;
     use pharos_types::altair::MetaData as AltairMetaData;
@@ -3937,6 +4077,86 @@ mod tests {
             network.test_local_enr_seq(),
             seq_after_first,
             "identical ExternalAddrConfirmed must NOT bump ENR seq again"
+        );
+    }
+
+    // ── Phase 10: v2→v1 fallback unit test ────────────────────────────────────
+
+    /// When a Fulu dialer sends StatusV2 and the responder returns
+    /// `UnsupportedProtocols`, the fallback path re-queues a v1 Status request
+    /// and the handshake completes normally.
+    ///
+    /// Exercises the `D-fulu-statusv2-handshake` robustness fallback:
+    ///   1. `test_inject_status_v2_handshake` registers the peer in Handshaking
+    ///      state and inserts a real StatusV2 request into `pending_status_checks`.
+    ///   2. `test_simulate_status_v2_unsupported_protocols` fires the
+    ///      OutboundFailure::UnsupportedProtocols arm, which removes the v2 entry
+    ///      and inserts a new v1 entry — exactly once, no loop.
+    ///   3. `test_drive_on_status_response` delivers a matching Status response,
+    ///      completing the handshake and emitting PeerConnected.
+    ///
+    /// Asserts: (a) after the failure, pending_status_checks has exactly 1 entry
+    /// (the v1 retry, not 0 which would mean the peer was disconnected); (b)
+    /// PeerConnected is emitted after the v1 response.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_v2_unsupported_protocols_fallback_completes_handshake() {
+        let discv5_sock: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let udp = std::net::UdpSocket::bind(discv5_sock).unwrap();
+        let port = udp.local_addr().unwrap().port();
+        drop(udp);
+
+        let (mut network, mut handle, _discovery_handle) =
+            NetworkBuilder::<MainnetBeaconSpec, MockHost, _>::new(MockHost)
+                .tcp_listen_port(0)
+                .discv5_addr(format!("127.0.0.1:{port}").parse().unwrap())
+                .build()
+                .await
+                .expect("NetworkBuilder::build failed");
+
+        let peer_id = libp2p::PeerId::random();
+
+        // Step 1: register a v2 handshake in pending_status_checks.
+        let v2_rid = network.test_inject_status_v2_handshake(peer_id);
+        assert_eq!(
+            network.test_pending_status_checks_len(),
+            1,
+            "one v2 entry in pending_status_checks after injection"
+        );
+
+        // Step 2: simulate UnsupportedProtocols on the StatusV2 request.
+        // The fallback removes the v2 entry and inserts a v1 retry.
+        network
+            .test_simulate_status_v2_unsupported_protocols(peer_id, v2_rid)
+            .await;
+        assert_eq!(
+            network.test_pending_status_checks_len(),
+            1,
+            "pending_status_checks must still have 1 entry after fallback (v1 retry)"
+        );
+
+        // Step 3: deliver a matching v1 Status response. This calls
+        // on_status_response which emits PeerConnected.
+        let fork_digest = ForkDigest::from_array([0u8; 4]); // MockHost's digest
+        let status = BeaconStatus {
+            fork_digest,
+            finalized_root: Root::default(),
+            finalized_epoch: Epoch(0),
+            head_root: Root::default(),
+            head_slot: Slot(0),
+        };
+        network
+            .test_drive_on_status_response(peer_id, RpcResponse::Status(status))
+            .await;
+
+        // Drain pending network events to find PeerConnected.
+        use std::time::Duration;
+        let event = tokio::time::timeout(Duration::from_secs(2), handle.next_event())
+            .await
+            .expect("PeerConnected not received within 2s")
+            .expect("event channel closed");
+        assert!(
+            matches!(event, NetworkEvent::PeerConnected(id) if id == peer_id),
+            "expected PeerConnected({peer_id}) after v1 fallback; got a different event"
         );
     }
 }

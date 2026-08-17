@@ -5350,3 +5350,116 @@ a routable `::1` the v6 UDP bind can fail for an environment reason; the test
 notes this explicitly and the `build_local_enr` IPv6 round-trip is additionally
 covered by a pure unit test so the ENR-building path is validated regardless of
 socket availability.
+
+### D-fulu-statusv2-handshake — full Fulu `Status v2` outbound handshake
+
+**Finding 7 (full scope).** Phase 2.2 made the *inbound* / response *routing*
+v2-aware: `pending_status_checks` is keyed by `OutboundRequestId` only, and both
+`RpcMethod::Status` and `RpcMethod::StatusV2` responses route into
+`on_status_response` (`network/mod.rs` Response + OutboundFailure arms). But the
+dialer still always sent v1 `Status` outbound, and `on_status_response` matched
+only `RpcResponse::Status`. This ADR completes Finding 7: a Fulu-capable node
+sends `Status v2` outbound and accepts both v1 and v2 responses.
+
+**Spec basis.** `specs/fulu/p2p-interface.md` (`Status v2`, protocol ID
+`/eth2/beacon_chain/req/status/2/`): the payload is the five v1 `Status` fields
+(`fork_digest`, `finalized_root`, `finalized_epoch`, `head_root`, `head_slot`)
+PLUS `earliest_available_slot: Slot` ([New in Fulu:EIP7594]) — the slot of the
+earliest available block the node can serve. The wire type (`StatusV2`), codec,
+size bounds, protocol string, the `rpc_status_v2` behaviour, and the inbound
+dual-handler already exist in Pharos; this ADR is purely the OUTBOUND send + the
+response-side acceptance.
+
+**Version-selection rule (decision: select by the LOCAL node's current fork).**
+There is no field in `Status` that reveals a peer's protocol version
+pre-handshake, and `specs/phase0/p2p-interface.md:177-178` requires exact-equality
+protocol negotiation. We therefore pick the outbound `Status` version from the
+local node's own fork position, not the peer's:
+
+- **At/after Fulu → send `StatusV2`**, populating `earliest_available_slot` from
+  `host.earliest_available_slot()` (already on the `ForkContext` trait).
+- **Before Fulu → send v1 `Status`** (unchanged behaviour).
+
+Rationale: a node past the Fulu fork epoch only shares a `fork_digest` with
+same-fork peers (the `on_status_response` fork-digest check already rejects
+cross-fork peers and Goodbye(2)s them), and every Fulu node serves `status/2`
+inbound (Pharos already does, via the dual-handler). So a Fulu node can safely
+default to v2 outbound.
+
+**"At/after Fulu" detection (decision: `fork_schedule.fulu_fork_epoch` epoch
+comparison, via a new `ForkContext::is_fulu_active()` method).**
+The `ForkContext` trait gains a new method `fn is_fulu_active(&self) -> bool`
+(default `false`). `HostImpl` overrides it as:
+```
+self.current_epoch() >= self.fork_context.fork_schedule.fulu_fork_epoch
+```
+This is the canonical, unambiguous check:
+
+- **Why not digest equality** (`current_fork_digest() ==
+  fork_digest_for(Fork::Fulu)`): both `current_fork_digest()` and
+  `fork_digest_for(Fork::Fulu)` on `HostImpl` call the SAME expression
+  `fulu_aware_fork_digest(self.current_epoch())` — so the comparison is a
+  tautology (always true) and would cause every production node to send StatusV2
+  regardless of its actual fork position. Digest equality is NOT a valid
+  discriminant for v1/v2 selection.
+- **Why epoch comparison is correct**: `fulu_fork_epoch` is
+  `FAR_FUTURE_EPOCH` (`u64::MAX`) on all pre-Fulu networks (verified: every
+  ForkSchedule in the test suite initialises `fulu_fork_epoch:
+  Epoch(u64::MAX)`). Pre-Fulu nodes get `false`; once the epoch clock passes
+  `fulu_fork_epoch`, all subsequent calls return `true`. BPO digest rotations
+  (EIP-7892) do not create a new fork epoch — the check remains `true` throughout
+  all BPO periods of the Fulu era. Any future post-Fulu fork would add its own
+  epoch field and its own `is_fulu_active`-style gate.
+- **Trait-default `false`**: test mocks and non-Fulu test nodes inherit `false`
+  without any change. Production-Fulu `TestHost`s set `fulu_active = true`
+  via the default constructor; pre-Fulu test nodes call `with_pre_fulu()` to
+  set `fulu_active = false`.
+
+**Robustness fallback (decision: v2 → v1 once, never v1 → v2).** During the
+fork transition a Fulu node may dial a not-yet-upgraded peer that does not
+negotiate `status/2`. libp2p surfaces this as
+`OutboundFailure::UnsupportedProtocols` on the `StatusV2` behaviour. The
+`OutboundFailure` arm, when the failed request is in `pending_status_checks`
+AND `method == RpcMethod::StatusV2` AND the error is
+`OutboundFailure::UnsupportedProtocols`, retries the handshake **once** with v1
+`Status`: it rebuilds `local_status` from the host, sends it on the
+`rpc_status` behaviour, and re-inserts the new `OutboundRequestId` into
+`pending_status_checks`. The fallback is gated on `method == RpcMethod::StatusV2`
+only, so a v1 `Status` failure never re-arms a v2 request — the retry can only
+go v2 → v1, exactly once, never the reverse, so it cannot loop. Any other
+`OutboundFailure` (timeout, dial failure, connection-closed, IO) on a status
+request keeps the existing behaviour: score `HandshakeFail::Timeout`, disconnect.
+
+**Which map keys the v2 request (decision: same map, version-agnostic).**
+`pending_status_checks: HashMap<OutboundRequestId, (PeerId, Instant)>` keys both
+v1 and v2 status handshakes by `OutboundRequestId` — exactly as Phase 2.2 left
+it. The dialer inserts under whichever request id `send_rpc_request` returns
+(v1 or v2), and the Response/OutboundFailure arms already match both methods
+against this single map. No new map, no version tag on the key.
+
+**`earliest_available_slot` handling in `on_status_response` (decision: mirror
+the inbound dual-handler — validate the v1 projection, record/log the v2 field,
+do not feed it to the peer manager).** The new `RpcResponse::StatusV2(s)` arm
+projects `s` to the five v1 fields for the existing `fork_digest` check and
+`peer_manager.on_status`, exactly as the v1 arm does; it additionally
+`tracing::debug!`s the peer's `earliest_available_slot`. The peer manager tracks
+only the v1 `Status` fields (per the inbound handler's comment at
+`rpc/handler.rs:110-119`), so the v2 field is observed and logged but not stored
+— consistent with the inbound side, which drops it via the same v1 projection.
+The handshake completes identically for both arms: `on_handshake_complete`,
+`NetworkEvent::PeerConnected`, and `ScoreEvent::RpcSuccess { method: Status }`
+(the score bucket stays `Status` for both versions so v1/v2 success is fungible,
+matching the inbound handler at `network/mod.rs:1268-1273`).
+
+**Verification.** Two integration tests in `tests/rpc.rs` exercise the full
+two-node handshake over real libp2p transports, mirroring the existing
+`status_handshake` test: (a) `status_handshake_v2` connects two Fulu-capable
+`TestHost`s (`current_fork_digest() == fork_digest_for(Fork::Fulu)`, the default
+for `TestHost::new`) and asserts both sides reach `PeerConnected` and record
+`RpcSuccess { Status }` — the dialer sends `StatusV2`; (b)
+`status_handshake_v1_pre_fulu` connects two pre-Fulu `TestHost`s configured via
+`with_distinct_fulu_fork_digest` so `fork_digest_for(Fork::Fulu)` differs from
+`current_fork_digest()`, forcing the v1 `Status` outbound path, and asserts both
+sides still reach `PeerConnected`. A `TestHost` builder
+`with_distinct_fulu_fork_digest(ForkDigest)` is added so the test can represent a
+pre-Fulu node distinctly from a Fulu node.

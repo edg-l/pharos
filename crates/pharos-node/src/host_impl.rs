@@ -990,6 +990,36 @@ impl<E: BeaconSpec> ForkContext for HostImpl<E> {
     fn custody_group_count(&self) -> u64 {
         self.effective_cgc()
     }
+
+    /// Whether the Fulu fork has activated at the current wall-clock epoch.
+    ///
+    /// Compares `current_epoch()` to `fork_schedule.fulu_fork_epoch`. Returns
+    /// `true` iff the local node is at/after Fulu. Pre-Fulu nodes (or nodes
+    /// where `fulu_fork_epoch` is `FAR_FUTURE_EPOCH`, the default on test
+    /// ForkSchedules) return `false`. BPO digest rotations do not affect this
+    /// — they rotate the fork digest within Fulu but do not advance the epoch
+    /// past a new fork; the check remains `true` once Fulu is active.
+    ///
+    /// Per `D-fulu-statusv2-handshake`.
+    fn is_fulu_active(&self) -> bool {
+        self.current_epoch() >= self.fork_context.fork_schedule.fulu_fork_epoch
+    }
+
+    /// The slot of the earliest available block this node can serve, for the
+    /// Fulu `Status v2` `earliest_available_slot` field.
+    ///
+    /// Returns the start slot of the finalized checkpoint epoch as a
+    /// conservative lower bound: the finalized block and state are always
+    /// present in the local store. A dedicated `anchor_slot` or `split_slot`
+    /// accessor would be more precise (it would reflect the cold-freeze
+    /// boundary), but neither is currently exposed as a public `Store` method.
+    /// The finalized epoch's start slot never overclaims availability.
+    ///
+    /// Per `D-fulu-statusv2-handshake` + `specs/fulu/p2p-interface.md`.
+    fn earliest_available_slot(&self) -> Slot {
+        let cp = self.fork_choice.read().finalized_checkpoint.clone();
+        cp.epoch.start_slot(E::SLOTS_PER_EPOCH)
+    }
 }
 
 // ── BlockProvider ─────────────────────────────────────────────────────────────

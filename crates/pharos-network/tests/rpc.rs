@@ -96,6 +96,92 @@ async fn status_handshake() {
     );
 }
 
+/// Phase 10 (D-fulu-statusv2-handshake): two Fulu-capable nodes complete the
+/// handshake using the v2 `StatusV2` outbound path.
+///
+/// `TestHost::new(fd())` has `fulu_active = true` by default, so
+/// `is_fulu_active()` returns `true` and `local_node_is_fulu()` is true.
+/// The dialer therefore sends `StatusV2`. PeerConnected on both sides proves
+/// the v2 exchange completed; the inbound dual-handler records
+/// `RpcSuccess { Status }` for v2 just as for v1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_handshake_v2() {
+    let scorer_a = CapturingScorer::default();
+    let scorer_b = CapturingScorer::default();
+
+    let mut node_a =
+        spawn_node_with_scorer(vec![], TestHost::new(fd()), false, Some(scorer_a.clone())).await;
+    let mut node_b =
+        spawn_node_with_scorer(vec![], TestHost::new(fd()), false, Some(scorer_b.clone())).await;
+
+    connect_and_wait(&mut node_a, &mut node_b).await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Pin that StatusV2 was on the wire: when node B (responder) receives an
+    // inbound StatusV2 request, `on_request_response_event` records
+    // `RpcSuccess{Status}` (is_inbound_status path) AND then, at line
+    // `if method != RpcMethod::Status`, also records `RpcSuccess{StatusV2}`
+    // (because method == StatusV2, which is != Status). A v1 path only records
+    // `RpcSuccess{Status}` on the inbound side. So the presence of
+    // `RpcSuccess{StatusV2}` on scorer_b proves v2 was on the wire.
+    assert!(
+        scorer_a.0.lock().unwrap().iter().any(
+            |e| matches!(e, ScoreEvent::RpcSuccess { method } if *method == RpcMethod::Status)
+        ),
+        "v2 node A scorer missing ScoreEvent::RpcSuccess {{ method: Status }}"
+    );
+    assert!(
+        scorer_b.0.lock().unwrap().iter().any(
+            |e| matches!(e, ScoreEvent::RpcSuccess { method } if *method == RpcMethod::Status)
+        ),
+        "v2 node B scorer missing ScoreEvent::RpcSuccess {{ method: Status }}"
+    );
+    // Wire-level pin: the responder (B) must have seen an inbound StatusV2 request.
+    assert!(
+        scorer_b.0.lock().unwrap().iter().any(
+            |e| matches!(e, ScoreEvent::RpcSuccess { method } if *method == RpcMethod::StatusV2)
+        ),
+        "v2 node B scorer missing RpcSuccess{{ method: StatusV2 }}; v2 was not on the wire"
+    );
+}
+
+/// Phase 10 (D-fulu-statusv2-handshake): two PRE-Fulu nodes still complete the
+/// handshake using the v1 `Status` outbound path.
+///
+/// `with_pre_fulu()` sets `fulu_active = false`, so `is_fulu_active()` returns
+/// `false` and `local_node_is_fulu()` is false. The dialer sends v1 `Status`.
+/// Both nodes share the same phase-0 `fork_digest`, so the handshake's
+/// fork-digest check passes and PeerConnected fires on both sides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_handshake_v1_pre_fulu() {
+    let scorer_a = CapturingScorer::default();
+    let scorer_b = CapturingScorer::default();
+
+    let host_a = TestHost::new(fd()).with_pre_fulu();
+    let host_b = TestHost::new(fd()).with_pre_fulu();
+
+    let mut node_a = spawn_node_with_scorer(vec![], host_a, false, Some(scorer_a.clone())).await;
+    let mut node_b = spawn_node_with_scorer(vec![], host_b, false, Some(scorer_b.clone())).await;
+
+    connect_and_wait(&mut node_a, &mut node_b).await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert!(
+        scorer_a.0.lock().unwrap().iter().any(
+            |e| matches!(e, ScoreEvent::RpcSuccess { method } if *method == RpcMethod::Status)
+        ),
+        "v1 node A scorer missing ScoreEvent::RpcSuccess {{ method: Status }}"
+    );
+    assert!(
+        scorer_b.0.lock().unwrap().iter().any(
+            |e| matches!(e, ScoreEvent::RpcSuccess { method } if *method == RpcMethod::Status)
+        ),
+        "v1 node B scorer missing ScoreEvent::RpcSuccess {{ method: Status }}"
+    );
+}
+
 /// A sends Ping(42) to B; B responds with its seq_number (0 from default MetaData).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ping_round_trip() {

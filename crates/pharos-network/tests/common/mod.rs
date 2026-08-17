@@ -46,6 +46,11 @@ pub struct TestHost {
     /// phase-0 digest is used for `Fork::Bellatrix` (safe for tests that don't
     /// exercise bellatrix).
     bellatrix_fork_digest: Option<ForkDigest>,
+    /// Whether this test host has the Fulu fork active, controls `is_fulu_active()`.
+    /// Default `true` (Fulu-capable) so integration tests use the v2 path by
+    /// default; set to `false` via `with_pre_fulu()` to exercise v1 `Status`.
+    /// Per `D-fulu-statusv2-handshake`.
+    fulu_active: bool,
     blocks: Arc<
         Mutex<HashMap<Root, <MainnetBeaconSpec as pharos_types::BeaconSpec>::SignedBeaconBlock>>,
     >,
@@ -77,6 +82,7 @@ impl TestHost {
             fork_digest,
             altair_fork_digest: None,
             bellatrix_fork_digest: None,
+            fulu_active: true,
             blocks: Arc::new(Mutex::new(HashMap::new())),
             reject_proposer_index: None,
             ignore_parent_unseen_for_slot: None,
@@ -95,6 +101,15 @@ impl TestHost {
     /// Builder helper: configure a bellatrix fork digest for bellatrix gossip tests.
     pub fn with_bellatrix_fork_digest(mut self, bellatrix_digest: ForkDigest) -> Self {
         self.bellatrix_fork_digest = Some(bellatrix_digest);
+        self
+    }
+
+    /// Builder helper: mark this node as PRE-Fulu so the Phase-10 StatusV2
+    /// version-selection uses v1 `Status` outbound. Sets `is_fulu_active() ==
+    /// false`, mirroring a production `HostImpl` where `current_epoch <
+    /// fulu_fork_epoch`. Per `D-fulu-statusv2-handshake`.
+    pub fn with_pre_fulu(mut self) -> Self {
+        self.fulu_active = false;
         self
     }
 
@@ -224,6 +239,20 @@ impl ForkContext for TestHost {
 
     fn local_metadata(&self) -> AltairMetaData {
         AltairMetaData::default()
+    }
+
+    /// The earliest available slot for the Fulu `Status v2` outbound handshake.
+    /// `TestHost` reports its configured head slot so the v2 payload carries a
+    /// non-default value (exercises the `earliest_available_slot` round-trip).
+    fn earliest_available_slot(&self) -> Slot {
+        self.head_slot
+    }
+
+    /// Whether this test node has Fulu active. Controlled via `with_pre_fulu()`.
+    /// Default is `true` (Fulu-capable). Mirrors `HostImpl::is_fulu_active()`
+    /// per `D-fulu-statusv2-handshake`.
+    fn is_fulu_active(&self) -> bool {
+        self.fulu_active
     }
 }
 

@@ -103,12 +103,30 @@ pub trait ForkContext: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Whether the local node has activated the Fulu fork.
+    ///
+    /// Used by the outbound Status version selection
+    /// (`D-fulu-statusv2-handshake`): `true` → send `StatusV2`, `false` →
+    /// send v1 `Status`. The default returns `false` so pre-Fulu test mocks and
+    /// the `Arc<T>` blanket compile unchanged.
+    ///
+    /// `HostImpl` overrides this by comparing the wall-clock epoch to
+    /// `fork_schedule.fulu_fork_epoch`. This correctly handles:
+    /// - Pre-Fulu nodes (epoch < fulu_fork_epoch): returns false.
+    /// - Fulu nodes (epoch >= fulu_fork_epoch): returns true, regardless of
+    ///   BPO digest rotation (which doesn't create a new fork, just rotates the
+    ///   digest within Fulu). There is no separate "after Fulu" fork variant
+    ///   today; any post-Fulu fork would add a new epoch condition here.
+    fn is_fulu_active(&self) -> bool {
+        false
+    }
+
     /// The slot of the earliest available block (`SignedBeaconBlock`) this node
     /// can serve, for the Fulu `Status` v2 `earliest_available_slot` field.
     ///
     /// Per `specs/fulu/p2p-interface.md` (`Status v2`). The default returns
     /// `Slot(0)` (genesis) so non-Fulu test mocks compile unchanged; HostImpl
-    /// overrides it with the anchor / split slot.
+    /// overrides it with the finalized-checkpoint slot.
     fn earliest_available_slot(&self) -> Slot {
         Slot::default()
     }
@@ -610,6 +628,10 @@ where
 
     fn custody_columns(&self, node_id: [u8; 32]) -> Vec<u64> {
         (**self).custody_columns(node_id)
+    }
+
+    fn is_fulu_active(&self) -> bool {
+        (**self).is_fulu_active()
     }
 
     fn earliest_available_slot(&self) -> Slot {
