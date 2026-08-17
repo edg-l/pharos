@@ -52,6 +52,15 @@ pub(crate) enum DiscoveryCommand {
         nfd: Option<[u8; 4]>,
         reply: oneshot::Sender<Result<(), NetworkError>>,
     },
+    /// Update the local ENR's TCP socket to a confirmed external address.
+    ///
+    /// Issued by the `Network` event loop when libp2p confirms a new external
+    /// address (`SwarmEvent::ExternalAddrConfirmed`). Calls
+    /// `discv5.update_local_enr_socket(addr, is_tcp = true)` so peers
+    /// discovering us over discv5 dial the routable address rather than a
+    /// possibly-wrong configured socket. discv5 bumps the ENR seq + re-signs
+    /// only when the socket actually changed (`D-enr-external-addr-update`).
+    UpdateExternalSocket(std::net::SocketAddr),
     /// Read the current local ENR. Used by tests and operational diagnostics
     /// to confirm field updates landed.
     LocalEnr { reply: oneshot::Sender<Enr> },
@@ -238,6 +247,60 @@ impl DiscoveryService {
                     self.persist_enr_seq();
                 }
                 let _ = reply.send(result);
+            }
+            DiscoveryCommand::UpdateExternalSocket(addr) => {
+                // libp2p's confirmed external address is the TCP transport
+                // socket, so update the ENR's tcp4/tcp6 field. discv5 returns
+                // `true` only when the socket actually changed (and in that
+                // case it has already bumped the ENR seq + re-signed); persist
+                // the new seq only on a real change. (`D-enr-external-addr-update`)
+                //
+                // IP-clobber warning: `update_local_enr_socket(is_tcp=true)` calls
+                // `set_tcp_socket`, which also overwrites the ENR `ip`/`ip6` field
+                // that discv5 uses for UDP reachability. Under asymmetric NAT the
+                // TCP-observed external IP can differ from the UDP one; warn here so
+                // the skew is visible in logs even though we still proceed (libp2p's
+                // confirmed addr is authoritative for our TCP advertisement).
+                let enr = self.discv5.local_enr();
+                let incoming_ip = addr.ip();
+                match addr {
+                    std::net::SocketAddr::V4(_) => {
+                        if let Some(current_ip4) = enr.ip4()
+                            && std::net::IpAddr::V4(current_ip4) != incoming_ip
+                        {
+                            tracing::warn!(
+                                current = %current_ip4,
+                                confirmed = %incoming_ip,
+                                "external TCP IP differs from ENR ip4; update_local_enr_socket \
+                                 will overwrite the ip4 field used for discv5 UDP reachability \
+                                 — possible asymmetric NAT (`D-enr-external-addr-update`)"
+                            );
+                        }
+                    }
+                    std::net::SocketAddr::V6(_) => {
+                        if let Some(current_ip6) = enr.ip6()
+                            && std::net::IpAddr::V6(current_ip6) != incoming_ip
+                        {
+                            tracing::warn!(
+                                current = %current_ip6,
+                                confirmed = %incoming_ip,
+                                "external TCP IP differs from ENR ip6; update_local_enr_socket \
+                                 will overwrite the ip6 field used for discv5 UDP reachability \
+                                 — possible asymmetric NAT (`D-enr-external-addr-update`)"
+                            );
+                        }
+                    }
+                }
+                let changed = self.discv5.update_local_enr_socket(addr, true);
+                if changed {
+                    self.persist_enr_seq();
+                } else {
+                    tracing::debug!(
+                        %addr,
+                        "external-socket ENR update suppressed: discv5 reports no change \
+                         (socket already matches or ENR key error)"
+                    );
+                }
             }
             DiscoveryCommand::LocalEnr { reply } => {
                 let _ = reply.send(self.local_enr());

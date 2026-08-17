@@ -319,4 +319,80 @@ mod tests {
         // Drop the service cleanly; Discv5::drop calls shutdown().
         drop(service);
     }
+
+    /// Integration test for `D-enr-external-addr-update` (Finding 9, Task 6.5).
+    ///
+    /// Synthesizes `ExternalAddrConfirmed` by driving
+    /// `UpdateExternalSocket(addr)` through `handle_discovery_command`, then
+    /// asserts: (1) the local ENR's tcp4 socket reflects the new address, and
+    /// (2) the ENR seq bumps EXACTLY ONCE across two identical confirmations.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn external_addr_updates_enr_socket_and_bumps_seq_once() {
+        use crate::discovery::handle::DiscoveryCommand;
+        use std::net::SocketAddr;
+
+        let key = CombinedKey::generate_secp256k1();
+        let attnets = Bitvector::<ATTESTATION_SUBNET_COUNT>::new();
+
+        let cfg = DiscoveryConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            tcp_port: 9000,
+            quic_port: None,
+            bootnodes: Vec::new(),
+            local_key: key,
+            fork_id: test_fork_id(),
+            attnets,
+            cgc: None,
+            network_dir: None,
+        };
+
+        let mut service = DiscoveryService::start(cfg)
+            .await
+            .expect("DiscoveryService::start failed");
+
+        let initial_seq = service.local_enr().seq();
+        let new_socket: SocketAddr = "203.0.113.7:9001".parse().unwrap();
+
+        // Precondition: confirm the ENR tcp4 socket is NOT already set to
+        // new_socket, so the first UpdateExternalSocket call is a genuine change.
+        // If a future refactor initialises the ENR with this address, this
+        // assertion will fail loudly rather than silently passing.
+        assert_ne!(
+            service.local_enr().tcp4_socket(),
+            Some(match new_socket {
+                SocketAddr::V4(v4) => v4,
+                SocketAddr::V6(_) => unreachable!("test uses an ipv4 socket"),
+            }),
+            "precondition: ENR tcp4 socket must differ from new_socket before first update"
+        );
+
+        // First confirmation: real change → seq bumps, ENR reflects the socket.
+        service.handle_discovery_command(DiscoveryCommand::UpdateExternalSocket(new_socket));
+        let after_first = service.local_enr();
+        assert_eq!(
+            after_first.tcp4_socket(),
+            Some(match new_socket {
+                SocketAddr::V4(v4) => v4,
+                SocketAddr::V6(_) => unreachable!("test uses an ipv4 socket"),
+            }),
+            "ENR tcp4 socket must reflect the confirmed external address"
+        );
+        let seq_after_first = after_first.seq();
+        assert_eq!(
+            seq_after_first,
+            initial_seq + 1,
+            "first external-socket update must bump the ENR seq once"
+        );
+
+        // Second identical confirmation: no change → seq must NOT bump again.
+        service.handle_discovery_command(DiscoveryCommand::UpdateExternalSocket(new_socket));
+        let after_second = service.local_enr();
+        assert_eq!(
+            after_second.seq(),
+            seq_after_first,
+            "identical external-socket update must NOT bump the ENR seq again"
+        );
+
+        drop(service);
+    }
 }

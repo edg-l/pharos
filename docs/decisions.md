@@ -4968,3 +4968,81 @@ shape, the `BlockRewards.total == sum(components)` identity, signed/unsigned
 JSON-string encoding, and 404/400/503; the reward MATH (and the electra
 projection path) is proven by the conformance regression gate, not by
 hand-built electra states.
+
+## M-PeeringHardening decisions
+
+Findings from a peering-robustness audit of `pharos-network`. Each finding is
+a discrete hardening item; this section records the ADRs as the phases land.
+
+### D-enr-external-addr-update — confirmed external address propagates into the local ENR
+
+**Finding 9.** When libp2p's swarm autonat/observed-address machinery confirms a
+routable external address, the local discv5 ENR previously did NOT learn about
+it (the `SwarmEvent::ExternalAddrConfirmed` arm only logged + re-emitted the
+event for the Beacon API identity cache). A node behind NAT therefore kept
+advertising its (possibly wrong) configured TCP socket in the ENR, so peers
+discovering us over discv5 could not dial us. This ADR wires the confirmed
+external address through to the ENR.
+
+**Flow.** `Network` event loop receives `SwarmEvent::ExternalAddrConfirmed
+{ address: Multiaddr }`. The `Multiaddr` carries `/ip{4,6}/.../tcp/<port>`
+(libp2p's external transport is TCP). The arm:
+
+1. Parses the `Multiaddr` into a `SocketAddr` by walking its protocol stack for
+   an `Ip4`/`Ip6` component plus a `Tcp` port. A `Multiaddr` without both is
+   ignored (e.g. a QUIC-only or DNS multiaddr we cannot map to a discv5 socket).
+2. Compares against `Network::last_external_addr` (an `Option<SocketAddr>`
+   cached on the event loop). If the parsed socket equals the last one we
+   already dispatched, the arm does nothing — **change-only dispatch** prevents
+   redundant commands and redundant ENR seq churn from libp2p re-confirming the
+   same address repeatedly. Only on an actual change do we update
+   `last_external_addr` and send the discovery command.
+3. Dispatches `DiscoveryCommand::UpdateExternalSocket(SocketAddr)` to the
+   discovery actor (the same channel cross-fork ENR updates already use), then
+   re-emits `NetworkEvent::ExternalAddrConfirmed` for downstream consumers
+   exactly as before.
+
+**discv5 0.10.4 ENR-update API.** The plan text referenced 0.10.2; the pinned
+dependency is **discv5 0.10.4** (`Cargo.lock`). The real API is
+`Discv5::update_local_enr_socket(&self, socket_addr: SocketAddr, is_tcp: bool)
+-> bool` (`discv5-0.10.4/src/discv5.rs:403`). It takes `&self` (interior
+mutability via `RwLock`), so the handler needs no `&mut`. We call it with
+`is_tcp = true` because the confirmed libp2p external address is the TCP
+transport socket (the discv5 UDP socket is managed by discv5's own
+connectivity-state machine, not by libp2p). The method already encodes
+**only-on-change + seq-bump-on-change semantics internally**: it returns early
+with `false` when the supplied socket equals the current `tcp{4,6}_socket()`,
+and only calls `set_tcp_socket` (which bumps the ENR seq and re-signs) when the
+socket actually differs, returning `true`. We layer our own `last_external_addr`
+guard on top so we never even issue the command for an unchanged address; the
+discv5 internal guard is the second line of defence. The handler persists the
+ENR seq (`persist_enr_seq`, `D-enr-seq-persistence`) only when
+`update_local_enr_socket` returns `true`.
+
+**Debounce / only-on-change decision.** Two layers: (1) the event-loop
+`last_external_addr` cache short-circuits identical confirmations before any
+command is sent; (2) `update_local_enr_socket` itself is a no-op (returns
+`false`, no seq bump) when the socket is unchanged. The net guarantee, asserted
+by the integration test, is that **two identical `ExternalAddrConfirmed` events
+bump the ENR seq exactly once.** No timer-based debounce is added: libp2p only
+emits `ExternalAddrConfirmed` on a state transition, and the two-layer
+change-only guard already collapses duplicates, so a timer would add latency
+without removing churn.
+
+**IP-clobber caveat.** `update_local_enr_socket(is_tcp=true)` calls
+`set_tcp_socket`, which also rewrites the ENR `ip`/`ip6` field that discv5 uses
+for UDP reachability. Under asymmetric NAT the TCP-observed external IP can
+differ from the UDP one; this is a known limitation. The handler emits a
+`tracing::warn!` when the incoming IP differs from `enr.ip4()`/`enr.ip6()` so
+the skew is visible in logs. The update still proceeds: libp2p's confirmed
+address is the best available signal for our TCP advertisement.
+
+**Verification.** Two test suites together cover the full path. A
+`multi_thread` test in `network/mod.rs` builds a real `Network`, calls the
+`test_on_external_addr_confirmed` seam (which runs the real `multiaddr_to_tcp_socket`
+parse and `last_external_addr` change-only gate), and asserts the ENR seq
+advances exactly once across two identical multiaddr confirmations. A companion
+test in `discovery/service.rs` directly exercises `handle_discovery_command` +
+`update_local_enr_socket`, asserting the ENR tcp4 socket and seq. Unit tests for
+`multiaddr_to_tcp_socket` cover IPv4, IPv6, no-TCP, UDP/QUIC-only, and
+multi-IP (rejected) inputs.

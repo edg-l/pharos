@@ -369,6 +369,13 @@ pub struct Network<
 > {
     swarm: Swarm<PharosBehaviour<E>>,
     discovery: DiscoveryService,
+    /// Last external `SocketAddr` dispatched into the local ENR.
+    ///
+    /// libp2p re-confirms the same external address repeatedly; this cache lets
+    /// the `ExternalAddrConfirmed` arm dispatch `UpdateExternalSocket` only when
+    /// the address actually changes, avoiding redundant ENR seq churn
+    /// (`D-enr-external-addr-update`).
+    last_external_addr: Option<SocketAddr>,
     peer_manager: PeerManager<S>,
     host: Arc<H>,
     /// Cached local `MetaData` (Altair v2) for lock-free reads by RPC handlers.
@@ -1035,7 +1042,7 @@ impl<
             }
             libp2p::swarm::SwarmEvent::ExternalAddrConfirmed { address } => {
                 tracing::info!(%address, "external address confirmed");
-                // ENR update deferred to M3b (cross-fork ENR migration).
+                self.apply_confirmed_external_addr(&address);
                 self.emit_event(NetworkEvent::ExternalAddrConfirmed { address })
                     .await;
             }
@@ -2344,6 +2351,43 @@ pub(crate) fn classify_dial_error(err: &libp2p::swarm::DialError) -> Option<Hand
     }
 }
 
+/// Extract the TCP `SocketAddr` from a libp2p `Multiaddr`.
+///
+/// Returns `Some` only when the multiaddr carries exactly one `Ip4`/`Ip6`
+/// component followed by a `Tcp` port (the shape of a libp2p TCP external
+/// address). QUIC-only, DNS, or otherwise non-TCP multiaddrs return `None`
+/// because they cannot be mapped to a discv5 TCP ENR socket.
+///
+/// Multi-IP multiaddrs (e.g. `/ip4/.../ip6/.../tcp/N`) are also rejected:
+/// if a second IP component appears before the `Tcp` component, `None` is
+/// returned so we never silently pick the wrong IP
+/// (`D-enr-external-addr-update`).
+pub(crate) fn multiaddr_to_tcp_socket(addr: &libp2p::Multiaddr) -> Option<SocketAddr> {
+    use libp2p::multiaddr::Protocol;
+
+    let mut ip: Option<IpAddr> = None;
+    for proto in addr.iter() {
+        match proto {
+            Protocol::Ip4(v4) => {
+                if ip.is_some() {
+                    // Second IP before Tcp: malformed multi-IP multiaddr; reject.
+                    return None;
+                }
+                ip = Some(IpAddr::V4(v4));
+            }
+            Protocol::Ip6(v6) => {
+                if ip.is_some() {
+                    return None;
+                }
+                ip = Some(IpAddr::V6(v6));
+            }
+            Protocol::Tcp(port) => return ip.map(|ip| SocketAddr::new(ip, port)),
+            _ => {}
+        }
+    }
+    None
+}
+
 // ── NetworkBuilder ────────────────────────────────────────────────────────────
 
 /// Builder for `Network<E, H, S>`.
@@ -2910,6 +2954,7 @@ impl<
         let network = Network {
             swarm,
             discovery,
+            last_external_addr: None,
             peer_manager,
             host: self.host,
             host_metadata,
@@ -3167,6 +3212,36 @@ impl<
     #[doc(hidden)]
     pub fn test_mark_ping_inflight(&mut self, peer_id: PeerId) {
         self.pending_ping_peers.insert(peer_id);
+    }
+
+    /// Propagate a libp2p-confirmed external TCP socket into the local ENR so
+    /// discv5 peers dial the routable address. Parses the multiaddr, then
+    /// dispatches `UpdateExternalSocket` only when the socket actually changed,
+    /// to avoid redundant ENR seq churn from libp2p re-confirming the same
+    /// address (`D-enr-external-addr-update`).
+    fn apply_confirmed_external_addr(&mut self, address: &libp2p::Multiaddr) {
+        if let Some(socket) = multiaddr_to_tcp_socket(address)
+            && self.last_external_addr != Some(socket)
+        {
+            self.last_external_addr = Some(socket);
+            self.discovery
+                .handle_discovery_command(DiscoveryCommand::UpdateExternalSocket(socket));
+        }
+    }
+
+    /// Phase 6 test seam: invoke the real `ExternalAddrConfirmed` gate logic
+    /// (`apply_confirmed_external_addr`) without the surrounding `emit_event`
+    /// (no event-tx needed for the unit test). Shares the exact code path the
+    /// swarm-event arm runs, so a regression in the gate fails this test.
+    #[doc(hidden)]
+    pub fn test_on_external_addr_confirmed(&mut self, address: libp2p::Multiaddr) {
+        self.apply_confirmed_external_addr(&address);
+    }
+
+    /// Return the current local ENR seq via the discovery service (Phase 6 test seam).
+    #[doc(hidden)]
+    pub fn test_local_enr_seq(&self) -> u64 {
+        self.discovery.local_enr().seq()
     }
 }
 
@@ -3586,6 +3661,148 @@ mod tests {
         assert!(
             network.test_pending_ping_peers_contains(&peer_id),
             "peer must still be in pending_ping_peers after the skipped tick"
+        );
+    }
+
+    // ── Phase 6: multiaddr_to_tcp_socket unit tests ──────────────────────────
+
+    /// `/ip4/.../tcp/N` -> `Some(SocketAddrV4)`.
+    #[test]
+    fn multiaddr_to_tcp_socket_ip4_tcp_some() {
+        let ma: libp2p::Multiaddr = "/ip4/1.2.3.4/tcp/9000".parse().unwrap();
+        let result = super::multiaddr_to_tcp_socket(&ma);
+        assert_eq!(
+            result,
+            Some(SocketAddr::new(
+                std::net::IpAddr::V4("1.2.3.4".parse().unwrap()),
+                9000
+            )),
+            "/ip4/.../tcp/N must parse to a V4 SocketAddr"
+        );
+    }
+
+    /// `/ip6/.../tcp/N` -> `Some(SocketAddrV6)`.
+    #[test]
+    fn multiaddr_to_tcp_socket_ip6_tcp_some() {
+        let ma: libp2p::Multiaddr = "/ip6/2001:db8::1/tcp/9000".parse().unwrap();
+        let result = super::multiaddr_to_tcp_socket(&ma);
+        assert_eq!(
+            result,
+            Some(SocketAddr::new(
+                std::net::IpAddr::V6("2001:db8::1".parse().unwrap()),
+                9000
+            )),
+            "/ip6/.../tcp/N must parse to a V6 SocketAddr"
+        );
+    }
+
+    /// `/ip4/...` without a `Tcp` component -> `None`.
+    #[test]
+    fn multiaddr_to_tcp_socket_ip4_no_tcp_none() {
+        let ma: libp2p::Multiaddr = "/ip4/1.2.3.4".parse().unwrap();
+        assert_eq!(
+            super::multiaddr_to_tcp_socket(&ma),
+            None,
+            "multiaddr without Tcp component must return None"
+        );
+    }
+
+    /// QUIC / UDP-only multiaddr -> `None`.
+    #[test]
+    fn multiaddr_to_tcp_socket_udp_quic_none() {
+        // UDP-only (discv5 style)
+        let ma: libp2p::Multiaddr = "/ip4/1.2.3.4/udp/9001".parse().unwrap();
+        assert_eq!(
+            super::multiaddr_to_tcp_socket(&ma),
+            None,
+            "UDP-only multiaddr must return None"
+        );
+        // QUIC-v1 (ip4/udp/quic-v1 — no Tcp component)
+        let ma2: libp2p::Multiaddr = "/ip4/1.2.3.4/udp/9001/quic-v1".parse().unwrap();
+        assert_eq!(
+            super::multiaddr_to_tcp_socket(&ma2),
+            None,
+            "QUIC multiaddr must return None"
+        );
+    }
+
+    /// `/ip4/.../ip6/.../tcp/N` (multi-IP) -> `None` (hardening).
+    #[test]
+    fn multiaddr_to_tcp_socket_multi_ip_none() {
+        // Manually build a multi-IP multiaddr since the string parser may reject it.
+        use libp2p::multiaddr::Protocol;
+        let mut ma = libp2p::Multiaddr::empty();
+        ma.push(Protocol::Ip4("1.2.3.4".parse().unwrap()));
+        ma.push(Protocol::Ip6("2001:db8::1".parse().unwrap()));
+        ma.push(Protocol::Tcp(9000));
+        assert_eq!(
+            super::multiaddr_to_tcp_socket(&ma),
+            None,
+            "multi-IP multiaddr must return None to avoid last-IP-wins ambiguity"
+        );
+    }
+
+    // ── Phase 6: last_external_addr gate test ────────────────────────────────
+
+    /// Two identical `ExternalAddrConfirmed` events must advance the ENR seq
+    /// exactly once.
+    ///
+    /// This test exercises the real `multiaddr_to_tcp_socket` parse AND the
+    /// `last_external_addr` change-only gate via `test_on_external_addr_confirmed`.
+    /// If either the parse or the gate were removed/inverted, the seq assertion
+    /// would fail.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn external_addr_confirmed_bumps_seq_exactly_once() {
+        let discv5_sock: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let udp = std::net::UdpSocket::bind(discv5_sock).unwrap();
+        let port = udp.local_addr().unwrap().port();
+        drop(udp); // release so discv5 can bind
+
+        let (mut network, _handle, _discovery_handle) =
+            NetworkBuilder::<MainnetBeaconSpec, MockHost, _>::new(MockHost)
+                .tcp_listen_port(0)
+                .discv5_addr(format!("127.0.0.1:{port}").parse().unwrap())
+                .build()
+                .await
+                .expect("NetworkBuilder::build failed");
+
+        let initial_seq = network.test_local_enr_seq();
+
+        // Construct a routable external TCP multiaddr that differs from the
+        // loopback address the builder uses.  The ENR tcp4_socket will be
+        // 127.0.0.1:configured_tcp, so 203.0.113.7:9001 is definitely different.
+        let external_ma: libp2p::Multiaddr = "/ip4/203.0.113.7/tcp/9001".parse().unwrap();
+
+        // Precondition: assert the parsed socket is NOT already the ENR tcp4
+        // socket, so the first call is genuinely a change.
+        let parsed_socket = super::multiaddr_to_tcp_socket(&external_ma)
+            .expect("test multiaddr must parse to a SocketAddr");
+        let current_tcp4 = network
+            .discovery
+            .local_enr()
+            .tcp4_socket()
+            .map(SocketAddr::V4);
+        assert_ne!(
+            Some(parsed_socket),
+            current_tcp4,
+            "precondition: test socket must differ from current ENR tcp4 socket"
+        );
+
+        // First confirmation: real change -> seq bumps once.
+        network.test_on_external_addr_confirmed(external_ma.clone());
+        let seq_after_first = network.test_local_enr_seq();
+        assert_eq!(
+            seq_after_first,
+            initial_seq + 1,
+            "first ExternalAddrConfirmed must bump ENR seq once"
+        );
+
+        // Second identical confirmation: gate blocks dispatch -> seq must NOT bump.
+        network.test_on_external_addr_confirmed(external_ma.clone());
+        assert_eq!(
+            network.test_local_enr_seq(),
+            seq_after_first,
+            "identical ExternalAddrConfirmed must NOT bump ENR seq again"
         );
     }
 }
