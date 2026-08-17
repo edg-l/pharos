@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use thiserror::Error;
-use tracing::warn;
+use tracing::{info, warn};
 
 use pharos_fork_choice::Store as FcStore;
 use pharos_fork_choice::{
@@ -263,6 +263,84 @@ pub fn signed_block_state_root<E: BeaconSpec>(
         inner.message().state_root()
     } else {
         unreachable!("unknown fork variant in SignedBeaconBlock")
+    }
+}
+
+/// Proposer index of a fork-enum `SignedBeaconBlock`.
+///
+/// Mirrors [`signed_block_slot`]: no single trait-dispatch accessor covers every
+/// variant (`.message()` on the enum panics), so each fork is unwrapped here in
+/// ONE place. A missing arm is a compile error.
+pub(crate) fn signed_block_proposer_index<E: BeaconSpec>(b: &E::SignedBeaconBlock) -> u64 {
+    use pharos_types::views::{BeaconBlockView as _, SignedBeaconBlockView as _};
+    if let Some(inner) = E::unwrap_phase0_signed_block(b) {
+        inner.message().proposer_index().0
+    } else if let Some(inner) = E::unwrap_altair_signed_block(b) {
+        inner.message().proposer_index().0
+    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(b) {
+        inner.message().proposer_index().0
+    } else if let Some(inner) = E::unwrap_capella_signed_block(b) {
+        inner.message().proposer_index().0
+    } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
+        inner.message().proposer_index().0
+    } else if let Some(inner) = E::unwrap_electra_signed_block(b) {
+        inner.message().proposer_index().0
+    } else if let Some(inner) = E::unwrap_fulu_signed_block(b) {
+        inner.message().proposer_index().0
+    } else {
+        unreachable!("unknown fork variant in SignedBeaconBlock")
+    }
+}
+
+/// Number of attestations in a fork-enum `SignedBeaconBlock` body.
+///
+/// Mirrors [`signed_block_slot`]: each fork is unwrapped here in ONE place so a
+/// missing arm is a compile error.
+pub(crate) fn signed_block_attestation_count<E: BeaconSpec>(b: &E::SignedBeaconBlock) -> usize {
+    use pharos_types::views::{
+        BeaconBlockBodyView as _, BeaconBlockView as _, SignedBeaconBlockView as _,
+    };
+    if let Some(inner) = E::unwrap_phase0_signed_block(b) {
+        inner.message().body().attestations().len()
+    } else if let Some(inner) = E::unwrap_altair_signed_block(b) {
+        inner.message().body().attestations().len()
+    } else if let Some(inner) = E::unwrap_bellatrix_signed_block(b) {
+        inner.message().body().attestations().len()
+    } else if let Some(inner) = E::unwrap_capella_signed_block(b) {
+        inner.message().body().attestations().len()
+    } else if let Some(inner) = E::unwrap_deneb_signed_block(b) {
+        inner.message().body().attestations().len()
+    } else if let Some(inner) = E::unwrap_electra_signed_block(b) {
+        inner.message().body().attestations().len()
+    } else if let Some(inner) = E::unwrap_fulu_signed_block(b) {
+        inner.message().body().attestations().len()
+    } else {
+        unreachable!("unknown fork variant in SignedBeaconBlock")
+    }
+}
+
+/// Map a block's fork to the data-availability count and its kind label for the
+/// "Imported block" log line. Fulu reports data columns; Deneb/Electra report
+/// blobs; pre-Deneb forks carry no DA payload (count 0).
+///
+/// EXHAUSTIVE over [`ForkVariant`] so a new fork is a compile error here, not a
+/// silently mislabelled log.
+///
+/// The `E: BeaconSpec` parameter is kept for call-site symmetry with the other
+/// `signed_block_*::<E>` import helpers (callers already carry `E`); the match
+/// is driven by the runtime `ForkVariant`, so `E` is not referenced in the body.
+#[allow(clippy::extra_unused_type_parameters)]
+pub(crate) fn count_data_for_log<E: BeaconSpec>(
+    fork_variant: ForkVariant,
+    blob_commitment_count: usize,
+) -> (usize, &'static str) {
+    match fork_variant {
+        ForkVariant::Fulu => (blob_commitment_count, "data_columns"),
+        ForkVariant::Deneb | ForkVariant::Electra => (blob_commitment_count, "blobs"),
+        ForkVariant::Phase0
+        | ForkVariant::Altair
+        | ForkVariant::Bellatrix
+        | ForkVariant::Capella => (0, "blobs"),
     }
 }
 
@@ -766,6 +844,35 @@ where
             finalized_block_hash: hash_to_hex(finalized_hash),
         }
     };
+
+    // (g.1) Debounced "Imported block" log — the single import chokepoint, so
+    // this is the ONLY place the message is emitted (no triple-logging across
+    // gossip / lookup / backfill). When synced we log every block; while syncing
+    // we log only every `SYNC_IMPORT_LOG_INTERVAL`-th block to avoid flooding.
+    // The `head_change` read guard is already dropped above, so the brief
+    // `fc_store.read()` here cannot deadlock.
+    {
+        let block_slot: u64 = signed_block_slot::<E>(signed_block).0;
+        let import_status = crate::status_logger::sync_status(
+            head_change.head_slot.into(),
+            get_current_slot::<E>(&fc_store.read()).0,
+        );
+        if crate::status_logger::should_log_import(&import_status, block_slot) {
+            let (data_count, data_kind) =
+                count_data_for_log::<E>(fork_variant, kzg_commitments.len());
+            let proposer_index = signed_block_proposer_index::<E>(signed_block);
+            let attestations = signed_block_attestation_count::<E>(signed_block);
+            info!(
+                slot = block_slot,
+                root = %crate::status_logger::short_root(block_root.into()),
+                proposer_index,
+                attestations,
+                data_count,
+                data_kind,
+                "Imported block"
+            );
+        }
+    }
 
     // (h) Persist worker — runs AFTER on_block has dropped the WRITE guard.
     //
@@ -1823,6 +1930,40 @@ mod tests {
                 Some(PayloadStatus::Valid),
                 "anchor must remain Valid after promotion walk stops at it"
             );
+        }
+    }
+
+    #[test]
+    fn count_data_for_log_fulu_reports_data_columns() {
+        let (count, kind) = count_data_for_log::<MinimalBeaconSpec>(ForkVariant::Fulu, 6);
+        assert_eq!(count, 6);
+        assert_eq!(kind, "data_columns");
+    }
+
+    #[test]
+    fn count_data_for_log_deneb_and_electra_report_blobs() {
+        let (deneb_count, deneb_kind) =
+            count_data_for_log::<MinimalBeaconSpec>(ForkVariant::Deneb, 3);
+        assert_eq!(deneb_count, 3);
+        assert_eq!(deneb_kind, "blobs");
+
+        let (electra_count, electra_kind) =
+            count_data_for_log::<MinimalBeaconSpec>(ForkVariant::Electra, 4);
+        assert_eq!(electra_count, 4);
+        assert_eq!(electra_kind, "blobs");
+    }
+
+    #[test]
+    fn count_data_for_log_pre_deneb_reports_zero_blobs() {
+        for fork in [
+            ForkVariant::Phase0,
+            ForkVariant::Altair,
+            ForkVariant::Bellatrix,
+            ForkVariant::Capella,
+        ] {
+            let (count, kind) = count_data_for_log::<MinimalBeaconSpec>(fork, 9);
+            assert_eq!(count, 0, "{fork:?} must report 0 data items");
+            assert_eq!(kind, "blobs", "{fork:?} must label as blobs");
         }
     }
 }

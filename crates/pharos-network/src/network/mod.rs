@@ -185,6 +185,10 @@ pub enum NetworkCommand<E: BeaconSpec> {
     PickHighestHeadPeer {
         reply: oneshot::Sender<Option<PeerId>>,
     },
+    /// Return the highest `head_slot` (as `u64`) among connected peers that
+    /// have completed the Status handshake.  Returns `None` when no such peers
+    /// exist.  Used by the per-slot heartbeat to estimate the sync ETA.
+    HighestHeadSlot { reply: oneshot::Sender<Option<u64>> },
     /// Return a cloned snapshot of every known peer's `PeerInfo`.
     ///
     /// Serves the Beacon API `/eth/v1/node/peers` and `/eth/v1/node/peer_count`
@@ -2302,6 +2306,16 @@ impl<
                     .connected_peers_with_status()
                     .max_by_key(|(_, status)| status.head_slot);
                 let _ = reply.send(best.map(|(peer_id, _)| peer_id));
+            }
+            NetworkCommand::HighestHeadSlot { reply } => {
+                // Mirror `PickHighestHeadPeer` but reply with the highest
+                // `head_slot` (as `u64`) rather than the `PeerId`.  Peers that
+                // have not yet completed the Status handshake are skipped.
+                let best = self
+                    .peer_manager
+                    .connected_peers_with_status()
+                    .max_by_key(|(_, status)| status.head_slot);
+                let _ = reply.send(best.map(|(_, status)| status.head_slot.0));
             }
             NetworkCommand::ListPeers { reply } => {
                 let _ = reply.send(self.peer_manager.peer_infos());

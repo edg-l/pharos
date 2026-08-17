@@ -33,6 +33,7 @@ pub mod shutdown;
 pub mod slasher;
 pub mod startup;
 pub mod state_regen;
+pub mod status_logger;
 pub mod subnet_rotation;
 
 pub use engine_driver::ExecutionEngineHandle;

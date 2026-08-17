@@ -120,6 +120,24 @@ impl<E: BeaconSpec> NetworkCommandSender<E> {
         }
         reply_rx.await.unwrap_or_default()
     }
+
+    /// Return the highest `head_slot` across connected peers' last `Status`
+    /// message, used by the per-slot heartbeat to estimate the sync ETA.
+    ///
+    /// Returns `None` when no peer status is known (no connected peers, or none
+    /// have completed the Status handshake) or if the network task has shut down.
+    pub async fn highest_head_slot(&self) -> Option<u64> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .0
+            .send(NetworkCommand::HighestHeadSlot { reply: reply_tx })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        reply_rx.await.unwrap_or(None)
+    }
 }
 
 // ── NetworkHandle ─────────────────────────────────────────────────────────────

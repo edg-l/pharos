@@ -29,7 +29,7 @@ use pharos_types::{
     views::BeaconBlockView as _,
 };
 use tokio::sync::watch;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crate::engine_driver::HeadChange;
 
@@ -213,6 +213,14 @@ pub async fn run_api_event_adapter<E>(
             debug!("api_event_adapter: no SSE subscribers for head event");
         }
 
+        info!(
+            slot = head_slot_u64,
+            head = %crate::status_logger::short_root(head_root_bytes),
+            epoch = head_epoch,
+            optimistic = is_optimistic,
+            "New chain head"
+        );
+
         // ── finalized_checkpoint event (only on advance) ──────────────────
         let emit_finalized = prev_finalized_epoch.is_none_or(|ep| finalized_epoch > ep);
         if emit_finalized {
@@ -227,6 +235,12 @@ pub async fn run_api_event_adapter<E>(
                 debug!("api_event_adapter: no SSE subscribers for finalized_checkpoint event");
             }
             prev_finalized_epoch = Some(finalized_epoch);
+
+            info!(
+                epoch = finalized_epoch,
+                root = %crate::status_logger::short_root(finalized_root),
+                "Finalized checkpoint updated"
+            );
         }
 
         // ── chain_reorg event ─────────────────────────────────────────────
@@ -246,6 +260,14 @@ pub async fn run_api_event_adapter<E>(
             if tx.send(reorg_event).is_err() {
                 debug!("api_event_adapter: no SSE subscribers for chain_reorg event");
             }
+
+            warn!(
+                slot = head_slot_u64,
+                depth,
+                old_head = %crate::status_logger::short_root(old.root),
+                new_head = %crate::status_logger::short_root(head_root_bytes),
+                "Chain reorg"
+            );
         }
 
         // Update tracked state for the next iteration.

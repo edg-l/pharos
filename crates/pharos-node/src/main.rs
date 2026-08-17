@@ -1728,6 +1728,18 @@ async fn main() -> anyhow::Result<()> {
             info!("SSE event adapter task started");
         }
 
+        // Spawn the slot-aligned per-slot status heartbeat task.
+        tokio::spawn(pharos_node::status_logger::run_status_heartbeat::<
+            MainnetBeaconSpec,
+        >(
+            Arc::clone(&fork_choice),
+            handle.command_sender(),
+            genesis_time_secs,
+            args.target_peers,
+            pharos_node_shutdown_rx.clone(),
+        ));
+        info!("per-slot status heartbeat task started");
+
         // Load the optional validator-API token (trimmed file contents, the common CL client format).
         let validator_token: Option<String> = if let Some(ref token_path) = args.validator_api_token
         {
