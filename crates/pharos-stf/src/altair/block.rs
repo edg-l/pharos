@@ -10,11 +10,12 @@ use pharos_types::{
     phase0::{Attestation, AttesterSlashing, Deposit},
 };
 
+use crate::altair::operations::attestation::attestation_signature_set;
 use crate::altair::operations::{
     process_attestation, process_attester_slashing, process_deposit, process_proposer_slashing,
     process_sync_aggregate, process_voluntary_exit,
 };
-use crate::error::StateTransitionError;
+use crate::error::{AttestationInvalidReason, StateTransitionError};
 
 /// `process_block` per `specs/altair/beacon-chain.md:492-506`.
 ///
@@ -321,6 +322,12 @@ where
             E,
         >(state, slashing, verify_signatures)?;
     }
+    // Attestations: validate + apply each with signature checks OFF, collecting
+    // each one's BLS signature set, then verify them all in a single batched
+    // `verify_signature_sets` call (≈1 pairing instead of one per attestation —
+    // the dominant per-block BLS cost). A whole-block failure discards the state,
+    // so apply-before-verify is safe.
+    let mut att_sig_sets: Vec<pharos_utils::bls::SignatureSet> = Vec::new();
     for attestation in body.attestations() {
         process_attestation::<
             SLOTS_PER_HISTORICAL_ROOT,
@@ -332,7 +339,31 @@ where
             JUSTIFICATION_BITS_LENGTH,
             SYNC_COMMITTEE_SIZE,
             E,
-        >(state, attestation, verify_signatures)?;
+        >(state, attestation, false)?;
+        if verify_signatures {
+            att_sig_sets.push(attestation_signature_set::<
+                SLOTS_PER_HISTORICAL_ROOT,
+                HISTORICAL_ROOTS_LIMIT,
+                ETH1_DATA_VOTES_LIMIT,
+                VALIDATOR_REGISTRY_LIMIT,
+                EPOCHS_PER_HISTORICAL_VECTOR,
+                EPOCHS_PER_SLASHINGS_VECTOR,
+                JUSTIFICATION_BITS_LENGTH,
+                SYNC_COMMITTEE_SIZE,
+                E,
+            >(state, attestation)?);
+        }
+    }
+    if !att_sig_sets.is_empty()
+        && !pharos_utils::bls::verify_signature_sets(&att_sig_sets).map_err(|_| {
+            StateTransitionError::InvalidAttestation {
+                reason: AttestationInvalidReason::InvalidSignature,
+            }
+        })?
+    {
+        return Err(StateTransitionError::InvalidAttestation {
+            reason: AttestationInvalidReason::InvalidSignature,
+        });
     }
     for deposit in body.deposits() {
         process_deposit::<

@@ -10,7 +10,8 @@ use pharos_types::{
     altair::BeaconState,
     phase0::{Attestation, Epoch, ValidatorIndex},
 };
-use pharos_utils::Gwei;
+use pharos_utils::bls::{SignatureSet, aggregate_pubkeys};
+use pharos_utils::{BLSPubkey, Gwei};
 
 use crate::altair::helpers::{
     PROPOSER_WEIGHT, add_flag, get_attestation_participation_flag_indices,
@@ -307,6 +308,133 @@ where
     >(state, proposer_index, proposer_reward)?;
 
     Ok(())
+}
+
+/// Build the BLS [`SignatureSet`] for an attestation: the aggregate signer
+/// pubkey, the signing root, and the aggregate signature.
+///
+/// Lets `process_operations` collect every attestation's signature and verify
+/// them in one batched `verify_signature_sets` call instead of one pairing per
+/// attestation. This mirrors the per-attestation verification inside
+/// `process_attestation` (committee → attesting indices → pubkeys → domain →
+/// signing root); the two paths must agree, which the `operations`/`sanity`
+/// conformance suites (with invalid-signature reject cases) guard.
+#[allow(clippy::type_complexity)]
+pub fn attestation_signature_set<
+    const SLOTS_PER_HISTORICAL_ROOT: u64,
+    const HISTORICAL_ROOTS_LIMIT: u64,
+    const ETH1_DATA_VOTES_LIMIT: u64,
+    const VALIDATOR_REGISTRY_LIMIT: u64,
+    const EPOCHS_PER_HISTORICAL_VECTOR: u64,
+    const EPOCHS_PER_SLASHINGS_VECTOR: u64,
+    const JUSTIFICATION_BITS_LENGTH: u64,
+    const SYNC_COMMITTEE_SIZE: u64,
+    E,
+>(
+    state: &BeaconState<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+    >,
+    attestation: &Attestation<2048>,
+) -> Result<SignatureSet, StateTransitionError>
+where
+    E: BeaconSpec<
+        AltairBeaconState = BeaconState<
+            SLOTS_PER_HISTORICAL_ROOT,
+            HISTORICAL_ROOTS_LIMIT,
+            ETH1_DATA_VOTES_LIMIT,
+            VALIDATOR_REGISTRY_LIMIT,
+            EPOCHS_PER_HISTORICAL_VECTOR,
+            EPOCHS_PER_SLASHINGS_VECTOR,
+            JUSTIFICATION_BITS_LENGTH,
+            SYNC_COMMITTEE_SIZE,
+        >,
+    >,
+{
+    let data = &attestation.data;
+    let committee = get_beacon_committee_altair::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        E,
+    >(state, data.slot, data.index.0);
+
+    let mut attesting_sorted: Vec<ValidatorIndex> = committee
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &vi)| {
+            if attestation.aggregation_bits.get(i).unwrap_or(false) {
+                Some(vi)
+            } else {
+                None
+            }
+        })
+        .collect();
+    attesting_sorted.sort();
+    if attesting_sorted.is_empty() {
+        return Err(StateTransitionError::InvalidAttestation {
+            reason: AttestationInvalidReason::EmptyAttestingIndices,
+        });
+    }
+
+    let pubkeys: Vec<BLSPubkey> = attesting_sorted
+        .iter()
+        .map(|vi| {
+            state
+                .validators
+                .get(vi.0 as usize)
+                .map(|v| v.pubkey)
+                .unwrap_or_default()
+        })
+        .collect();
+    let agg_pubkey = aggregate_pubkeys(&pubkeys).map_err(|_| {
+        StateTransitionError::InvalidAttestation {
+            reason: AttestationInvalidReason::InvalidSignature,
+        }
+    })?;
+
+    let domain = get_domain_altair::<
+        SLOTS_PER_HISTORICAL_ROOT,
+        HISTORICAL_ROOTS_LIMIT,
+        ETH1_DATA_VOTES_LIMIT,
+        VALIDATOR_REGISTRY_LIMIT,
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        JUSTIFICATION_BITS_LENGTH,
+        SYNC_COMMITTEE_SIZE,
+        E,
+    >(
+        state,
+        crate::phase0::helpers::DOMAIN_BEACON_ATTESTER,
+        Some(data.target.epoch),
+    );
+
+    let msg = {
+        use pharos_ssz::TreeHash;
+        use pharos_types::phase0::SigningData;
+        SigningData {
+            object_root: data.tree_hash_root(),
+            domain,
+        }
+        .tree_hash_root()
+    };
+
+    Ok(SignatureSet {
+        pubkey: agg_pubkey,
+        message: msg.as_slice().to_vec(),
+        signature: attestation.signature,
+    })
 }
 
 /// Update epoch-participation flags for `attesting_indices` and accumulate the
