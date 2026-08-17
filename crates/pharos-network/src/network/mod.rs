@@ -10,7 +10,7 @@
 pub mod behaviour;
 pub mod transport;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -336,6 +336,16 @@ impl NetworkEvent {
 
 // ── Network ───────────────────────────────────────────────────────────────────
 
+/// Backstop TTL for entries in the three in-flight RPC maps
+/// (`pending_status_checks`, `pending_ping_checks`, `pending_metadata_fetches`).
+///
+/// Intentionally longer than `RPC_TIMEOUT_CONTROL` (15 s) because this sweep
+/// is a **last-resort backstop** for when libp2p fails to deliver the
+/// `OutboundFailure` timeout event.  A late response arriving after eviction
+/// falls through to the "unknown request" warning (safe); the subsequent
+/// `ConnectionClosed` event then removes the peer through the normal path.
+const RPC_INFLIGHT_TTL: Duration = Duration::from_secs(60);
+
 /// TTL for entries in `Network::pending_dials`.
 ///
 /// When an addr-only bootnode dial fails, `OutgoingConnectionError.peer_id` is
@@ -400,21 +410,33 @@ pub struct Network<
     >,
     /// Outbound Status requests sent as part of the connection handshake.
     ///
-    /// Maps `OutboundRequestId` → `PeerId`.  When the Status response arrives
-    /// in `on_request_response_event`, if the request id is in this map we
-    /// perform the fork-digest check and complete (or abort) the handshake.
-    pending_status_checks: HashMap<OutboundRequestId, PeerId>,
+    /// Maps `OutboundRequestId` → `(PeerId, Instant)`.  The `Instant` records
+    /// insertion time for TTL-based eviction in the discovery tick (backstop for
+    /// when libp2p fails to deliver the timeout event).  When the Status response
+    /// arrives in `on_request_response_event`, if the request id is in this map
+    /// we perform the fork-digest check and complete (or abort) the handshake.
+    pending_status_checks: HashMap<OutboundRequestId, (PeerId, Instant)>,
     /// Outbound Ping requests sent for keepalive purposes.
     ///
-    /// Maps `OutboundRequestId` → `PeerId`.  On response, if the peer's
-    /// seq_number is newer than our stored value, a follow-up `GetMetaData`
-    /// is sent.
-    pending_ping_checks: HashMap<OutboundRequestId, PeerId>,
+    /// Maps `OutboundRequestId` → `(PeerId, Instant)`.  The `Instant` records
+    /// insertion time for TTL-based eviction in the discovery tick.  On response,
+    /// if the peer's seq_number is newer than our stored value, a follow-up
+    /// `GetMetaData` is sent.
+    pending_ping_checks: HashMap<OutboundRequestId, (PeerId, Instant)>,
     /// Outbound GetMetaData requests sent after a Ping seq-number mismatch.
     ///
-    /// Maps `OutboundRequestId` → `PeerId`.  On response, updates the peer
-    /// manager's stored metadata for that peer.
-    pending_metadata_fetches: HashMap<OutboundRequestId, PeerId>,
+    /// Maps `OutboundRequestId` → `(PeerId, Instant)`.  The `Instant` records
+    /// insertion time for TTL-based eviction in the discovery tick.  On response,
+    /// updates the peer manager's stored metadata for that peer.
+    pending_metadata_fetches: HashMap<OutboundRequestId, (PeerId, Instant)>,
+    /// Dedup set for in-flight ping requests.
+    ///
+    /// Maintained in sync with `pending_ping_checks`: a peer is inserted on ping
+    /// send and removed on ping response, failure, or TTL eviction in the
+    /// discovery tick.  `tick_ping` skips peers already present here so that a
+    /// slow ping response cannot cause a second ping to stack up.  O(1) lookup,
+    /// NOT an O(n) scan of `pending_ping_checks.values()`.
+    pending_ping_peers: HashSet<PeerId>,
     /// Fires every 15 seconds to drive `Ping` keepalives.
     ping_tick: Interval,
     /// Fires every 30 seconds to drive score-based peer pruning.
@@ -607,6 +629,57 @@ impl<
                     // in the error arm.  This TTL sweep self-heals them so a peer
                     // is never permanently blocked from re-dial.
                     self.pending_dials.retain(|_, t| t.elapsed() < DIAL_PENDING_TTL);
+
+                    // Backstop TTL sweep for in-flight RPC maps.
+                    //
+                    // TTL(60 s) > RPC_TIMEOUT_CONTROL(15 s) intentionally: this
+                    // sweep fires only when libp2p fails to deliver the
+                    // OutboundFailure timeout event.  A late status response after
+                    // eviction falls through to "unknown request" safely.
+                    //
+                    // Status evictions: record HandshakeFail{Timeout} + disconnect.
+                    let mut evicted_status: Vec<PeerId> = Vec::new();
+                    self.pending_status_checks.retain(|_, (peer_id, inserted_at)| {
+                        if inserted_at.elapsed() >= RPC_INFLIGHT_TTL {
+                            evicted_status.push(*peer_id);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    for peer_id in evicted_status {
+                        tracing::debug!(
+                            %peer_id,
+                            ttl_secs = RPC_INFLIGHT_TTL.as_secs(),
+                            "pending_status_checks TTL expired; disconnecting (backstop)"
+                        );
+                        self.peer_manager.record_event(
+                            peer_id,
+                            ScoreEvent::HandshakeFail {
+                                kind: HandshakeFailKind::Timeout,
+                            },
+                        );
+                        self.peer_manager.on_disconnecting(peer_id);
+                        self.swarm.disconnect_peer_id(peer_id).ok();
+                    }
+
+                    // Ping evictions: remove from dedup set; no score penalty
+                    // (the OutboundFailure arm handles scoring if libp2p fires it).
+                    self.pending_ping_checks.retain(|_, (peer_id, inserted_at)| {
+                        if inserted_at.elapsed() >= RPC_INFLIGHT_TTL {
+                            self.pending_ping_peers.remove(peer_id);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+
+                    // Metadata evictions: silent TTL drop (no scoring; the
+                    // OutboundFailure arm handles it when libp2p fires).
+                    self.pending_metadata_fetches
+                        .retain(|_, (_peer_id, inserted_at)| {
+                            inserted_at.elapsed() < RPC_INFLIGHT_TTL
+                        });
 
                     // Run a discv5 FINDNODE query and dial any discovered peers.
                     let peers = self.discovery.find_peers().await;
@@ -922,17 +995,31 @@ impl<
                 })
                 .await;
                 if let Some(pid) = peer_id {
-                    self.peer_manager.record_event(
-                        pid,
-                        ScoreEvent::HandshakeFail {
-                            kind: HandshakeFailKind::Timeout,
-                        },
-                    );
-                }
-                if let Some(pid) = peer_id {
                     self.pending_dials.remove(&pid);
+                    // Classify the error to determine scoring and backoff path.
+                    match classify_dial_error(&error) {
+                        Some(kind) => {
+                            self.peer_manager
+                                .record_event(pid, ScoreEvent::HandshakeFail { kind });
+                            if kind == HandshakeFailKind::Unreachable {
+                                // Transient offline: soft backoff advance.
+                                self.peer_manager.note_soft_dial_failure(pid);
+                            } else {
+                                // Persistent failure (Timeout, Decode): full backoff advance.
+                                self.peer_manager.note_dial_failure(Some(pid));
+                            }
+                        }
+                        None => {
+                            // Our own gating (Denied, Aborted, NoAddresses,
+                            // DialPeerConditionFalse): do NOT penalise the peer
+                            // or advance its backoff; only update the dedup LRU.
+                            self.peer_manager.note_gating_dial_failure(pid);
+                        }
+                    }
+                } else {
+                    // peer_id unknown: addr-only failure; preserve existing LRU no-op.
+                    self.peer_manager.note_dial_failure(None);
                 }
-                self.peer_manager.note_dial_failure(peer_id);
             }
             libp2p::swarm::SwarmEvent::ExternalAddrConfirmed { address } => {
                 tracing::info!(%address, "external address confirmed");
@@ -1288,17 +1375,21 @@ impl<
                     if (method == RpcMethod::Status || method == RpcMethod::StatusV2)
                         && self.pending_status_checks.contains_key(&request_id)
                     {
-                        let hs_peer = self.pending_status_checks.remove(&request_id).unwrap();
+                        let (hs_peer, _inserted_at) =
+                            self.pending_status_checks.remove(&request_id).unwrap();
                         self.on_status_response(hs_peer, &response).await;
                     } else if method == RpcMethod::Ping
                         && self.pending_ping_checks.contains_key(&request_id)
                     {
-                        let ping_peer = self.pending_ping_checks.remove(&request_id).unwrap();
+                        let (ping_peer, _inserted_at) =
+                            self.pending_ping_checks.remove(&request_id).unwrap();
+                        self.pending_ping_peers.remove(&ping_peer);
                         self.on_ping_response(ping_peer, &response);
                     } else if (method == RpcMethod::MetaData || method == RpcMethod::MetaDataV1)
                         && self.pending_metadata_fetches.contains_key(&request_id)
                     {
-                        let meta_peer = self.pending_metadata_fetches.remove(&request_id).unwrap();
+                        let (meta_peer, _inserted_at) =
+                            self.pending_metadata_fetches.remove(&request_id).unwrap();
                         self.on_metadata_response(meta_peer, &response);
                     } else if let Some((_method, tx)) =
                         self.pending_rpc.remove(&(method, request_id))
@@ -1341,6 +1432,7 @@ impl<
                 } else if method == RpcMethod::Ping
                     && self.pending_ping_checks.remove(&request_id).is_some()
                 {
+                    self.pending_ping_peers.remove(&peer);
                     self.peer_manager.record_event(
                         peer,
                         ScoreEvent::RpcError {
@@ -1498,7 +1590,8 @@ impl<
         if peer_seq > stored_seq {
             let request_id = self.send_rpc_request(&peer_id, RpcRequest::MetaData);
             // Track only via pending_metadata_fetches; no oneshot to resolve.
-            self.pending_metadata_fetches.insert(request_id, peer_id);
+            self.pending_metadata_fetches
+                .insert(request_id, (peer_id, Instant::now()));
         }
     }
 
@@ -1745,7 +1838,8 @@ impl<
                     &peer_id,
                     crate::rpc::types::RpcRequest::Status(local_status),
                 );
-                self.pending_status_checks.insert(request_id, peer_id);
+                self.pending_status_checks
+                    .insert(request_id, (peer_id, Instant::now()));
             } else {
                 // Inbound connection: do NOT emit PeerConnected here.
                 // PeerConnected is emitted only after successful Status handshake
@@ -1787,6 +1881,18 @@ impl<
     ) {
         if num_established == 0 {
             use crate::types::DisconnectReason;
+            // Eagerly clear any in-flight RPC bookkeeping for this peer. The normal
+            // flow relies on libp2p firing OutboundFailure per pending request, but
+            // an abrupt close can arrive without it — leaving the peer in
+            // pending_ping_peers would make tick_ping skip it for up to RPC_INFLIGHT_TTL
+            // if it reconnects within that window (delaying keepalive / seq detection).
+            self.pending_ping_checks
+                .retain(|_, (pid, _)| *pid != peer_id);
+            self.pending_ping_peers.remove(&peer_id);
+            self.pending_status_checks
+                .retain(|_, (pid, _)| *pid != peer_id);
+            self.pending_metadata_fetches
+                .retain(|_, (pid, _)| *pid != peer_id);
             // Pre-registered reason wins (set before issuing the disconnect so the
             // Goodbye/fork-mismatch semantics are preserved even when libp2p delivers
             // a generic clean-close error).
@@ -1811,19 +1917,30 @@ impl<
         }
     }
 
-    /// Send a `Ping` keepalive to every `Connected` peer.
+    /// Send a `Ping` keepalive to every `Connected` peer that does not already
+    /// have an in-flight ping.
     ///
     /// Per `p2p-interface.md:1543-1575`: the local node sends
     /// `Ping(seq_number)` every 15 s. If the peer replies with a
     /// seq_number newer than the stored one, a follow-up `GetMetaData`
     /// is issued.
+    ///
+    /// Dedup: peers already present in `pending_ping_peers` are skipped (O(1)
+    /// HashSet lookup).  This prevents a slow ping response from causing a
+    /// second ping to stack up on the next tick.
     pub fn tick_ping(&mut self) {
         let local_seq = self.host_metadata.load().seq_number;
         let connected: Vec<PeerId> = self.peer_manager.connected_peers().collect();
         for peer_id in connected {
+            // Skip peers that already have an in-flight ping.
+            if self.pending_ping_peers.contains(&peer_id) {
+                continue;
+            }
             let request_id = self.send_rpc_request(&peer_id, RpcRequest::Ping(local_seq));
             // Track only via pending_ping_checks; no oneshot to resolve.
-            self.pending_ping_checks.insert(request_id, peer_id);
+            self.pending_ping_checks
+                .insert(request_id, (peer_id, Instant::now()));
+            self.pending_ping_peers.insert(peer_id);
         }
     }
 
@@ -2152,6 +2269,66 @@ pub(crate) fn rpc_method_from_request(req: &RpcRequest) -> RpcMethod {
         RpcRequest::DataColumnSidecarsByRange(_) => RpcMethod::DataColumnSidecarsByRange,
         RpcRequest::DataColumnSidecarsByRoot(_) => RpcMethod::DataColumnSidecarsByRoot,
         RpcRequest::BeaconBlocksByHead(_) => RpcMethod::BeaconBlocksByHead,
+    }
+}
+
+/// Classify a `DialError` into a `HandshakeFailKind` for peer scoring.
+///
+/// Returns `Some(kind)` when the failure is attributable to the remote peer and
+/// should be recorded as a `HandshakeFail` score event.  Returns `None` for
+/// failures caused by our own gating logic (e.g. `Denied`, `Aborted`,
+/// `DialPeerConditionFalse`, `NoAddresses`) — these must NOT penalise the peer.
+///
+/// Variant classification for libp2p-swarm 0.47.1 (enum is NOT `#[non_exhaustive]`
+/// so the match is exhaustive):
+/// - `Transport` — inspect the inner `io::Error` kinds:
+///   `ConnectionRefused` / `ConnectionReset` / `HostUnreachable` /
+///   `NetworkUnreachable` → `Unreachable` (transient offline);
+///   `TimedOut` → `Timeout`; any other → `Unreachable` (conservative transient).
+/// - `WrongPeerId` / `LocalPeerId` → `Decode` (identity mismatch).
+/// - `Denied` / `DialPeerConditionFalse` / `Aborted` / `NoAddresses` → `None`.
+pub(crate) fn classify_dial_error(err: &libp2p::swarm::DialError) -> Option<HandshakeFailKind> {
+    use libp2p::core::transport::TransportError;
+    use libp2p::swarm::DialError;
+    use std::io::ErrorKind;
+
+    match err {
+        DialError::Transport(errors) => {
+            // Inspect each (addr, transport-error) pair; TimedOut takes priority.
+            // Track whether any actual connection attempt failed (io::Error) vs.
+            // only MultiaddrNotSupported — the latter is our own local transport
+            // config, not the peer's fault, so it must NOT be penalised.
+            let mut any_timed_out = false;
+            let mut any_io_error = false;
+            for (_addr, te) in errors {
+                if let TransportError::Other(io_err) = te {
+                    any_io_error = true;
+                    if io_err.kind() == ErrorKind::TimedOut {
+                        any_timed_out = true;
+                    }
+                    // ConnectionRefused/Reset/HostUnreachable/NetworkUnreachable and
+                    // all other io kinds collapse to transient Unreachable below.
+                }
+                // TransportError::MultiaddrNotSupported: local config, not scored.
+            }
+            if any_timed_out {
+                Some(HandshakeFailKind::Timeout)
+            } else if any_io_error {
+                Some(HandshakeFailKind::Unreachable)
+            } else {
+                // Empty error list or only MultiaddrNotSupported: our fault, no penalty.
+                None
+            }
+        }
+        // Identity mismatch: the remote sent a different peer ID than expected.
+        DialError::WrongPeerId { .. } | DialError::LocalPeerId { .. } => {
+            Some(HandshakeFailKind::Decode)
+        }
+        // Our own gating: NOT the peer's fault; do not penalise.
+        DialError::Denied { .. }
+        | DialError::DialPeerConditionFalse(_)
+        | DialError::Aborted
+        | DialError::NoAddresses => None,
     }
 }
 
@@ -2730,6 +2907,7 @@ impl<
             pending_status_checks: HashMap::new(),
             pending_ping_checks: HashMap::new(),
             pending_metadata_fetches: HashMap::new(),
+            pending_ping_peers: HashSet::new(),
             ping_tick,
             score_prune_tick,
             bootnodes: bootnodes_for_network,
@@ -2945,6 +3123,33 @@ impl<
     pub fn test_record_inbound_stream_reset(&mut self, peer_id: PeerId) {
         self.peer_manager
             .record_event(peer_id, ScoreEvent::InboundStreamReset);
+    }
+
+    /// Number of entries currently in `pending_ping_checks` (Phase 3 test seam).
+    #[doc(hidden)]
+    pub fn test_pending_ping_checks_len(&self) -> usize {
+        self.pending_ping_checks.len()
+    }
+
+    /// Whether `peer_id` is in `pending_ping_peers` (Phase 3 dedup test seam).
+    #[doc(hidden)]
+    pub fn test_pending_ping_peers_contains(&self, peer_id: &PeerId) -> bool {
+        self.pending_ping_peers.contains(peer_id)
+    }
+
+    /// Drive one `tick_ping` call (Phase 3 test seam).
+    #[doc(hidden)]
+    pub fn test_tick_ping(&mut self) {
+        self.tick_ping();
+    }
+
+    /// Manually mark `peer_id` as having an in-flight ping (Phase 3 test seam).
+    ///
+    /// Inserts into `pending_ping_peers` without actually sending a request,
+    /// so `test_tick_ping` skips the peer on the next call.
+    #[doc(hidden)]
+    pub fn test_mark_ping_inflight(&mut self, peer_id: PeerId) {
+        self.pending_ping_peers.insert(peer_id);
     }
 }
 
@@ -3258,5 +3463,112 @@ mod tests {
         assert_eq!(super::score_bucket_label(25.0), "healthy");
         assert_eq!(super::score_bucket_label(50.0), "healthy");
         assert_eq!(super::score_bucket_label(100.0), "excellent");
+    }
+
+    // ── Phase 3: classify_dial_error unit tests ──────────────────────────────
+
+    /// `classify_dial_error` maps a Transport connection-refused io::Error to
+    /// `Some(Unreachable)`.
+    #[test]
+    fn classify_dial_error_transport_refused_is_unreachable() {
+        use libp2p::core::transport::TransportError;
+        use libp2p::swarm::DialError;
+        use std::io;
+
+        let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "connection refused");
+        let te = TransportError::<io::Error>::Other(io_err);
+        let dial_err = DialError::Transport(vec![("/ip4/127.0.0.1/tcp/9999".parse().unwrap(), te)]);
+        assert_eq!(
+            super::classify_dial_error(&dial_err),
+            Some(crate::scoring::HandshakeFailKind::Unreachable),
+            "ConnectionRefused must map to Unreachable"
+        );
+    }
+
+    /// `classify_dial_error` maps a Transport TimedOut io::Error to
+    /// `Some(Timeout)`.
+    #[test]
+    fn classify_dial_error_transport_timedout_is_timeout() {
+        use libp2p::core::transport::TransportError;
+        use libp2p::swarm::DialError;
+        use std::io;
+
+        let io_err = io::Error::new(io::ErrorKind::TimedOut, "timed out");
+        let te = TransportError::<io::Error>::Other(io_err);
+        let dial_err = DialError::Transport(vec![("/ip4/127.0.0.1/tcp/9999".parse().unwrap(), te)]);
+        assert_eq!(
+            super::classify_dial_error(&dial_err),
+            Some(crate::scoring::HandshakeFailKind::Timeout),
+            "TimedOut must map to Timeout"
+        );
+    }
+
+    /// `classify_dial_error` returns `None` for `DialError::Aborted` (our own
+    /// gating; the peer must not be penalised).
+    #[test]
+    fn classify_dial_error_aborted_is_none() {
+        use libp2p::swarm::DialError;
+
+        let dial_err = DialError::Aborted;
+        assert_eq!(
+            super::classify_dial_error(&dial_err),
+            None,
+            "Aborted is our own gating; must return None"
+        );
+    }
+
+    // ── Phase 3: tick_ping dedup test ────────────────────────────────────────
+
+    /// A peer with an in-flight ping must be skipped on the next `tick_ping`
+    /// call.  `pending_ping_checks` must not grow and `pending_ping_peers`
+    /// continues to contain the peer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tick_ping_dedup_skips_inflight_peer() {
+        // Use a unique UDP port for discv5 to avoid collisions when tests run
+        // concurrently (the default 127.0.0.1:9001 may be held by another test).
+        let discv5_sock: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let udp = std::net::UdpSocket::bind(discv5_sock).unwrap();
+        let port = udp.local_addr().unwrap().port();
+        drop(udp); // release so discv5 can bind
+
+        let (mut network, _handle, _discovery_handle) =
+            NetworkBuilder::<MainnetBeaconSpec, MockHost, _>::new(MockHost)
+                .tcp_listen_port(0)
+                .discv5_addr(format!("127.0.0.1:{port}").parse().unwrap())
+                .build()
+                .await
+                .expect("NetworkBuilder::build failed");
+
+        // Register a peer as Connected (handshake complete) in the peer manager.
+        let peer_id = libp2p::PeerId::random();
+        network.test_register_connected_peer(peer_id);
+
+        // Simulate an in-flight ping for this peer by inserting into the dedup set.
+        network.test_mark_ping_inflight(peer_id);
+
+        // At this point pending_ping_checks is empty (no actual request sent).
+        assert_eq!(
+            network.test_pending_ping_checks_len(),
+            0,
+            "no real pings sent yet"
+        );
+        assert!(
+            network.test_pending_ping_peers_contains(&peer_id),
+            "peer must be in pending_ping_peers"
+        );
+
+        // Fire tick_ping; the peer must be skipped because it's already in
+        // pending_ping_peers.
+        network.test_tick_ping();
+
+        assert_eq!(
+            network.test_pending_ping_checks_len(),
+            0,
+            "pending_ping_checks must not grow; peer had an in-flight ping"
+        );
+        assert!(
+            network.test_pending_ping_peers_contains(&peer_id),
+            "peer must still be in pending_ping_peers after the skipped tick"
+        );
     }
 }

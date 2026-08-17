@@ -174,6 +174,10 @@ pub enum HandshakeFailKind {
     IrrelevantNetwork,
     Timeout,
     Decode,
+    /// The peer was transiently unreachable at dial time (connection refused,
+    /// reset, or host/network unreachable).  Penalised lighter than `Timeout`
+    /// because a reachability blip is usually transient; the peer may recover.
+    Unreachable,
 }
 
 /// Trait implemented by peer scorers.
@@ -234,6 +238,13 @@ pub trait PeerScorer: Send + Sync + 'static {
     /// Records a failed dial attempt, advancing exponential backoff. The
     /// default is a no-op (a no-op scorer tracks no backoff).
     fn record_dial_failure(&mut self, _peer: PeerId) {}
+
+    /// Records a soft (transient-unreachable) dial failure.
+    ///
+    /// Advances the dial backoff by a single half-step rather than doubling it,
+    /// since a transient-unreachable peer is likely to recover.  The default
+    /// no-op is suitable for `NoopScorer` and tests.
+    fn record_soft_dial_failure(&mut self, _peer: PeerId) {}
 
     /// Clears dial-backoff state after a successful dial. Default no-op.
     fn record_dial_success(&mut self, _peer: PeerId) {}
@@ -307,7 +318,12 @@ const W_RATE_LIMIT_EXCEEDED: f64 = -10.0;
 const W_INBOUND_STREAM_RESET: f64 = W_RPC_ERROR;
 
 // --- app-component event weights ---
+/// Weight for most handshake failures (fork mismatch, timeout, decode).
 const W_HANDSHAKE_FAIL: f64 = -20.0;
+/// Weight for a transient-unreachable dial failure.  Deliberately lighter than
+/// `W_HANDSHAKE_FAIL` / `Timeout` (-20) because an offline peer should back
+/// off less than a peer that completed transport but failed the handshake.
+const W_HANDSHAKE_FAIL_UNREACHABLE: f64 = -5.0;
 const W_BANNED_RECONNECT: f64 = -50.0;
 const W_SUBNET_NON_PROPAGATION: f64 = -20.0;
 const W_UNSUBSCRIBED_EXPECTED_SUBNET: f64 = -10.0;
@@ -486,7 +502,12 @@ impl RealScorer {
             // Penalise req_resp only — no per-method bucket touch because the method
             // is unknown at InboundFailure time.
             ScoreEvent::InboundStreamReset => state.req_resp += W_INBOUND_STREAM_RESET,
-            ScoreEvent::HandshakeFail { .. } => state.app += W_HANDSHAKE_FAIL,
+            ScoreEvent::HandshakeFail { kind } => {
+                state.app += match kind {
+                    HandshakeFailKind::Unreachable => W_HANDSHAKE_FAIL_UNREACHABLE,
+                    _ => W_HANDSHAKE_FAIL,
+                };
+            }
             ScoreEvent::BannedPeerConnected => state.app += W_BANNED_RECONNECT,
             ScoreEvent::SubnetNonPropagation { .. } => state.app += W_SUBNET_NON_PROPAGATION,
             ScoreEvent::UnsubscribedFromExpectedSubnet { .. } => {
@@ -557,6 +578,30 @@ impl RealScorer {
         state.backoff.next_allowed = now + backoff;
     }
 
+    /// Records a soft dial failure (transient-unreachable), advancing the
+    /// backoff by at most one half-step rather than doubling.
+    ///
+    /// The backoff for a soft failure is capped at `DIAL_BACKOFF_BASE * 4`
+    /// (8 seconds) regardless of prior failure count, so a transiently
+    /// unreachable peer is retried sooner than a chronically failing one.
+    pub fn record_soft_dial_failure(&mut self, peer: PeerId) {
+        self.record_soft_dial_failure_at(peer, Instant::now());
+    }
+
+    /// [`record_soft_dial_failure`](Self::record_soft_dial_failure) at an explicit time (test seam).
+    pub fn record_soft_dial_failure_at(&mut self, peer: PeerId, now: Instant) {
+        let state = self.entry(peer, now);
+        // Increment failure count only if it hasn't exceeded 2 (keeps the soft
+        // path from silently becoming a hard path on repeated unreachability).
+        state.backoff.failures = state.backoff.failures.saturating_add(1).min(2);
+        let shift = state.backoff.failures.saturating_sub(1);
+        let backoff = DIAL_BACKOFF_BASE
+            .checked_mul(1u32.checked_shl(shift.min(31)).unwrap_or(u32::MAX))
+            .unwrap_or(DIAL_BACKOFF_MAX)
+            .min(DIAL_BACKOFF_BASE * 4); // soft cap: 8 s max
+        state.backoff.next_allowed = now + backoff;
+    }
+
     /// Clears dial-backoff state after a successful dial.
     pub fn record_dial_success(&mut self, peer: PeerId) {
         let now = Instant::now();
@@ -618,6 +663,10 @@ impl PeerScorer for RealScorer {
 
     fn record_dial_failure(&mut self, peer: PeerId) {
         RealScorer::record_dial_failure(self, peer)
+    }
+
+    fn record_soft_dial_failure(&mut self, peer: PeerId) {
+        RealScorer::record_soft_dial_failure(self, peer)
     }
 
     fn record_dial_success(&mut self, peer: PeerId) {
@@ -757,7 +806,7 @@ impl RealScorer {
     /// Returns `Err` if `bytes.len()` is not a multiple of [`RECORD_SIZE`]
     /// (corrupt file — caller should start fresh with a WARN).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SszPersistError> {
-        if bytes.len() % RECORD_SIZE != 0 {
+        if !bytes.len().is_multiple_of(RECORD_SIZE) {
             return Err(SszPersistError::BadLength {
                 len: bytes.len(),
                 record_size: RECORD_SIZE,

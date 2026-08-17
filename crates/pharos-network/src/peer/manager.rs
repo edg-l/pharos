@@ -418,6 +418,32 @@ impl<S: PeerScorer> PeerManager<S> {
         }
     }
 
+    /// Records a transient-unreachable dial failure for `peer`.
+    ///
+    /// Updates the recently-failed-dials LRU (for dedup) and advances the
+    /// scorer's dial backoff via the soft path (`record_soft_dial_failure`),
+    /// which is capped lower than the full exponential path.  Use this when
+    /// the peer was unreachable due to a transient network condition rather
+    /// than a persistent protocol failure.
+    pub fn note_soft_dial_failure(&mut self, peer: PeerId) {
+        self.recently_failed_dials.put(peer, Instant::now());
+        self.scorer.record_soft_dial_failure(peer);
+    }
+
+    /// Records a dial failure that is not the peer's fault (e.g. our own
+    /// gating logic rejected the dial: `Denied`, `Aborted`,
+    /// `DialPeerConditionFalse`, `NoAddresses`).
+    ///
+    /// Updates the recently-failed-dials LRU for dedup purposes but does NOT
+    /// advance the scorer's exponential backoff, since the failure is not
+    /// attributable to the remote peer.
+    pub fn note_gating_dial_failure(&mut self, peer: PeerId) {
+        self.recently_failed_dials.put(peer, Instant::now());
+        // Intentionally does NOT call scorer.record_dial_failure — gating
+        // failures (Denied, Aborted, NoAddresses, DialPeerConditionFalse) are
+        // our own decisions, not the peer's fault.
+    }
+
     /// Returns the total number of tracked peers across **all** lifecycle states
     /// (`Connecting`, `Handshaking`, `Connected`, `Disconnecting`, `Banned`).
     ///
