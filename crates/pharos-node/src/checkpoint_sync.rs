@@ -197,13 +197,26 @@ where
         return Err(CheckpointSyncError::Status { code, body });
     }
 
+    // The Beacon API spec says blocks responses SHOULD carry `Eth-Consensus-Version`,
+    // but some checkpoint providers (e.g. Checkpointz) omit it on the SSZ blocks
+    // endpoint while still setting it on the debug state endpoint. Fall back to the
+    // anchor state's fork: the anchor block is at `latest_block_header.slot` (≤ the
+    // state's slot) and shares its fork in every realistic case. A wrong guess is not
+    // silently accepted — the `BlockRootMismatch` check below re-hashes the decoded
+    // block and rejects a mis-decode.
     let block_fork_str = block_resp
         .headers()
         .get("Eth-Consensus-Version")
-        .ok_or(CheckpointSyncError::MissingForkHeader)?
-        .to_str()
-        .unwrap_or("")
-        .to_string();
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                state_fork = %fork_str,
+                "checkpoint block response missing Eth-Consensus-Version header; \
+                 falling back to the anchor state's fork"
+            );
+            fork_str.clone()
+        });
 
     let block_bytes = block_resp.bytes().await?;
     let signed_block = decode_signed_block::<E>(&block_fork_str, &block_bytes)?;
@@ -757,6 +770,102 @@ mod tests {
         handle.abort();
 
         let anchor = result.expect("fetch should succeed");
+        assert_eq!(
+            anchor.block_root, expected_block_root,
+            "block_root mismatch"
+        );
+        assert_eq!(
+            anchor.state_root, computed_state_root,
+            "state_root mismatch"
+        );
+    }
+
+    // ── Test (a2): block response missing Eth-Consensus-Version header ────────
+    //
+    // Some checkpoint providers (e.g. Checkpointz) omit the fork header on the
+    // SSZ blocks endpoint while still setting it on the debug state endpoint.
+    // fetch_checkpoint must fall back to the anchor state's fork and succeed.
+    #[tokio::test]
+    async fn fetch_succeeds_when_block_header_missing() {
+        let body = MinimalBeaconBlockBody::default();
+        let body_root: Root = body.tree_hash_root();
+
+        let state_inner = MinimalBeaconState {
+            genesis_time: 1_600_000_000u64,
+            slot: Slot(64),
+            latest_block_header: BeaconBlockHeader {
+                slot: Slot(64),
+                state_root: Root::default(),
+                body_root,
+                ..BeaconBlockHeader::default()
+            },
+            ..MinimalBeaconState::default()
+        };
+
+        let fork_state = ForkMinimalBeaconState::Bellatrix(state_inner.clone());
+        let computed_state_root: Root = fork_state.tree_hash_root();
+
+        let signed_block_inner = MinimalSignedBeaconBlock {
+            message: MinimalBeaconBlock {
+                slot: Slot(64),
+                state_root: computed_state_root,
+                body: body.clone(),
+                ..MinimalBeaconBlock::default()
+            },
+            ..MinimalSignedBeaconBlock::default()
+        };
+
+        let expected_block_root: Root = {
+            let mut h = state_inner.latest_block_header.clone();
+            h.state_root = computed_state_root;
+            h.tree_hash_root()
+        };
+
+        use pharos_ssz::Encode as _;
+        let state_bytes = state_inner.as_ssz_bytes();
+        let block_bytes = signed_block_inner.as_ssz_bytes();
+        let block_root_hex = hex::encode(expected_block_root.as_slice());
+
+        let state_bytes_arc = std::sync::Arc::new(state_bytes);
+        let block_bytes_arc = std::sync::Arc::new(block_bytes);
+        let app = Router::new()
+            .route(
+                "/eth/v2/debug/beacon/states/finalized",
+                get({
+                    let sb = state_bytes_arc.clone();
+                    move || {
+                        let sb = sb.clone();
+                        async move {
+                            let mut headers = HeaderMap::new();
+                            headers.insert("Eth-Consensus-Version", "bellatrix".parse().unwrap());
+                            (StatusCode::OK, headers, (*sb).clone())
+                        }
+                    }
+                }),
+            )
+            .route(
+                &format!("/eth/v2/beacon/blocks/0x{block_root_hex}"),
+                get({
+                    let bb = block_bytes_arc.clone();
+                    move || {
+                        let bb = bb.clone();
+                        // Deliberately NO Eth-Consensus-Version header: exercises
+                        // the fall-back to the anchor state's fork.
+                        async move { (StatusCode::OK, (*bb).clone()) }
+                    }
+                }),
+            );
+
+        let (addr, listener) = bind_random().await;
+        let handle = tokio::spawn(axum::serve(listener, app).into_future());
+
+        let url = reqwest::Url::parse(&format!("http://{addr}/")).unwrap();
+        let http = reqwest::Client::new();
+        let result = fetch_checkpoint::<MinimalBeaconSpec>(&url, &http, None).await;
+
+        handle.abort();
+
+        let anchor = result.expect("fetch should succeed despite missing block header");
         assert_eq!(
             anchor.block_root, expected_block_root,
             "block_root mismatch"
