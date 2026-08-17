@@ -61,7 +61,7 @@ pharos-validator     validator binary `pharos-vc`
 - Prefer `make` targets over raw cargo (output capture, pipefail, fast/full
   split). `make help`. Inner loop: `make test` / `make lint` / `make check`.
   Pre-commit: `make pre-commit`. Full gate: `make ci`.
-- Rust 2024, MSRV 1.86. `cargo fmt` + clippy before commits.
+- Rust 2024, MSRV 1.88. `cargo fmt` + clippy before commits.
 - **Commit directly to `master`** (solo repo); no auto feature branches. No
   Co-Authored-By lines. Don't commit `CLAUDE.md` or planning artifacts.
 - **Long runs** (workspace test, conformance, flamegraph, cold full builds):

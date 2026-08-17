@@ -111,7 +111,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-Rust 2024 edition, MSRV 1.86. No nightly features.
+Rust 2024 edition, MSRV 1.88. No nightly features.
 
 ## Running
 
